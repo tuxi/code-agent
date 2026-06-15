@@ -222,6 +222,7 @@ func (r *Runner) Run(ctx context.Context, goal string) (RunResult, error) {
 			validationObservation := "Patch was not validated."
 			applyObservation := "Patch was not applied."
 			diffObservation := "No git diff was generated."
+			rollbackHint := "No rollback hint was generated."
 
 			// 1. 先询问是否校验 patch
 			ok := ui.Confirm("Validate this patch with git apply --check?")
@@ -324,6 +325,8 @@ func (r *Runner) Run(ctx context.Context, goal string) (RunResult, error) {
 					if len(patchPaths) == 0 {
 						patchPaths = []string{""}
 					}
+					rollbackHint = BuildRollbackHint(patchPaths)
+					fmt.Printf("[rollback hint]\n%s\n", rollbackHint)
 					var diffParts []string
 					for _, patchPath := range patchPaths {
 						diffInput, _ := json.Marshal(map[string]any{
@@ -381,13 +384,15 @@ func (r *Runner) Run(ctx context.Context, goal string) (RunResult, error) {
 						"Patch validation result:\n" + validationObservation + "\n\n" +
 						"Patch apply result:\n" + applyObservation + "\n\n" +
 						"Patch-scoped remaining git diff after applying patch:\n" + diffObservation + "\n\n" +
+						"Rollback hint:\n" + rollbackHint + "\n\n" +
 						"Important semantics:\n" +
 						"- The patch proposal above is the exact patch that was validated and, if confirmed, applied.\n" +
 						"- git_diff shows remaining uncommitted changes relative to HEAD, not the exact patch that was just applied.\n" +
 						"- If the patch apply result says it was applied successfully but the patch-scoped diff is empty, this usually means the touched files now match HEAD or have no remaining uncommitted changes.\n" +
 						"- Do not claim the patch failed just because the remaining git diff is empty.\n" +
 						"- Only describe changes from the patch proposal and the patch-scoped diff. Do not summarize unrelated workspace changes.\n\n" +
-						"Now return final_answer. Summarize whether the patch was validated, whether it was applied, and what remaining diff exists.",
+						"Now return final_answer. Summarize whether the patch was validated, whether it was applied, and what remaining diff exists." +
+						"Do not use markdown code fences in final_answer. Use plain text bullets if needed. ",
 				},
 			)
 

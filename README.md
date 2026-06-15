@@ -269,7 +269,7 @@ The first milestone is to build a correct, observable, minimal AI-native agent r
 * [x] User confirmation before applying patches
 * [x] Apply patches after validation
 * [x] Show `git_diff` after patch application
-* [ ] Rollback strategy
+* [x] Rollback strategy v1
 
 ### P2: Command Execution
 
