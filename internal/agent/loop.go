@@ -4,6 +4,7 @@ import (
 	"code-agent/internal/model"
 	"code-agent/internal/prompt"
 	"code-agent/internal/tools"
+	"code-agent/internal/ui"
 	"context"
 	"encoding/json"
 	"errors"
@@ -33,7 +34,7 @@ func (r *Runner) Run(ctx context.Context, goal string) (RunResult, error) {
 		r.Tools = tools.NewRegistry()
 	}
 	if r.MaxSteps <= 0 {
-		r.MaxSteps = 8
+		r.MaxSteps = 16
 	}
 
 	state := State{
@@ -128,17 +129,92 @@ func (r *Runner) Run(ctx context.Context, goal string) (RunResult, error) {
 
 			fmt.Printf("[observation]\n%s\n", observation)
 
+			remainingSteps := r.MaxSteps - i - 1
+			recentReadFiles := countRecentToolCalls(state, "read_file", 5)
+
+			extraHint := ""
+			if recentReadFiles >= 3 {
+				extraHint = "\nYou have recently read several files. Prefer converging to plan, patch_proposal, or final_answer unless another file is absolutely necessary."
+			}
+
+			nextInstruction := fmt.Sprintf(
+				"Tool observation for %s:\n%s\n\n"+
+					"Remaining steps: %d.%s\n"+
+					"Now return the next JSON decision.\n"+
+					"If you have enough context for a code change, return patch_proposal.\n"+
+					"If the task is too large for the remaining steps, return plan or final_answer with a concise next-step recommendation.\n"+
+					"Do not keep reading files unless the missing information is essential.",
+				decision.Tool,
+				observation,
+				remainingSteps,
+				extraHint,
+			)
+
 			messages = append(messages,
 				model.Message{
 					Role:    model.RoleAssistant,
 					Content: mustMarshalDecision(decision),
 				},
 				model.Message{
-					Role: model.RoleUser,
-					Content: "Tool observation for " + decision.Tool + ":\n" + observation + "\n\n" +
-						"Now return the next JSON decision.",
+					Role:    model.RoleUser,
+					Content: nextInstruction,
 				},
 			)
+		case DecisionPlan:
+			step.FinishedAt = time.Now()
+			state.Steps = append(state.Steps, step)
+
+			printPlan(decision)
+
+			if decision.NeedsConfirmation {
+				ok := ui.Confirm("Continue with this plan?")
+				if !ok {
+					state.Completed = true
+					state.Final = "Plan rejected by user."
+					return RunResult{
+						Final: state.Final,
+						State: state,
+					}, nil
+				}
+
+				messages = append(messages,
+					model.Message{
+						Role:    model.RoleAssistant,
+						Content: mustMarshalDecision(decision),
+					},
+					model.Message{
+						Role: model.RoleUser,
+						// 用户确认的消息
+						Content: "The user approved the plan. Continue executing the approved plan. " +
+							"Use tools only if you still need concrete file contents. " +
+							"If you have enough information for the code change, return patch_proposal. " +
+							"Do not repeat the same plan. " +
+							"Do not modify files directly.",
+					},
+				)
+			} else {
+				messages = append(messages,
+					model.Message{
+						Role:    model.RoleAssistant,
+						Content: mustMarshalDecision(decision),
+					},
+					model.Message{
+						Role:    model.RoleUser,
+						Content: "Continue with the next JSON decision.",
+					},
+				)
+			}
+		case DecisionPatchProposal:
+			step.FinishedAt = time.Now()
+			state.Steps = append(state.Steps, step)
+			printPatchProposal(decision)
+
+			state.Completed = true
+			state.Final = "Patch proposal generated. No files were modified."
+			return RunResult{
+				Final: state.Final,
+				State: state,
+			}, nil
 		default:
 			step.Error = "unknown decision type: " + string(decision.Type)
 
@@ -155,8 +231,20 @@ func (r *Runner) Run(ctx context.Context, goal string) (RunResult, error) {
 			)
 		}
 	}
+
+	final := "Agent stopped because max steps reached."
+	if len(state.Steps) > 0 {
+		last := state.Steps[len(state.Steps)-1]
+		final = fmt.Sprintf(
+			"Agent stopped because max steps reached. Last decision=%s tool=%s error=%s",
+			last.Decision.Type,
+			last.Decision.Tool,
+			last.Error,
+		)
+	}
+
 	return RunResult{
-		Final: "Agent stopped because max steps reached.",
+		Final: final,
 		State: state,
 	}, nil
 }
@@ -203,5 +291,67 @@ func mustMarshalDecision(decision Decision) string {
 		return `{"type":"final_answer","message":"failed to marshal previous decision"}`
 	}
 	return string(data)
+}
 
+func printPlan(decision Decision) {
+	fmt.Println("\nPlan:")
+	if decision.Summary != "" {
+		fmt.Println(decision.Summary)
+	}
+
+	if len(decision.Steps) > 0 {
+		fmt.Println("\nSteps:")
+		for i, step := range decision.Steps {
+			fmt.Printf("%d. %s\n", i+1, step)
+		}
+	}
+
+	if len(decision.Risks) > 0 {
+		fmt.Println("\nRisks:")
+		for i, risk := range decision.Risks {
+			fmt.Printf("%d. %s\n", i+1, risk)
+		}
+	}
+
+	fmt.Printf("\nNeeds confirmation: %v\n", decision.NeedsConfirmation)
+}
+
+func printPatchProposal(decision Decision) {
+	fmt.Println("\nPatch Proposal:")
+
+	if decision.Summary != "" {
+		fmt.Println("\nSummary:")
+		fmt.Println(decision.Summary)
+	}
+
+	if decision.Risk != "" {
+		fmt.Println("\nRisk:")
+		fmt.Println(decision.Risk)
+	}
+
+	if len(decision.Risks) > 0 {
+		fmt.Println("\nRisks:")
+		for i, risk := range decision.Risks {
+			fmt.Printf("%d. %s\n", i+1, risk)
+		}
+	}
+
+	fmt.Println("\nPatch:")
+	if decision.Patch == "" {
+		fmt.Println("(empty patch)")
+		return
+	}
+
+	fmt.Println(decision.Patch)
+}
+
+func countRecentToolCalls(state State, toolName string, maxLookback int) int {
+	count := 0
+	for i := len(state.Steps) - 1; i >= 0 && len(state.Steps)-i <= maxLookback; i-- {
+		step := state.Steps[i]
+		if step.Decision.Type == DecisionToolCall && step.Decision.Tool == toolName {
+			count++
+		}
+	}
+	return count
 }

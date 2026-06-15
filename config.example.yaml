@@ -5,7 +5,7 @@ model:
   temperature: 0.2
 
 agent:
-  max_steps: 8
+  max_steps: 16
 
 workspace:
   root: "."
