@@ -1,6 +1,7 @@
 model:
   provider: deepseek
   base_url: "https://api.deepseek.com"
+  # model must support function calling
   model: "deepseek-v4-flash"
   temperature: 0.2
 

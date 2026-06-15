@@ -1,325 +1,271 @@
 # Code Agent
-Code Agent is an experimental AI-native coding agent runtime written in Go.
 
-This project is not just a chatbot wrapper. Its goal is to explore the core loop of a real coding agent:
+Code Agent is an experimental, AI-native coding agent runtime written in Go.
 
-```plain text
-Goal → Model Decision → Tool Execution → Observation → Next Decision → Final
+It is not a chatbot wrapper. The goal is to build a real coding agent from first
+principles, where the model owns the control flow and the runtime owns the
+boundaries, execution, and observation:
+
+```
+Goal → Model reasons & calls tools → Runtime executes under policy → Results fed back → … → Done
 ```
 
-The current version is a minimal runnable foundation. It supports:
+The long-term aim is an on-device agent that migrates cleanly to a server-side
+runtime, with coding as the entry point.
 
-* Running a CLI command
-* Calling DeepSeek through an OpenAI-compatible chat completion API
-* Executing a simple agent loop
-* Letting the model output structured JSON decisions
-* Executing the first workspace tool: list_files
-* Returning tool observations back to the model
-* Producing a final answer after one or more reasoning/action steps
+---
 
-## Project Status
+## Philosophy
 
-This project is currently in P1: Safe Code Editing Foundation.
+```
+An AI-native agent is not a fixed workflow.
 
-The current goal is to build a small but correct agent runtime foundation before adding advanced features.
-
-Implemented:
-
-* `list_files` tool
-* `read_file` tool
-* `grep` tool
-* `git_diff` tool
-* `plan` decision flow
-* `patch_proposal` decision flow
-* `apply_patch` validation tool using `git apply --check`
-
-Not implemented yet:
-
-* Applying patches after confirmation
-* Automatic `git_diff` after patch application
-* Rollback strategy
-* `run_command`
-* SQLite memory
-* Native model tool calls
-* Streaming output
-* Full sandbox policy enforcement
-* GUI
-
-## Why This Project Exists
-
-The purpose of this project is to understand and build an AI-native coding agent from first principles.
-
-Many coding assistants can generate a large amount of code quickly, but this project intentionally starts small and transparent. Every part of the runtime should be understandable, observable, and controllable.
-
-The design principle is:
-```plain text
 The model decides what to do next.
-The runtime controls what can actually be executed.
-Tools are explicit and observable.
-Every step should be traceable.
+The runtime decides what is allowed to actually happen.
+Tools are explicit, typed, observable capabilities.
+Context is engineered, not assumed.
+Every step is traceable.
+No hidden automation. No uncontrolled file modification.
 ```
 
-## Architecture
+A practical consequence drives the whole design: **control flow belongs to the
+model, not to a runtime state machine.** The runtime stays thin and uniform; it
+does not encode task-specific sequences.
 
-Current high-level architecture:
-```plain text
-cmd/codeagent
+---
+
+## Where the project is now
+
+A working foundation already exists, built on an early "JSON decision protocol"
+(the model emits a typed JSON decision each turn; the runtime parses and acts).
+The following is implemented and runnable:
+
+- **Read-only foundation** — CLI entrypoint, OpenAI-compatible provider, agent
+  loop, tool registry, and the tools `list_files`, `read_file`, `grep`.
+- **Code editing** — `git_diff`, plan/patch-proposal flow, `apply_patch`
+  validation via `git apply --check`, user-confirmed apply, post-apply diff,
+  and a first rollback strategy.
+- **Command execution** — `run_command` with an allowlist, timeout control, and
+  a basic sandbox policy.
+
+This foundation works, but it has three structural limits that the roadmap below
+addresses directly:
+
+1. **Tool metadata is duplicated in three places** (the `Tool` interface, the
+   system prompt, and the loop's `switch`). Adding a tool requires editing the
+   prompt and the loop. The Registry should be the single source of truth.
+2. **Control flow is baked into the runtime** as decision types
+   (`plan`, `patch_proposal`, …) and a hardcoded patch orchestration sequence.
+   This makes the agent feel like a workflow and makes the loop grow with every
+   capability.
+3. **No context engineering** — runs are bounded by `max_steps` rather than a
+   token budget, there is no compaction, and the project memory file
+   (`CODEAGENT.md`) is not injected.
+
+The project is now entering a deliberate refactor toward a native tool-calling
+agent with a layered harness.
+
+---
+
+## Target architecture
+
+The runtime is decomposed into clear layers, each owning one concern. The loop
+itself stays small and **business-agnostic** — it must not know about patches,
+plans, or git.
+
+```
+cmd/codeagent            CLI entrypoint
   ↓
-internal/app
-  ↓
-internal/agent
-  ↓
-internal/model
-  ↓
-internal/tools
-  ↓
-workspace
+internal/agent           Loop driver (thin) + run state
+internal/context         Conversation/context manager: messages, prompt
+                         assembly, token accounting, compaction
+internal/model           Provider abstraction: tool-calling protocol, retries,
+                         (later) streaming
+internal/tools           Tool registry (single source of truth) + tool impls
+                         (filesystem / search / git / shell)
+internal/sandbox         Policy & permission layer: what is allowed, what needs
+                         confirmation, allowlists
+internal/memory          Project memory (CODEAGENT.md) + session persistence
+internal/skills          Skill registry: progressive disclosure of guidance
+internal/trace           Structured event tracing
+internal/prompt          Base identity + prompt assembly (NOT the tool catalog)
+internal/ui              CLI permission implementation
+pkg/agentapi             Public API types
 ```
 
-Main packages:
-```plain text
-cmd/codeagent/
-  CLI entrypoint.
+### The agent loop (target)
 
-internal/app/
-  Application configuration loading.
+The loop becomes a single uniform cycle, identical regardless of how many tools
+exist:
 
-internal/agent/
-  Core agent runtime: decision, state, loop, step.
-
-internal/model/
-  LLM provider abstraction and OpenAI-compatible implementation.
-
-internal/prompt/
-  System prompt for JSON decision protocol.
-
-internal/tools/
-  Tool interface and registry.
-
-internal/tools/filesystem/
-  Filesystem tools, including list_files and read_file.
-
-internal/tools/search/
-  Search tools, currently including grep.
-
-internal/workspace/
-  Future workspace context management.
-
-internal/sandbox/
-  Future permission and execution policy.
-
-internal/memory/
-  Future session and trace persistence.
-
-internal/trace/
-  Future structured event tracing.
-
-internal/ui/
-  Future terminal interaction helpers.
-
-pkg/agentapi/
-  Future public API types.
+```
+1. Assemble context (system identity + project memory + relevant skills + history)
+2. Call the model with the tool schemas from the Registry
+3. Model returns reasoning text and/or tool calls
+4. For each tool call: the policy layer gates it; the runtime executes it
+5. Tool results are fed back as tool messages
+6. Repeat until the model returns a final text response with no tool calls
 ```
 
-Core Agent Loop
+There are no `plan` / `patch_proposal` branches. Planning, asking the user, and
+applying patches are ordinary tools. Confirmation lives in the policy layer, and
+the sequencing of validate → apply → test is decided by the model, not the loop.
 
-The runtime is built around a simple loop:
+---
 
-```plain text
-1. User gives a goal
-2. Agent sends goal and system prompt to the model
-3. Model returns a JSON decision
-4. Runtime parses the decision
-5. If it is a tool call, runtime executes the tool
-6. Tool result becomes an observation
-7. Observation is sent back to the model
-8. Model returns the next decision
-9. Agent stops when it receives final_answer
+## Roadmap
+
+The phases are ordered by dependency. Each phase is independently runnable and
+testable.
+
+### Phase 1 — Native tool calling & a thin loop  *(keystone)*
+
+Unlocks all three structural limits at once.
+
+- [ ] Confirm the configured model supports function calling (and reasoning);
+  swap the model if it does not.
+- [ ] Extend `model.Request` with `Tools`; extend `model.Response` / `Message`
+  to carry `tool_calls`, the `tool` role, and `tool_call_id`.
+- [ ] Update the OpenAI-compatible provider to send `tools` and parse
+  `tool_calls`.
+- [ ] Change `Tool.InputSchema()` to return structured JSON Schema; the Registry
+  emits the `tools` array.
+- [ ] Rewrite the loop as a uniform model → tools → feedback cycle; stop on a
+  text-only response.
+- [ ] Dissolve decision types: `plan` → a todo/plan tool, `patch_proposal` →
+  the `apply_patch` tool, `ask_user` → a tool or plain text.
+- [ ] Remove all tool descriptions from the system prompt; remove the
+  "JSON only / no explanations" constraint so the model can think.
+
+**Done when:** adding a new tool requires only registering it (no prompt or loop
+edits), and the model produces reasoning text alongside tool calls.
+
+### Phase 2 — Harness layering
+
+- [ ] Extract the context manager (owns messages and prompt assembly).
+- [ ] Extract the policy/permission layer behind an interface; move every
+  `ui.Confirm` gate into it. The CLI prompt is one implementation.
+- [ ] Make the loop driver thin and business-agnostic (no patch/plan/git
+  branches).
+- [ ] Add retry/backoff in the provider so a transient API error does not kill
+  the run.
+- [ ] Move patch validate → apply → diff orchestration out of the loop:
+  `apply_patch` self-validates, the policy layer gates the apply, and the
+  model decides whether to run tests.
+- [ ] Emit structured trace events from the harness.
+
+**Done when:** the loop driver contains no tool-specific logic, the permission
+layer is swappable, and runs survive transient API errors.
+
+### Phase 3 — Context engineering
+
+- [ ] Inject `CODEAGENT.md` as project memory at session start.
+- [ ] Add token accounting; budget on tokens (keep `max_steps` as a safety cap).
+- [ ] Add compaction near the context-window limit (summarize old turns, keep
+  recent ones verbatim).
+- [ ] Add session persistence (SQLite) for resume and trace.
+
+**Done when:** long runs do not overflow the context window, and project
+conventions persist across runs.
+
+### Phase 4 — Thinking & reflection
+
+- [ ] Adopt a reasoning-capable model / interleaved reasoning.
+- [ ] Confirm the verify-fix loop closes through real tool feedback (tests,
+  compiler, lint) — this replaces the old "self-validation loop" idea, which
+  should emerge from the uniform loop rather than be a hardcoded state
+  machine.
+- [ ] Optional: a lightweight self-check before the final answer.
+
+**Non-goal:** a heavyweight, separate reflection engine. Reflection is grounded
+in real tool results, not a bolt-on subsystem.
+
+**Done when:** the model autonomously runs tests, reads failures, and fixes them
+without any hardcoded sequencing.
+
+### Phase 5 — Skills (progressive disclosure)
+
+- [ ] A skill = a named instruction document (+ optionally scoped tools) loaded
+  into context only when relevant.
+- [ ] Task-specific guidance lives in skills, not the base system prompt.
+
+**Done when:** the base system prompt stays small as capabilities grow.
+
+### Later / parallel
+
+- [ ] MCP adapter — consume and expose tools through a standard protocol,
+  registering them into the same Registry.
+- [ ] Streaming output.
+- [ ] Local/cloud runtime split — remote tool runtime, workspace adapter,
+  server-side sandbox experiment.
+- [ ] GUI.
+
+---
+
+## Design rules
+
+```
+1.  An AI-native agent is not a fixed workflow.
+2.  The model owns control flow; the runtime owns boundaries, execution, observation.
+3.  The Registry is the single source of truth for tools.
+    Adding a tool must not require editing the loop or the prompt.
+4.  Permission and confirmation live in a policy layer, never inline in the loop.
+5.  Patches are never applied silently. Gates are policy; sequencing is the model's.
+6.  Reflection emerges from real tool feedback, not a separate engine.
+7.  Context is engineered: project memory is injected, history is compacted.
+8.  Skills add guidance via progressive disclosure, only when the prompt would
+    otherwise grow unbounded.
+9.  Every step is traceable.
+10. No hidden automation. No uncontrolled file modification.
 ```
 
-Example model decision:
-
-```json
-{
-  "type": "tool_call",
-  "tool": "list_files",
-  "input": {
-    "path": "."
-  },
-  "reason": "I need to inspect the workspace structure first."
-}
-```
-
-Example final answer:
-```json
-{
-  "type": "final_answer",
-  "message": "This project is a Go-based AI-native coding agent runtime..."
-}
-```
+---
 
 ## Requirements
 
-* Go 1.22+
-* DeepSeek API key
+- Go 1.22+
+- An API key for a model that supports function calling
 
 ## Setup
 
-Install dependencies:
-
 ```bash
 go mod tidy
-```
-
-Create local config:
-
-```bash
 cp config.example.yaml config.yaml
-```
-
-Set your DeepSeek API key:
-
-```bash
 export DEEPSEEK_API_KEY="your_api_key"
 ```
 
-Configuration
-
-Example config.example.yaml:
+Example `config.example.yaml`:
 
 ```yaml
 model:
   provider: deepseek
   base_url: "https://api.deepseek.com"
-  model: "deepseek-v4-flash"
+  model: "deepseek-v4-flash"   # must support function calling; verify in Phase 1
   temperature: 0.2
 
 agent:
-  max_steps: 8
+  max_steps: 16                # safety cap; the real budget becomes tokens (Phase 3)
 
 workspace:
   root: "."
 ```
 
-Usage
-
-Ask a normal question:
+## Usage
 
 ```bash
+# Ask a normal question
 go run ./cmd/codeagent ask "你是谁"
-```
 
-Run the agent loop:
-```bash
+# Run the agent loop
 go run ./cmd/codeagent run "解释下这个项目结构"
 ```
 
-Example output:
-```plain text
-[1] decision=tool_call tool=list_files reason=To understand the project structure, I need to list the files and directories in the current workspace.
+---
 
-[observation]
-cmd/
-internal/
-go.mod
-README.md
-...
+## Project belief
 
-[2] decision=final_answer
-
-Final:
-该项目是一个名为 CodeAgent 的 AI 编码代理...
 ```
-
-## Current Design Rules
-
-The project currently follows these rules:
-
-```plain text
-No database before the basic agent loop works.
-No uncontrolled file modification.
-No shell execution before permission control is designed.
-No hidden automation.
-No complex framework before the runtime is understandable.
+An AI-native agent is a runtime where the model decides the next step,
+while the system provides tools, boundaries, state, memory, and observation.
+The runtime stays thin. The intelligence lives in the model.
 ```
-
-The first milestone is not to build a full Claude Code replacement.
-
-The first milestone is to build a correct, observable, minimal AI-native agent runtime.
-
-## Roadmap
-
-### P0: Read-only Agent Foundation
-
-* [x] CLI entrypoint
-* [x] DeepSeek provider
-* [x] Agent loop
-* [x] JSON decision protocol
-* [x] Tool registry
-* [x] `list_files`
-* [x] `read_file`
-* [x] `grep`
-
-### P1: Code Editing
-
-* [x] `git_diff`
-* [x] `plan`
-* [x] `patch_proposal`
-* [x] `apply_patch` validation with `git apply --check`
-* [x] User confirmation before applying patches
-* [x] Apply patches after validation
-* [x] Show `git_diff` after patch application
-* [x] Rollback strategy v1
-
-## P2: Command Execution
-* [x] run_command
-* [x] command allowlist
-* [x] timeout control
-* [x] basic sandbox policy
-* [x] post-patch validation
-
-## P2.5: Self Validation Loop
-* [ ] validation decision
-* [ ] automatic validation selection
-* [ ] validation observation feedback
-* [ ] self-fix retry loop
-* [ ] max retry control
-
-### P3: Memory and Trace
-
-* SQLite session store
-* Step persistence
-* Tool call persistence
-* Trace viewer
-
-### P4: Local and Cloud Runtime Split
-
-* Local tool runtime
-* Remote tool runtime abstraction
-* Workspace adapter
-* Server-side sandbox experiment
-
-## Philosophy
-
-Code Agent is built around one simple belief:
-
-```plain text
-An AI-native agent is not a fixed workflow.
-It is a runtime where the model can decide the next step,
-while the system provides tools, boundaries, state, and observation.
-```
-
-## P0 Verification
-
-```bash
-go run ./cmd/codeagent ask "你是谁"
-go run ./cmd/codeagent run "解释这个项目结构"
-go run ./cmd/codeagent run "解释 cmd/codeagent/main.go 是怎么工作的"
-go run ./cmd/codeagent run "Provider 接口在哪里定义？它是如何被调用的？"
-go run ./cmd/codeagent run "Agent loop 的核心流程是什么？请基于代码解释"
-go run ./cmd/codeagent run "当前有哪些未提交改动？"
-go run ./cmd/codeagent run "修复 internal/ui/confirm.go 里的 errr 变量名，把它改成 err，只提出 patch，不要应用"
-go run ./cmd/codeagent run "新增 apply_patch 工具，先只支持 git apply --check，不要真正应用 patch"
-```
-
-This project is currently in P2: Command Execution and Validation.
