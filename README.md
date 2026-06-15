@@ -19,33 +19,30 @@ The current version is a minimal runnable foundation. It supports:
 
 ## Project Status
 
-This project is in the earliest P0 stage.
+This project is currently in P1: Safe Code Editing Foundation.
 
 The current goal is to build a small but correct agent runtime foundation before adding advanced features.
 
 Implemented:
 
-* `codeagent ask "..."`
-* `codeagent run "..."`
-* DeepSeek provider via OpenAI-compatible API
-* In-memory agent state
-* JSON-based model decision protocol
-* Tool registry
 * `list_files` tool
 * `read_file` tool
 * `grep` tool
-* Basic trace output in terminal
+* `git_diff` tool
+* `plan` decision flow
+* `patch_proposal` decision flow
+* `apply_patch` validation tool using `git apply --check`
 
 Not implemented yet:
 
-* `apply_patch`
-* `git_diff`
+* Applying patches after confirmation
+* Automatic `git_diff` after patch application
+* Rollback strategy
 * `run_command`
 * SQLite memory
 * Native model tool calls
 * Streaming output
-* Permission confirmation
-* Sandbox policy enforcement
+* Full sandbox policy enforcement
 * GUI
 
 ## Why This Project Exists
@@ -265,10 +262,14 @@ The first milestone is to build a correct, observable, minimal AI-native agent r
 
 ### P1: Code Editing
 
-* apply_patch
-* [x] git_diff
-* User confirmation before applying patches
-* Rollback strategy
+* [x] `git_diff`
+* [x] `plan`
+* [x] `patch_proposal`
+* [x] `apply_patch` validation with `git apply --check`
+* [ ] User confirmation before applying patches
+* [ ] Apply patches after validation
+* [ ] Show `git_diff` after patch application
+* [ ] Rollback strategy
 
 ### P2: Command Execution
 
@@ -311,6 +312,8 @@ go run ./cmd/codeagent run "解释 cmd/codeagent/main.go 是怎么工作的"
 go run ./cmd/codeagent run "Provider 接口在哪里定义？它是如何被调用的？"
 go run ./cmd/codeagent run "Agent loop 的核心流程是什么？请基于代码解释"
 go run ./cmd/codeagent run "当前有哪些未提交改动？"
+go run ./cmd/codeagent run "修复 internal/ui/confirm.go 里的 errr 变量名，把它改成 err，只提出 patch，不要应用"
+go run ./cmd/codeagent run "新增 apply_patch 工具，先只支持 git apply --check，不要真正应用 patch"
 ```
 
-The current version is the first read-only heartbeat of the agent runtime.
+The current version is the first safe code-editing heartbeat of the agent runtime.

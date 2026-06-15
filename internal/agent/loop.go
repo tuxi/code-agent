@@ -209,12 +209,69 @@ func (r *Runner) Run(ctx context.Context, goal string) (RunResult, error) {
 			state.Steps = append(state.Steps, step)
 			printPatchProposal(decision)
 
-			state.Completed = true
-			state.Final = "Patch proposal generated. No files were modified."
-			return RunResult{
-				Final: state.Final,
-				State: state,
-			}, nil
+			if strings.TrimSpace(decision.Patch) == "" {
+				state.Completed = true
+				state.Final = "Patch proposal generated, but patch is empty. No files were modified."
+				return RunResult{
+					Final: state.Final,
+					State: state,
+				}, nil
+			}
+
+			ok := ui.Confirm("Validate this patch with git apply --check?")
+			if !ok {
+				state.Completed = true
+				state.Final = "Patch proposal generated. No files were modified or validated."
+				return RunResult{
+					Final: state.Final,
+					State: state,
+				}, nil
+			}
+
+			validationInput, _ := json.Marshal(map[string]string{
+				"patch": decision.Patch,
+			})
+
+			validationDecision := Decision{
+				Type:   DecisionToolCall,
+				Tool:   "apply_patch",
+				Input:  validationInput,
+				Reason: "Validate the proposed patch with git apply --check before applying anything.",
+			}
+
+			validationStartedAt := time.Now()
+
+			validationStep := Step{
+				Index:     len(state.Steps) + 1,
+				Decision:  validationDecision,
+				StartedAt: validationStartedAt,
+			}
+
+			validationObservation, err := r.executeTool(ctx, validationDecision)
+			if err != nil {
+				validationObservation = "Patch validation tool error: " + err.Error()
+			}
+
+			validationObservation = TruncateObservation(validationObservation, 8000)
+			validationStep.Observation = validationObservation
+			validationStep.FinishedAt = time.Now()
+			state.Steps = append(state.Steps, validationStep)
+
+			fmt.Printf("[patch validation]\n%s\n", validationObservation)
+
+			messages = append(messages,
+				model.Message{
+					Role:    model.RoleAssistant,
+					Content: mustMarshalDecision(decision),
+				},
+				model.Message{
+					Role: model.RoleUser,
+					Content: "Patch validation result:\n" + validationObservation + "\n\n" +
+						"Now return final_answer. Summarize the proposed patch and whether it applies cleanly. " +
+						"Do not claim files were modified.",
+				},
+			)
+
 		default:
 			step.Error = "unknown decision type: " + string(decision.Type)
 
@@ -226,7 +283,7 @@ func (r *Runner) Run(ctx context.Context, goal string) (RunResult, error) {
 				},
 				model.Message{
 					Role:    model.RoleUser,
-					Content: "Unknown decision type. Return one of: final_answer, tool_call, ask_user.",
+					Content: "Unknown decision type. Return one of: final_answer, tool_call, ask_user, plan, patch_proposal.",
 				},
 			)
 		}

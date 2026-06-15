@@ -55,6 +55,10 @@ func (t *ApplyPatchTool) Execute(ctx context.Context, input json.RawMessage) (to
 		return tools.ToolResult{}, fmt.Errorf("patch input is required")
 	}
 
+	if !strings.HasSuffix(patch, "\n") {
+		patch += "\n"
+	}
+
 	if len(patch) > t.MaxBytes {
 		return tools.ToolResult{}, fmt.Errorf("patch too large: size=%d max=%d", len(patch), t.MaxBytes)
 	}
@@ -67,7 +71,8 @@ func (t *ApplyPatchTool) Execute(ctx context.Context, input json.RawMessage) (to
 	cmdCtx, cancel := context.WithTimeout(ctx, t.Timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(cmdCtx, "git", "-C", rootAbs, "apply", "--check")
+	// --recount的作用是：当 patch 是手写或模型生成的，hunk 行数可能不准时，让 git 重新计算 hunk 行数。
+	cmd := exec.CommandContext(cmdCtx, "git", "-C", rootAbs, "apply", "--check", "--recount")
 	cmd.Stdin = strings.NewReader(patch)
 
 	output, err := cmd.CombinedOutput()
