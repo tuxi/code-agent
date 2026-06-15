@@ -266,15 +266,15 @@ The first milestone is to build a correct, observable, minimal AI-native agent r
 * [x] `plan`
 * [x] `patch_proposal`
 * [x] `apply_patch` validation with `git apply --check`
-* [ ] User confirmation before applying patches
-* [ ] Apply patches after validation
-* [ ] Show `git_diff` after patch application
+* [x] User confirmation before applying patches
+* [x] Apply patches after validation
+* [x] Show `git_diff` after patch application
 * [ ] Rollback strategy
 
 ### P2: Command Execution
 
 * run_command
-* Command allowlist
+* Command allowlist 
 * Timeout control
 * Basic sandbox policy
 * Test/fix loop

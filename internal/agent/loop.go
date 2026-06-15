@@ -218,6 +218,12 @@ func (r *Runner) Run(ctx context.Context, goal string) (RunResult, error) {
 				}, nil
 			}
 
+			// 这些 observation 必须在外层声明，后面 messages 才能统一使用
+			validationObservation := "Patch was not validated."
+			applyObservation := "Patch was not applied."
+			diffObservation := "No git diff was generated."
+
+			// 1. 先询问是否校验 patch
 			ok := ui.Confirm("Validate this patch with git apply --check?")
 			if !ok {
 				state.Completed = true
@@ -228,8 +234,10 @@ func (r *Runner) Run(ctx context.Context, goal string) (RunResult, error) {
 				}, nil
 			}
 
-			validationInput, _ := json.Marshal(map[string]string{
+			// 2. 执行 git apply --check
+			validationInput, _ := json.Marshal(map[string]any{
 				"patch": decision.Patch,
+				"apply": false,
 			})
 
 			validationDecision := Decision{
@@ -239,16 +247,16 @@ func (r *Runner) Run(ctx context.Context, goal string) (RunResult, error) {
 				Reason: "Validate the proposed patch with git apply --check before applying anything.",
 			}
 
-			validationStartedAt := time.Now()
-
 			validationStep := Step{
 				Index:     len(state.Steps) + 1,
 				Decision:  validationDecision,
-				StartedAt: validationStartedAt,
+				StartedAt: time.Now(),
 			}
 
-			validationObservation, err := r.executeTool(ctx, validationDecision)
+			var err error
+			validationObservation, err = r.executeTool(ctx, validationDecision)
 			if err != nil {
+				validationStep.Error = err.Error()
 				validationObservation = "Patch validation tool error: " + err.Error()
 			}
 
@@ -259,6 +267,83 @@ func (r *Runner) Run(ctx context.Context, goal string) (RunResult, error) {
 
 			fmt.Printf("[patch validation]\n%s\n", validationObservation)
 
+			canApply := strings.Contains(validationObservation, "Patch applies cleanly.")
+
+			// 3. 校验失败：不允许应用，让模型总结失败原因
+			if !canApply {
+				messages = append(messages,
+					model.Message{
+						Role:    model.RoleAssistant,
+						Content: mustMarshalDecision(decision),
+					},
+					model.Message{
+						Role: model.RoleUser,
+						Content: "Patch validation result:\n" + validationObservation + "\n\n" +
+							"The patch did not validate cleanly, so it was not applied.\n" +
+							"Now return final_answer. Explain that no files were modified and summarize the validation failure.",
+					},
+				)
+				continue
+			}
+
+			// 4. 校验通过后，再询问是否真正应用
+			applyOK := ui.Confirm("Apply this patch now?")
+			if applyOK {
+				applyInput, _ := json.Marshal(map[string]any{
+					"patch": decision.Patch,
+					"apply": true,
+				})
+				applyDecision := Decision{
+					Type:   DecisionToolCall,
+					Tool:   "apply_patch",
+					Input:  applyInput,
+					Reason: "Apply the validated patch after user confirmation.",
+				}
+				applyStep := Step{
+					Index:     len(state.Steps) + 1,
+					Decision:  applyDecision,
+					StartedAt: time.Now(),
+				}
+				applyObservation, err = r.executeTool(ctx, applyDecision)
+				if err != nil {
+					applyStep.Error = err.Error()
+					applyObservation = "Patch apply tool error: " + err.Error()
+				}
+				applyObservation = TruncateObservation(applyObservation, 8000)
+				applyStep.Observation = applyObservation
+				applyStep.FinishedAt = time.Now()
+				state.Steps = append(state.Steps, applyStep)
+				fmt.Printf("[patch apply]\n%s\n", applyObservation)
+				// 5. 应用后自动 git_diff
+				diffInput, _ := json.Marshal(map[string]any{
+					"path":   "",
+					"staged": false,
+					"stat":   false,
+				})
+				diffDecision := Decision{
+					Type:   DecisionToolCall,
+					Tool:   "git_diff",
+					Input:  diffInput,
+					Reason: "Show the actual git diff after applying the patch.",
+				}
+				diffStep := Step{
+					Index:     len(state.Steps) + 1,
+					Decision:  diffDecision,
+					StartedAt: time.Now(),
+				}
+				diffObservation, err = r.executeTool(ctx, diffDecision)
+				if err != nil {
+					diffStep.Error = err.Error()
+					diffObservation = "git_diff tool error: " + err.Error()
+				}
+				diffObservation = TruncateObservation(diffObservation, 8000)
+				diffStep.Observation = diffObservation
+				diffStep.FinishedAt = time.Now()
+				state.Steps = append(state.Steps, diffStep)
+				fmt.Printf("[git diff after apply]\n%s\n", diffObservation)
+			}
+
+			// 6. 把 validation/apply/diff 的结果统一回传给模型，让它 final_answer
 			messages = append(messages,
 				model.Message{
 					Role:    model.RoleAssistant,
@@ -267,8 +352,11 @@ func (r *Runner) Run(ctx context.Context, goal string) (RunResult, error) {
 				model.Message{
 					Role: model.RoleUser,
 					Content: "Patch validation result:\n" + validationObservation + "\n\n" +
-						"Now return final_answer. Summarize the proposed patch and whether it applies cleanly. " +
-						"Do not claim files were modified.",
+						"Patch apply result:\n" + applyObservation + "\n\n" +
+						"Git diff after applying patch:\n" + diffObservation + "\n\n" +
+						"Now return final_answer. " +
+						"Summarize whether the patch was validated, whether it was applied, and what changed. " +
+						"Do not claim files were modified unless the apply result says the patch was applied successfully.",
 				},
 			)
 
