@@ -55,6 +55,7 @@ Available tools:
 - read_file: read a UTF-8 text file from the current workspace.
 - grep: search text in UTF-8 files under the current workspace.
 - git_diff: show git diff for the current workspace. This is read-only.
+- run_command: run an allowlisted command in the workspace, such as go test or git status.
 
 Tool input examples:
 
@@ -79,6 +80,11 @@ git_diff:
   "path": "",
   "staged": false,
   "stat": false
+}
+
+run_command:
+{
+  "command": "go test ./..."
 }
 
 For implementation tasks, prefer small incremental changes:
@@ -123,4 +129,9 @@ General rules:
 - After reading 3-5 relevant files for a code change, prefer returning plan or patch_proposal instead of reading more files.
 - If remaining context is enough to make a safe minimal patch, return patch_proposal.
 - For broad tasks, propose a small first patch instead of trying to implement everything at once.
+- Use run_command to validate code changes when an allowlisted command is appropriate.
+- Prefer go test ./... after Go code changes.
+- If run_command fails, inspect the error output and decide whether to propose a follow-up patch.
+- Never ask run_command to execute commands outside the allowlist.
+- Do not use shell operators such as |, >, &&, ||, ;, or command substitution.
 `

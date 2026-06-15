@@ -8,6 +8,7 @@ import (
 	"code-agent/internal/tools/filesystem"
 	"code-agent/internal/tools/git"
 	"code-agent/internal/tools/search"
+	"code-agent/internal/tools/shell"
 	"context"
 	"fmt"
 	"os"
@@ -92,6 +93,10 @@ func runAgent(ctx context.Context, cfg app.Config, provider model.Provider, goal
 	}
 
 	if err := registry.Register(git.NewApplyPatchTool(cfg.Workspace.Root)); err != nil {
+		return err
+	}
+
+	if err := registry.Register(shell.NewRunCommandTool(cfg.Workspace.Root)); err != nil {
 		return err
 	}
 

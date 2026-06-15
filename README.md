@@ -273,11 +273,11 @@ The first milestone is to build a correct, observable, minimal AI-native agent r
 
 ### P2: Command Execution
 
-* run_command
-* Command allowlist 
-* Timeout control
-* Basic sandbox policy
-* Test/fix loop
+* [x] `run_command`
+* [x] Command allowlist
+* [x] Timeout control
+* [ ] Basic sandbox policy
+* [ ] Test/fix loop
 
 ### P3: Memory and Trace
 
@@ -316,4 +316,4 @@ go run ./cmd/codeagent run "修复 internal/ui/confirm.go 里的 errr 变量名�
 go run ./cmd/codeagent run "新增 apply_patch 工具，先只支持 git apply --check，不要真正应用 patch"
 ```
 
-The current version is the first safe code-editing heartbeat of the agent runtime.
+This project is currently in P2: Command Execution and Validation.
