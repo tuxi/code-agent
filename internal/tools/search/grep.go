@@ -3,6 +3,7 @@ package search
 import (
 	"bufio"
 	"code-agent/internal/tools"
+	"code-agent/internal/workspace"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -72,7 +73,7 @@ func (g *GrepTool) Execute(ctx context.Context, input json.RawMessage) (tools.To
 		return tools.ToolResult{}, err
 	}
 
-	if !isSubPath(rootAbs, targetAbs) {
+	if !workspace.IsSubPath(rootAbs, targetAbs) {
 		return tools.ToolResult{}, fmt.Errorf("path escapes workspace: %s", in.Path)
 	}
 
@@ -98,7 +99,7 @@ func (g *GrepTool) Execute(ctx context.Context, input json.RawMessage) (tools.To
 				return filepath.SkipDir
 			}
 
-			if shouldSkip(d.Name()) {
+			if workspace.ShouldSkipName(d.Name()) {
 				if d.IsDir() {
 					return filepath.SkipDir
 				}
@@ -172,26 +173,5 @@ func (g *GrepTool) searchFile(rootAbs, path, query string) ([]string, error) {
 		}
 	}
 	return matches, nil
-
-}
-
-func shouldSkip(name string) bool {
-
-	switch name {
-	case ".git", "node_modules", "vendor", ".idea", ".vscode", ".DS_Store", "dist", "build", ".next":
-		return true
-	default:
-		return false
-	}
-
-}
-
-func isSubPath(rootAbs, targetAbs string) bool {
-
-	rel, err := filepath.Rel(rootAbs, targetAbs)
-	if err != nil {
-		return false
-	}
-	return rel == "." || (!strings.HasPrefix(rel, "..") && rel != "..")
 
 }

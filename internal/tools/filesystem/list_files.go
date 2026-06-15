@@ -2,6 +2,7 @@ package filesystem
 
 import (
 	"code-agent/internal/tools"
+	"code-agent/internal/workspace"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -27,20 +28,20 @@ func NewListFilesTool(workspaceRoot string) *ListFilesTool {
 	}
 }
 
-func (l ListFilesTool) Name() string {
+func (l *ListFilesTool) Name() string {
 	return "list_files"
 }
 
-func (l ListFilesTool) Description() string {
+func (l *ListFilesTool) Description() string {
 	return "List files and directories under a path in the current workspace."
 }
 
-func (l ListFilesTool) InputSchema() string {
+func (l *ListFilesTool) InputSchema() string {
 	return `
 {"path":"relative path under workspace, default is ."}`
 }
 
-func (t *ListFilesTool) Execute(ctx context.Context, input json.RawMessage) (tools.ToolResult, error) {
+func (l *ListFilesTool) Execute(ctx context.Context, input json.RawMessage) (tools.ToolResult, error) {
 
 	var in listFilesInput
 	if len(input) > 0 {
@@ -51,7 +52,7 @@ func (t *ListFilesTool) Execute(ctx context.Context, input json.RawMessage) (too
 	if in.Path == "" {
 		in.Path = "."
 	}
-	rootAbs, err := filepath.Abs(t.WorkspaceRoot)
+	rootAbs, err := filepath.Abs(l.WorkspaceRoot)
 	if err != nil {
 		return tools.ToolResult{}, err
 	}
@@ -60,7 +61,7 @@ func (t *ListFilesTool) Execute(ctx context.Context, input json.RawMessage) (too
 	if err != nil {
 		return tools.ToolResult{}, err
 	}
-	if !isSubPath(rootAbs, targetAbs) {
+	if !workspace.IsSubPath(rootAbs, targetAbs) {
 		return tools.ToolResult{}, fmt.Errorf("path escapes workspace: %s", in.Path)
 	}
 	info, err := os.Stat(targetAbs)
@@ -81,7 +82,7 @@ func (t *ListFilesTool) Execute(ctx context.Context, input json.RawMessage) (too
 		default:
 		}
 		name := d.Name()
-		if shouldSkip(name) {
+		if workspace.ShouldSkipName(name) {
 			if d.IsDir() {
 				return filepath.SkipDir
 			}
@@ -94,8 +95,8 @@ func (t *ListFilesTool) Execute(ctx context.Context, input json.RawMessage) (too
 		if relFromTarget == "." {
 			return nil
 		}
-		depth := pathDepth(relFromTarget)
-		if depth > t.MaxDepth {
+		depth := workspace.PathDepth(relFromTarget)
+		if depth > l.MaxDepth {
 			if d.IsDir() {
 				return filepath.SkipDir
 			}
@@ -122,35 +123,4 @@ func (t *ListFilesTool) Execute(ctx context.Context, input json.RawMessage) (too
 	return tools.ToolResult{
 		Content: strings.Join(entries, "\n"),
 	}, nil
-
-}
-
-func shouldSkip(name string) bool {
-
-	switch name {
-	case ".git", "node_modules", "vendor", ".idea", ".vscode", ".DS_Store", "dist", "build", ".next":
-		return true
-	default:
-		return false
-	}
-
-}
-
-func pathDepth(rel string) int {
-
-	if rel == "." || rel == "" {
-		return 0
-	}
-	return strings.Count(filepath.ToSlash(rel), "/") + 1
-
-}
-
-func isSubPath(rootAbs, targetAbs string) bool {
-
-	rel, err := filepath.Rel(rootAbs, targetAbs)
-	if err != nil {
-		return false
-	}
-	return rel == "." || (!strings.HasPrefix(rel, "..") && rel != "..")
-
 }

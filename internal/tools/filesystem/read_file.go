@@ -2,6 +2,7 @@ package filesystem
 
 import (
 	"code-agent/internal/tools"
+	"code-agent/internal/workspace"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -69,7 +70,7 @@ func (r *ReadFileTool) Execute(ctx context.Context, input json.RawMessage) (tool
 	if err != nil {
 		return tools.ToolResult{}, err
 	}
-	if !isSubPath(rootAbs, targetAbs) {
+	if !workspace.IsSubPath(rootAbs, targetAbs) {
 		return tools.ToolResult{}, fmt.Errorf("path escapes workspace: %s", in.Path)
 	}
 

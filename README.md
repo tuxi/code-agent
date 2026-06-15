@@ -302,4 +302,14 @@ It is a runtime where the model can decide the next step,
 while the system provides tools, boundaries, state, and observation.
 ```
 
+## P0 Verification
+
+```bash
+go run ./cmd/codeagent ask "你是谁"
+go run ./cmd/codeagent run "解释这个项目结构"
+go run ./cmd/codeagent run "解释 cmd/codeagent/main.go 是怎么工作的"
+go run ./cmd/codeagent run "Provider 接口在哪里定义？它是如何被调用的？"
+go run ./cmd/codeagent run "Agent loop 的核心流程是什么？请基于代码解释"
+```
+
 The current version is the first read-only heartbeat of the agent runtime.

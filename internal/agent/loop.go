@@ -117,11 +117,16 @@ func (r *Runner) Run(ctx context.Context, goal string) (RunResult, error) {
 				step.Error = err.Error()
 				observation = "Tool error: " + err.Error()
 			}
+			// read_file 读出来如果文件比较大，虽然有 MaxBytes，但返回给模型的 observation 还是可能很长
+			// 默认max最多 8000 或 12000 字符
+			// 超过则追加 <truncated>
+			observation = TruncateObservation(observation, 8000)
+
 			step.Observation = observation
 			step.FinishedAt = time.Now()
 			state.Steps = append(state.Steps, step)
 
-			fmt.Printf("[observation]\n%s\n", truncate(observation, 2000))
+			fmt.Printf("[observation]\n%s\n", observation)
 
 			messages = append(messages,
 				model.Message{
@@ -198,14 +203,5 @@ func mustMarshalDecision(decision Decision) string {
 		return `{"type":"final_answer","message":"failed to marshal previous decision"}`
 	}
 	return string(data)
-
-}
-
-func truncate(s string, max int) string {
-
-	if len(s) <= max {
-		return s
-	}
-	return s[:max] + "\n...<truncated>"
 
 }
