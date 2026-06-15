@@ -1,0 +1,11 @@
+model:
+  provider: deepseek
+  base_url: "https://api.deepseek.com"
+  model: "deepseek-v4-flash"
+  temperature: 0.2
+
+agent:
+  max_steps: 8
+
+workspace:
+  root: "."
