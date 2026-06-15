@@ -73,31 +73,59 @@ func (t *ApplyPatchTool) Execute(ctx context.Context, input json.RawMessage) (to
 		return tools.ToolResult{}, err
 	}
 
-	cmdCtx, cancel := context.WithTimeout(ctx, t.Timeout)
-	defer cancel()
+	// First try git apply default behavior.
+	// Git apply defaults to stripping one leading path component, which works for a/... and b/... patches.
+	result := t.runGitApply(ctx, rootAbs, patch, in.Apply, "")
 
-	// --recount的作用是：当 patch 是手写或模型生成的，hunk 行数可能不准时，让 git 重新计算 hunk 行数。
-	args := []string{"-C", rootAbs, "apply", "--recount"}
-	if !in.Apply {
-		args = append(args, "--check")
-	}
-	cmd := exec.CommandContext(cmdCtx, "git", args...)
-	cmd.Stdin = strings.NewReader(patch)
-
-	output, err := cmd.CombinedOutput()
-
-	if errors.Is(cmdCtx.Err(), context.DeadlineExceeded) {
-		return tools.ToolResult{}, fmt.Errorf("git apply --check timed out")
-	}
-
-	content := strings.TrimSpace(string(output))
-	if err != nil {
-		if content != "" {
+	// If that fails, retry with -p0.
+	// This supports patches whose headers are like:
+	// --- internal/ui/confirm.go
+	// +++ internal/ui/confirm.go
+	if result.Err != nil {
+		fallback := t.runGitApply(ctx, rootAbs, patch, in.Apply, "-p0")
+		if fallback.Err == nil {
+			if in.Apply {
+				return tools.ToolResult{
+					Content: "Patch applied successfully. Applied with -p0 path mode.",
+				}, nil
+			}
 			return tools.ToolResult{
-				Content: "Patch validation failed:\n" + content,
+				Content: "Patch applies cleanly. Validated with -p0 path mode.",
 			}, nil
 		}
-		return tools.ToolResult{}, fmt.Errorf("git apply --check failed: %w", err)
+
+		// Both attempts failed. Return both errors to help the model fix the patch.
+		defaultMsg := strings.TrimSpace(result.Content)
+		fallbackMsg := strings.TrimSpace(fallback.Content)
+
+		var b strings.Builder
+		b.WriteString("Patch validation failed.\n")
+		if in.Apply {
+			b.Reset()
+			b.WriteString("Patch apply failed.\n")
+		}
+
+		b.WriteString("\nDefault path mode failed")
+		if defaultMsg != "" {
+			b.WriteString(":\n")
+			b.WriteString(defaultMsg)
+		} else {
+			b.WriteString(": ")
+			b.WriteString(result.Err.Error())
+		}
+
+		b.WriteString("\n\n-p0 path mode failed")
+		if fallbackMsg != "" {
+			b.WriteString(":\n")
+			b.WriteString(fallbackMsg)
+		} else {
+			b.WriteString(": ")
+			b.WriteString(fallback.Err.Error())
+		}
+
+		return tools.ToolResult{
+			Content: b.String(),
+		}, nil
 	}
 
 	if in.Apply {
@@ -109,6 +137,56 @@ func (t *ApplyPatchTool) Execute(ctx context.Context, input json.RawMessage) (to
 	return tools.ToolResult{
 		Content: "Patch applies cleanly.",
 	}, nil
+}
+
+type applyPatchExecResult struct {
+	Content string
+	Err     error
+}
+
+func (t *ApplyPatchTool) runGitApply(ctx context.Context, rootAbs string, patch string, apply bool, stripOption string) applyPatchExecResult {
+	args := []string{"-C", rootAbs, "apply", "--recount"}
+
+	if !apply {
+		args = append(args, "--check")
+	}
+
+	if stripOption != "" {
+		args = append(args, stripOption)
+	}
+
+	cmdCtx, cancel := context.WithTimeout(ctx, t.Timeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(cmdCtx, "git", args...)
+	cmd.Stdin = strings.NewReader(patch)
+
+	output, err := cmd.CombinedOutput()
+
+	if errors.Is(cmdCtx.Err(), context.DeadlineExceeded) {
+		return applyPatchExecResult{
+			Err: fmt.Errorf("git apply timed out"),
+		}
+	}
+
+	content := strings.TrimSpace(string(output))
+
+	if err != nil {
+		if content != "" {
+			return applyPatchExecResult{
+				Content: content,
+				Err:     err,
+			}
+		}
+		return applyPatchExecResult{
+			Err: err,
+		}
+	}
+
+	return applyPatchExecResult{
+		Content: content,
+		Err:     nil,
+	}
 }
 
 var _ tools.Tool = (*ApplyPatchTool)(nil)

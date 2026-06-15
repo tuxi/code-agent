@@ -223,6 +223,7 @@ func (r *Runner) Run(ctx context.Context, goal string) (RunResult, error) {
 			applyObservation := "Patch was not applied."
 			diffObservation := "No git diff was generated."
 			rollbackHint := "No rollback hint was generated."
+			commandObservation := "No validation command was run."
 
 			// 1. 先询问是否校验 patch
 			ok := ui.Confirm("Validate this patch with git apply --check?")
@@ -364,6 +365,39 @@ func (r *Runner) Run(ctx context.Context, goal string) (RunResult, error) {
 
 					diffObservation = strings.Join(diffParts, "\n\n")
 					fmt.Printf("[git diff after apply]\n%s\n", diffObservation)
+
+					runValidationOK := ui.Confirm("Run validation command now? [go test ./...]")
+					if runValidationOK {
+						commandInput, _ := json.Marshal(map[string]any{
+							"command": "go test ./...",
+						})
+
+						commandDecision := Decision{
+							Type:   DecisionToolCall,
+							Tool:   "run_command",
+							Input:  commandInput,
+							Reason: "Run go test ./... after applying the patch.",
+						}
+
+						commandStep := Step{
+							Index:     len(state.Steps) + 1,
+							Decision:  commandDecision,
+							StartedAt: time.Now(),
+						}
+
+						commandObservation, err = r.executeTool(ctx, commandDecision)
+						if err != nil {
+							commandStep.Error = err.Error()
+							commandObservation = "Validation command tool error: " + err.Error()
+						}
+
+						commandObservation = TruncateObservation(commandObservation, 8000)
+						commandStep.Observation = commandObservation
+						commandStep.FinishedAt = time.Now()
+						state.Steps = append(state.Steps, commandStep)
+
+						fmt.Printf("[validation command]\n%s\n", commandObservation)
+					}
 				}
 			}
 
@@ -385,12 +419,15 @@ func (r *Runner) Run(ctx context.Context, goal string) (RunResult, error) {
 						"Patch apply result:\n" + applyObservation + "\n\n" +
 						"Patch-scoped remaining git diff after applying patch:\n" + diffObservation + "\n\n" +
 						"Rollback hint:\n" + rollbackHint + "\n\n" +
+						"Validation command result:\n" + commandObservation + "\n\n" +
 						"Important semantics:\n" +
 						"- The patch proposal above is the exact patch that was validated and, if confirmed, applied.\n" +
 						"- git_diff shows remaining uncommitted changes relative to HEAD, not the exact patch that was just applied.\n" +
 						"- If the patch apply result says it was applied successfully but the patch-scoped diff is empty, this usually means the touched files now match HEAD or have no remaining uncommitted changes.\n" +
 						"- Do not claim the patch failed just because the remaining git diff is empty.\n" +
 						"- Only describe changes from the patch proposal and the patch-scoped diff. Do not summarize unrelated workspace changes.\n\n" +
+						"- If a validation command was run, summarize whether it passed or failed.\n" +
+						"- If validation failed, do not claim the task is complete; summarize the failure and suggest the next fix step.\n" +
 						"Now return final_answer. Summarize whether the patch was validated, whether it was applied, and what remaining diff exists." +
 						"Do not use markdown code fences in final_answer. Use plain text bullets if needed. ",
 				},

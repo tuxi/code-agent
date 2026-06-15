@@ -271,13 +271,19 @@ The first milestone is to build a correct, observable, minimal AI-native agent r
 * [x] Show `git_diff` after patch application
 * [x] Rollback strategy v1
 
-### P2: Command Execution
+## P2: Command Execution
+* [x] run_command
+* [x] command allowlist
+* [x] timeout control
+* [x] basic sandbox policy
+* [x] post-patch validation
 
-* [x] `run_command`
-* [x] Command allowlist
-* [x] Timeout control
-* [ ] Basic sandbox policy
-* [ ] Test/fix loop
+## P2.5: Self Validation Loop
+* [ ] validation decision
+* [ ] automatic validation selection
+* [ ] validation observation feedback
+* [ ] self-fix retry loop
+* [ ] max retry control
 
 ### P3: Memory and Trace
 
