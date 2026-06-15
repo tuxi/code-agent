@@ -97,7 +97,7 @@ func (r *Runner) Run(ctx context.Context, goal string) (RunResult, error) {
 		switch decision.Type {
 		case DecisionFinalAnswer:
 			state.Completed = true
-			state.Final = decision.Reason
+			state.Final = decision.Message
 			state.Steps = append(state.Steps, step)
 			return RunResult{
 				Final: decision.Message,

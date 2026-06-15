@@ -6,6 +6,7 @@ import (
 	"code-agent/internal/model"
 	"code-agent/internal/tools"
 	"code-agent/internal/tools/filesystem"
+	"code-agent/internal/tools/git"
 	"code-agent/internal/tools/search"
 	"context"
 	"fmt"
@@ -83,6 +84,10 @@ func runAgent(ctx context.Context, cfg app.Config, provider model.Provider, goal
 	}
 
 	if err := registry.Register(search.NewGrepTool(cfg.Workspace.Root)); err != nil {
+		return err
+	}
+
+	if err := registry.Register(git.NewDiffTool(cfg.Workspace.Root)); err != nil {
 		return err
 	}
 

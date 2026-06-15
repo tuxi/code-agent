@@ -266,7 +266,7 @@ The first milestone is to build a correct, observable, minimal AI-native agent r
 ### P1: Code Editing
 
 * apply_patch
-* git_diff
+* [x] git_diff
 * User confirmation before applying patches
 * Rollback strategy
 
@@ -310,6 +310,7 @@ go run ./cmd/codeagent run "解释这个项目结构"
 go run ./cmd/codeagent run "解释 cmd/codeagent/main.go 是怎么工作的"
 go run ./cmd/codeagent run "Provider 接口在哪里定义？它是如何被调用的？"
 go run ./cmd/codeagent run "Agent loop 的核心流程是什么？请基于代码解释"
+go run ./cmd/codeagent run "当前有哪些未提交改动？"
 ```
 
 The current version is the first read-only heartbeat of the agent runtime.
