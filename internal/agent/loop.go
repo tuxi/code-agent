@@ -314,33 +314,54 @@ func (r *Runner) Run(ctx context.Context, goal string) (RunResult, error) {
 				applyStep.FinishedAt = time.Now()
 				state.Steps = append(state.Steps, applyStep)
 				fmt.Printf("[patch apply]\n%s\n", applyObservation)
-				// 5. 应用后自动 git_diff
-				diffInput, _ := json.Marshal(map[string]any{
-					"path":   "",
-					"staged": false,
-					"stat":   false,
-				})
-				diffDecision := Decision{
-					Type:   DecisionToolCall,
-					Tool:   "git_diff",
-					Input:  diffInput,
-					Reason: "Show the actual git diff after applying the patch.",
+
+				// 只有 applyObservation 包含成功时，才执行 git_diff
+				applySucceeded := strings.Contains(applyObservation, "Patch applied successfully.")
+				if applySucceeded {
+					// 5. 应用后自动 git_diff
+					// 只展示本次 patch 涉及文件的 diff
+					patchPaths := ExtractPatchPaths(decision.Patch)
+					if len(patchPaths) == 0 {
+						patchPaths = []string{""}
+					}
+					var diffParts []string
+					for _, patchPath := range patchPaths {
+						diffInput, _ := json.Marshal(map[string]any{
+							"path":   patchPath,
+							"staged": false,
+							"stat":   false,
+						})
+
+						diffDecision := Decision{
+							Type:   DecisionToolCall,
+							Tool:   "git_diff",
+							Input:  diffInput,
+							Reason: "Show the actual git diff after applying the patch.",
+						}
+
+						diffStep := Step{
+							Index:     len(state.Steps) + 1,
+							Decision:  diffDecision,
+							StartedAt: time.Now(),
+						}
+
+						currentDiff, err := r.executeTool(ctx, diffDecision)
+						if err != nil {
+							diffStep.Error = err.Error()
+							currentDiff = "git_diff tool error: " + err.Error()
+						}
+
+						currentDiff = TruncateObservation(currentDiff, 8000)
+						diffStep.Observation = currentDiff
+						diffStep.FinishedAt = time.Now()
+						state.Steps = append(state.Steps, diffStep)
+
+						diffParts = append(diffParts, "Diff for "+patchPath+":\n"+currentDiff)
+					}
+
+					diffObservation = strings.Join(diffParts, "\n\n")
+					fmt.Printf("[git diff after apply]\n%s\n", diffObservation)
 				}
-				diffStep := Step{
-					Index:     len(state.Steps) + 1,
-					Decision:  diffDecision,
-					StartedAt: time.Now(),
-				}
-				diffObservation, err = r.executeTool(ctx, diffDecision)
-				if err != nil {
-					diffStep.Error = err.Error()
-					diffObservation = "git_diff tool error: " + err.Error()
-				}
-				diffObservation = TruncateObservation(diffObservation, 8000)
-				diffStep.Observation = diffObservation
-				diffStep.FinishedAt = time.Now()
-				state.Steps = append(state.Steps, diffStep)
-				fmt.Printf("[git diff after apply]\n%s\n", diffObservation)
 			}
 
 			// 6. 把 validation/apply/diff 的结果统一回传给模型，让它 final_answer
@@ -349,14 +370,24 @@ func (r *Runner) Run(ctx context.Context, goal string) (RunResult, error) {
 					Role:    model.RoleAssistant,
 					Content: mustMarshalDecision(decision),
 				},
+				// 这里的 Content 是 final prompt，它是告诉模型：
+				// 刚才 patch 校验结果是什么；
+				// patch 有没有被应用；
+				// 应用后剩余 diff 是什么；
+				// 现在输出 final_answer
 				model.Message{
 					Role: model.RoleUser,
-					Content: "Patch validation result:\n" + validationObservation + "\n\n" +
+					Content: "Patch proposal:\n" + decision.Patch + "\n\n" +
+						"Patch validation result:\n" + validationObservation + "\n\n" +
 						"Patch apply result:\n" + applyObservation + "\n\n" +
-						"Git diff after applying patch:\n" + diffObservation + "\n\n" +
-						"Now return final_answer. " +
-						"Summarize whether the patch was validated, whether it was applied, and what changed. " +
-						"Do not claim files were modified unless the apply result says the patch was applied successfully.",
+						"Patch-scoped remaining git diff after applying patch:\n" + diffObservation + "\n\n" +
+						"Important semantics:\n" +
+						"- The patch proposal above is the exact patch that was validated and, if confirmed, applied.\n" +
+						"- git_diff shows remaining uncommitted changes relative to HEAD, not the exact patch that was just applied.\n" +
+						"- If the patch apply result says it was applied successfully but the patch-scoped diff is empty, this usually means the touched files now match HEAD or have no remaining uncommitted changes.\n" +
+						"- Do not claim the patch failed just because the remaining git diff is empty.\n" +
+						"- Only describe changes from the patch proposal and the patch-scoped diff. Do not summarize unrelated workspace changes.\n\n" +
+						"Now return final_answer. Summarize whether the patch was validated, whether it was applied, and what remaining diff exists.",
 				},
 			)
 
