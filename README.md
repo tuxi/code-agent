@@ -25,22 +25,22 @@ The current goal is to build a small but correct agent runtime foundation before
 
 Implemented:
 
-* codeagent ask "..."
-* codeagent run "..."
+* `codeagent ask "..."`
+* `codeagent run "..."`
 * DeepSeek provider via OpenAI-compatible API
 * In-memory agent state
 * JSON-based model decision protocol
 * Tool registry
-* list_files tool
+* `list_files` tool
+* `read_file` tool
+* `grep` tool
 * Basic trace output in terminal
 
 Not implemented yet:
 
-* read_file
-* grep
-* apply_patch
-* git_diff
-* run_command
+* `apply_patch`
+* `git_diff`
+* `run_command`
 * SQLite memory
 * Native model tool calls
 * Streaming output
@@ -100,7 +100,10 @@ internal/tools/
   Tool interface and registry.
 
 internal/tools/filesystem/
-  Filesystem tools. Currently includes list_files.
+  Filesystem tools, including list_files and read_file.
+
+internal/tools/search/
+  Search tools, currently including grep.
 
 internal/workspace/
   Future workspace context management.
@@ -251,14 +254,14 @@ The first milestone is to build a correct, observable, minimal AI-native agent r
 
 ### P0: Read-only Agent Foundation
 
-* CLI entrypoint
-* DeepSeek provider
-* Agent loop
-* JSON decision protocol
-* Tool registry
-* list_files
-* read_file
-* grep
+* [x] CLI entrypoint
+* [x] DeepSeek provider
+* [x] Agent loop
+* [x] JSON decision protocol
+* [x] Tool registry
+* [x] `list_files`
+* [x] `read_file`
+* [x] `grep`
 
 ### P1: Code Editing
 
@@ -299,4 +302,4 @@ It is a runtime where the model can decide the next step,
 while the system provides tools, boundaries, state, and observation.
 ```
 
-The current version is the first heartbeat.
+The current version is the first read-only heartbeat of the agent runtime.
