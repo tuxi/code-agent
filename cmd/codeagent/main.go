@@ -28,13 +28,6 @@ func run() error {
 	args := os.Args[1:]
 	modelName, args := extractModelFlag(args)
 
-	if len(args) < 1 {
-		printUsage()
-		return nil
-	}
-	command := args[0]
-	goal := strings.Join(args[1:], " ")
-
 	cfg, err := app.LoadConfig("config.yaml")
 	if err != nil {
 		return err
@@ -51,6 +44,13 @@ func run() error {
 	}
 
 	ctx := context.Background()
+	if len(args) == 0 {
+		return repl(ctx, cfg, mc, provider)
+	}
+
+	command := args[0]
+	goal := strings.Join(args[1:], " ")
+
 	switch command {
 	case "ask":
 		return runAsk(ctx, mc, provider, goal)
@@ -72,6 +72,25 @@ func buildProvider(mc app.ModelConfig) (model.Provider, error) {
 	default:
 		return nil, fmt.Errorf("unsupported provider %q (only \"openai\"-compatible is wired so far)", mc.Provider)
 	}
+}
+
+// buildRegistry registers the model-facing tool set. Shared by run and repl.
+func buildRegistry(root string) (*tools.Registry, error) {
+	registry := tools.NewRegistry()
+	for _, tool := range []tools.Tool{
+		filesystem.NewListFilesTool(root),
+		filesystem.NewReadFileTool(root),
+		filesystem.NewEditFileTool(root),
+		search.NewGrepTool(root),
+		git.NewDiffTool(root),
+		git.NewApplyPatchTool(root),
+		shell.NewRunCommandTool(root),
+	} {
+		if err := registry.Register(tool); err != nil {
+			return nil, err
+		}
+	}
+	return registry, nil
 }
 
 // extractModelFlag pulls a --model NAME (or --model=NAME) out of args from any
@@ -110,20 +129,11 @@ func runAsk(ctx context.Context, mc app.ModelConfig, provider model.Provider, qu
 }
 
 func runAgent(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider model.Provider, goal string) error {
-	registry := tools.NewRegistry()
+	root := cfg.Workspace.Root
 
-	for _, tool := range []tools.Tool{
-		filesystem.NewEditFileTool(cfg.Workspace.Root),
-		filesystem.NewReadFileTool(cfg.Workspace.Root),
-		filesystem.NewListFilesTool(cfg.Workspace.Root),
-		search.NewGrepTool(cfg.Workspace.Root),
-		git.NewDiffTool(cfg.Workspace.Root),
-		git.NewApplyPatchTool(cfg.Workspace.Root),
-		shell.NewRunCommandTool(cfg.Workspace.Root),
-	} {
-		if err := registry.Register(tool); err != nil {
-			return err
-		}
+	registry, err := buildRegistry(root)
+	if err != nil {
+		return err
 	}
 
 	runner := &agent.Runner{
@@ -132,31 +142,32 @@ func runAgent(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider 
 		Temperature: mc.Temperature,
 		Tools:       registry,
 		MaxSteps:    cfg.Agent.MaxSteps,
-		Approver:    ui.ConfirmApprover{}, // 副作用工具的确认门禁
+		Approver:    ui.ConfirmApprover{},
 	}
 
-	sess, err := session.NewBuilder(cfg.Workspace.Root).Build()
+	sess, err := session.NewBuilder(root).Build()
 	if err != nil {
 		return err
 	}
 
 	fmt.Printf("Model: %s (%s)\n", mc.Name, mc.Model)
 
-	result, err := runner.RunTurn(ctx, sess, goal)
+	res, err := runner.RunTurn(ctx, sess, goal)
 	if err != nil {
 		return err
 	}
 
 	fmt.Println("\nFinal:")
-	fmt.Println(result.Final)
+	fmt.Println(res.Final)
 	return nil
 }
 
 func printUsage() {
 	fmt.Println(`Usage:
-  codeagent [--model NAME] ask "hello"
-  codeagent [--model NAME] run "解释这个项目结构"
+  codeagent [--model NAME]                 start the interactive REPL
+  codeagent [--model NAME] run "..."       run a single task
+  codeagent [--model NAME] ask "..."       one-off question (no tools)
  
-Models are defined in config.yaml under "models:". --model selects one;
-the default is the configured default_model.`)
+Models are defined in config.yaml under "models:"; --model selects one
+(default: the configured default_model).`)
 }

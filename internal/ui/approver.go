@@ -1,21 +1,23 @@
 package ui
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
+	"os"
 	"sort"
 )
 
 // ConfirmApprover is the terminal implementation of the agent's Approver
 // interface. Before a side-effecting tool runs, it shows the tool name and its
-// arguments (with real newlines, so a patch or command reads naturally) and
-// asks the user to confirm.
-//
-// It satisfies agent.Approver structurally; it does not import the agent
-// package, which keeps the dependency direction clean.
-type ConfirmApprover struct{}
+// arguments and asks the user to confirm.
+type ConfirmApprover struct {
+	// Reader, when set, is shared with the REPL's input loop so both read from
+	// the same buffered stdin. When nil, a fresh reader is used (one-shot mode).
+	Reader *bufio.Reader
+}
 
-func (ConfirmApprover) Approve(toolName string, input json.RawMessage) bool {
+func (a ConfirmApprover) Approve(toolName string, input json.RawMessage) bool {
 	fmt.Printf("\nThe agent wants to run a side-effecting tool: %s\n", toolName)
 
 	var fields map[string]any
@@ -32,5 +34,9 @@ func (ConfirmApprover) Approve(toolName string, input json.RawMessage) bool {
 		fmt.Printf("  input: %s\n", string(input))
 	}
 
-	return Confirm("Proceed?")
+	r := a.Reader
+	if r == nil {
+		r = bufio.NewReader(os.Stdin)
+	}
+	return confirm(r, "Proceed?")
 }

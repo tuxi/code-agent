@@ -1,19 +1,25 @@
-# Code Agent
+# CodeAgent
 
-Code Agent is an experimental, AI-native coding agent runtime written in Go.
+CodeAgent is a lightweight Claude Code–style coding agent written in Go.
 
-It is not a chatbot wrapper. The goal is to build a real coding agent from first
-principles, where the model owns the control flow and the runtime owns the
-boundaries, execution, and observation:
+It is built around a simple idea:
 
-```
-Goal → Model reasons & calls tools → Runtime executes under policy → Results fed back → … → Done
-```
+> The model owns control flow.
+> The runtime owns boundaries.
 
-The long-term aim is an on-device agent that migrates cleanly to a server-side
-runtime, with coding as the entry point.
+The runtime stays thin.
+Tools are explicit.
+Context is assembled into a session.
+Every action is observable and reviewable.
 
----
+Current capabilities:
+
+- Tool Calling agent loop
+- Interactive REPL with persistent session memory
+- Project memory via CODEAGENT.md
+- Multi-model support
+- Human approval gates for side-effecting tools
+- File editing, git diff, shell execution
 
 ## Philosophy
 
@@ -34,38 +40,36 @@ does not encode task-specific sequences.
 
 ---
 
-## Where the project is now
+## Features
 
-A working foundation already exists, built on an early "JSON decision protocol"
-(the model emits a typed JSON decision each turn; the runtime parses and acts).
-The following is implemented and runnable:
+### Agent Runtime
 
-- **Read-only foundation** — CLI entrypoint, OpenAI-compatible provider, agent
-  loop, tool registry, and the tools `list_files`, `read_file`, `grep`.
-- **Code editing** — `git_diff`, plan/patch-proposal flow, `apply_patch`
-  validation via `git apply --check`, user-confirmed apply, post-apply diff,
-  and a first rollback strategy.
-- **Command execution** — `run_command` with an allowlist, timeout control, and
-  a basic sandbox policy.
+- Native tool-calling loop
+- Thin runtime
+- Tool registry as the single source of truth
+- Human approval for side-effecting tools
 
-This foundation works, but it has three structural limits that the roadmap below
-addresses directly:
+### Session
 
-1. **Tool metadata is duplicated in three places** (the `Tool` interface, the
-   system prompt, and the loop's `switch`). Adding a tool requires editing the
-   prompt and the loop. The Registry should be the single source of truth.
-2. **Control flow is baked into the runtime** as decision types
-   (`plan`, `patch_proposal`, …) and a hardcoded patch orchestration sequence.
-   This makes the agent feel like a workflow and makes the loop grow with every
-   capability.
-3. **No context engineering** — runs are bounded by `max_steps` rather than a
-   token budget, there is no compaction, and the project memory file
-   (`CODEAGENT.md`) is not injected.
+- Persistent conversation state
+- Multi-turn REPL
+- Project memory via CODEAGENT.md
 
-The project is now entering a deliberate refactor toward a native tool-calling
-agent with a layered harness.
+### Models
 
----
+- Multiple configured models
+- Runtime model switching
+- OpenAI-compatible providers
+
+### Built-in Tools
+
+- list_files
+- read_file
+- edit_file
+- grep
+- git_diff
+- apply_patch
+- run_command
 
 ## Target architecture
 
@@ -142,14 +146,14 @@ edits), and the model produces reasoning text alongside tool calls.
 
 ### Phase 2 — Harness layering
 
-- [ ] Extract the context manager (owns messages and prompt assembly).
-- [ ] Extract the policy/permission layer behind an interface; move every
+- [x] Extract the context manager (owns messages and prompt assembly).
+- [x] Extract the policy/permission layer behind an interface; move every
   `ui.Confirm` gate into it. The CLI prompt is one implementation.
-- [ ] Make the loop driver thin and business-agnostic (no patch/plan/git
+- [x] Make the loop driver thin and business-agnostic (no patch/plan/git
   branches).
 - [ ] Add retry/backoff in the provider so a transient API error does not kill
   the run.
-- [ ] Move patch validate → apply → diff orchestration out of the loop:
+- [x] Move patch validate → apply → diff orchestration out of the loop:
   `apply_patch` self-validates, the policy layer gates the apply, and the
   model decides whether to run tests.
 - [ ] Emit structured trace events from the harness.
@@ -159,7 +163,7 @@ layer is swappable, and runs survive transient API errors.
 
 ### Phase 3 — Context engineering
 
-- [ ] Inject `CODEAGENT.md` as project memory at session start.
+- [x] Inject `CODEAGENT.md` as project memory at session start.
 - [ ] Add token accounting; budget on tokens (keep `max_steps` as a safety cap).
 - [ ] Add compaction near the context-window limit (summarize old turns, keep
   recent ones verbatim).
@@ -228,15 +232,64 @@ without any hardcoded sequencing.
 
 ## Setup
 
+## Quick Start
+
+### Install
 ```bash
 go mod tidy
 cp config.example.yaml config.yaml
-export DEEPSEEK_API_KEY="your_api_key"
-
-go run ./cmd/codeagent run "解释这个项目结构"               # 用 default_model
-go run ./cmd/codeagent run --model qwen "解释这个项目结构"   # 显式选 qwen（需设 DASHSCOPE_API_KEY）
 ```
 
+### Configure API Keys
+```bash
+export DEEPSEEK_API_KEY="..."
+export DASHSCOPE_API_KEY="..."
+export GLM_API_KEY="..."
+```
+
+### Install CLI
+```bash
+go install ./cmd/codeagent
+```
+
+### Start Interactive Mode
+```bash
+codeagent
+codeagent --model qwen
+```
+
+### Example Session
+```bash
+> 解释这个项目结构
+> 顺便看看 RunTurn 是怎么工作的
+> /models             
+  deepseek
+* deepseek-pro
+  glm
+  qwen
+
+> /use glm
+switched to glm (glm-5.1)
+
+> /model
+current model: glm (glm-5.1)
+
+> /exit
+```
+
+### One-shot Mode
+```bash
+codeagent run "解释这个项目结构"
+codeagent --model qwen run "解释这个项目结构"
+```
+
+### Ask Mode
+```bash
+codeagent ask "什么是 interface"
+codeagent --model qwen ask "什么是 interface"
+```
+
+## Configuration
 Example `config.example.yaml`:
 
 ```yaml
@@ -274,18 +327,6 @@ agent:
 workspace:
   root: "."
 ```
-
-## Usage
-
-```bash
-# Ask a normal question
-go run ./cmd/codeagent ask "你是谁"
-
-# Run the agent loop
-go run ./cmd/codeagent run "解释下这个项目结构"
-```
-
----
 
 ## Project belief
 
