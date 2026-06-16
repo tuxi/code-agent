@@ -47,8 +47,14 @@ func (t *RunCommandTool) Description() string {
 	return "Run an allowlisted command in the workspace, such as go test or git status."
 }
 
-func (t *RunCommandTool) InputSchema() string {
-	return `{"command":"allowlisted command to run, such as go test ./..."}`
+func (t *RunCommandTool) InputSchema() json.RawMessage {
+	//return `{"command":"allowlisted command to run, such as go test ./..."}`
+	return tools.Object(map[string]tools.Property{
+		"command": {
+			Type:        "string",
+			Description: `An allowlisted command to run, e.g. \"go test ./...\"."`,
+		},
+	}, "command").JSON()
 }
 
 func (t *RunCommandTool) Execute(ctx context.Context, input json.RawMessage) (tools.ToolResult, error) {
@@ -100,6 +106,10 @@ func (t *RunCommandTool) Execute(ctx context.Context, input json.RawMessage) (to
 	}, nil
 }
 
+// SideEffects marks run_command as a side-effecting tool, so the runtime gates
+// it behind user confirmation.
+func (t *RunCommandTool) SideEffects() bool { return true }
+
 func formatCommandOutput(command, stdout, stderr string, err error) string {
 	var b strings.Builder
 	b.WriteString("Command: ")
@@ -148,4 +158,7 @@ func truncateOutput(s string, max int) string {
 	return s[:max] + "\n...<truncated>"
 }
 
-var _ tools.Tool = (*RunCommandTool)(nil)
+var (
+	_ tools.Tool          = (*RunCommandTool)(nil)
+	_ tools.SideEffecting = (*RunCommandTool)(nil)
+)

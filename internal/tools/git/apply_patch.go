@@ -20,11 +20,6 @@ type ApplyPatchTool struct {
 
 type applyPatchInput struct {
 	Patch string `json:"patch"`
-	// Apply 是否应用，逻辑是：
-	// Apply=false：git apply --check --recount
-	// Apply=true：git apply --recount
-	// 注意：即使工具支持 apply=true，也不要在 system prompt 里暴露给模型。应用 patch 必须由 Runtime 控制。
-	Apply bool `json:"apply"`
 }
 
 func NewApplyPatchTool(workspaceRoot string) *ApplyPatchTool {
@@ -35,17 +30,24 @@ func NewApplyPatchTool(workspaceRoot string) *ApplyPatchTool {
 	}
 }
 
-func (t *ApplyPatchTool) Name() string {
-	return "apply_patch"
-}
+func (t *ApplyPatchTool) Name() string { return "apply_patch" }
 
 func (t *ApplyPatchTool) Description() string {
-	return "Validate or apply a unified diff patch using git apply. Applying modifies files and must be confirmed by the runtime."
+	return "Apply a unified diff patch to the workspace. The patch is validated with a dry run first; if it does not apply cleanly, nothing is changed and the error is returned so you can fix the patch and try again."
 }
 
-func (t *ApplyPatchTool) InputSchema() string {
-	return `{"patch":"unified diff patch content","apply":false}`
+func (t *ApplyPatchTool) InputSchema() json.RawMessage {
+	return tools.Object(map[string]tools.Property{
+		"patch": {
+			Type:        "string",
+			Description: "A unified diff (git-style) describing the change to make.",
+		},
+	}, "patch").JSON()
 }
+
+// SideEffects marks apply_patch as a mutating tool, so the runtime gates it
+// behind user confirmation before it runs.
+func (t *ApplyPatchTool) SideEffects() bool { return true }
 
 func (t *ApplyPatchTool) Execute(ctx context.Context, input json.RawMessage) (tools.ToolResult, error) {
 	var in applyPatchInput
@@ -59,11 +61,9 @@ func (t *ApplyPatchTool) Execute(ctx context.Context, input json.RawMessage) (to
 	if patch == "" {
 		return tools.ToolResult{}, fmt.Errorf("patch input is required")
 	}
-
 	if !strings.HasSuffix(patch, "\n") {
 		patch += "\n"
 	}
-
 	if len(patch) > t.MaxBytes {
 		return tools.ToolResult{}, fmt.Errorf("patch too large: size=%d max=%d", len(patch), t.MaxBytes)
 	}
@@ -73,70 +73,52 @@ func (t *ApplyPatchTool) Execute(ctx context.Context, input json.RawMessage) (to
 		return tools.ToolResult{}, err
 	}
 
-	// First try git apply default behavior.
-	// Git apply defaults to stripping one leading path component, which works for a/... and b/... patches.
-	result := t.runGitApply(ctx, rootAbs, patch, in.Apply, "")
-
-	// If that fails, retry with -p0.
-	// This supports patches whose headers are like:
-	// --- internal/ui/confirm.go
-	// +++ internal/ui/confirm.go
-	if result.Err != nil {
-		fallback := t.runGitApply(ctx, rootAbs, patch, in.Apply, "-p0")
-		if fallback.Err == nil {
-			if in.Apply {
-				return tools.ToolResult{
-					Content: "Patch applied successfully. Applied with -p0 path mode.",
-				}, nil
-			}
-			return tools.ToolResult{
-				Content: "Patch applies cleanly. Validated with -p0 path mode.",
-			}, nil
-		}
-
-		// Both attempts failed. Return both errors to help the model fix the patch.
-		defaultMsg := strings.TrimSpace(result.Content)
-		fallbackMsg := strings.TrimSpace(fallback.Content)
-
-		var b strings.Builder
-		b.WriteString("Patch validation failed.\n")
-		if in.Apply {
-			b.Reset()
-			b.WriteString("Patch apply failed.\n")
-		}
-
-		b.WriteString("\nDefault path mode failed")
-		if defaultMsg != "" {
-			b.WriteString(":\n")
-			b.WriteString(defaultMsg)
-		} else {
-			b.WriteString(": ")
-			b.WriteString(result.Err.Error())
-		}
-
-		b.WriteString("\n\n-p0 path mode failed")
-		if fallbackMsg != "" {
-			b.WriteString(":\n")
-			b.WriteString(fallbackMsg)
-		} else {
-			b.WriteString(": ")
-			b.WriteString(fallback.Err.Error())
-		}
-
+	// 1. Validate with a dry run (git apply --check). If it fails, change nothing
+	//    and hand the error back so the model can fix the patch and retry.
+	if ok, msg := t.runWithFallback(ctx, rootAbs, patch, false); !ok {
 		return tools.ToolResult{
-			Content: b.String(),
+			Content: "Patch did not validate; no files were changed.\n\n" + msg,
 		}, nil
 	}
 
-	if in.Apply {
+	// 2. Apply for real.
+	if ok, msg := t.runWithFallback(ctx, rootAbs, patch, true); !ok {
 		return tools.ToolResult{
-			Content: "Patch applied successfully.",
+			Content: "Patch validated but failed to apply; no files were changed.\n\n" + msg,
 		}, nil
 	}
 
-	return tools.ToolResult{
-		Content: "Patch applies cleanly.",
-	}, nil
+	return tools.ToolResult{Content: "Patch applied successfully."}, nil
+}
+
+// runWithFallback runs git apply (check or apply) trying the default path mode
+// first and then -p0, to support both a/.. b/.. headers and bare paths. It
+// returns whether the operation succeeded and a human-readable message.
+func (t *ApplyPatchTool) runWithFallback(ctx context.Context, rootAbs, patch string, apply bool) (bool, string) {
+	primary := t.runGitApply(ctx, rootAbs, patch, apply, "")
+	if primary.Err == nil {
+		return true, primary.Content
+	}
+
+	fallback := t.runGitApply(ctx, rootAbs, patch, apply, "-p0")
+	if fallback.Err == nil {
+		return true, fallback.Content
+	}
+
+	var b strings.Builder
+	b.WriteString("Default path mode failed")
+	if msg := strings.TrimSpace(primary.Content); msg != "" {
+		b.WriteString(":\n" + msg)
+	} else {
+		b.WriteString(": " + primary.Err.Error())
+	}
+	b.WriteString("\n\n-p0 path mode failed")
+	if msg := strings.TrimSpace(fallback.Content); msg != "" {
+		b.WriteString(":\n" + msg)
+	} else {
+		b.WriteString(": " + fallback.Err.Error())
+	}
+	return false, b.String()
 }
 
 type applyPatchExecResult struct {
@@ -144,13 +126,11 @@ type applyPatchExecResult struct {
 	Err     error
 }
 
-func (t *ApplyPatchTool) runGitApply(ctx context.Context, rootAbs string, patch string, apply bool, stripOption string) applyPatchExecResult {
+func (t *ApplyPatchTool) runGitApply(ctx context.Context, rootAbs, patch string, apply bool, stripOption string) applyPatchExecResult {
 	args := []string{"-C", rootAbs, "apply", "--recount"}
-
 	if !apply {
 		args = append(args, "--check")
 	}
-
 	if stripOption != "" {
 		args = append(args, stripOption)
 	}
@@ -162,31 +142,21 @@ func (t *ApplyPatchTool) runGitApply(ctx context.Context, rootAbs string, patch 
 	cmd.Stdin = strings.NewReader(patch)
 
 	output, err := cmd.CombinedOutput()
-
 	if errors.Is(cmdCtx.Err(), context.DeadlineExceeded) {
-		return applyPatchExecResult{
-			Err: fmt.Errorf("git apply timed out"),
-		}
+		return applyPatchExecResult{Err: fmt.Errorf("git apply timed out")}
 	}
 
 	content := strings.TrimSpace(string(output))
-
 	if err != nil {
 		if content != "" {
-			return applyPatchExecResult{
-				Content: content,
-				Err:     err,
-			}
+			return applyPatchExecResult{Content: content, Err: err}
 		}
-		return applyPatchExecResult{
-			Err: err,
-		}
+		return applyPatchExecResult{Err: err}
 	}
-
-	return applyPatchExecResult{
-		Content: content,
-		Err:     nil,
-	}
+	return applyPatchExecResult{Content: content, Err: nil}
 }
 
-var _ tools.Tool = (*ApplyPatchTool)(nil)
+var (
+	_ tools.Tool          = (*ApplyPatchTool)(nil)
+	_ tools.SideEffecting = (*ApplyPatchTool)(nil)
+)

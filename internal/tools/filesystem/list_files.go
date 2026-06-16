@@ -36,9 +36,13 @@ func (l *ListFilesTool) Description() string {
 	return "List files and directories under a path in the current workspace."
 }
 
-func (l *ListFilesTool) InputSchema() string {
-	return `
-{"path":"relative path under workspace, default is ."}`
+func (l *ListFilesTool) InputSchema() json.RawMessage {
+	return tools.Object(map[string]tools.Property{
+		"path": {
+			Type:        "string",
+			Description: `Directory path relative to the workspace root. Use "." for the root.`,
+		},
+	}).JSON()
 }
 
 func (l *ListFilesTool) Execute(ctx context.Context, input json.RawMessage) (tools.ToolResult, error) {

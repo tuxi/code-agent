@@ -41,8 +41,11 @@ func (g *GrepTool) Description() string {
 	return "Search text in UTF-8 files under the current workspace."
 }
 
-func (g *GrepTool) InputSchema() string {
-	return `{"query":"text to search","path":"relative directory or file path, default is ."}`
+func (g *GrepTool) InputSchema() json.RawMessage {
+	return tools.Object(map[string]tools.Property{
+		"query": {Type: "string", Description: "Text or pattern to search for."},
+		"path":  {Type: "string", Description: `Directory to search under, relative to the workspace root. Use "." for the root.`},
+	}, "query").JSON()
 }
 
 func (g *GrepTool) Execute(ctx context.Context, input json.RawMessage) (tools.ToolResult, error) {

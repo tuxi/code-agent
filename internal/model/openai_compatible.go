@@ -28,16 +28,20 @@ func NewOpenAICompatibleProvider(baseURL, apiKey string) *OpenAICompatibleProvid
 }
 
 type chatCompletionRequest struct {
-	Model       string    `json:"model"`
-	Messages    []Message `json:"messages"`
-	Temperature float64   `json:"temperature,omitempty"`
+	Model       string           `json:"model"`
+	Messages    []Message        `json:"messages"`
+	Temperature float64          `json:"temperature,omitempty"`
+	Tools       []ToolDefinition `json:"tools,omitempty"`
+	ToolChoice  string           `json:"tool_choice,omitempty"`
 }
 
 type chatCompletionResponse struct {
 	Choices []struct {
 		Message struct {
-			Content string `json:"content"`
+			Content   string     `json:"content"`
+			ToolCalls []ToolCall `json:"tool_calls"`
 		} `json:"message"`
+		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
 	Error *struct {
 		Message string `json:"message"`
@@ -61,6 +65,8 @@ func (p *OpenAICompatibleProvider) Complete(ctx context.Context, req Request) (R
 		Model:       req.Model,
 		Messages:    req.Messages,
 		Temperature: req.Temperature,
+		Tools:       req.Tools,
+		ToolChoice:  req.ToolChoice,
 	}
 
 	data, err := json.Marshal(body)
@@ -108,8 +114,11 @@ func (p *OpenAICompatibleProvider) Complete(ctx context.Context, req Request) (R
 		return Response{}, fmt.Errorf("model api returned no choices: raw=%s", string(raw))
 	}
 
+	choice := decoded.Choices[0]
 	return Response{
-		Content: strings.TrimSpace(decoded.Choices[0].Message.Content),
-		Raw:     raw,
+		Content:      strings.TrimSpace(choice.Message.Content),
+		ToolCalls:    choice.Message.ToolCalls,
+		FinishReason: choice.FinishReason,
+		Raw:          raw,
 	}, nil
 }

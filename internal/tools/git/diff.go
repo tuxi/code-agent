@@ -41,8 +41,21 @@ func (t *DiffTool) Description() string {
 	return "Show git diff for the current workspace. This is read-only."
 }
 
-func (t *DiffTool) InputSchema() string {
-	return `{"path":"optional relative path under workspace","staged":false,"stat":false}`
+func (t *DiffTool) InputSchema() json.RawMessage {
+	return tools.Object(map[string]tools.Property{
+		"path": {
+			Type:        "string",
+			Description: `Limit the diff to this path. Empty means the whole workspace.`,
+		},
+		"staged": {
+			Type:        "boolean",
+			Description: `Show staged changes instead of working-tree changes.`,
+		},
+		"stat": {
+			Type:        "boolean",
+			Description: `Show a diffstat summary instead of the full diff.`,
+		},
+	}).JSON()
 }
 
 func (t *DiffTool) Execute(ctx context.Context, input json.RawMessage) (tools.ToolResult, error) {

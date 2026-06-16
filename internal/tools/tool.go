@@ -12,6 +12,6 @@ type ToolResult struct {
 type Tool interface {
 	Name() string
 	Description() string
-	InputSchema() string
+	InputSchema() json.RawMessage
 	Execute(ctx context.Context, input json.RawMessage) (ToolResult, error)
 }

@@ -9,6 +9,7 @@ import (
 	"code-agent/internal/tools/git"
 	"code-agent/internal/tools/search"
 	"code-agent/internal/tools/shell"
+	"code-agent/internal/ui"
 	"context"
 	"fmt"
 	"os"
@@ -92,6 +93,7 @@ func runAgent(ctx context.Context, cfg app.Config, provider model.Provider, goal
 		return err
 	}
 
+	// 从 RegisterInternal 改回 Register —— 编辑工具现在受门禁保护，可以安全地暴露给模型
 	if err := registry.Register(git.NewApplyPatchTool(cfg.Workspace.Root)); err != nil {
 		return err
 	}
@@ -106,6 +108,7 @@ func runAgent(ctx context.Context, cfg app.Config, provider model.Provider, goal
 		Temperature: cfg.Model.Temperature,
 		Tools:       registry,
 		MaxSteps:    cfg.Agent.MaxSteps,
+		Approver:    ui.ConfirmApprover{}, // 副作用工具的确认门禁
 	}
 
 	result, err := runner.Run(ctx, goal)

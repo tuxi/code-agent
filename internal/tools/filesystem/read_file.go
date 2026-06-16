@@ -36,8 +36,13 @@ func (r *ReadFileTool) Description() string {
 	return "Read a UTF-8 text file from the current workspace."
 }
 
-func (r *ReadFileTool) InputSchema() string {
-	return `{"path":"relative file path under workspace"}`
+func (r *ReadFileTool) InputSchema() json.RawMessage {
+	return tools.Object(map[string]tools.Property{
+		"path": {
+			Type:        "string",
+			Description: "File path relative to the workspace root.",
+		},
+	}, "path").JSON()
 }
 
 func (r *ReadFileTool) Execute(ctx context.Context, input json.RawMessage) (tools.ToolResult, error) {
