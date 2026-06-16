@@ -4,6 +4,7 @@ import (
 	"code-agent/internal/agent"
 	"code-agent/internal/app"
 	"code-agent/internal/model"
+	"code-agent/internal/session"
 	"code-agent/internal/tools"
 	"code-agent/internal/tools/filesystem"
 	"code-agent/internal/tools/git"
@@ -134,9 +135,14 @@ func runAgent(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider 
 		Approver:    ui.ConfirmApprover{}, // 副作用工具的确认门禁
 	}
 
+	sess, err := session.NewBuilder(cfg.Workspace.Root).Build()
+	if err != nil {
+		return err
+	}
+
 	fmt.Printf("Model: %s (%s)\n", mc.Name, mc.Model)
 
-	result, err := runner.Run(ctx, goal)
+	result, err := runner.RunTurn(ctx, sess, goal)
 	if err != nil {
 		return err
 	}

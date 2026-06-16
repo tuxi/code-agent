@@ -233,8 +233,6 @@ go mod tidy
 cp config.example.yaml config.yaml
 export DEEPSEEK_API_KEY="your_api_key"
 
-go build ./...
-go test ./internal/app/                                  # 两个离线用例：多模型加载/选择、回退 deepseek
 go run ./cmd/codeagent run "解释这个项目结构"               # 用 default_model
 go run ./cmd/codeagent run --model qwen "解释这个项目结构"   # 显式选 qwen（需设 DASHSCOPE_API_KEY）
 ```

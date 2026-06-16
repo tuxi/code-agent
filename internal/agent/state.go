@@ -15,7 +15,8 @@ type State struct {
 	Steps     []Step
 }
 
-// Step records a single tool execution within a run.
+// Step records a single tool execution within a turn. The cumulative
+// conversation lives on the Session; a Step is just per-turn observability.
 type Step struct {
 	Index       int
 	ToolName    string

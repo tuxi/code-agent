@@ -2,12 +2,13 @@ package agent
 
 import (
 	"code-agent/internal/model"
-	"code-agent/internal/prompt"
+	"code-agent/internal/session"
 	"code-agent/internal/tools"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync/atomic"
 	"time"
 )
 
@@ -23,25 +24,36 @@ type Runner struct {
 	Approver Approver
 }
 
-type RunResult struct {
+// TurnResult is the outcome of a single turn: the final answer the model
+// produced and the tool steps taken to get there. The conversation itself lives
+// on the Session, which accumulates across turns.
+type TurnResult struct {
 	Final string
-	State State
+	Steps []Step
 }
 
 const defaultMaxSteps = 24
 
-// Run drives the agent as a single uniform loop:
+// toolCallSeq backs synthetic tool_call ids (see RunTurn). Process-global and
+// monotonic so synthesized ids never collide within a session.
+var toolCallSeq atomic.Uint64
+
+func nextCallID() string {
+	return fmt.Sprintf("call_%d", toolCallSeq.Add(1))
+}
+
+// RunTurn runs one turn of the agent against a persistent session: it appends
+// the user's input to the session history, then drives the uniform loop —
+// call the model (with tool schemas); if it returns no tool calls, that text is
+// the final answer; otherwise execute every tool call, append each result to
+// the session, and loop — until a final answer or the per-turn step limit.
 //
-//	call the model (with the tool schemas) -> if it returns no tool calls, that
-//	is the final answer; otherwise execute every requested tool call, feed each
-//	result back as a tool message, and loop.
-//
-// The loop contains no per-tool logic and no decision-type state machine. The
-// model owns the control flow; the runtime executes tools, gates the ones with
-// side effects, and records what happened.
-func (r *Runner) Run(ctx context.Context, goal string) (RunResult, error) {
+// The session's Messages survive the call, so the next turn sees this turn's
+// full history. The loop contains no per-tool logic and no decision state
+// machine: the model owns control flow, the runtime executes and gates tools.
+func (r *Runner) RunTurn(ctx context.Context, sess *session.Session, userInput string) (TurnResult, error) {
 	if r.Model == nil {
-		return RunResult{}, errors.New("missing model provider")
+		return TurnResult{}, errors.New("missing model provider")
 	}
 	if r.Tools == nil {
 		r.Tools = tools.NewRegistry()
@@ -50,42 +62,55 @@ func (r *Runner) Run(ctx context.Context, goal string) (RunResult, error) {
 		r.MaxSteps = defaultMaxSteps
 	}
 
-	state := State{Goal: goal, MaxSteps: r.MaxSteps}
-
 	toolDefs := toolDefinitions(r.Tools)
 
-	// The set of tools the model is actually allowed to call. Internal tools
-	// (registered but not advertised) must not be reachable via a model call.
+	// Tools the model may actually call. Internal tools (registered but not
+	// advertised) must not be reachable through a model call.
 	advertised := make(map[string]bool, len(toolDefs))
 	for _, d := range toolDefs {
 		advertised[d.Function.Name] = true
 	}
 
-	messages := []model.Message{
-		{Role: model.RoleSystem, Content: prompt.AgentSystemPrompt},
-		{Role: model.RoleUser, Content: goal},
-	}
+	// Append the user's turn to the persistent session history.
+	sess.Messages = append(sess.Messages, model.Message{
+		Role:    model.RoleUser,
+		Content: userInput,
+	})
+	sess.UpdatedAt = time.Now()
+
+	var turn TurnResult
 
 	for i := 0; i < r.MaxSteps; i++ {
 		resp, err := r.Model.Complete(ctx, model.Request{
 			Model:       r.ModelName,
 			Temperature: r.Temperature,
-			Messages:    messages,
+			Messages:    sess.Messages,
 			Tools:       toolDefs,
 		})
 		if err != nil {
-			return RunResult{State: state}, err
+			return turn, err
+		}
+
+		// Some OpenAI-compatible providers occasionally return a tool call with
+		// an empty id. Assign a stable, unique id here so the echoed assistant
+		// message and the tool result messages reference the SAME non-empty
+		// tool_call_id — otherwise the API rejects the next request with
+		// "insufficient tool messages following tool_calls message".
+		for j := range resp.ToolCalls {
+			if resp.ToolCalls[j].ID == "" {
+				resp.ToolCalls[j].ID = nextCallID()
+			}
 		}
 
 		// The assistant turn must be kept in history verbatim: the API requires
 		// the tool_calls message to precede the tool results that answer it.
-		messages = append(messages, resp.AssistantMessage())
+		sess.Messages = append(sess.Messages, resp.AssistantMessage())
+		sess.UpdatedAt = time.Now()
 
-		// No tool calls => the model is done. This is the final answer.
+		// No tool calls => the model is done; this is the final answer.
 		if !resp.HasToolCalls() {
-			state.Completed = true
-			state.Final = resp.Content
-			return RunResult{Final: resp.Content, State: state}, nil
+			turn.Final = resp.Content
+			return turn, nil
 		}
 
 		if resp.Content != "" {
@@ -98,7 +123,7 @@ func (r *Runner) Run(ctx context.Context, goal string) (RunResult, error) {
 			input := json.RawMessage(call.Function.Arguments)
 
 			step := Step{
-				Index:     len(state.Steps) + 1,
+				Index:     len(turn.Steps) + 1,
 				ToolName:  call.Function.Name,
 				ToolInput: input,
 				StartedAt: time.Now(),
@@ -125,21 +150,21 @@ func (r *Runner) Run(ctx context.Context, goal string) (RunResult, error) {
 
 			step.Observation = observation
 			step.FinishedAt = time.Now()
-			state.Steps = append(state.Steps, step)
+			turn.Steps = append(turn.Steps, step)
 
 			fmt.Printf("[observation]\n%s\n", observation)
 
-			messages = append(messages, model.Message{
+			sess.Messages = append(sess.Messages, model.Message{
 				Role:       model.RoleTool,
 				ToolCallID: call.ID,
 				Content:    observation,
 			})
+			sess.UpdatedAt = time.Now()
 		}
 	}
 
-	final := "Agent stopped: reached the step limit before finishing."
-	state.Final = final
-	return RunResult{Final: final, State: state}, nil
+	turn.Final = "Agent stopped: reached the step limit before finishing."
+	return turn, nil
 }
 
 func (r *Runner) executeTool(ctx context.Context, tool tools.Tool, input json.RawMessage) (string, error) {

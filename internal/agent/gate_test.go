@@ -7,16 +7,20 @@ import (
 	"testing"
 
 	"code-agent/internal/model"
+	"code-agent/internal/session"
 	"code-agent/internal/tools"
 )
 
-// scriptedProvider returns queued responses in order, ignoring the request.
+// scriptedProvider returns queued responses in order and records the messages
+// it last received, so tests can assert what context reached the model.
 type scriptedProvider struct {
-	responses []model.Response
-	calls     int
+	responses    []model.Response
+	calls        int
+	lastMessages []model.Message
 }
 
-func (p *scriptedProvider) Complete(_ context.Context, _ model.Request) (model.Response, error) {
+func (p *scriptedProvider) Complete(_ context.Context, req model.Request) (model.Response, error) {
+	p.lastMessages = req.Messages
 	r := p.responses[p.calls]
 	p.calls++
 	return r, nil
@@ -42,7 +46,14 @@ type denyApprover struct{}
 
 func (denyApprover) Approve(string, json.RawMessage) bool { return false }
 
-func runGated(t *testing.T, approver Approver) (*recordingTool, RunResult) {
+func newSession() *session.Session {
+	return &session.Session{
+		Messages: []model.Message{{Role: model.RoleSystem, Content: "You are a test agent."}},
+		Metadata: map[string]any{},
+	}
+}
+
+func runGated(t *testing.T, approver Approver) (*recordingTool, TurnResult) {
 	t.Helper()
 
 	rt := &recordingTool{}
@@ -60,17 +71,12 @@ func runGated(t *testing.T, approver Approver) (*recordingTool, RunResult) {
 			}},
 			FinishReason: "tool_calls",
 		},
-		{Content: "done", FinishReason: "stop"}, // turn 2: final answer
+		{Content: "done", FinishReason: "stop"}, // final answer
 	}}
 
-	runner := &Runner{
-		Model:    provider,
-		Tools:    reg,
-		Approver: approver,
-		MaxSteps: 5,
-	}
+	runner := &Runner{Model: provider, Tools: reg, Approver: approver, MaxSteps: 5}
 
-	res, err := runner.Run(context.Background(), "do the dangerous thing")
+	res, err := runner.RunTurn(context.Background(), newSession(), "do the dangerous thing")
 	if err != nil {
 		t.Fatalf("run failed: %v", err)
 	}
@@ -88,7 +94,7 @@ func TestGateDeniesSideEffectingTool(t *testing.T) {
 	}
 
 	var sawDecline bool
-	for _, s := range res.State.Steps {
+	for _, s := range res.Steps {
 		if strings.Contains(s.Observation, "declined") {
 			sawDecline = true
 		}
@@ -112,5 +118,39 @@ func TestGateNilApproverDeniesByDefault(t *testing.T) {
 	}
 	if res.Final != "done" {
 		t.Errorf("final = %q, want %q", res.Final, "done")
+	}
+}
+
+// TestSessionContinuityAcrossTurns is the core P2.2 invariant: a second turn
+// must see the first turn's messages, because the Session persists history.
+func TestSessionContinuityAcrossTurns(t *testing.T) {
+	reg := tools.NewRegistry()
+	provider := &scriptedProvider{responses: []model.Response{
+		{Content: "noted", FinishReason: "stop"},
+		{Content: "you said hello", FinishReason: "stop"},
+	}}
+	runner := &Runner{Model: provider, Tools: reg, MaxSteps: 3}
+	sess := newSession()
+
+	if _, err := runner.RunTurn(context.Background(), sess, "hello"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runner.RunTurn(context.Background(), sess, "what did I say?"); err != nil {
+		t.Fatal(err)
+	}
+
+	var sawFirstUser bool
+	for _, m := range provider.lastMessages {
+		if m.Role == model.RoleUser && m.Content == "hello" {
+			sawFirstUser = true
+		}
+	}
+	if !sawFirstUser {
+		t.Error("second turn did not see the first turn's message; session is not accumulating history")
+	}
+
+	// system + (user + assistant) + (user + assistant) = 5
+	if len(sess.Messages) != 5 {
+		t.Errorf("session holds %d messages, want 5", len(sess.Messages))
 	}
 }
