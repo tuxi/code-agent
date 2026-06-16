@@ -17,12 +17,40 @@ import (
 // baked into the initial messages, because it would go stale within a single
 // session. That kind of context is injected per turn or fetched by the model
 // through tools.
+// defaultContextWindow / defaultCompactThreshold are the model-agnostic fallback
+// budget. Callers that know the model (the CLI) override these via WithBudget;
+// tests and any caller that does not care keep the defaults.
+const (
+	defaultContextWindow    = 128000
+	defaultCompactThreshold = 90000
+)
+
 type Builder struct {
 	WorkspaceRoot string
+
+	ContextWindow    int
+	CompactThreshold int
 }
 
 func NewBuilder(workspaceRoot string) *Builder {
-	return &Builder{WorkspaceRoot: workspaceRoot}
+	return &Builder{
+		WorkspaceRoot:    workspaceRoot,
+		ContextWindow:    defaultContextWindow,
+		CompactThreshold: defaultCompactThreshold,
+	}
+}
+
+// WithBudget sets the session's context window and compaction threshold, e.g.
+// from the selected model's config. Non-positive values leave the default in
+// place, so a caller can override just one of them.
+func (b *Builder) WithBudget(contextWindow, compactThreshold int) *Builder {
+	if contextWindow > 0 {
+		b.ContextWindow = contextWindow
+	}
+	if compactThreshold > 0 {
+		b.CompactThreshold = compactThreshold
+	}
+	return b
 }
 
 func (b *Builder) Build() (*Session, error) {
@@ -41,9 +69,11 @@ func (b *Builder) Build() (*Session, error) {
 		Messages: []model.Message{
 			{Role: model.RoleSystem, Content: systemContent},
 		},
-		Metadata:  map[string]any{},
-		CreatedAt: now,
-		UpdatedAt: now,
+		ContextWindow:    b.ContextWindow,
+		CompactThreshold: b.CompactThreshold,
+		Metadata:         map[string]any{},
+		CreatedAt:        now,
+		UpdatedAt:        now,
 	}, nil
 }
 

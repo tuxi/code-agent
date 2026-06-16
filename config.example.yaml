@@ -8,26 +8,34 @@ models:
     model: "deepseek-v4-flash"
     api_key_env: DEEPSEEK_API_KEY
     temperature: 0.2
+    # max context in tokens; sizes the compaction threshold. Optional (default 128000).
+    context_window: 128000
 
   deepseek-pro:
     provider: openai
     base_url: "https://api.deepseek.com"
     model: "deepseek-v4-pro"
     api_key_env: DEEPSEEK_API_KEY
+    context_window: 128000
 
   qwen:
     provider: openai
     base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
     model: "qwen3-coder-plus"
     api_key_env: DASHSCOPE_API_KEY
+    context_window: 256000
   glm:
     provider: openai
     base_url: "https://open.bigmodel.cn/api/paas/v4"
     model: "glm-5.1"
     api_key_env: GLM_API_KEY
+    context_window: 128000
 
 agent:
   max_steps: 16
+  # compact when the prompt reaches this fraction of the model's context_window.
+  # Optional (default 0.7); values outside (0,1) fall back to the default.
+  compact_ratio: 0.7
 
 workspace:
   root: "."

@@ -22,6 +22,8 @@ type Runner struct {
 	// Approver gates side-effecting tool calls. If nil, side-effecting tools are
 	// denied (see approve()). Read-only tools never consult it.
 	Approver Approver
+
+	Compactor session.Compactor
 }
 
 // TurnResult is the outcome of a single turn: the final answer the model
@@ -82,6 +84,12 @@ func (r *Runner) RunTurn(ctx context.Context, sess *session.Session, userInput s
 	var turn TurnResult
 
 	for i := 0; i < r.MaxSteps; i++ {
+		// Compact before each model call, not just at the turn boundary: a single
+		// turn with many tool calls can grow the prompt past the threshold mid-loop.
+		if err := r.maybeCompact(ctx, sess); err != nil {
+			return turn, err
+		}
+
 		resp, err := r.Model.Complete(ctx, model.Request{
 			Model:       r.ModelName,
 			Temperature: r.Temperature,
@@ -91,8 +99,14 @@ func (r *Runner) RunTurn(ctx context.Context, sess *session.Session, userInput s
 		if err != nil {
 			return turn, err
 		}
-		
+
 		turn.PromptTokens = resp.Usage.PromptTokens
+		sess.PromptTokens = resp.Usage.PromptTokens
+		// This call's prompt size is the true post-compaction size if a compaction
+		// just ran, so finalize its observability stat here.
+		if stat := sess.FinalizeCompaction(resp.Usage.PromptTokens); stat != nil {
+			fmt.Printf("[compaction] %s\n", stat)
+		}
 
 		// Some OpenAI-compatible providers occasionally return a tool call with
 		// an empty id. Assign a stable, unique id here so the echoed assistant
@@ -168,6 +182,33 @@ func (r *Runner) RunTurn(ctx context.Context, sess *session.Session, userInput s
 
 	turn.Final = "Agent stopped: reached the step limit before finishing."
 	return turn, nil
+}
+
+// maybeCompact compacts the session when it has grown past the token threshold.
+// It is best-effort: a nil Compactor means the caller opted out.
+//
+// PromptTokens is deliberately NOT reset afterwards. The pre-compaction count is
+// stale, but faking a 0-token state would hide a compaction that failed to get
+// under the window. Instead the next model call (immediately after this, at the
+// top of the loop) measures the true reduced size and refreshes PromptTokens —
+// which also finalizes the observability stat. A compaction that changed nothing
+// (the recent window already is the whole history) is not recorded.
+func (r *Runner) maybeCompact(ctx context.Context, sess *session.Session) error {
+	if r.Compactor == nil || !sess.NeedCompaction() {
+		return nil
+	}
+	before := sess.PromptTokens
+	prevLen, prevSummary := len(sess.Messages), sess.Summary
+	if err := r.Compactor.Compact(ctx, sess); err != nil {
+		return err
+	}
+	if len(sess.Messages) == prevLen && sess.Summary == prevSummary {
+		return nil // nothing was folded
+	}
+	sess.RecordCompaction(before, len(sess.Summary))
+	fmt.Printf("Context compacted: %d tokens → summary of %d chars (new size measured on next call)\n",
+		before, len(sess.Summary))
+	return nil
 }
 
 func (r *Runner) executeTool(ctx context.Context, tool tools.Tool, input json.RawMessage) (string, error) {

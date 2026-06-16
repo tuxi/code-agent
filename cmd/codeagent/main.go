@@ -74,6 +74,18 @@ func buildProvider(mc app.ModelConfig) (model.Provider, error) {
 	}
 }
 
+// buildCompactor builds the summary compactor used to keep long sessions inside
+// the context window. It summarizes with the same provider/model the agent is
+// running, so switching models (`/use`) must rebuild it. Shared by run and repl.
+func buildCompactor(mc app.ModelConfig, provider model.Provider) session.Compactor {
+	return &session.LLMCompactor{
+		Provider:           provider,
+		ModelName:          mc.Model,
+		Temperature:        mc.Temperature,
+		KeepRecentMessages: 50,
+	}
+}
+
 // buildRegistry registers the model-facing tool set. Shared by run and repl.
 func buildRegistry(root string) (*tools.Registry, error) {
 	registry := tools.NewRegistry()
@@ -143,9 +155,12 @@ func runAgent(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider 
 		Tools:       registry,
 		MaxSteps:    cfg.Agent.MaxSteps,
 		Approver:    ui.ConfirmApprover{},
+		Compactor:   buildCompactor(mc, provider),
 	}
 
-	sess, err := session.NewBuilder(root).Build()
+	sess, err := session.NewBuilder(root).
+		WithBudget(mc.ContextWindow, cfg.CompactThreshold(mc)).
+		Build()
 	if err != nil {
 		return err
 	}

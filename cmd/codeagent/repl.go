@@ -33,9 +33,12 @@ func repl(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider mode
 		Tools:       registry,
 		MaxSteps:    cfg.Agent.MaxSteps,
 		Approver:    ui.ConfirmApprover{Reader: stdin},
+		Compactor:   buildCompactor(mc, provider),
 	}
 
-	sess, err := session.NewBuilder(root).Build()
+	sess, err := session.NewBuilder(root).
+		WithBudget(mc.ContextWindow, cfg.CompactThreshold(mc)).
+		Build()
 	if err != nil {
 		return err
 	}
@@ -56,7 +59,7 @@ func repl(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider mode
 		}
 
 		if strings.HasPrefix(line, "/") {
-			quit, cerr := handleCommand(line, cfg, &mc, runner)
+			quit, cerr := handleCommand(line, cfg, &mc, runner, sess)
 			if cerr != nil {
 				fmt.Println("error:", cerr)
 			}
@@ -73,14 +76,20 @@ func repl(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider mode
 		}
 		fmt.Println("\n" + res.Final)
 		if res.PromptTokens > 0 {
-			fmt.Printf("[context: ~%d tokens]\n", res.PromptTokens)
+			// 展示Token 预算，这样能看出离压缩还有多远
+			fmt.Printf(
+				"[context: %d / %d]\n",
+				sess.PromptTokens,
+				sess.CompactThreshold,
+			)
 		}
 	}
 }
 
 // handleCommand processes a slash command. It may mutate the current model
-// (mc) and the runner (on /use). It returns quit=true for /exit and /quit.
-func handleCommand(line string, cfg app.Config, mc *app.ModelConfig, runner *agent.Runner) (bool, error) {
+// (mc), the runner, and the session budget (on /use). It returns quit=true for
+// /exit and /quit.
+func handleCommand(line string, cfg app.Config, mc *app.ModelConfig, runner *agent.Runner, sess *session.Session) (bool, error) {
 	fields := strings.Fields(line)
 	switch fields[0] {
 	case "/exit", "/quit":
@@ -124,7 +133,13 @@ func handleCommand(line string, cfg app.Config, mc *app.ModelConfig, runner *age
 		runner.Model = newProvider
 		runner.ModelName = newMC.Model
 		runner.Temperature = newMC.Temperature
-		fmt.Printf("switched to %s (%s)\n", newMC.Name, newMC.Model)
+		runner.Compactor = buildCompactor(newMC, newProvider)
+		// The budget belongs to the session, not the runner: switching to a model
+		// with a different window must change WHEN this conversation compacts.
+		sess.ContextWindow = newMC.ContextWindow
+		sess.CompactThreshold = cfg.CompactThreshold(newMC)
+		fmt.Printf("switched to %s (%s); context budget %d/%d\n",
+			newMC.Name, newMC.Model, sess.CompactThreshold, sess.ContextWindow)
 		return false, nil
 
 	default:

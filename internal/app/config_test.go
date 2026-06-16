@@ -57,6 +57,17 @@ workspace:
 	if mc.Temperature != 0.2 {
 		t.Errorf("temperature = %v, want default 0.2", mc.Temperature)
 	}
+	// context_window is unset in this config -> default; compact_ratio defaults to
+	// 0.7, so the threshold is model-aware off the default window.
+	if mc.ContextWindow != 128000 {
+		t.Errorf("context_window = %d, want default 128000", mc.ContextWindow)
+	}
+	if cfg.Agent.CompactRatio != 0.7 {
+		t.Errorf("compact_ratio = %v, want default 0.7", cfg.Agent.CompactRatio)
+	}
+	if got := cfg.CompactThreshold(mc); got != 89600 {
+		t.Errorf("CompactThreshold = %d, want 89600 (128000 * 0.7)", got)
+	}
 
 	// deepseek is configured but its key is unset -> selection fails clearly.
 	if _, err := cfg.SelectModel("deepseek"); err == nil {
@@ -66,6 +77,57 @@ workspace:
 	// Unknown model -> error.
 	if _, err := cfg.SelectModel("gpt"); err == nil {
 		t.Error("expected an error selecting an unknown model")
+	}
+}
+
+func TestCompactThresholdIsModelAware(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "config.yaml")
+	yaml := `
+default_model: big
+models:
+  big:
+    provider: openai
+    base_url: https://example.com
+    model: big-model
+    api_key_env: BIG_KEY
+    context_window: 256000
+  small:
+    provider: openai
+    base_url: https://example.com
+    model: small-model
+    api_key_env: SMALL_KEY
+agent:
+  compact_ratio: 0.8
+`
+	if err := os.WriteFile(p, []byte(yaml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("BIG_KEY", "k")
+	t.Setenv("SMALL_KEY", "k")
+
+	cfg, err := LoadConfig(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	big, _ := cfg.SelectModel("big")
+	small, _ := cfg.SelectModel("small")
+
+	// Explicit window honored; unset window falls back to the default.
+	if big.ContextWindow != 256000 {
+		t.Errorf("big context_window = %d, want 256000", big.ContextWindow)
+	}
+	if small.ContextWindow != 128000 {
+		t.Errorf("small context_window = %d, want default 128000", small.ContextWindow)
+	}
+	// Same ratio (0.8), different windows -> different thresholds. This is the
+	// model-aware property P3.2 adds.
+	if got := cfg.CompactThreshold(big); got != 204800 {
+		t.Errorf("big threshold = %d, want 204800 (256000 * 0.8)", got)
+	}
+	if got := cfg.CompactThreshold(small); got != 102400 {
+		t.Errorf("small threshold = %d, want 102400 (128000 * 0.8)", got)
 	}
 }
 

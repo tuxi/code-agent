@@ -165,8 +165,16 @@ layer is swappable, and runs survive transient API errors.
 
 - [x] Inject `CODEAGENT.md` as project memory at session start.
 - [x] Add token accounting; budget on tokens (keep `max_steps` as a safety cap).
-- [ ] Add compaction near the context-window limit (summarize old turns, keep
-  recent ones verbatim).
+- [x] Add compaction near the context-window limit (summarize old turns, keep
+  recent ones verbatim). `LLMCompactor` folds dropped turns into a cumulative
+  `Session.Summary`; history is rebuilt as system → summary → recent.
+- [x] Make the budget model-aware: per-model `context_window` and a
+  `compact_ratio` derive the compaction threshold; `/use` re-budgets the live
+  session.
+- [x] Make compaction observable: each compaction records a `CompactionStats`
+  (before/after tokens, saved, ratio, summary size) on the session, finalized
+  from the next call's measured prompt size — no fabricated post-compaction
+  token count.
 - [ ] Add session persistence (SQLite) for resume and trace.
 
 **Done when:** long runs do not overflow the context window, and project
@@ -303,30 +311,42 @@ models:
     model: "deepseek-v4-flash"
     api_key_env: DEEPSEEK_API_KEY
     temperature: 0.2
+    # max context in tokens; sizes the compaction threshold (optional, default 128000)
+    context_window: 128000
 
   deepseek-pro:
     provider: openai
     base_url: "https://api.deepseek.com"
     model: "deepseek-v4-pro"
     api_key_env: DEEPSEEK_API_KEY
+    context_window: 128000
 
   qwen:
     provider: openai
     base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
     model: "qwen3-coder-plus"
     api_key_env: DASHSCOPE_API_KEY
+    context_window: 256000
   glm:
     provider: openai
     base_url: "https://open.bigmodel.cn/api/paas/v4"
     model: "glm-5.1"
     api_key_env: GLM_API_KEY
+    context_window: 128000
 
 agent:
   max_steps: 16
+  # compact at this fraction of the model's context_window (optional, default 0.7)
+  compact_ratio: 0.7
 
 workspace:
   root: "."
 ```
+
+Compaction is **model-aware**: the threshold is `context_window * compact_ratio`, so
+a 256k model compacts later than a 128k one. The recent-window retention policy
+(`KeepRecentMessages`) is separate — it decides *what* survives a compaction,
+independent of *when* compaction fires.
 
 ## Project belief
 

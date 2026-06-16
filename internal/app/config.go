@@ -10,6 +10,15 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+const (
+	// defaultContextWindow is assumed for any model that does not declare its own
+	// context_window. 128k matches the smaller models currently configured.
+	defaultContextWindow = 128000
+	// defaultCompactRatio is the fraction of the context window at which a session
+	// compacts when agent.compact_ratio is unset or invalid.
+	defaultCompactRatio = 0.7
+)
+
 type Config struct {
 	DefaultModel string                 `yaml:"default_model"`
 	Models       map[string]ModelConfig `yaml:"models"`
@@ -24,6 +33,11 @@ type ModelConfig struct {
 	APIKeyEnv   string  `yaml:"api_key_env"` // name of the env var holding the API key
 	Temperature float64 `yaml:"temperature"` // optional; defaults to 0.2
 
+	// ContextWindow is the model's maximum context in tokens. It sizes the
+	// compaction threshold (see Config.CompactThreshold). Defaults to
+	// defaultContextWindow when unset.
+	ContextWindow int `yaml:"context_window"`
+
 	// Resolved at load time, not read from YAML.
 	Name   string `yaml:"-"` // the friendly name (the map key)
 	APIKey string `yaml:"-"` // resolved from APIKeyEnv
@@ -31,6 +45,11 @@ type ModelConfig struct {
 
 type AgentConfig struct {
 	MaxSteps int `yaml:"max_steps"`
+
+	// CompactRatio is the fraction of a model's context window at which the
+	// session compacts. Defaults to defaultCompactRatio; values outside (0,1) are
+	// treated as unset.
+	CompactRatio float64 `yaml:"compact_ratio"`
 }
 
 type WorkspaceConfig struct {
@@ -86,6 +105,9 @@ func LoadConfig(path string) (Config, error) {
 		if mc.Temperature <= 0 {
 			mc.Temperature = 0.2
 		}
+		if mc.ContextWindow <= 0 {
+			mc.ContextWindow = defaultContextWindow
+		}
 		if mc.APIKeyEnv != "" {
 			mc.APIKey = os.Getenv(mc.APIKeyEnv)
 		}
@@ -94,6 +116,9 @@ func LoadConfig(path string) (Config, error) {
 
 	if cfg.Agent.MaxSteps <= 0 {
 		cfg.Agent.MaxSteps = 8
+	}
+	if cfg.Agent.CompactRatio <= 0 || cfg.Agent.CompactRatio >= 1 {
+		cfg.Agent.CompactRatio = defaultCompactRatio
 	}
 	if cfg.Workspace.Root == "" {
 		cfg.Workspace.Root = "."
@@ -122,6 +147,14 @@ func (c Config) SelectModel(name string) (ModelConfig, error) {
 			name, mc.APIKeyEnv)
 	}
 	return mc, nil
+}
+
+// CompactThreshold is the prompt-token count at which a session running the
+// given model should compact: the model's context window scaled by the
+// configured compact ratio. This is what makes compaction model-aware — a
+// 256k-window model gets a proportionally higher threshold than a 128k one.
+func (c Config) CompactThreshold(mc ModelConfig) int {
+	return int(float64(mc.ContextWindow) * c.Agent.CompactRatio)
 }
 
 // ModelNames returns the configured model names, sorted.
