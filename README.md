@@ -232,19 +232,46 @@ without any hardcoded sequencing.
 go mod tidy
 cp config.example.yaml config.yaml
 export DEEPSEEK_API_KEY="your_api_key"
+
+go build ./...
+go test ./internal/app/                                  # 两个离线用例：多模型加载/选择、回退 deepseek
+go run ./cmd/codeagent run "解释这个项目结构"               # 用 default_model
+go run ./cmd/codeagent run --model qwen "解释这个项目结构"   # 显式选 qwen（需设 DASHSCOPE_API_KEY）
 ```
 
 Example `config.example.yaml`:
 
 ```yaml
-model:
-  provider: deepseek
-  base_url: "https://api.deepseek.com"
-  model: "deepseek-v4-flash"   # must support function calling; verify in Phase 1
-  temperature: 0.2
+default_model: deepseek
+
+models:
+  deepseek:
+    provider: openai
+    base_url: "https://api.deepseek.com"
+    # model must support function calling
+    model: "deepseek-v4-flash"
+    api_key_env: DEEPSEEK_API_KEY
+    temperature: 0.2
+
+  deepseek-pro:
+    provider: openai
+    base_url: "https://api.deepseek.com"
+    model: "deepseek-v4-pro"
+    api_key_env: DEEPSEEK_API_KEY
+
+  qwen:
+    provider: openai
+    base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    model: "qwen3-coder-plus"
+    api_key_env: DASHSCOPE_API_KEY
+  glm:
+    provider: openai
+    base_url: "https://open.bigmodel.cn/api/paas/v4"
+    model: "glm-5.1"
+    api_key_env: GLM_API_KEY
 
 agent:
-  max_steps: 16                # safety cap; the real budget becomes tokens (Phase 3)
+  max_steps: 16
 
 workspace:
   root: "."

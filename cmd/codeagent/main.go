@@ -24,96 +24,117 @@ func main() {
 }
 
 func run() error {
-	if len(os.Args) < 3 {
+	args := os.Args[1:]
+	modelName, args := extractModelFlag(args)
+
+	if len(args) < 1 {
 		printUsage()
 		return nil
 	}
-
-	command := os.Args[1]
-	goal := strings.Join(os.Args[2:], " ")
+	command := args[0]
+	goal := strings.Join(args[1:], " ")
 
 	cfg, err := app.LoadConfig("config.yaml")
 	if err != nil {
 		return err
 	}
 
-	provider := model.NewOpenAICompatibleProvider(cfg.Model.BaseURL, cfg.Model.APIKey)
+	mc, err := cfg.SelectModel(modelName)
+	if err != nil {
+		return err
+	}
 
+	provider, err := buildProvider(mc)
+	if err != nil {
+		return err
+	}
+
+	ctx := context.Background()
 	switch command {
 	case "ask":
-		return runAsk(context.Background(), cfg, provider, goal)
+		return runAsk(ctx, mc, provider, goal)
 	case "run":
-		return runAgent(context.Background(), cfg, provider, goal)
+		return runAgent(ctx, cfg, mc, provider, goal)
 	default:
 		printUsage()
 		return fmt.Errorf("unknown command: %s", command)
 	}
 }
 
-func runAsk(ctx context.Context, cfg app.Config, provider model.Provider, question string) error {
+// buildProvider constructs a model.Provider from a resolved model config. Only
+// OpenAI-compatible endpoints are wired today; this is the extension point for
+// Anthropic, Gemini, Ollama, etc.
+func buildProvider(mc app.ModelConfig) (model.Provider, error) {
+	switch mc.Provider {
+	case "openai", "":
+		return model.NewOpenAICompatibleProvider(mc.BaseURL, mc.APIKey), nil
+	default:
+		return nil, fmt.Errorf("unsupported provider %q (only \"openai\"-compatible is wired so far)", mc.Provider)
+	}
+}
+
+// extractModelFlag pulls a --model NAME (or --model=NAME) out of args from any
+// position, returning the chosen name and the remaining args.
+func extractModelFlag(args []string) (string, []string) {
+	for i := 0; i < len(args); i++ {
+		switch {
+		case args[i] == "--model" || args[i] == "-model":
+			if i+1 < len(args) {
+				rest := append(append([]string{}, args[:i]...), args[i+2:]...)
+				return args[i+1], rest
+			}
+		case strings.HasPrefix(args[i], "--model="):
+			name := strings.TrimPrefix(args[i], "--model=")
+			rest := append(append([]string{}, args[:i]...), args[i+1:]...)
+			return name, rest
+		}
+	}
+	return "", args
+}
+
+func runAsk(ctx context.Context, mc app.ModelConfig, provider model.Provider, question string) error {
 	resp, err := provider.Complete(ctx, model.Request{
-		Model:       cfg.Model.Model,
-		Temperature: cfg.Model.Temperature,
+		Model:       mc.Model,
+		Temperature: mc.Temperature,
 		Messages: []model.Message{
-			model.Message{
-				Role:    model.RoleSystem,
-				Content: "You are a helpful coding assistant.",
-			},
-			model.Message{
-				Role:    model.RoleUser,
-				Content: question,
-			},
+			{Role: model.RoleSystem, Content: "You are a helpful coding assistant."},
+			{Role: model.RoleUser, Content: question},
 		},
 	})
-
 	if err != nil {
 		return err
 	}
-
 	fmt.Println(resp.Content)
 	return nil
 }
 
-func runAgent(ctx context.Context, cfg app.Config, provider model.Provider, goal string) error {
+func runAgent(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider model.Provider, goal string) error {
 	registry := tools.NewRegistry()
 
-	if err := registry.Register(filesystem.NewListFilesTool(cfg.Workspace.Root)); err != nil {
-		return err
-	}
-
-	if err := registry.Register(filesystem.NewReadFileTool(cfg.Workspace.Root)); err != nil {
-		return err
-	}
-
-	if err := registry.Register(search.NewGrepTool(cfg.Workspace.Root)); err != nil {
-		return err
-	}
-
-	if err := registry.Register(git.NewDiffTool(cfg.Workspace.Root)); err != nil {
-		return err
-	}
-
-	// 从 RegisterInternal 改回 Register —— 编辑工具现在受门禁保护，可以安全地暴露给模型
-	if err := registry.Register(git.NewApplyPatchTool(cfg.Workspace.Root)); err != nil {
-		return err
-	}
-
-	if err := registry.Register(shell.NewRunCommandTool(cfg.Workspace.Root)); err != nil {
-		return err
-	}
-
-	if err := registry.Register(filesystem.NewEditFileTool(cfg.Workspace.Root)); err != nil {
-		return err
+	for _, tool := range []tools.Tool{
+		filesystem.NewEditFileTool(cfg.Workspace.Root),
+		filesystem.NewReadFileTool(cfg.Workspace.Root),
+		filesystem.NewListFilesTool(cfg.Workspace.Root),
+		search.NewGrepTool(cfg.Workspace.Root),
+		git.NewDiffTool(cfg.Workspace.Root),
+		git.NewApplyPatchTool(cfg.Workspace.Root),
+		shell.NewRunCommandTool(cfg.Workspace.Root),
+	} {
+		if err := registry.Register(tool); err != nil {
+			return err
+		}
 	}
 
 	runner := &agent.Runner{
 		Model:       provider,
-		ModelName:   cfg.Model.Model,
-		Temperature: cfg.Model.Temperature,
+		ModelName:   mc.Model,
+		Temperature: mc.Temperature,
 		Tools:       registry,
 		MaxSteps:    cfg.Agent.MaxSteps,
 		Approver:    ui.ConfirmApprover{}, // 副作用工具的确认门禁
 	}
+
+	fmt.Printf("Model: %s (%s)\n", mc.Name, mc.Model)
 
 	result, err := runner.Run(ctx, goal)
 	if err != nil {
@@ -127,10 +148,9 @@ func runAgent(ctx context.Context, cfg app.Config, provider model.Provider, goal
 
 func printUsage() {
 	fmt.Println(`Usage:
-  codeagent ask "hello"
-  codeagent run "解释这个项目结构"
-
-Environment:
-  DEEPSEEK_API_KEY=your_api_key`)
-
+  codeagent [--model NAME] ask "hello"
+  codeagent [--model NAME] run "解释这个项目结构"
+ 
+Models are defined in config.yaml under "models:". --model selects one;
+the default is the configured default_model.`)
 }

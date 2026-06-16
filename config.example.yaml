@@ -1,9 +1,30 @@
-model:
-  provider: deepseek
-  base_url: "https://api.deepseek.com"
-  # model must support function calling
-  model: "deepseek-v4-flash"
-  temperature: 0.2
+default_model: deepseek
+
+models:
+  deepseek:
+    provider: openai
+    base_url: "https://api.deepseek.com"
+    # model must support function calling
+    model: "deepseek-v4-flash"
+    api_key_env: DEEPSEEK_API_KEY
+    temperature: 0.2
+
+  deepseek-pro:
+    provider: openai
+    base_url: "https://api.deepseek.com"
+    model: "deepseek-v4-pro"
+    api_key_env: DEEPSEEK_API_KEY
+
+  qwen:
+    provider: openai
+    base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    model: "qwen3-coder-plus"
+    api_key_env: DASHSCOPE_API_KEY
+  glm:
+    provider: openai
+    base_url: "https://open.bigmodel.cn/api/paas/v4"
+    model: "glm-5.1"
+    api_key_env: GLM_API_KEY
 
 agent:
   max_steps: 16
