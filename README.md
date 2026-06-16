@@ -151,8 +151,11 @@ edits), and the model produces reasoning text alongside tool calls.
   `ui.Confirm` gate into it. The CLI prompt is one implementation.
 - [x] Make the loop driver thin and business-agnostic (no patch/plan/git
   branches).
-- [ ] Add retry/backoff in the provider so a transient API error does not kill
-  the run.
+- [x] Add retry/backoff in the provider so a transient API error does not kill
+  the run. `ResilientProvider` wraps every provider with a per-attempt timeout,
+  bounded retries, exponential backoff + jitter, and error classification
+  (408/429/5xx and transport errors retry; 4xx do not). Replaying is
+  context-safe — the request is read-only, so retries never duplicate messages.
 - [x] Move patch validate → apply → diff orchestration out of the loop:
   `apply_patch` self-validates, the policy layer gates the apply, and the
   model decides whether to run tests.
@@ -338,6 +341,13 @@ agent:
   max_steps: 16
   # compact at this fraction of the model's context_window (optional, default 0.7)
   compact_ratio: 0.7
+
+# transport resilience: per-attempt timeout + retry/backoff (all optional)
+provider:
+  request_timeout_seconds: 120
+  max_retries: 2
+  backoff_millis: 500
+  max_backoff_seconds: 8
 
 workspace:
   root: "."

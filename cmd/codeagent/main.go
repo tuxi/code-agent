@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 )
 
 func main() {
@@ -38,7 +39,7 @@ func run() error {
 		return err
 	}
 
-	provider, err := buildProvider(mc)
+	provider, err := buildProvider(mc, cfg.Provider)
 	if err != nil {
 		return err
 	}
@@ -65,13 +66,25 @@ func run() error {
 // buildProvider constructs a model.Provider from a resolved model config. Only
 // OpenAI-compatible endpoints are wired today; this is the extension point for
 // Anthropic, Gemini, Ollama, etc.
-func buildProvider(mc app.ModelConfig) (model.Provider, error) {
+//
+// Every provider is wrapped in a ResilientProvider so a transient API error
+// (timeout, 429, 5xx) does not kill the run: timeout and retry policy live in
+// this one transport layer, not in each provider.
+func buildProvider(mc app.ModelConfig, pc app.ProviderConfig) (model.Provider, error) {
+	var inner model.Provider
 	switch mc.Provider {
 	case "openai", "":
-		return model.NewOpenAICompatibleProvider(mc.BaseURL, mc.APIKey), nil
+		inner = model.NewOpenAICompatibleProvider(mc.BaseURL, mc.APIKey)
 	default:
 		return nil, fmt.Errorf("unsupported provider %q (only \"openai\"-compatible is wired so far)", mc.Provider)
 	}
+	return &model.ResilientProvider{
+		Inner:      inner,
+		MaxRetries: pc.MaxRetries,
+		Timeout:    time.Duration(pc.RequestTimeoutSeconds) * time.Second,
+		Backoff:    time.Duration(pc.BackoffMillis) * time.Millisecond,
+		MaxBackoff: time.Duration(pc.MaxBackoffSeconds) * time.Second,
+	}, nil
 }
 
 // buildCompactor builds the summary compactor used to keep long sessions inside

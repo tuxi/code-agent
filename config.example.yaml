@@ -37,5 +37,13 @@ agent:
   # Optional (default 0.7); values outside (0,1) fall back to the default.
   compact_ratio: 0.7
 
+# Transport resilience: each model call gets a per-attempt timeout and retries
+# transient failures (timeout, 429, 5xx) with exponential backoff. All optional.
+provider:
+  request_timeout_seconds: 120
+  max_retries: 2
+  backoff_millis: 500
+  max_backoff_seconds: 8
+
 workspace:
   root: "."

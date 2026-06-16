@@ -8,7 +8,6 @@ import (
 	"io"
 	"net/http"
 	"strings"
-	"time"
 )
 
 type OpenAICompatibleProvider struct {
@@ -21,9 +20,12 @@ func NewOpenAICompatibleProvider(baseURL, apiKey string) *OpenAICompatibleProvid
 	return &OpenAICompatibleProvider{
 		BaseURL: strings.TrimRight(baseURL, "/"),
 		APIKey:  apiKey,
-		HTTPClient: &http.Client{
-			Timeout: 120 * time.Second,
-		},
+		// No client-level timeout: timeout policy lives in one place, the
+		// ResilientProvider, which sets a per-attempt deadline via context. The
+		// request already threads ctx (NewRequestWithContext), so cancellation
+		// and deadlines are honored. Callers that use this provider unwrapped
+		// must pass a context with a deadline.
+		HTTPClient: &http.Client{},
 	}
 }
 
@@ -103,16 +105,23 @@ func (p *OpenAICompatibleProvider) Complete(ctx context.Context, req Request) (R
 		return Response{}, err
 	}
 
+	// Classify by status BEFORE decoding: a 5xx often returns a non-JSON body
+	// (proxy/HTML error page), and we must not mask a retryable status as a
+	// "decode response" failure. Parse the structured error best-effort for a
+	// better message.
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		apiErr := &APIError{StatusCode: resp.StatusCode, Body: string(raw)}
+		var decoded chatCompletionResponse
+		if json.Unmarshal(raw, &decoded) == nil && decoded.Error != nil {
+			apiErr.Type = decoded.Error.Type
+			apiErr.Message = decoded.Error.Message
+		}
+		return Response{}, apiErr
+	}
+
 	var decoded chatCompletionResponse
 	if err := json.Unmarshal(raw, &decoded); err != nil {
 		return Response{}, fmt.Errorf("decode response: %w; raw=%s", err, string(raw))
-	}
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		if decoded.Error != nil {
-			return Response{}, fmt.Errorf("model api error: status=%d type=%s message=%s", resp.StatusCode, decoded.Error.Type, decoded.Error.Message)
-		}
-		return Response{}, fmt.Errorf("model api error: status=%d raw=%s", resp.StatusCode, string(raw))
 	}
 
 	if len(decoded.Choices) == 0 {

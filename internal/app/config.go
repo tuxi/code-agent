@@ -17,6 +17,14 @@ const (
 	// defaultCompactRatio is the fraction of the context window at which a session
 	// compacts when agent.compact_ratio is unset or invalid.
 	defaultCompactRatio = 0.7
+
+	// Provider transport defaults (see ProviderConfig). Tuned for large prompts:
+	// prefill on a 90k-token context can exceed a minute, so the per-attempt
+	// timeout is generous and transient failures retry with backoff.
+	defaultRequestTimeoutSeconds = 120
+	defaultMaxRetries            = 2
+	defaultBackoffMillis         = 500
+	defaultMaxBackoffSeconds     = 8
 )
 
 type Config struct {
@@ -24,6 +32,17 @@ type Config struct {
 	Models       map[string]ModelConfig `yaml:"models"`
 	Agent        AgentConfig            `yaml:"agent"`
 	Workspace    WorkspaceConfig        `yaml:"workspace"`
+	Provider     ProviderConfig         `yaml:"provider"`
+}
+
+// ProviderConfig tunes the transport resilience layer (ResilientProvider):
+// per-attempt timeout, retry count, and backoff. Durations are expressed in
+// plain integer units so the YAML stays simple.
+type ProviderConfig struct {
+	RequestTimeoutSeconds int `yaml:"request_timeout_seconds"` // per-attempt deadline
+	MaxRetries            int `yaml:"max_retries"`             // retries after the first attempt
+	BackoffMillis         int `yaml:"backoff_millis"`          // base backoff before the first retry
+	MaxBackoffSeconds     int `yaml:"max_backoff_seconds"`     // cap on a single backoff
 }
 
 type ModelConfig struct {
@@ -119,6 +138,19 @@ func LoadConfig(path string) (Config, error) {
 	}
 	if cfg.Agent.CompactRatio <= 0 || cfg.Agent.CompactRatio >= 1 {
 		cfg.Agent.CompactRatio = defaultCompactRatio
+	}
+
+	if cfg.Provider.RequestTimeoutSeconds <= 0 {
+		cfg.Provider.RequestTimeoutSeconds = defaultRequestTimeoutSeconds
+	}
+	if cfg.Provider.MaxRetries <= 0 {
+		cfg.Provider.MaxRetries = defaultMaxRetries
+	}
+	if cfg.Provider.BackoffMillis <= 0 {
+		cfg.Provider.BackoffMillis = defaultBackoffMillis
+	}
+	if cfg.Provider.MaxBackoffSeconds <= 0 {
+		cfg.Provider.MaxBackoffSeconds = defaultMaxBackoffSeconds
 	}
 	if cfg.Workspace.Root == "" {
 		cfg.Workspace.Root = "."

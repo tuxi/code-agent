@@ -125,7 +125,7 @@ func handleCommand(line string, cfg app.Config, mc *app.ModelConfig, runner *age
 		if err != nil {
 			return false, err
 		}
-		newProvider, err := buildProvider(newMC)
+		newProvider, err := buildProvider(newMC, cfg.Provider)
 		if err != nil {
 			return false, err
 		}

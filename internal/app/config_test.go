@@ -68,6 +68,11 @@ workspace:
 	if got := cfg.CompactThreshold(mc); got != 89600 {
 		t.Errorf("CompactThreshold = %d, want 89600 (128000 * 0.7)", got)
 	}
+	// No provider section in this config -> transport defaults apply.
+	if cfg.Provider.RequestTimeoutSeconds != 120 || cfg.Provider.MaxRetries != 2 ||
+		cfg.Provider.BackoffMillis != 500 || cfg.Provider.MaxBackoffSeconds != 8 {
+		t.Errorf("provider defaults not applied: %+v", cfg.Provider)
+	}
 
 	// deepseek is configured but its key is unset -> selection fails clearly.
 	if _, err := cfg.SelectModel("deepseek"); err == nil {
