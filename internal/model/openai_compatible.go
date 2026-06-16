@@ -43,6 +43,11 @@ type chatCompletionResponse struct {
 		} `json:"message"`
 		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
+	Usage struct {
+		PromptTokens     int `json:"prompt_tokens"`
+		CompletionTokens int `json:"completion_tokens"`
+		TotalTokens      int `json:"total_tokens"`
+	} `json:"usage"`
 	Error *struct {
 		Message string `json:"message"`
 		Type    string `json:"type"`
@@ -119,6 +124,11 @@ func (p *OpenAICompatibleProvider) Complete(ctx context.Context, req Request) (R
 		Content:      strings.TrimSpace(choice.Message.Content),
 		ToolCalls:    choice.Message.ToolCalls,
 		FinishReason: choice.FinishReason,
-		Raw:          raw,
+		Usage: Usage{
+			PromptTokens:     decoded.Usage.PromptTokens,
+			CompletionTokens: decoded.Usage.CompletionTokens,
+			TotalTokens:      decoded.Usage.TotalTokens,
+		},
+		Raw: raw,
 	}, nil
 }

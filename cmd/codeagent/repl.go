@@ -72,6 +72,9 @@ func repl(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider mode
 			continue
 		}
 		fmt.Println("\n" + res.Final)
+		if res.PromptTokens > 0 {
+			fmt.Printf("[context: ~%d tokens]\n", res.PromptTokens)
+		}
 	}
 }
 

@@ -164,7 +164,7 @@ layer is swappable, and runs survive transient API errors.
 ### Phase 3 — Context engineering
 
 - [x] Inject `CODEAGENT.md` as project memory at session start.
-- [ ] Add token accounting; budget on tokens (keep `max_steps` as a safety cap).
+- [x] Add token accounting; budget on tokens (keep `max_steps` as a safety cap).
 - [ ] Add compaction near the context-window limit (summarize old turns, keep
   recent ones verbatim).
 - [ ] Add session persistence (SQLite) for resume and trace.

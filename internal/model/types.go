@@ -5,6 +5,12 @@ import (
 	"encoding/json"
 )
 
+type Usage struct {
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+	TotalTokens      int `json:"total_tokens"`
+}
+
 type Role string
 
 const (
@@ -88,6 +94,9 @@ type Response struct {
 
 	// FinishReason is the raw provider stop reason ("stop", "tool_calls", ...).
 	FinishReason string `json:"finish_reason,omitempty"`
+
+	// 读 API 响应里的 usage，作为 token 计量
+	Usage Usage `json:"usage,omitempty"`
 
 	Raw []byte `json:"raw,omitempty"`
 }

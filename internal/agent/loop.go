@@ -28,8 +28,9 @@ type Runner struct {
 // produced and the tool steps taken to get there. The conversation itself lives
 // on the Session, which accumulates across turns.
 type TurnResult struct {
-	Final string
-	Steps []Step
+	Final        string
+	Steps        []Step
+	PromptTokens int
 }
 
 const defaultMaxSteps = 24
@@ -90,6 +91,8 @@ func (r *Runner) RunTurn(ctx context.Context, sess *session.Session, userInput s
 		if err != nil {
 			return turn, err
 		}
+		
+		turn.PromptTokens = resp.Usage.PromptTokens
 
 		// Some OpenAI-compatible providers occasionally return a tool call with
 		// an empty id. Assign a stable, unique id here so the echoed assistant
