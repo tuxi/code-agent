@@ -102,6 +102,10 @@ func runAgent(ctx context.Context, cfg app.Config, provider model.Provider, goal
 		return err
 	}
 
+	if err := registry.Register(filesystem.NewEditFileTool(cfg.Workspace.Root)); err != nil {
+		return err
+	}
+
 	runner := &agent.Runner{
 		Model:       provider,
 		ModelName:   cfg.Model.Model,

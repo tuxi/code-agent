@@ -122,19 +122,19 @@ testable.
 
 Unlocks all three structural limits at once.
 
-- [ ] Confirm the configured model supports function calling (and reasoning);
+- [x] Confirm the configured model supports function calling (and reasoning);
   swap the model if it does not.
-- [ ] Extend `model.Request` with `Tools`; extend `model.Response` / `Message`
+- [x] Extend `model.Request` with `Tools`; extend `model.Response` / `Message`
   to carry `tool_calls`, the `tool` role, and `tool_call_id`.
-- [ ] Update the OpenAI-compatible provider to send `tools` and parse
+- [x] Update the OpenAI-compatible provider to send `tools` and parse
   `tool_calls`.
-- [ ] Change `Tool.InputSchema()` to return structured JSON Schema; the Registry
+- [x] Change `Tool.InputSchema()` to return structured JSON Schema; the Registry
   emits the `tools` array.
-- [ ] Rewrite the loop as a uniform model → tools → feedback cycle; stop on a
+- [x] Rewrite the loop as a uniform model → tools → feedback cycle; stop on a
   text-only response.
-- [ ] Dissolve decision types: `plan` → a todo/plan tool, `patch_proposal` →
+- [x] Dissolve decision types: `plan` → a todo/plan tool, `patch_proposal` →
   the `apply_patch` tool, `ask_user` → a tool or plain text.
-- [ ] Remove all tool descriptions from the system prompt; remove the
+- [x] Remove all tool descriptions from the system prompt; remove the
   "JSON only / no explanations" constraint so the model can think.
 
 **Done when:** adding a new tool requires only registering it (no prompt or loop
