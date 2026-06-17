@@ -37,6 +37,12 @@ func (consoleEmitter) Emit(e agent.Event) {
 		fmt.Printf("\n[thinking] %s\n", e.Text)
 	case agent.EventToolStarted:
 		fmt.Printf("\n[%d] tool=%s args=%s\n", e.Step, e.ToolName, e.ToolArgs)
+	case agent.EventObserved:
+		// A concise, scannable classification line printed just before the full
+		// [result]. Only failures are shown — a successful command needs no line.
+		if e.Failure != "" && e.Failure != "none" {
+			fmt.Printf("[observed] %s  %s\n", e.Failure, e.Observation)
+		}
 	case agent.EventToolFinished:
 		fmt.Printf("[result]\n%s\n", e.Observation)
 	case agent.EventCompacted:
