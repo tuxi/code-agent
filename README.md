@@ -460,7 +460,9 @@ request slow / failing". A bare `context deadline exceeded` is a black box.
 - [x] Latency histogram / P95: `stats` reports P50/P95/P99 latency and an ASCII
   distribution histogram, computed in Go from the request log (the average hides
   the slow tail; the percentiles and shape show it).
-- [ ] Cost metrics (token-based spend per model).
+- [x] Cost metrics: requests log completion tokens too; per-model prices
+  (`input_price_per_million` / `output_price_per_million`) drive a `=== Cost ===`
+  section in `stats` showing per-model token spend and the total.
 
 **Done when:** a slow or failing run can be diagnosed from `stats` and the retry
 log instead of a bare timeout error.

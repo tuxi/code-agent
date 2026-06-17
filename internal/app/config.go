@@ -33,6 +33,10 @@ type Config struct {
 	Agent        AgentConfig            `yaml:"agent"`
 	Workspace    WorkspaceConfig        `yaml:"workspace"`
 	Provider     ProviderConfig         `yaml:"provider"`
+
+	// Currency is the display symbol for cost reporting (the price fields are in
+	// this unit). Defaults to "$".
+	Currency string `yaml:"currency"`
 }
 
 // ProviderConfig tunes the transport resilience layer (ResilientProvider):
@@ -56,6 +60,12 @@ type ModelConfig struct {
 	// compaction threshold (see Config.CompactThreshold). Defaults to
 	// defaultContextWindow when unset.
 	ContextWindow int `yaml:"context_window"`
+
+	// InputPricePerM / OutputPricePerM are the price per 1,000,000 prompt and
+	// completion tokens, in Config.Currency. Optional; 0 means "unpriced" (cost
+	// reporting shows the tokens but no money for this model).
+	InputPricePerM  float64 `yaml:"input_price_per_million"`
+	OutputPricePerM float64 `yaml:"output_price_per_million"`
 
 	// Resolved at load time, not read from YAML.
 	Name   string `yaml:"-"` // the friendly name (the map key)
@@ -151,6 +161,9 @@ func LoadConfig(path string) (Config, error) {
 	}
 	if cfg.Provider.MaxBackoffSeconds <= 0 {
 		cfg.Provider.MaxBackoffSeconds = defaultMaxBackoffSeconds
+	}
+	if cfg.Currency == "" {
+		cfg.Currency = "$"
 	}
 	if cfg.Workspace.Root == "" {
 		cfg.Workspace.Root = "."

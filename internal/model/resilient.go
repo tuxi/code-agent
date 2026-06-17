@@ -71,6 +71,7 @@ func (p *ResilientProvider) Complete(ctx context.Context, req Request) (resp Res
 		stat.Success = err == nil
 		if err == nil {
 			stat.PromptTokens = resp.Usage.PromptTokens
+			stat.CompletionTokens = resp.Usage.CompletionTokens
 		} else {
 			stat.ErrorClass = errorClass(err)
 		}

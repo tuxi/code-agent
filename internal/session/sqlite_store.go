@@ -55,17 +55,18 @@ CREATE TABLE IF NOT EXISTS compactions (
 	PRIMARY KEY (session_id, seq)
 );
 CREATE TABLE IF NOT EXISTS requests (
-	id            INTEGER PRIMARY KEY AUTOINCREMENT,
-	at            TEXT,
-	model         TEXT,
-	prompt_tokens INTEGER,
-	attempts      INTEGER,
-	retries       INTEGER,
-	timed_out     INTEGER,
-	success       INTEGER,
-	error_class   TEXT,
-	latency_ms    INTEGER,
-	trace         TEXT
+	id                INTEGER PRIMARY KEY AUTOINCREMENT,
+	at                TEXT,
+	model             TEXT,
+	prompt_tokens     INTEGER,
+	completion_tokens INTEGER,
+	attempts          INTEGER,
+	retries           INTEGER,
+	timed_out         INTEGER,
+	success           INTEGER,
+	error_class       TEXT,
+	latency_ms        INTEGER,
+	trace             TEXT
 );`
 
 func NewSQLiteStore(path string) (*SQLiteStore, error) {
@@ -79,13 +80,17 @@ func NewSQLiteStore(path string) (*SQLiteStore, error) {
 		db.Close()
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
-	// Additive migration: a `requests` table created before the trace column
-	// existed won't get it from CREATE IF NOT EXISTS. ADD COLUMN is idempotent
-	// here — "duplicate column" just means it already applied.
-	if _, err := db.Exec(`ALTER TABLE requests ADD COLUMN trace TEXT`); err != nil &&
-		!strings.Contains(err.Error(), "duplicate column") {
-		db.Close()
-		return nil, fmt.Errorf("migrate trace column: %w", err)
+	// Additive migrations: columns added after the requests table first shipped
+	// won't come from CREATE IF NOT EXISTS. ADD COLUMN is idempotent here —
+	// "duplicate column" just means it already applied.
+	for _, stmt := range []string{
+		`ALTER TABLE requests ADD COLUMN trace TEXT`,
+		`ALTER TABLE requests ADD COLUMN completion_tokens INTEGER`,
+	} {
+		if _, err := db.Exec(stmt); err != nil && !strings.Contains(err.Error(), "duplicate column") {
+			db.Close()
+			return nil, fmt.Errorf("migrate (%s): %w", stmt, err)
+		}
 	}
 	return &SQLiteStore{db: db}, nil
 }
@@ -285,11 +290,34 @@ func (s *SQLiteStore) RecordRequest(ctx context.Context, r RequestRecord) error 
 		trace = string(b)
 	}
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO requests (at, model, prompt_tokens, attempts, retries, timed_out, success, error_class, latency_ms, trace)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		formatTime(r.At), r.Model, r.PromptTokens, r.Attempts, r.Retries,
+		INSERT INTO requests (at, model, prompt_tokens, completion_tokens, attempts, retries, timed_out, success, error_class, latency_ms, trace)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		formatTime(r.At), r.Model, r.PromptTokens, r.CompletionTokens, r.Attempts, r.Retries,
 		boolToInt(r.TimedOut), boolToInt(r.Success), r.ErrorClass, r.LatencyMs, trace)
 	return err
+}
+
+// TokenUsageByModel returns per-model token totals (most tokens first) — the
+// basis for cost accounting.
+func (s *SQLiteStore) TokenUsageByModel(ctx context.Context) ([]ModelUsage, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT model, COUNT(*), COALESCE(SUM(prompt_tokens), 0), COALESCE(SUM(completion_tokens), 0)
+		FROM requests
+		GROUP BY model
+		ORDER BY SUM(prompt_tokens) + SUM(completion_tokens) DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ModelUsage
+	for rows.Next() {
+		var u ModelUsage
+		if err := rows.Scan(&u.Model, &u.Requests, &u.PromptTokens, &u.CompletionTokens); err != nil {
+			return nil, err
+		}
+		out = append(out, u)
+	}
+	return out, rows.Err()
 }
 
 // RecentRequests returns the most recent requests (newest first) with their

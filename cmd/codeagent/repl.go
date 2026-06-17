@@ -7,8 +7,11 @@ import (
 	"code-agent/internal/session"
 	"code-agent/internal/ui"
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"os"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -46,6 +49,15 @@ func repl(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider mode
 	defer store.Close()
 	attachObserver(provider, store, ctx)
 
+	// Bracketed-paste: tell the terminal to wrap pasted text in ESC[200~ …
+	// ESC[201~ so our paste filter can flatten multi-line pastes into one input.
+	// Without this, readline (which has no paste support) submits every line of a
+	// multi-line paste as a separate turn — spawning a runaway turn queue and
+	// bleeding paste lines into y/N approval prompts.
+	pasteFilt := newPasteFilter(os.Stdin)
+	fmt.Fprint(os.Stdout, "\x1b[?2004h")
+	defer fmt.Fprint(os.Stdout, "\x1b[?2004l")
+
 	rl, err := readline.NewEx(&readline.Config{
 		Prompt:                 "> ",
 		HistoryFile:            filepath.Join(root, ".codeagent", "history"),
@@ -53,6 +65,7 @@ func repl(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider mode
 		DisableAutoSaveHistory: true, // save only real input lines, not y/N or selections
 		InterruptPrompt:        "^C",
 		EOFPrompt:              "exit",
+		Stdin:                  pasteFilt.StdinWrapper(),
 	})
 	if err != nil {
 		return err
@@ -132,11 +145,19 @@ func repl(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider mode
 			continue
 		}
 
-		res, err := runner.RunTurn(ctx, sess, line)
+		// Each turn gets its own signal context: Ctrl-C during a long model call
+		// cancels this turn (not the process), and the REPL stays alive.
+		turnCtx, turnCancel := signal.NotifyContext(ctx, os.Interrupt)
+		res, err := runner.RunTurn(turnCtx, sess, line)
+		turnCancel()
 		// Persist after every turn, even on error: the partial history is
 		// consistent (no orphaned tool_calls) and therefore resumable.
 		if serr := store.Save(ctx, sess); serr != nil {
 			fmt.Println("warning: failed to save session:", serr)
+		}
+		if errors.Is(err, context.Canceled) {
+			fmt.Println("\nTurn interrupted")
+			continue
 		}
 		if err != nil {
 			fmt.Println("error:", err)
@@ -187,7 +208,7 @@ func handleCommand(line string, cfg app.Config, mc *app.ModelConfig, runner *age
 		return sess, false, nil
 
 	case "/stats":
-		if err := printStatsReport(context.Background(), store); err != nil {
+		if err := printStatsReport(context.Background(), store, cfg); err != nil {
 			return sess, false, err
 		}
 		return sess, false, nil

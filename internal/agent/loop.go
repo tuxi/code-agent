@@ -115,6 +115,11 @@ func (r *Runner) RunTurn(ctx context.Context, sess *session.Session, userInput s
 	var turn TurnResult
 
 	for i := 0; i < r.MaxSteps; i++ {
+		// A canceled context (Ctrl-C) must stop the turn at the step boundary
+		// without waiting for the next HTTP call to time out.
+		if err := ctx.Err(); err != nil {
+			return turn, err
+		}
 		// Compact before each model call, not just at the turn boundary: a single
 		// turn with many tool calls can grow the prompt past the threshold mid-loop.
 		if err := r.maybeCompact(ctx, sess); err != nil {
@@ -186,6 +191,9 @@ func (r *Runner) RunTurn(ctx context.Context, sess *session.Session, userInput s
 		// Execute EVERY requested tool call. Each one must get a tool result
 		// with a matching tool_call_id, or the next request will be rejected.
 		for _, call := range resp.ToolCalls {
+			if err := ctx.Err(); err != nil {
+				return turn, err
+			}
 			input := json.RawMessage(call.Function.Arguments)
 
 			step := Step{

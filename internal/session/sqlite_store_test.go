@@ -325,6 +325,37 @@ func TestSQLiteStoreLatencyPercentilesAndHistogram(t *testing.T) {
 	}
 }
 
+func TestSQLiteStoreTokenUsageByModel(t *testing.T) {
+	store := newStore(t)
+	ctx := context.Background()
+	recs := []RequestRecord{
+		{Model: "glm-5.1", PromptTokens: 1000, CompletionTokens: 200, Success: true, At: time.Now()},
+		{Model: "glm-5.1", PromptTokens: 3000, CompletionTokens: 500, Success: true, At: time.Now()},
+		{Model: "deepseek-v4", PromptTokens: 500, CompletionTokens: 100, Success: true, At: time.Now()},
+	}
+	for _, r := range recs {
+		if err := store.RecordRequest(ctx, r); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	usage, err := store.TokenUsageByModel(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(usage) != 2 {
+		t.Fatalf("want 2 models, got %d", len(usage))
+	}
+	// Ordered by total tokens desc: glm (4700) before deepseek (600).
+	if usage[0].Model != "glm-5.1" || usage[0].Requests != 2 ||
+		usage[0].PromptTokens != 4000 || usage[0].CompletionTokens != 700 {
+		t.Fatalf("glm usage wrong: %+v", usage[0])
+	}
+	if usage[1].Model != "deepseek-v4" || usage[1].PromptTokens != 500 || usage[1].CompletionTokens != 100 {
+		t.Fatalf("deepseek usage wrong: %+v", usage[1])
+	}
+}
+
 func TestSQLiteStoreProviderStatsEmpty(t *testing.T) {
 	st, err := newStore(t).ProviderStats(context.Background())
 	if err != nil {

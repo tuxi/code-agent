@@ -118,16 +118,17 @@ func (o requestObserver) Observe(s model.RequestStat) {
 		trace[i] = session.AttemptRecord{LatencyMs: a.Latency.Milliseconds(), Result: result}
 	}
 	_ = o.store.RecordRequest(o.ctx, session.RequestRecord{
-		At:           s.At,
-		Model:        s.Model,
-		PromptTokens: s.PromptTokens,
-		Attempts:     s.Attempts,
-		Retries:      s.Retries,
-		TimedOut:     s.TimedOut,
-		Success:      s.Success,
-		ErrorClass:   s.ErrorClass,
-		LatencyMs:    s.Latency.Milliseconds(),
-		Trace:        trace,
+		At:               s.At,
+		Model:            s.Model,
+		PromptTokens:     s.PromptTokens,
+		CompletionTokens: s.CompletionTokens,
+		Attempts:         s.Attempts,
+		Retries:          s.Retries,
+		TimedOut:         s.TimedOut,
+		Success:          s.Success,
+		ErrorClass:       s.ErrorClass,
+		LatencyMs:        s.Latency.Milliseconds(),
+		Trace:            trace,
 	})
 }
 
@@ -179,12 +180,13 @@ func runStats(ctx context.Context, cfg app.Config) error {
 		return err
 	}
 	defer store.Close()
-	return printStatsReport(ctx, store)
+	return printStatsReport(ctx, store, cfg)
 }
 
-// printStatsReport renders both telemetry sections: Context (compaction) and
-// Provider (transport). Shared by `codeagent stats` and the REPL's /stats.
-func printStatsReport(ctx context.Context, store session.Store) error {
+// printStatsReport renders all three telemetry sections: Context (compaction),
+// Provider (transport), and Cost (token spend). Shared by `codeagent stats` and
+// the REPL's /stats.
+func printStatsReport(ctx context.Context, store session.Store, cfg app.Config) error {
 	cstat, err := store.Stats(ctx)
 	if err != nil {
 		return err
@@ -193,11 +195,61 @@ func printStatsReport(ctx context.Context, store session.Store) error {
 	if err != nil {
 		return err
 	}
+	usage, err := store.TokenUsageByModel(ctx)
+	if err != nil {
+		return err
+	}
 	fmt.Println("=== Context ===")
 	printContextStats(cstat)
 	fmt.Println("\n=== Provider ===")
 	printProviderStats(pstat)
+	fmt.Println("\n=== Cost ===")
+	printCostReport(usage, cfg)
 	return nil
+}
+
+// computeCost is the per-model spend: tokens × price-per-million, in the
+// configured currency.
+func computeCost(promptTokens, completionTokens int64, inPerM, outPerM float64) float64 {
+	return (float64(promptTokens)*inPerM + float64(completionTokens)*outPerM) / 1_000_000
+}
+
+// printCostReport joins per-model token usage with the configured prices. A
+// model with no price set is shown "unpriced" (tokens but no money).
+func printCostReport(usage []session.ModelUsage, cfg app.Config) {
+	if len(usage) == 0 {
+		fmt.Println("(no requests recorded yet)")
+		return
+	}
+	// Requests store the wire model string; map it to that model's prices.
+	priced := map[string]app.ModelConfig{}
+	for _, mc := range cfg.Models {
+		priced[mc.Model] = mc
+	}
+	cur := cfg.Currency
+	if cur == "" {
+		cur = "$"
+	}
+
+	var total float64
+	var anyPriced bool
+	for _, u := range usage {
+		mc, ok := priced[u.Model]
+		costStr := "unpriced"
+		if ok && (mc.InputPricePerM > 0 || mc.OutputPricePerM > 0) {
+			cost := computeCost(u.PromptTokens, u.CompletionTokens, mc.InputPricePerM, mc.OutputPricePerM)
+			total += cost
+			anyPriced = true
+			costStr = fmt.Sprintf("%s%.4f", cur, cost)
+		}
+		fmt.Printf("  %-18s reqs=%-4d in=%-9d out=%-9d %s\n",
+			u.Model, u.Requests, u.PromptTokens, u.CompletionTokens, costStr)
+	}
+	if anyPriced {
+		fmt.Printf("  TOTAL: %s%.4f\n", cur, total)
+	} else {
+		fmt.Println("  (set input_price_per_million / output_price_per_million per model to see cost)")
+	}
 }
 
 // printContextStats renders compaction telemetry — the evidence base for sizing

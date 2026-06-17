@@ -21,6 +21,7 @@ type Store interface {
 	RecordRequest(ctx context.Context, r RequestRecord) error
 	ProviderStats(ctx context.Context) (ProviderStats, error)
 	RecentRequests(ctx context.Context, limit int) ([]RequestRecord, error)
+	TokenUsageByModel(ctx context.Context) ([]ModelUsage, error)
 	Delete(ctx context.Context, id string) error
 	Close() error
 }
@@ -28,16 +29,26 @@ type Store interface {
 // RequestRecord is one persisted model request (across its retry attempts) for
 // transport telemetry. The persisted log doubles as a per-request trace.
 type RequestRecord struct {
-	At           time.Time
-	Model        string
-	PromptTokens int
-	Attempts     int
-	Retries      int
-	TimedOut     bool
-	Success      bool
-	ErrorClass   string
-	LatencyMs    int64
-	Trace        []AttemptRecord // per-attempt detail
+	At               time.Time
+	Model            string
+	PromptTokens     int
+	CompletionTokens int
+	Attempts         int
+	Retries          int
+	TimedOut         bool
+	Success          bool
+	ErrorClass       string
+	LatencyMs        int64
+	Trace            []AttemptRecord // per-attempt detail
+}
+
+// ModelUsage is per-model token totals — the basis for cost (tokens × the
+// model's configured price, computed by the caller that holds the prices).
+type ModelUsage struct {
+	Model            string
+	Requests         int
+	PromptTokens     int64
+	CompletionTokens int64
 }
 
 // AttemptRecord is one try within a request, for the per-attempt trace.

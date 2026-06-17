@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"code-agent/internal/model"
@@ -105,6 +106,21 @@ func TestRunTurnEmitsEventStream(t *testing.T) {
 	last := em.events[len(em.events)-1]
 	if last.Text != "all done" {
 		t.Fatalf("turn_finished text = %q, want %q", last.Text, "all done")
+	}
+}
+
+// A canceled context must stop the turn at the next step boundary — not
+// dead-reckon through the remaining MaxSteps. (Ctrl-C in the REPL wraps the
+// turn ctx with signal.NotifyContext, which fires context.Canceled.)
+func TestRunTurnStopsOnCanceledContext(t *testing.T) {
+	reg := tools.NewRegistry()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // already canceled before the turn starts
+
+	runner := &Runner{Model: &scriptedProvider{}, Tools: reg, MaxSteps: 5}
+	_, err := runner.RunTurn(ctx, newSession(), "hello")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("want context.Canceled, got %v", err)
 	}
 }
 

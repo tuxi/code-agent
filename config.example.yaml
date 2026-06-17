@@ -1,4 +1,4 @@
-default_model: deepseek
+default_model: glm
 
 models:
   deepseek:
@@ -10,6 +10,10 @@ models:
     temperature: 0.2
     # max context in tokens; sizes the compaction threshold. Optional (default 128000).
     context_window: 128000
+    # price per 1,000,000 tokens, in `currency`; powers the cost section of `stats`.
+    # Optional — omit to leave a model "unpriced".
+    input_price_per_million: 0.27
+    output_price_per_million: 1.10
 
   deepseek-pro:
     provider: openai
@@ -17,20 +21,24 @@ models:
     model: "deepseek-v4-pro"
     api_key_env: DEEPSEEK_API_KEY
     context_window: 128000
-
+    input_price_per_million: 2.0
+    output_price_per_million: 8.0
   qwen:
     provider: openai
     base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
     model: "qwen3-coder-plus"
     api_key_env: DASHSCOPE_API_KEY
     context_window: 256000
+    input_price_per_million: 2.0
+    output_price_per_million: 8.0
   glm:
     provider: openai
     base_url: "https://open.bigmodel.cn/api/paas/v4"
     model: "glm-5.1"
     api_key_env: GLM_API_KEY
     context_window: 128000
-
+    input_price_per_million: 2.0
+    output_price_per_million: 8.0
 agent:
   max_steps: 16
   # compact when the prompt reaches this fraction of the model's context_window.
@@ -44,6 +52,9 @@ provider:
   max_retries: 2
   backoff_millis: 500
   max_backoff_seconds: 8
+
+# display symbol for cost reporting (the price fields are in this unit). Optional (default "$").
+currency: "$"
 
 workspace:
   root: "."
