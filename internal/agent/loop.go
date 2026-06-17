@@ -225,7 +225,7 @@ func (r *Runner) RunTurn(ctx context.Context, sess *session.Session, userInput s
 				step.Error = execErr.Error()
 				observation = "Tool error: " + execErr.Error()
 			}
-			observation = TruncateObservation(observation, 8000)
+			observation = TruncateObservation(observation, 9800)
 
 			step.Observation = observation
 			step.FinishedAt = time.Now()

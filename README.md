@@ -487,39 +487,48 @@ This is reusable Agent-Runtime infrastructure, not CLI glue.
 
 ### Phase 3.9 — Tooling primitives upgrade (Claude Code parity layer)
 
-- [ ] Replace edit_file with apply_patch (multi-hunk diff model)
-- [x] Introduce symbol index / project graph layer — `project_graph` tool
-  (`find_symbol` / `find_references` / `rename_check`) delegating to language
-  toolchains (gopls implemented; sourcekitten / rust-analyzer / pyright stubbed
-  behind one adapter interface).
-- [x] Add a policy-gated shell layer — `sandbox.CommandPolicy` classifies every
-  `run_command` into allow / confirm / block; the confirmation gate is now
-  command-aware (read-only/build run free; mutating/network are confirmed).
-- [x] Introduce tool output schemas (machine-readable results) — `run_command`
-  returns structured `{stdout, stderr, exit_code, duration_ms, command,
-  decision}`; `project_graph` returns the unified `Symbol` / `Reference` schema.
-- [ ] Add streaming / background shell execution
-- [ ] Improve failure semantics (retryable vs fatal tool errors)
-- [ ] Enable tool chaining through structured outputs
+- [x] Add apply_patch (multi-hunk diff model)
+- [x] Add edit_file (small targeted edits)
+- [x] Add policy-gated shell layer (run_command)
+- [x] Add machine-readable tool outputs
+- [ ] Add streaming shell execution
+- [ ] Add background jobs
+- [ ] Add tool result attachments
+- [ ] Add retryable vs fatal tool errors
+- [ ] Add tool chaining through structured outputs
 
-**Done when:** the agent can complete a multi-file refactor + test cycle without manual intervention.
+### Phase 4 — Thinking & Reflection Runtime
 
-### Phase 4 — Thinking & reflection
+### P4.1 Tool-driven reasoning
+- [ ] Add Observation model
+- [ ] Add Tool Result Summarizer
+- [ ] Add Failure Classification
+- [ ] Add Retry Planning
 
-- [ ] Adopt a reasoning-capable model / interleaved reasoning.
-- [ ] Confirm the verify-fix loop closes through real tool feedback (tests,
-  compiler, lint) — this replaces the old "self-validation loop" idea, which
-  should emerge from the uniform loop rather than be a hardcoded state
-  machine.
-- [ ] Optional: a lightweight self-check before the final answer.
+### P4.2 Verify-Fix Loop
+- [ ] Verify → Observe → Fix loop
+- [ ] Compiler-driven repair
+- [ ] Test-driven repair
+- [ ] Lint-driven repair
+- [ ] Max retry budget
 
-**Non-goal:** a heavyweight, separate reflection engine. Reflection is grounded
-in real tool results, not a bolt-on subsystem.
+### Phase 4.3 — Reflection
 
-**Done when:** the model autonomously runs tests, reads failures, and fixes them
-without any hardcoded sequencing.
+- [ ] Lightweight self-check
+- [ ] Final answer verification
+- [ ] Detect unfinished work
+- [ ] Detect unverified assumptions
+- [ ] Suggest next verification step
 
-### Phase 5 — Skills (progressive disclosure)
+### Phase 5 — Semantic code intelligence (Project Graph)
+
+- [ ] Go backend (gopls)
+- [ ] Swift backend (SourceKit / sourcekitten)
+- [ ] Rust backend (rust-analyzer)
+- [ ] Python backend (pyright)
+- [ ] ProjectGraphTool
+
+### Phase 6 — Skills (progressive disclosure)
 
 - [ ] A skill = a named instruction document (+ optionally scoped tools) loaded
   into context only when relevant.

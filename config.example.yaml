@@ -40,7 +40,7 @@ models:
     input_price_per_million: 2.0
     output_price_per_million: 8.0
 agent:
-  max_steps: 16
+  max_steps: 32
   # compact when the prompt reaches this fraction of the model's context_window.
   # Optional (default 0.7); values outside (0,1) fall back to the default.
   compact_ratio: 0.7
