@@ -377,6 +377,7 @@ func runAgent(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider 
 		MaxSteps:    cfg.Agent.MaxSteps,
 		Approver:    ui.ConfirmApprover{},
 		Compactor:   buildCompactor(mc, provider),
+		Emitter:     consoleEmitter{},
 	}
 
 	sess, err := session.NewBuilder(root).

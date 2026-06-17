@@ -24,6 +24,20 @@ type Runner struct {
 	Approver Approver
 
 	Compactor session.Compactor
+
+	// Emitter, if set, receives the turn's event stream (thinking, tool calls,
+	// compaction, model latency). The loop emits; it never writes to stdout
+	// itself, so the UI is fully decoupled from the runtime.
+	Emitter Emitter
+}
+
+// emit sends an event to the configured Emitter, if any. Nil-safe.
+func (r *Runner) emit(e Event) {
+	if r.Emitter == nil {
+		return
+	}
+	e.At = time.Now()
+	r.Emitter.Emit(e)
 }
 
 // TurnResult is the outcome of a single turn: the final answer the model
@@ -80,6 +94,7 @@ func (r *Runner) RunTurn(ctx context.Context, sess *session.Session, userInput s
 		Content: userInput,
 	})
 	sess.UpdatedAt = time.Now()
+	r.emit(Event{Kind: EventTurnStarted, Text: userInput})
 
 	var turn TurnResult
 
@@ -90,6 +105,8 @@ func (r *Runner) RunTurn(ctx context.Context, sess *session.Session, userInput s
 			return turn, err
 		}
 
+		r.emit(Event{Kind: EventModelStarted})
+		modelStart := time.Now()
 		resp, err := r.Model.Complete(ctx, model.Request{
 			Model:       r.ModelName,
 			Temperature: r.Temperature,
@@ -99,13 +116,21 @@ func (r *Runner) RunTurn(ctx context.Context, sess *session.Session, userInput s
 		if err != nil {
 			return turn, err
 		}
+		r.emit(Event{Kind: EventModelFinished, PromptTokens: resp.Usage.PromptTokens, Elapsed: time.Since(modelStart)})
 
 		turn.PromptTokens = resp.Usage.PromptTokens
 		sess.PromptTokens = resp.Usage.PromptTokens
 		// This call's prompt size is the true post-compaction size if a compaction
 		// just ran, so finalize its observability stat here.
 		if stat := sess.FinalizeCompaction(resp.Usage.PromptTokens); stat != nil {
-			fmt.Printf("[compaction] %s\n", stat)
+			r.emit(Event{
+				Kind:         EventCompacted,
+				BeforeTokens: stat.BeforeTokens,
+				AfterTokens:  stat.AfterTokens,
+				SavedTokens:  stat.SavedTokens,
+				Ratio:        stat.CompressionRatio,
+				SummaryChars: stat.SummaryChars,
+			})
 		}
 
 		// Some OpenAI-compatible providers occasionally return a tool call with
@@ -127,11 +152,12 @@ func (r *Runner) RunTurn(ctx context.Context, sess *session.Session, userInput s
 		// No tool calls => the model is done; this is the final answer.
 		if !resp.HasToolCalls() {
 			turn.Final = resp.Content
+			r.emit(Event{Kind: EventTurnFinished, Text: turn.Final})
 			return turn, nil
 		}
 
 		if resp.Content != "" {
-			fmt.Printf("\n[thinking] %s\n", resp.Content)
+			r.emit(Event{Kind: EventThinking, Text: resp.Content})
 		}
 
 		// Execute EVERY requested tool call. Each one must get a tool result
@@ -145,7 +171,12 @@ func (r *Runner) RunTurn(ctx context.Context, sess *session.Session, userInput s
 				ToolInput: input,
 				StartedAt: time.Now(),
 			}
-			fmt.Printf("\n[%d] tool=%s args=%s\n", step.Index, call.Function.Name, call.Function.Arguments)
+			r.emit(Event{
+				Kind:     EventToolStarted,
+				Step:     step.Index,
+				ToolName: call.Function.Name,
+				ToolArgs: call.Function.Arguments,
+			})
 
 			tool, known := r.Tools.Get(call.Function.Name)
 
@@ -169,7 +200,13 @@ func (r *Runner) RunTurn(ctx context.Context, sess *session.Session, userInput s
 			step.FinishedAt = time.Now()
 			turn.Steps = append(turn.Steps, step)
 
-			fmt.Printf("[observation]\n%s\n", observation)
+			r.emit(Event{
+				Kind:        EventToolFinished,
+				Step:        step.Index,
+				ToolName:    call.Function.Name,
+				Observation: observation,
+				Err:         step.Error,
+			})
 
 			sess.Messages = append(sess.Messages, model.Message{
 				Role:       model.RoleTool,
@@ -181,6 +218,7 @@ func (r *Runner) RunTurn(ctx context.Context, sess *session.Session, userInput s
 	}
 
 	turn.Final = "Agent stopped: reached the step limit before finishing."
+	r.emit(Event{Kind: EventTurnFinished, Text: turn.Final})
 	return turn, nil
 }
 
@@ -206,8 +244,7 @@ func (r *Runner) maybeCompact(ctx context.Context, sess *session.Session) error 
 		return nil // nothing was folded
 	}
 	sess.RecordCompaction(before, len(sess.Summary))
-	fmt.Printf("Context compacted: %d tokens → summary of %d chars (new size measured on next call)\n",
-		before, len(sess.Summary))
+	r.emit(Event{Kind: EventCompacted, BeforeTokens: before, SummaryChars: len(sess.Summary)})
 	return nil
 }
 

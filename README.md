@@ -215,6 +215,22 @@ request slow / failing". A bare `context deadline exceeded` is a black box.
 **Done when:** a slow or failing run can be diagnosed from `stats` and the retry
 log instead of a bare timeout error.
 
+### Phase 3.7 — Agent event stream
+
+The runtime emits a typed event stream instead of writing to stdout, so one turn
+can drive a plain terminal, a live progress UI, or a remote event bus unchanged.
+This is reusable Agent-Runtime infrastructure, not CLI glue.
+
+- [x] EventEmitter: `Runner` emits `Event`s (turn start/finish, model
+  start/finish + latency, thinking, tool start/finish, compaction) through an
+  `Emitter` interface; the loop no longer prints. The CLI wires a
+  `consoleEmitter` that renders them — identical output, fully decoupled.
+- [ ] **(P3.8)** Live progress: a renderer that shows an elapsed "Thinking… Ns"
+  and the current step in place (built on `EventModelStarted` + `Elapsed`), so a
+  long wait reads as progress, not a hang.
+
+**Done when:** swapping the renderer changes the UX without touching the loop.
+
 ### Phase 4 — Thinking & reflection
 
 - [ ] Adopt a reasoning-capable model / interleaved reasoning.
