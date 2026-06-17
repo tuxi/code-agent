@@ -84,6 +84,53 @@ func TestClassifyLongestPrefixWins(t *testing.T) {
 	}
 }
 
+// TestClassifyIgnoresQuotedContent guards the dogfooding bug: a commit message
+// that merely mentions a blocked pattern (or contains shell-operator-looking
+// text) must not be blocked — the dangerous text is data inside quotes, not a
+// command. Only an actual unquoted invocation is blocked.
+func TestClassifyIgnoresQuotedContent(t *testing.T) {
+	p := DefaultPolicy()
+
+	// "rm -rf /" inside a commit message: must classify as Confirm (git commit),
+	// not Block.
+	msg := `git commit -m "docs: explain that rm -rf / is hard-blocked"`
+	if d := p.Classify(msg).Decision; d != Confirm {
+		t.Errorf("Classify(commit message mentioning rm -rf /) = %v, want Confirm", d)
+	}
+
+	// A bare, unquoted rm -rf / is still blocked.
+	if d := p.Classify("rm -rf /").Decision; d != Block {
+		t.Errorf("Classify(rm -rf /) = %v, want Block", d)
+	}
+
+	// A double-quoted single arg containing the pattern is data, not a command.
+	if d := p.Classify(`echo "rm -rf /"`).Decision; d == Block {
+		t.Errorf(`Classify(echo "rm -rf /") = Block; quoted text must not block`)
+	}
+}
+
+func TestContainsShellOperatorsIgnoresQuotes(t *testing.T) {
+	// Operators / newlines inside quotes are data (a multi-line commit message),
+	// not shell syntax — they must not trip the guard.
+	quoted := []string{
+		`git commit -m "a | b"`,
+		`git commit -m "line one
+line two"`,
+		`git commit -m "uses > and && in prose"`,
+		`echo "$(date)"`,
+	}
+	for _, c := range quoted {
+		if ContainsShellOperators(c) {
+			t.Errorf("ContainsShellOperators(%q) = true, want false (operators are inside quotes)", c)
+		}
+	}
+
+	// Real, unquoted operators are still detected.
+	if !ContainsShellOperators("cat a.txt | grep x") {
+		t.Error("ContainsShellOperators(cat a.txt | grep x) = false, want true")
+	}
+}
+
 func TestSplitArgs(t *testing.T) {
 	cases := []struct {
 		in   string

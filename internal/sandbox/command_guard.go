@@ -12,17 +12,56 @@ import (
 // instead of silently doing the wrong thing.
 var shellOperators = []string{"|", "&", ";", ">", "<", "$(", "`", "\n"}
 
-// ContainsShellOperators reports whether the command uses shell control
-// operators (pipes, redirection, command substitution, chaining). It is a
-// best-effort check on the raw string; an operator inside a quoted argument may
-// produce a false positive, which is an accepted MVP limitation.
+// ContainsShellOperators reports whether the command *structure* uses shell
+// control operators (pipes, redirection, command substitution, chaining).
+//
+// It examines the command with quoted argument contents removed, so an operator
+// or newline that lives inside a quoted string — e.g. a multi-line
+// `git commit -m "line1\nline2"` or a message that contains a literal "|" — is
+// treated as data, not syntax. That is correct for our execution model: we exec
+// one program directly, so quoted bytes are always passed through verbatim.
 func ContainsShellOperators(command string) bool {
+	structure := unquotedStructure(command)
 	for _, op := range shellOperators {
-		if strings.Contains(command, op) {
+		if strings.Contains(structure, op) {
 			return true
 		}
 	}
 	return false
+}
+
+// unquotedStructure returns the command with the contents of every single- or
+// double-quoted span removed, leaving only the command's structural skeleton
+// (program name, flags, unquoted arguments, and any real shell operators).
+//
+// This is what makes policy checks ignore data the user put inside quotes: a
+// commit message that merely mentions "rm -rf /" or embeds a newline is text,
+// not a command to run. The full, unmasked command is still shown to the user
+// at the confirmation prompt, so nothing is hidden — only the false positives
+// are removed. Unterminated quotes mask to end-of-string, which is the safe
+// (more-masked) direction.
+func unquotedStructure(command string) string {
+	var b strings.Builder
+	inSingle, inDouble := false, false
+	for _, r := range command {
+		switch {
+		case inSingle:
+			if r == '\'' {
+				inSingle = false
+			}
+		case inDouble:
+			if r == '"' {
+				inDouble = false
+			}
+		case r == '\'':
+			inSingle = true
+		case r == '"':
+			inDouble = true
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 // SplitArgs splits a command line into argv. It understands single and double

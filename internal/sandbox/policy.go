@@ -171,11 +171,15 @@ func (p CommandPolicy) Classify(command string) Classification {
 	if cmd == "" {
 		return Classification{Command: cmd, Decision: Block, Level: LevelUnknown, Reason: "empty command"}
 	}
-	low := strings.ToLower(cmd)
 
-	// 1. Catastrophic patterns are refused no matter what else matches.
+	// 1. Catastrophic patterns are refused no matter what else matches. The match
+	//    runs against the command's structure (quoted argument contents removed),
+	//    so a commit message that merely *mentions* "rm -rf /" is not blocked —
+	//    only an actual "rm -rf /" invocation is. The user still sees the full,
+	//    unmasked command at the confirmation prompt.
+	structure := strings.ToLower(unquotedStructure(cmd))
 	for _, b := range p.BlockedCommands {
-		if strings.Contains(low, strings.ToLower(b)) {
+		if strings.Contains(structure, strings.ToLower(b)) {
 			return Classification{Command: cmd, Decision: Block, Level: LevelFullShell, Reason: "matches blocked pattern: " + b}
 		}
 	}
