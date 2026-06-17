@@ -29,7 +29,18 @@ type Runner struct {
 	// compaction, model latency). The loop emits; it never writes to stdout
 	// itself, so the UI is fully decoupled from the runtime.
 	Emitter Emitter
+
+	// Correlation IDs stamped onto every emitted event. Set per RunTurn (which is
+	// sequential on a Runner), so an event always carries which session and turn
+	// produced it.
+	emitSessionID string
+	emitTurnID    string
 }
+
+// turnSeq backs per-turn ids; process-global and monotonic.
+var turnSeq atomic.Uint64
+
+func newTurnID() string { return fmt.Sprintf("turn_%d", turnSeq.Add(1)) }
 
 // emit sends an event to the configured Emitter, if any. Nil-safe.
 func (r *Runner) emit(e Event) {
@@ -37,6 +48,8 @@ func (r *Runner) emit(e Event) {
 		return
 	}
 	e.At = time.Now()
+	e.SessionID = r.emitSessionID
+	e.TurnID = r.emitTurnID
 	r.Emitter.Emit(e)
 }
 
@@ -88,6 +101,9 @@ func (r *Runner) RunTurn(ctx context.Context, sess *session.Session, userInput s
 		advertised[d.Function.Name] = true
 	}
 
+	r.emitSessionID = sess.ID
+	r.emitTurnID = newTurnID()
+
 	// Append the user's turn to the persistent session history.
 	sess.Messages = append(sess.Messages, model.Message{
 		Role:    model.RoleUser,
@@ -113,10 +129,17 @@ func (r *Runner) RunTurn(ctx context.Context, sess *session.Session, userInput s
 			Messages:    sess.Messages,
 			Tools:       toolDefs,
 		})
+		// Always emit ModelFinished, even on error: it pairs with ModelStarted, so
+		// a live renderer's "Thinking…" ticker is always stopped (no leaked timer).
+		r.emit(Event{
+			Kind:         EventModelFinished,
+			PromptTokens: resp.Usage.PromptTokens,
+			Elapsed:      time.Since(modelStart),
+			Err:          errString(err),
+		})
 		if err != nil {
 			return turn, err
 		}
-		r.emit(Event{Kind: EventModelFinished, PromptTokens: resp.Usage.PromptTokens, Elapsed: time.Since(modelStart)})
 
 		turn.PromptTokens = resp.Usage.PromptTokens
 		sess.PromptTokens = resp.Usage.PromptTokens
@@ -246,6 +269,13 @@ func (r *Runner) maybeCompact(ctx context.Context, sess *session.Session) error 
 	sess.RecordCompaction(before, len(sess.Summary))
 	r.emit(Event{Kind: EventCompacted, BeforeTokens: before, SummaryChars: len(sess.Summary)})
 	return nil
+}
+
+func errString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
 
 func (r *Runner) executeTool(ctx context.Context, tool tools.Tool, input json.RawMessage) (string, error) {

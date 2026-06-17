@@ -27,6 +27,12 @@ type Event struct {
 	Kind EventKind
 	At   time.Time
 
+	// Correlation IDs: which session and turn produced this event. A single
+	// console reads them as constant, but a multiplexed bus (concurrent runs, a
+	// web UI, DreamAI) needs them to keep streams from crossing.
+	SessionID string
+	TurnID    string
+
 	// Tool events (ToolStarted / ToolFinished).
 	Step        int
 	ToolName    string

@@ -223,11 +223,13 @@ This is reusable Agent-Runtime infrastructure, not CLI glue.
 
 - [x] EventEmitter: `Runner` emits `Event`s (turn start/finish, model
   start/finish + latency, thinking, tool start/finish, compaction) through an
-  `Emitter` interface; the loop no longer prints. The CLI wires a
-  `consoleEmitter` that renders them — identical output, fully decoupled.
-- [ ] **(P3.8)** Live progress: a renderer that shows an elapsed "Thinking… Ns"
-  and the current step in place (built on `EventModelStarted` + `Elapsed`), so a
-  long wait reads as progress, not a hang.
+  `Emitter` interface; the loop no longer prints. Each event carries
+  `SessionID` + `TurnID` correlation ids so a multiplexed bus (concurrent runs,
+  a web UI) never crosses streams.
+- [x] **(P3.8)** Live progress: `liveProgress` decorates the console renderer
+  with a "Thinking… Ns" ticker between `EventModelStarted` and
+  `EventModelFinished` (TTY only), so a long wait reads as progress, not a hang.
+  Added as a pure renderer — zero changes to the loop, agent, or session.
 
 **Done when:** swapping the renderer changes the UX without touching the loop.
 

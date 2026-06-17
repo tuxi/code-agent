@@ -52,8 +52,21 @@ func TestRunTurnEmitsEventStream(t *testing.T) {
 	em := &capturingEmitter{}
 	runner := &Runner{Model: provider, Tools: reg, Approver: allowApprover{}, MaxSteps: 5, Emitter: em}
 
-	if _, err := runner.RunTurn(context.Background(), newSession(), "do it"); err != nil {
+	sess := newSession()
+	sess.ID = "sess-x"
+	if _, err := runner.RunTurn(context.Background(), sess, "do it"); err != nil {
 		t.Fatal(err)
+	}
+
+	// Every event carries the same correlation IDs (session + turn).
+	sid, tid := em.events[0].SessionID, em.events[0].TurnID
+	if sid != "sess-x" || tid == "" {
+		t.Fatalf("correlation ids = %q/%q, want sess-x/<non-empty>", sid, tid)
+	}
+	for _, e := range em.events {
+		if e.SessionID != sid || e.TurnID != tid {
+			t.Fatalf("event %s has mismatched ids %q/%q", e.Kind, e.SessionID, e.TurnID)
+		}
 	}
 
 	// Turn boundaries.

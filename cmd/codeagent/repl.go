@@ -76,7 +76,7 @@ func repl(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider mode
 		MaxSteps:    cfg.Agent.MaxSteps,
 		Approver:    ui.ConfirmApprover{Prompt: ask},
 		Compactor:   buildCompactor(mc, provider),
-		Emitter:     consoleEmitter{},
+		Emitter:     buildEmitter(),
 	}
 
 	var sess *session.Session

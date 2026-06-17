@@ -3,7 +3,27 @@ package main
 import (
 	"code-agent/internal/agent"
 	"fmt"
+	"os"
 )
+
+// buildEmitter wires the renderer stack: a console renderer, wrapped in the live
+// "Thinking… Ns" ticker when stdout is a real terminal (the ticker's in-place
+// rewrites would just be noise when piped to a file or pipe).
+func buildEmitter() agent.Emitter {
+	base := agent.Emitter(consoleEmitter{})
+	if isTTY(os.Stdout) {
+		return newLiveProgress(base, os.Stdout)
+	}
+	return base
+}
+
+func isTTY(f *os.File) bool {
+	fi, err := f.Stat()
+	if err != nil {
+		return false
+	}
+	return fi.Mode()&os.ModeCharDevice != 0
+}
 
 // consoleEmitter renders the agent's event stream to stdout. It reproduces the
 // previous inline output exactly — the difference is that the loop no longer
