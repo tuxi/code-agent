@@ -45,6 +45,10 @@ func (consoleEmitter) Emit(e agent.Event) {
 		}
 	case agent.EventToolFinished:
 		fmt.Printf("[result]\n%s\n", e.Observation)
+	case agent.EventReflected:
+		// The model said it was done; a grounded self-check sent it back for one
+		// more pass. Show the human why, so the extra work reads as intent.
+		fmt.Printf("\n[reflection] work looks incomplete — asking the model to self-check:\n%s\n", e.Text)
 	case agent.EventCompacted:
 		if e.AfterTokens == 0 {
 			fmt.Printf("Context compacted: %d tokens → summary of %d chars (new size measured on next call)\n",

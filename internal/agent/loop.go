@@ -27,6 +27,10 @@ type Runner struct {
 	// Nil-safe: when unset, raw tool results are appended unchanged.
 	Observer Observer
 
+	// Reflector runs a one-shot self-check at the finalize boundary (P4.3).
+	// Nil-safe: when unset, the model's first "done" is accepted as before.
+	Reflector Reflector
+
 	Compactor session.Compactor
 
 	// Emitter, if set, receives the turn's event stream (thinking, tool calls,
@@ -118,6 +122,11 @@ func (r *Runner) RunTurn(ctx context.Context, sess *session.Session, userInput s
 
 	var turn TurnResult
 
+	// Reflection (P4.3) per-turn state: at most one self-check pass, and the
+	// ephemeral nudge to apply on the next request once it fires.
+	reflected := false
+	pendingReflection := ""
+
 	for i := 0; i < r.MaxSteps; i++ {
 		// A canceled context (Ctrl-C) must stop the turn at the step boundary
 		// without waiting for the next HTTP call to time out.
@@ -137,6 +146,13 @@ func (r *Runner) RunTurn(ctx context.Context, sess *session.Session, userInput s
 		msgs := sess.Messages
 		if n := len(turn.Steps); n >= r.nudgeThreshold() {
 			msgs = withConvergenceNudge(sess.Messages, n)
+		}
+		// Reflection nudge (P4.3): apply the self-check once, ephemerally — the
+		// same non-persisted mechanism as the convergence nudge, fired at the
+		// opposite boundary (about to finish, not over-investigating).
+		if pendingReflection != "" {
+			msgs = appendEphemeralUser(msgs, pendingReflection)
+			pendingReflection = ""
 		}
 
 		r.emit(Event{Kind: EventModelStarted})
@@ -185,17 +201,34 @@ func (r *Runner) RunTurn(ctx context.Context, sess *session.Session, userInput s
 			}
 		}
 
-		// The assistant turn must be kept in history verbatim: the API requires
-		// the tool_calls message to precede the tool results that answer it.
-		sess.Messages = append(sess.Messages, resp.AssistantMessage())
-		sess.UpdatedAt = time.Now()
-
-		// No tool calls => the model is done; this is the final answer.
+		// No tool calls => the model wants to finish.
 		if !resp.HasToolCalls() {
+			// Reflection (P4.3): before accepting "done", run one grounded
+			// self-check. If the turn's work looks unfinished — a test edited to go
+			// green, a change left unverified — re-prompt with an ephemeral nudge
+			// and do NOT persist this premature finish (persisting it would leave a
+			// retracted answer, and two assistant turns in a row, in history).
+			// One-shot per turn; the model decides whether to actually do more.
+			if r.Reflector != nil && !reflected {
+				rc := r.Reflector.Reflect(turn.Steps)
+				if nudge := rc.Nudge(); nudge != "" {
+					reflected = true
+					pendingReflection = nudge
+					r.emit(Event{Kind: EventReflected, Text: nudge})
+					continue
+				}
+			}
+			sess.Messages = append(sess.Messages, resp.AssistantMessage())
+			sess.UpdatedAt = time.Now()
 			turn.Final = resp.Content
 			r.emit(Event{Kind: EventTurnFinished, Text: turn.Final})
 			return turn, nil
 		}
+
+		// Tool-call path: the assistant turn must precede its tool results in
+		// history (the API requires the tool_calls message before the answers).
+		sess.Messages = append(sess.Messages, resp.AssistantMessage())
+		sess.UpdatedAt = time.Now()
 
 		if resp.Content != "" {
 			r.emit(Event{Kind: EventThinking, Text: resp.Content})
@@ -301,14 +334,18 @@ func (r *Runner) nudgeThreshold() int {
 // withConvergenceNudge returns a copy of msgs with a transient reminder appended,
 // steering the model to answer now instead of over-investigating.
 func withConvergenceNudge(msgs []model.Message, toolCalls int) []model.Message {
+	return appendEphemeralUser(msgs, fmt.Sprintf("[reminder] You have already made %d tool calls and very"+
+		" likely have enough to answer. Unless you are genuinely blocked, stop calling tools and give your"+
+		" final answer now. Do not re-run similar queries to double-check.", toolCalls))
+}
+
+// appendEphemeralUser returns a copy of msgs with a transient user message
+// appended. Both the convergence nudge and the reflection nudge use it: the
+// message shapes the next request only and is never persisted to the session.
+func appendEphemeralUser(msgs []model.Message, content string) []model.Message {
 	out := make([]model.Message, len(msgs), len(msgs)+1)
 	copy(out, msgs)
-	return append(out, model.Message{
-		Role: model.RoleUser,
-		Content: fmt.Sprintf("[reminder] You have already made %d tool calls and very likely have"+
-			" enough to answer. Unless you are genuinely blocked, stop calling tools and give your"+
-			" final answer now. Do not re-run similar queries to double-check.", toolCalls),
-	})
+	return append(out, model.Message{Role: model.RoleUser, Content: content})
 }
 
 const stepLimitMessage = "Agent stopped: reached the step limit before finishing."

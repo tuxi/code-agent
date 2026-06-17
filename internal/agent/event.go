@@ -16,7 +16,8 @@ const (
 	EventThinking      EventKind = "thinking"       // model produced reasoning text
 	EventToolStarted   EventKind = "tool_started"
 	EventToolFinished  EventKind = "tool_finished"
-	EventObserved      EventKind = "observed" // a tool result was classified (P4.1)
+	EventObserved      EventKind = "observed"  // a tool result was classified (P4.1)
+	EventReflected     EventKind = "reflected" // a finalize self-check fired (P4.3)
 	EventCompacted     EventKind = "compacted"
 	EventTurnFinished  EventKind = "turn_finished"
 )

@@ -469,6 +469,7 @@ func runAgent(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider 
 		MaxSteps:    cfg.Agent.MaxSteps,
 		Approver:    ui.ConfirmApprover{},
 		Observer:    observation.DefaultObserver{},
+		Reflector:   agent.DefaultReflector{},
 		Compactor:   buildCompactor(mc, provider),
 		Emitter:     buildEmitter(),
 	}
