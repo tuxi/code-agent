@@ -27,25 +27,39 @@ internal/foo/repo.go:18:2: "fmt" imported and not used`
 }
 
 func TestExtractSalientTestFailure(t *testing.T) {
-	stdout := `=== RUN   TestParse
---- FAIL: TestParse (0.00s)
-    parse_test.go:12: want 3 got 4
+	// Modeled on a real transcript: a single failing test with two assertion
+	// lines, then Go's trailing FAIL / package-summary / FAIL block.
+	stdout := `=== RUN   TestLoadConfigMultiModel
+--- FAIL: TestLoadConfigMultiModel (0.00s)
+    config_test.go:66: compact_ratio = 0.5, want default 0.7
+    config_test.go:69: CompactThreshold = 64000, want 89600
 === RUN   TestLex
 --- PASS: TestLex (0.00s)
 FAIL
-FAIL	code-agent/internal/foo	0.20s`
+FAIL	code-agent/internal/app	0.82s
+FAIL`
 
 	salient := extractSalient(stdout, "")
 	joined := strings.Join(salient, "\n")
-	if !strings.Contains(joined, "--- FAIL: TestParse") {
+	if !strings.Contains(joined, "--- FAIL: TestLoadConfigMultiModel") {
 		t.Errorf("expected the FAIL line in salient, got: %#v", salient)
 	}
-	if !strings.Contains(joined, "want 3 got 4") {
+	if !strings.Contains(joined, "config_test.go:66:") {
 		t.Errorf("expected the assertion diagnostic in salient, got: %#v", salient)
 	}
 	// Noise like "=== RUN" / "--- PASS" must not be salient.
 	if strings.Contains(joined, "=== RUN") || strings.Contains(joined, "--- PASS") {
 		t.Errorf("salient kept passing/run noise: %#v", salient)
+	}
+	// Bare standalone "FAIL" lines must be dropped...
+	for _, l := range salient {
+		if l == "FAIL" {
+			t.Errorf("salient kept a bare FAIL noise line: %#v", salient)
+		}
+	}
+	// ...but the package-level summary (with a tab) must be kept.
+	if !strings.Contains(joined, "FAIL\tcode-agent/internal/app") {
+		t.Errorf("salient dropped the package summary line: %#v", salient)
 	}
 }
 

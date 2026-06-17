@@ -57,7 +57,7 @@ func extractSalient(stdout, stderr string) []string {
 
 func isSalient(line string) bool {
 	l := strings.TrimSpace(line)
-	if l == "" {
+	if l == "" || isNoiseLine(l) {
 		return false
 	}
 	if diagnosticPrefix.MatchString(l) {
@@ -70,6 +70,19 @@ func isSalient(line string) bool {
 		}
 	}
 	return false
+}
+
+// isNoiseLine drops Go's standalone status words. A bare "FAIL"/"PASS"/"ok"
+// line adds nothing the failure_type does not already say. The package-level
+// summary "FAIL\tpkg\t0.2s" has an embedded tab (so it is not bare) and is
+// deliberately kept — it names which package failed.
+func isNoiseLine(l string) bool {
+	switch l {
+	case "FAIL", "PASS", "ok":
+		return true
+	default:
+		return false
+	}
 }
 
 // summarize builds the one-line, model- and human-readable summary for a failed
