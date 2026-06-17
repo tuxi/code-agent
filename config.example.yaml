@@ -42,8 +42,8 @@ models:
 agent:
   max_steps: 32
   # compact when the prompt reaches this fraction of the model's context_window.
-  # Optional (default 0.7); values outside (0,1) fall back to the default.
-  compact_ratio: 0.7
+  # Optional (default 0.5); values outside (0,1) fall back to the default.
+  compact_ratio: 0.5
 
 # Transport resilience: each model call gets a per-attempt timeout and retries
 # transient failures (timeout, 429, 5xx) with exponential backoff. All optional.

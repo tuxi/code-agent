@@ -16,7 +16,7 @@ const (
 	defaultContextWindow = 128000
 	// defaultCompactRatio is the fraction of the context window at which a session
 	// compacts when agent.compact_ratio is unset or invalid.
-	defaultCompactRatio = 0.7
+	defaultCompactRatio = 0.5
 
 	// Provider transport defaults (see ProviderConfig). Tuned for large prompts:
 	// prefill on a 90k-token context can exceed a minute, so the per-attempt
