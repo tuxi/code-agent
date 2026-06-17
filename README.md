@@ -506,26 +506,35 @@ This is reusable Agent-Runtime infrastructure, not CLI glue.
 
 ### Phase 4 — Thinking & Reflection Runtime
 
-### P4.1 Tool-driven reasoning
-- [ ] Add Observation model
-- [ ] Add Tool Result Summarizer
-- [ ] Add Failure Classification
-- [ ] Add Retry Planning
+The spine here is "the model owns control flow." Observation and Reflection are
+**data layers** (classify, summarize, surface), never control machines; the
+verify-fix loop *emerges* from the uniform loop rather than being hardcoded.
+Design docs: [docs/p4.1-observation.md](docs/p4.1-observation.md),
+[docs/p4.3-reflection.md](docs/p4.3-reflection.md).
 
-### P4.2 Verify-Fix Loop
-- [ ] Verify → Observe → Fix loop
-- [ ] Compiler-driven repair
-- [ ] Test-driven repair
-- [ ] Lint-driven repair
-- [ ] Max retry budget
+### P4.1 Tool-driven reasoning  *(shipped)*
+- [x] Observation model — `internal/observation`, structured `{ok, failure_type,
+  summary, salient}` enriched ahead of each tool result
+- [x] Tool Result Summarizer — salient-line extraction (signal, not the dump)
+- [x] Failure Classification — compile / test / lint / runtime / timeout / blocked
+- [~] Retry Planning — *reframed as data, not a runtime planner*: Observation
+  surfaces the failure; the **model** decides the retry (see the guardrail)
 
-### Phase 4.3 — Reflection
+### P4.2 Verify-Fix Loop  *(emergent — validated)*
+- [x] Verify → Observe → Fix loop — emerges from P4.1 + the uniform loop; seen
+  end-to-end in a real run (test fails → read → edit → re-test → green)
+- [x] Compiler- / test- / lint-driven repair — emergent: the model reads the
+  classified Observation and fixes; no per-failure control code
+- [x] Max retry budget — `max_steps` backstop + one-shot reflection
 
-- [ ] Lightweight self-check
-- [ ] Final answer verification
-- [ ] Detect unfinished work
-- [ ] Detect unverified assumptions
-- [ ] Suggest next verification step
+### Phase 4.3 — Reflection  *(shipped)*
+- [x] Lightweight self-check — `internal/reflection`, an ephemeral nudge at the
+  finalize boundary (mirror of the convergence nudge), one-shot per turn
+- [x] Detect unfinished work — `UnverifiedMutation` (code changed, never verified)
+- [x] Detect unverified assumptions — `TestEditedAfterFailure` (paper-over guard)
+- [x] Suggest next verification step — the nudge asks; the model decides
+- [ ] Broader signals (partial-verification scope, more languages) — deferred to
+  telemetry (see PRD §13)
 
 ### Phase 5 — Semantic code intelligence (Project Graph)
 
