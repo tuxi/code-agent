@@ -95,11 +95,11 @@ func (p *ResilientProvider) Complete(ctx context.Context, req Request) (resp Res
 		if cancel != nil {
 			cancel()
 		}
+		class := errorClass(err) // "" on success
+		stat.Trace = append(stat.Trace, Attempt{Latency: attemptDur, ErrorClass: class})
 		if err == nil {
 			return resp, nil
 		}
-
-		class := errorClass(err)
 		if class == "timeout" {
 			stat.TimedOut = true
 		}

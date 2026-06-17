@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -44,6 +45,14 @@ func run() error {
 			return listSessions(ctx, cfg)
 		case "stats":
 			return runStats(ctx, cfg)
+		case "trace":
+			limit := 20
+			if len(args) >= 2 {
+				if n, err := strconv.Atoi(args[1]); err == nil {
+					limit = n
+				}
+			}
+			return runTrace(ctx, cfg, limit)
 		}
 	}
 
@@ -99,6 +108,14 @@ type requestObserver struct {
 }
 
 func (o requestObserver) Observe(s model.RequestStat) {
+	trace := make([]session.AttemptRecord, len(s.Trace))
+	for i, a := range s.Trace {
+		result := a.ErrorClass
+		if result == "" {
+			result = "success"
+		}
+		trace[i] = session.AttemptRecord{LatencyMs: a.Latency.Milliseconds(), Result: result}
+	}
 	_ = o.store.RecordRequest(o.ctx, session.RequestRecord{
 		At:           s.At,
 		Model:        s.Model,
@@ -109,6 +126,7 @@ func (o requestObserver) Observe(s model.RequestStat) {
 		Success:      s.Success,
 		ErrorClass:   s.ErrorClass,
 		LatencyMs:    s.Latency.Milliseconds(),
+		Trace:        trace,
 	})
 }
 
@@ -213,6 +231,44 @@ func printProviderStats(st session.ProviderStats) {
 	fmt.Printf("Retries:            %d\n", st.Retries)
 	fmt.Printf("Avg latency:        %.1fs\n", st.AvgLatencyMs/1000)
 	fmt.Printf("Max latency:        %.1fs\n", float64(st.MaxLatencyMs)/1000)
+}
+
+// runTrace prints the most recent requests with their per-attempt breakdown.
+func runTrace(ctx context.Context, cfg app.Config, limit int) error {
+	store, err := openStore(cfg.Workspace.Root)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+
+	recs, err := store.RecentRequests(ctx, limit)
+	if err != nil {
+		return err
+	}
+	printTrace(recs)
+	return nil
+}
+
+// printTrace renders each request as a header line plus one line per attempt —
+// the detail that turns "context deadline exceeded" into "attempt 1 timed out at
+// 30s, attempt 2 succeeded in 5s".
+func printTrace(recs []session.RequestRecord) {
+	if len(recs) == 0 {
+		fmt.Println("no requests recorded yet")
+		return
+	}
+	for _, r := range recs {
+		outcome := "ok"
+		if !r.Success {
+			outcome = "FAILED (" + r.ErrorClass + ")"
+		}
+		fmt.Printf("%s  %s  prompt=%d  %d attempt(s)  %.1fs  %s\n",
+			r.At.Local().Format("2006-01-02 15:04:05"), r.Model, r.PromptTokens, r.Attempts,
+			float64(r.LatencyMs)/1000, outcome)
+		for i, a := range r.Trace {
+			fmt.Printf("    attempt %d: %.1fs %s\n", i+1, float64(a.LatencyMs)/1000, a.Result)
+		}
+	}
 }
 
 // buildProvider constructs a model.Provider from a resolved model config. Only
@@ -362,7 +418,8 @@ func printUsage() {
   codeagent [--model NAME] run "..."       run a single task
   codeagent [--model NAME] ask "..."       one-off question (no tools)
   codeagent sessions                       list saved sessions
-  codeagent stats                          aggregate compaction telemetry
+  codeagent stats                          aggregate compaction + provider telemetry
+  codeagent trace [N]                      show the last N requests, per attempt
   codeagent [--model NAME] resume <id>     resume a saved session in the REPL
 
 Sessions are stored per-project in .codeagent/sessions.db and persist across

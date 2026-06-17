@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite" // pure-Go driver, registered as "sqlite" (no cgo)
@@ -62,7 +63,8 @@ CREATE TABLE IF NOT EXISTS requests (
 	timed_out     INTEGER,
 	success       INTEGER,
 	error_class   TEXT,
-	latency_ms    INTEGER
+	latency_ms    INTEGER,
+	trace         TEXT
 );`
 
 func NewSQLiteStore(path string) (*SQLiteStore, error) {
@@ -75,6 +77,14 @@ func NewSQLiteStore(path string) (*SQLiteStore, error) {
 	if _, err := db.Exec(schema); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("migrate: %w", err)
+	}
+	// Additive migration: a `requests` table created before the trace column
+	// existed won't get it from CREATE IF NOT EXISTS. ADD COLUMN is idempotent
+	// here — "duplicate column" just means it already applied.
+	if _, err := db.Exec(`ALTER TABLE requests ADD COLUMN trace TEXT`); err != nil &&
+		!strings.Contains(err.Error(), "duplicate column") {
+		db.Close()
+		return nil, fmt.Errorf("migrate trace column: %w", err)
 	}
 	return &SQLiteStore{db: db}, nil
 }
@@ -265,12 +275,55 @@ func (s *SQLiteStore) Stats(ctx context.Context) (Stats, error) {
 // RecordRequest appends one request to the telemetry log. Best-effort by
 // convention: callers should not fail a run if this errors.
 func (s *SQLiteStore) RecordRequest(ctx context.Context, r RequestRecord) error {
+	trace := ""
+	if len(r.Trace) > 0 {
+		b, err := json.Marshal(r.Trace)
+		if err != nil {
+			return fmt.Errorf("marshal request trace: %w", err)
+		}
+		trace = string(b)
+	}
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO requests (at, model, prompt_tokens, attempts, retries, timed_out, success, error_class, latency_ms)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		INSERT INTO requests (at, model, prompt_tokens, attempts, retries, timed_out, success, error_class, latency_ms, trace)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		formatTime(r.At), r.Model, r.PromptTokens, r.Attempts, r.Retries,
-		boolToInt(r.TimedOut), boolToInt(r.Success), r.ErrorClass, r.LatencyMs)
+		boolToInt(r.TimedOut), boolToInt(r.Success), r.ErrorClass, r.LatencyMs, trace)
 	return err
+}
+
+// RecentRequests returns the most recent requests (newest first) with their
+// per-attempt trace decoded — the data behind `codeagent trace`.
+func (s *SQLiteStore) RecentRequests(ctx context.Context, limit int) ([]RequestRecord, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT at, model, prompt_tokens, attempts, retries, timed_out, success, error_class, latency_ms, COALESCE(trace, '')
+		FROM requests ORDER BY id DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []RequestRecord
+	for rows.Next() {
+		var r RequestRecord
+		var at, trace string
+		var timedOut, success int
+		if err := rows.Scan(&at, &r.Model, &r.PromptTokens, &r.Attempts, &r.Retries,
+			&timedOut, &success, &r.ErrorClass, &r.LatencyMs, &trace); err != nil {
+			return nil, err
+		}
+		r.At = parseTime(at)
+		r.TimedOut = timedOut != 0
+		r.Success = success != 0
+		if trace != "" {
+			if err := json.Unmarshal([]byte(trace), &r.Trace); err != nil {
+				return nil, fmt.Errorf("unmarshal request trace: %w", err)
+			}
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
 }
 
 // ProviderStats aggregates the request log into transport telemetry.

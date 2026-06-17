@@ -251,6 +251,45 @@ func TestSQLiteStoreProviderStats(t *testing.T) {
 	}
 }
 
+func TestSQLiteStoreRecentRequestsTrace(t *testing.T) {
+	store := newStore(t)
+	ctx := context.Background()
+	if err := store.RecordRequest(ctx, RequestRecord{
+		Model: "m", Success: true, Attempts: 1, LatencyMs: 5000, At: time.Now().Add(-time.Minute),
+		Trace: []AttemptRecord{{LatencyMs: 5000, Result: "success"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RecordRequest(ctx, RequestRecord{
+		Model: "m", Success: true, Attempts: 2, Retries: 1, TimedOut: true, LatencyMs: 35000, At: time.Now(),
+		Trace: []AttemptRecord{{LatencyMs: 30000, Result: "timeout"}, {LatencyMs: 5000, Result: "success"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	recs, err := store.RecentRequests(ctx, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recs) != 2 {
+		t.Fatalf("want 2 requests, got %d", len(recs))
+	}
+	// Newest first, with the per-attempt trace preserved.
+	if recs[0].Attempts != 2 || len(recs[0].Trace) != 2 {
+		t.Fatalf("newest-first/trace wrong: %+v", recs[0])
+	}
+	if recs[0].Trace[0].Result != "timeout" || recs[0].Trace[0].LatencyMs != 30000 {
+		t.Fatalf("trace[0] wrong: %+v", recs[0].Trace[0])
+	}
+	if recs[0].Trace[1].Result != "success" {
+		t.Fatalf("trace[1] wrong: %+v", recs[0].Trace[1])
+	}
+
+	if one, _ := store.RecentRequests(ctx, 1); len(one) != 1 {
+		t.Fatalf("limit not applied: got %d", len(one))
+	}
+}
+
 func TestSQLiteStoreProviderStatsEmpty(t *testing.T) {
 	st, err := newStore(t).ProviderStats(context.Background())
 	if err != nil {
@@ -259,6 +298,22 @@ func TestSQLiteStoreProviderStatsEmpty(t *testing.T) {
 	if st.Requests != 0 || st.MaxLatencyMs != 0 {
 		t.Fatalf("empty store should be zero: %+v", st)
 	}
+}
+
+// Reopening an existing DB re-runs migrate(); the additive ALTER must be
+// idempotent (a "duplicate column" is expected and ignored).
+func TestSQLiteStoreReopenIdempotent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "s.db")
+	s1, err := NewSQLiteStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s1.Close()
+	s2, err := NewSQLiteStore(path)
+	if err != nil {
+		t.Fatalf("reopen failed (migration not idempotent?): %v", err)
+	}
+	s2.Close()
 }
 
 func TestSQLiteStoreLoadMissing(t *testing.T) {

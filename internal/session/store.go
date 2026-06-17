@@ -20,6 +20,7 @@ type Store interface {
 	Stats(ctx context.Context) (Stats, error)
 	RecordRequest(ctx context.Context, r RequestRecord) error
 	ProviderStats(ctx context.Context) (ProviderStats, error)
+	RecentRequests(ctx context.Context, limit int) ([]RequestRecord, error)
 	Delete(ctx context.Context, id string) error
 	Close() error
 }
@@ -36,6 +37,13 @@ type RequestRecord struct {
 	Success      bool
 	ErrorClass   string
 	LatencyMs    int64
+	Trace        []AttemptRecord // per-attempt detail
+}
+
+// AttemptRecord is one try within a request, for the per-attempt trace.
+type AttemptRecord struct {
+	LatencyMs int64  `json:"ms"`
+	Result    string `json:"result"` // "success" or an error class
 }
 
 // ProviderStats is aggregate transport telemetry across all recorded requests —

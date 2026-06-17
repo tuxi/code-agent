@@ -22,6 +22,14 @@ type RequestStat struct {
 	Success      bool
 	ErrorClass   string        // "" on success; else timeout/429/5xx/4xx/network/...
 	Latency      time.Duration // total wall time across attempts
+	Trace        []Attempt     // per-attempt detail, in order
+}
+
+// Attempt is one try within a Complete call — the per-attempt detail behind the
+// request trace ("attempt 1: 30s timeout / attempt 2: 5s success").
+type Attempt struct {
+	Latency    time.Duration
+	ErrorClass string // "" on success
 }
 
 // Observer receives one RequestStat per Complete call. Implementations must be
@@ -57,6 +65,9 @@ func errorClass(err error) string {
 	}
 	var netErr net.Error
 	if errors.As(err, &netErr) {
+		if netErr.Timeout() {
+			return "timeout"
+		}
 		return "network"
 	}
 	return "error"

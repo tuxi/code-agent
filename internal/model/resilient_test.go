@@ -234,6 +234,28 @@ func TestResilientEmitsFailureStat(t *testing.T) {
 	}
 }
 
+// The emitted stat carries per-attempt detail: error class for each try, "" on
+// the one that succeeded.
+func TestResilientCapturesPerAttemptTrace(t *testing.T) {
+	obs := &capturingObserver{}
+	inner := &fakeInner{
+		errs: []error{&APIError{StatusCode: 503}, timeoutErr{}},
+		resp: Response{Content: "ok"},
+	}
+	p := &ResilientProvider{Inner: inner, MaxRetries: 5, sleep: noSleep(), LogWriter: io.Discard, Observer: obs}
+
+	if _, err := p.Complete(context.Background(), Request{Model: "m"}); err != nil {
+		t.Fatal(err)
+	}
+	s := obs.stats[0]
+	if len(s.Trace) != 3 {
+		t.Fatalf("trace length = %d, want 3", len(s.Trace))
+	}
+	if s.Trace[0].ErrorClass != "5xx" || s.Trace[1].ErrorClass != "timeout" || s.Trace[2].ErrorClass != "" {
+		t.Fatalf("unexpected trace classes: %+v", s.Trace)
+	}
+}
+
 func TestResilientStatRecordsTimeout(t *testing.T) {
 	obs := &capturingObserver{}
 	inner := &fakeInner{block: true}

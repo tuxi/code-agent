@@ -167,7 +167,8 @@ func handleCommand(line string, cfg app.Config, mc *app.ModelConfig, runner *age
   /use NAME     switch to another configured model (keeps the conversation)
   /session      show the current session id
   /sessions     list saved sessions
-  /stats        aggregate compaction telemetry
+  /stats        aggregate compaction + provider telemetry
+  /trace [N]    show the last N requests, per attempt
   /resume [id]  switch to a saved session (no id => pick from a list)
   /exit, /quit  leave the REPL`)
 		return sess, false, nil
@@ -188,6 +189,20 @@ func handleCommand(line string, cfg app.Config, mc *app.ModelConfig, runner *age
 		if err := printStatsReport(context.Background(), store); err != nil {
 			return sess, false, err
 		}
+		return sess, false, nil
+
+	case "/trace":
+		limit := 20
+		if len(fields) >= 2 {
+			if n, err := strconv.Atoi(fields[1]); err == nil {
+				limit = n
+			}
+		}
+		recs, err := store.RecentRequests(context.Background(), limit)
+		if err != nil {
+			return sess, false, err
+		}
+		printTrace(recs)
 		return sess, false, nil
 
 	case "/resume":

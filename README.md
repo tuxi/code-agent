@@ -206,8 +206,9 @@ request slow / failing". A bare `context deadline exceeded` is a black box.
   `=== Provider ===` section (requests, successes, failures, timeouts, retries,
   avg/max latency). Each retry also prints a one-line notice so a slow request is
   visible live.
-- [ ] Request trace: per-attempt detail (latency + result for each attempt),
-  built on the persisted request log.
+- [x] Request trace: each request persists per-attempt detail (latency + result
+  per attempt) as a JSON `trace`; `codeagent trace [N]` / `/trace [N]` show the
+  last N requests broken down attempt by attempt.
 - [ ] Latency histogram / P95.
 - [ ] Cost metrics (token-based spend per model).
 
