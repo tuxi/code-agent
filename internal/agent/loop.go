@@ -130,12 +130,21 @@ func (r *Runner) RunTurn(ctx context.Context, sess *session.Session, userInput s
 			return turn, err
 		}
 
+		// Convergence nudge: once a turn has made many tool calls, steer a model
+		// that lacks agentic restraint toward answering. The nudge is ephemeral —
+		// appended only to this request, never persisted — so it keeps applying
+		// pressure without polluting history. (max_steps still backstops it.)
+		msgs := sess.Messages
+		if n := len(turn.Steps); n >= r.nudgeThreshold() {
+			msgs = withConvergenceNudge(sess.Messages, n)
+		}
+
 		r.emit(Event{Kind: EventModelStarted})
 		modelStart := time.Now()
 		resp, err := r.Model.Complete(ctx, model.Request{
 			Model:       r.ModelName,
 			Temperature: r.Temperature,
-			Messages:    sess.Messages,
+			Messages:    msgs,
 			Tools:       toolDefs,
 		})
 		// Always emit ModelFinished, even on error: it pairs with ModelStarted, so
@@ -270,9 +279,72 @@ func (r *Runner) RunTurn(ctx context.Context, sess *session.Session, userInput s
 		}
 	}
 
-	turn.Final = "Agent stopped: reached the step limit before finishing."
+	// Step limit reached. Don't discard the work: the model has gathered tool
+	// results in the history, so give it one final tool-free call to answer from
+	// what it has — instead of a useless "stopped" message that forces the user to
+	// re-ask (and re-pay for the whole investigation).
+	turn.Final = r.finalAnswerAfterLimit(ctx, sess)
 	r.emit(Event{Kind: EventTurnFinished, Text: turn.Final})
 	return turn, nil
+}
+
+// nudgeThreshold is the tool-call count at which the convergence nudge starts —
+// half the step budget, with a floor so short budgets don't nudge too eagerly.
+func (r *Runner) nudgeThreshold() int {
+	t := r.MaxSteps / 2
+	if t < 6 {
+		t = 6
+	}
+	return t
+}
+
+// withConvergenceNudge returns a copy of msgs with a transient reminder appended,
+// steering the model to answer now instead of over-investigating.
+func withConvergenceNudge(msgs []model.Message, toolCalls int) []model.Message {
+	out := make([]model.Message, len(msgs), len(msgs)+1)
+	copy(out, msgs)
+	return append(out, model.Message{
+		Role: model.RoleUser,
+		Content: fmt.Sprintf("[reminder] You have already made %d tool calls and very likely have"+
+			" enough to answer. Unless you are genuinely blocked, stop calling tools and give your"+
+			" final answer now. Do not re-run similar queries to double-check.", toolCalls),
+	})
+}
+
+const stepLimitMessage = "Agent stopped: reached the step limit before finishing."
+
+// finalAnswerAfterLimit makes one tool-free model call so the agent answers from
+// what it already gathered when the step limit is hit. The nudge is ephemeral
+// (not persisted); only the answer is appended to history, so the conversation
+// continues cleanly.
+func (r *Runner) finalAnswerAfterLimit(ctx context.Context, sess *session.Session) string {
+	if ctx.Err() != nil {
+		return stepLimitMessage
+	}
+	msgs := make([]model.Message, len(sess.Messages), len(sess.Messages)+1)
+	copy(msgs, sess.Messages)
+	msgs = append(msgs, model.Message{
+		Role:    model.RoleUser,
+		Content: "You've reached the step limit and cannot call more tools. Give your best final answer now, based on everything gathered so far.",
+	})
+
+	r.emit(Event{Kind: EventModelStarted})
+	start := time.Now()
+	resp, err := r.Model.Complete(ctx, model.Request{
+		Model:       r.ModelName,
+		Temperature: r.Temperature,
+		Messages:    msgs,
+		// No Tools: the model must answer with text, not request more tools.
+	})
+	r.emit(Event{Kind: EventModelFinished, PromptTokens: resp.Usage.PromptTokens, Elapsed: time.Since(start), Err: errString(err)})
+	if err != nil || resp.Content == "" {
+		return stepLimitMessage
+	}
+
+	sess.Messages = append(sess.Messages, model.Message{Role: model.RoleAssistant, Content: resp.Content})
+	sess.PromptTokens = resp.Usage.PromptTokens
+	sess.UpdatedAt = time.Now()
+	return resp.Content
 }
 
 // maybeCompact compacts the session when it has grown past the token threshold.

@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"code-agent/internal/model"
@@ -121,6 +122,85 @@ func TestRunTurnStopsOnCanceledContext(t *testing.T) {
 	_, err := runner.RunTurn(ctx, newSession(), "hello")
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("want context.Canceled, got %v", err)
+	}
+}
+
+// Hitting the step limit must NOT discard the work: the loop makes one final
+// tool-free call so the model answers from what it gathered, instead of
+// returning the canned "stopped" message (which forced the user to re-ask).
+func TestRunTurnSynthesizesAnswerAtStepLimit(t *testing.T) {
+	rt := &recordingTool{}
+	reg := tools.NewRegistry()
+	if err := reg.Register(rt); err != nil {
+		t.Fatal(err)
+	}
+	toolCall := model.Response{
+		ToolCalls: []model.ToolCall{{
+			ID:       "c1",
+			Type:     "function",
+			Function: model.FunctionCall{Name: "danger", Arguments: "{}"},
+		}},
+		FinishReason: "tool_calls",
+	}
+	provider := &scriptedProvider{responses: []model.Response{
+		toolCall, // step 0 (uses a tool, never finishes)
+		toolCall, // step 1 — now MaxSteps=2 is reached
+		{Content: "here is my best answer from what I gathered", FinishReason: "stop"}, // forced final
+	}}
+	runner := &Runner{Model: provider, Tools: reg, Approver: allowApprover{}, MaxSteps: 2}
+
+	res, err := runner.RunTurn(context.Background(), newSession(), "investigate")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Final != "here is my best answer from what I gathered" {
+		t.Fatalf("step-limit final = %q, want the synthesized answer (not the canned stop message)", res.Final)
+	}
+	// The forced final call must advertise NO tools.
+	if len(provider.lastTools) != 0 {
+		t.Fatalf("final synthesis call advertised %d tools, want 0", len(provider.lastTools))
+	}
+}
+
+// Once a turn has made enough tool calls (>= half the step budget), the request
+// must carry a transient convergence nudge — steering a restraint-poor model to
+// answer rather than over-investigate. The nudge must not be persisted.
+func TestRunTurnNudgesTowardConvergence(t *testing.T) {
+	rt := &recordingTool{}
+	reg := tools.NewRegistry()
+	if err := reg.Register(rt); err != nil {
+		t.Fatal(err)
+	}
+	toolCall := model.Response{
+		ToolCalls: []model.ToolCall{{
+			ID: "c", Type: "function",
+			Function: model.FunctionCall{Name: "danger", Arguments: "{}"},
+		}},
+		FinishReason: "tool_calls",
+	}
+	// MaxSteps=12 -> threshold 6. Six tool-call turns, then the 7th call (steps==6)
+	// carries the nudge and the model finally answers.
+	provider := &scriptedProvider{responses: []model.Response{
+		toolCall, toolCall, toolCall, toolCall, toolCall, toolCall,
+		{Content: "done", FinishReason: "stop"},
+	}}
+	runner := &Runner{Model: provider, Tools: reg, Approver: allowApprover{}, MaxSteps: 12}
+
+	sess := newSession()
+	if _, err := runner.RunTurn(context.Background(), sess, "investigate"); err != nil {
+		t.Fatal(err)
+	}
+
+	// The final (over-threshold) request carried the nudge as its last message...
+	last := provider.lastMessages[len(provider.lastMessages)-1]
+	if last.Role != model.RoleUser || !strings.Contains(last.Content, "tool calls") {
+		t.Fatalf("over-threshold call should carry the convergence nudge, got %+v", last)
+	}
+	// ...but the nudge must not be persisted into the session history.
+	for _, m := range sess.Messages {
+		if strings.Contains(m.Content, "[reminder]") {
+			t.Fatal("convergence nudge leaked into persisted history")
+		}
 	}
 }
 
