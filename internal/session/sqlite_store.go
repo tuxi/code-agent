@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -342,7 +343,75 @@ func (s *SQLiteStore) ProviderStats(ctx context.Context) (ProviderStats, error) 
 		&st.Retries, &st.AvgLatencyMs, &st.MaxLatencyMs); err != nil {
 		return ProviderStats{}, err
 	}
+
+	// Latencies for percentiles + histogram. SQLite has no percentile function;
+	// at CLI scale, pulling the (sorted) column and computing in Go is exact and
+	// simple. Failed/timed-out requests count too — a 120s timeout IS a slow
+	// request the distribution should show.
+	rows, err := s.db.QueryContext(ctx, `SELECT latency_ms FROM requests ORDER BY latency_ms`)
+	if err != nil {
+		return ProviderStats{}, err
+	}
+	defer rows.Close()
+	var lat []int64
+	for rows.Next() {
+		var ms int64
+		if err := rows.Scan(&ms); err != nil {
+			return ProviderStats{}, err
+		}
+		lat = append(lat, ms)
+	}
+	if err := rows.Err(); err != nil {
+		return ProviderStats{}, err
+	}
+	st.P50LatencyMs = percentile(lat, 50)
+	st.P95LatencyMs = percentile(lat, 95)
+	st.P99LatencyMs = percentile(lat, 99)
+	st.Histogram = histogram(lat)
 	return st, nil
+}
+
+// latencyBuckets defines the histogram's fixed boundaries (exclusive upper, in
+// ms). The last is the "and above" bucket.
+var latencyBuckets = []LatencyBucket{
+	{Label: "<1s", UpperMs: 1000},
+	{Label: "1-2s", UpperMs: 2000},
+	{Label: "2-5s", UpperMs: 5000},
+	{Label: "5-10s", UpperMs: 10000},
+	{Label: "10-20s", UpperMs: 20000},
+	{Label: "20-30s", UpperMs: 30000},
+	{Label: "30s+", UpperMs: math.MaxInt64},
+}
+
+// percentile returns the nearest-rank pth percentile of an ascending slice.
+func percentile(sortedAsc []int64, p float64) int64 {
+	n := len(sortedAsc)
+	if n == 0 {
+		return 0
+	}
+	rank := int(math.Ceil(p / 100 * float64(n)))
+	if rank < 1 {
+		rank = 1
+	}
+	if rank > n {
+		rank = n
+	}
+	return sortedAsc[rank-1]
+}
+
+// histogram buckets latencies into latencyBuckets (counts per bar).
+func histogram(latencies []int64) []LatencyBucket {
+	out := make([]LatencyBucket, len(latencyBuckets))
+	copy(out, latencyBuckets)
+	for _, l := range latencies {
+		for i := range out {
+			if l < out[i].UpperMs {
+				out[i].Count++
+				break
+			}
+		}
+	}
+	return out
 }
 
 func boolToInt(b bool) int {

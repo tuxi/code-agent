@@ -48,7 +48,8 @@ type AttemptRecord struct {
 
 // ProviderStats is aggregate transport telemetry across all recorded requests —
 // the evidence behind "why are requests slow / failing", which a bare
-// "context deadline exceeded" cannot answer.
+// "context deadline exceeded" cannot answer. Percentiles and the histogram show
+// the latency DISTRIBUTION, not just the average (which hides the slow tail).
 type ProviderStats struct {
 	Requests     int
 	Successes    int
@@ -57,6 +58,19 @@ type ProviderStats struct {
 	Retries      int
 	AvgLatencyMs float64
 	MaxLatencyMs int64
+	P50LatencyMs int64
+	P95LatencyMs int64
+	P99LatencyMs int64
+	Histogram    []LatencyBucket
+}
+
+// LatencyBucket is one bar of the latency histogram: how many requests fell in
+// [previous bound, UpperMs). The last bucket's UpperMs is the max int64 (the
+// "and above" bucket).
+type LatencyBucket struct {
+	Label   string
+	UpperMs int64
+	Count   int
 }
 
 // Meta is a one-line summary of a stored session, for listing. The compaction

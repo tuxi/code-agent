@@ -230,7 +230,38 @@ func printProviderStats(st session.ProviderStats) {
 	fmt.Printf("Timeouts:           %d\n", st.Timeouts)
 	fmt.Printf("Retries:            %d\n", st.Retries)
 	fmt.Printf("Avg latency:        %.1fs\n", st.AvgLatencyMs/1000)
+	fmt.Printf("P50 latency:        %.1fs\n", float64(st.P50LatencyMs)/1000)
+	fmt.Printf("P95 latency:        %.1fs\n", float64(st.P95LatencyMs)/1000)
+	fmt.Printf("P99 latency:        %.1fs\n", float64(st.P99LatencyMs)/1000)
 	fmt.Printf("Max latency:        %.1fs\n", float64(st.MaxLatencyMs)/1000)
+	printLatencyHistogram(st.Histogram)
+}
+
+// printLatencyHistogram renders the latency distribution as proportional bars —
+// the average hides the slow tail; the shape shows it.
+func printLatencyHistogram(buckets []session.LatencyBucket) {
+	max := 0
+	for _, b := range buckets {
+		if b.Count > max {
+			max = b.Count
+		}
+	}
+	if max == 0 {
+		return
+	}
+	fmt.Println("Latency distribution:")
+	const width = 24
+	for _, b := range buckets {
+		bar := ""
+		if b.Count > 0 {
+			n := b.Count * width / max
+			if n == 0 {
+				n = 1
+			}
+			bar = strings.Repeat("█", n)
+		}
+		fmt.Printf("  %-7s %-24s %d\n", b.Label, bar, b.Count)
+	}
 }
 
 // runTrace prints the most recent requests with their per-attempt breakdown.

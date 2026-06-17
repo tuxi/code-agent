@@ -290,6 +290,41 @@ func TestSQLiteStoreRecentRequestsTrace(t *testing.T) {
 	}
 }
 
+func TestSQLiteStoreLatencyPercentilesAndHistogram(t *testing.T) {
+	store := newStore(t)
+	ctx := context.Background()
+	// Latencies 1s, 2s, … 10s.
+	for i := 1; i <= 10; i++ {
+		if err := store.RecordRequest(ctx, RequestRecord{
+			Model: "m", Success: true, Attempts: 1, LatencyMs: int64(i * 1000), At: time.Now(),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	st, err := store.ProviderStats(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.P50LatencyMs != 5000 || st.P95LatencyMs != 10000 || st.P99LatencyMs != 10000 {
+		t.Fatalf("P50/P95/P99 = %d/%d/%d, want 5000/10000/10000",
+			st.P50LatencyMs, st.P95LatencyMs, st.P99LatencyMs)
+	}
+
+	counts := map[string]int{}
+	total := 0
+	for _, b := range st.Histogram {
+		counts[b.Label] = b.Count
+		total += b.Count
+	}
+	if total != 10 {
+		t.Fatalf("histogram total = %d, want 10 (all requests bucketed)", total)
+	}
+	if counts["1-2s"] != 1 || counts["2-5s"] != 3 || counts["5-10s"] != 5 || counts["10-20s"] != 1 {
+		t.Fatalf("histogram counts wrong: %+v", counts)
+	}
+}
+
 func TestSQLiteStoreProviderStatsEmpty(t *testing.T) {
 	st, err := newStore(t).ProviderStats(context.Background())
 	if err != nil {

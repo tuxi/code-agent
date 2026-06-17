@@ -71,6 +71,29 @@ does not encode task-specific sequences.
 - apply_patch
 - run_command
 
+### File modification philosophy
+
+CodeAgent provides two complementary file-modification tools.
+
+- `edit_file` is the primary editing tool.
+  It performs direct file modifications and is optimized for routine code and
+  documentation changes.
+
+- `apply_patch` is a patch-oriented tool.
+  It is useful when a precise diff must be reviewed, validated, or applied
+  across multiple files.
+
+The model chooses the appropriate tool.
+The runtime does not enforce a workflow.
+
+### Project Graph Principle
+
+grep answers: "where is this text"
+
+ProjectGraph answers: "what is this symbol and how does it relate"
+
+The model should prefer ProjectGraph over grep whenever structural understanding is needed.
+
 ## Target architecture
 
 The runtime is decomposed into clear layers, each owning one concern. The loop
@@ -96,6 +119,180 @@ internal/prompt          Base identity + prompt assembly (NOT the tool catalog)
 internal/ui              CLI permission implementation
 pkg/agentapi             Public API types
 ```
+
+## Tool design principles
+
+Tools represent capabilities, not workflows.
+
+A tool should answer:
+
+"What can the model do?"
+
+not
+
+"What sequence should the model follow?"
+
+Good examples:
+
+- read_file
+- edit_file
+- grep
+- run_command
+
+Bad examples:
+
+- analyze_project
+- create_plan_then_patch
+- fix_build_errors
+
+The latter encode workflows into tools and reduce model autonomy.
+
+## Tooling Philosophy (Claude Code-inspired)
+CodeAgent’s tool system is designed to evolve from a minimal CLI toolset into a developer-environment-grade agent runtime.
+
+The long-term direction is inspired by Claude Code–style systems:
+
+> Tools are not workflows.
+Tools are atomic capabilities that compose into workflows implicitly through the model.
+
+---
+
+#### 1.Tools are atomic, not procedural
+
+We explicitly avoid encoding workflows such as:
+
+* plan → patch → test → fix
+* read → modify → validate
+
+Instead, we provide primitive operations:
+
+* file I/O
+* code search
+* patch application
+* test execution
+* git inspection
+* shell execution
+
+The model is responsible for sequencing.
+
+---
+
+#### 2. The system evolves toward an “AI coding environment”, not a chatbot
+
+Future tool design is guided by three missing primitives:
+
+(1) Patch-first mutation model (not string replacement)
+
+Current:
+
+* edit_file(old, new)
+
+Target:
+
+* apply_patch (multi-hunk, git-compatible diffs)
+
+Reason:
+
+* enables refactors, batch edits, and model-driven code evolution
+
+---
+
+(2) Project structure intelligence layer
+
+Current:
+
+* grep-based search
+
+Target:
+
+* symbol graph + reference index
+
+Examples:
+
+* find_symbol
+* find_references
+* list_dependencies
+
+Reason:
+
+* enables semantic navigation instead of lexical search
+
+---
+
+(3) Execution environment (not command whitelist)
+
+Current:
+
+* allowlisted run_command
+
+Target:
+
+* sandboxed execution environment with:
+* background jobs
+* streaming logs
+* long-running processes
+* structured output capture
+
+Reason:
+
+* debugging is an iterative process, not a single command
+
+---
+
+#### 3. Workflow is emergent, not encoded
+
+We intentionally do NOT implement:
+
+* workflow engine
+* task DAG system
+* planning state machine
+
+Instead:
+
+workflows emerge from tool composition + model reasoning + feedback loops
+
+Typical emergent pattern:
+
+read_file → grep → apply_patch → run_tests → inspect diff → retry
+
+This is not hardcoded — it is a natural result of tool design.
+
+---
+
+#### 4. Tool outputs must be machine-actionable
+
+All tool outputs should evolve toward:
+
+* structured results (not only text)
+* parseable failure modes
+* stable identifiers (file paths, symbols, diff hunks)
+* retryable error semantics
+
+This enables the model to:
+
+* recover from failure
+* self-correct
+* iterate safely
+
+---
+
+#### 5. The system is converging toward an AI-native IDE kernel
+
+Long-term vision:
+
+CodeAgent is not a CLI tool.
+
+It is an agent-native development kernel providing:
+
+* code understanding primitives
+* mutation primitives
+* execution primitives
+* traceable state transitions
+
+The model provides intelligence.
+The runtime provides guarantees.
+
+---
 
 ### The agent loop (target)
 
@@ -209,7 +406,9 @@ request slow / failing". A bare `context deadline exceeded` is a black box.
 - [x] Request trace: each request persists per-attempt detail (latency + result
   per attempt) as a JSON `trace`; `codeagent trace [N]` / `/trace [N]` show the
   last N requests broken down attempt by attempt.
-- [ ] Latency histogram / P95.
+- [x] Latency histogram / P95: `stats` reports P50/P95/P99 latency and an ASCII
+  distribution histogram, computed in Go from the request log (the average hides
+  the slow tail; the percentiles and shape show it).
 - [ ] Cost metrics (token-based spend per model).
 
 **Done when:** a slow or failing run can be diagnosed from `stats` and the retry
@@ -232,6 +431,17 @@ This is reusable Agent-Runtime infrastructure, not CLI glue.
   Added as a pure renderer — zero changes to the loop, agent, or session.
 
 **Done when:** swapping the renderer changes the UX without touching the loop.
+
+### Phase 3.9 — Tooling primitives upgrade (Claude Code parity layer)
+
+- [ ] Replace edit_file with apply_patch (multi-hunk diff model)
+- [ ] Introduce symbol index / project graph layer
+- [ ] Add structured shell execution (background + streaming)
+- [ ] Introduce tool output schemas (machine-readable results)
+- [ ] Improve failure semantics (retryable vs fatal tool errors)
+- [ ] Enable tool chaining through structured outputs
+
+**Done when:** the agent can complete a multi-file refactor + test cycle without manual intervention.
 
 ### Phase 4 — Thinking & reflection
 
@@ -417,6 +627,15 @@ Compaction is **model-aware**: the threshold is `context_window * compact_ratio`
 a 256k model compacts later than a 128k one. The recent-window retention policy
 (`KeepRecentMessages`) is separate — it decides *what* survives a compaction,
 independent of *when* compaction fires.
+
+## Key Insight
+* As the tool system matures, the agent loop does not become more complex.
+* Instead, **the tools become more composable, structured, and environment-like.**
+* This shifts the system from:
+> a model calling functions
+
+to:
+> a model operating a programming environment
 
 ## Project belief
 
