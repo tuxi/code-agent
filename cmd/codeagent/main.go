@@ -399,6 +399,12 @@ func buildCompactor(mc app.ModelConfig, provider model.Provider) session.Compact
 // buildRegistry registers the model-facing tool set. Shared by run and repl.
 func buildRegistry(root string) (*tools.Registry, error) {
 	registry := tools.NewRegistry()
+
+	// run_command and the job_* tools share one job registry, so a job_id
+	// returned by a background run_command is resolvable by job_status/logs/cancel.
+	runCmd := shell.NewRunCommandTool(root)
+	jobReg := runCmd.Jobs
+
 	for _, tool := range []tools.Tool{
 		filesystem.NewListFilesTool(root),
 		filesystem.NewReadFileTool(root),
@@ -409,7 +415,10 @@ func buildRegistry(root string) (*tools.Registry, error) {
 		git.NewDiffTool(root),
 		git.NewApplyPatchTool(root),
 		git.NewGitCommitTool(root),
-		shell.NewRunCommandTool(root),
+		runCmd,
+		&shell.JobStatusTool{Jobs: jobReg},
+		&shell.JobLogsTool{Jobs: jobReg},
+		&shell.JobCancelTool{Jobs: jobReg},
 	} {
 		if err := registry.Register(tool); err != nil {
 			return nil, err

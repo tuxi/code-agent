@@ -498,8 +498,10 @@ This is reusable Agent-Runtime infrastructure, not CLI glue.
 - [x] Add edit_file (small targeted edits)
 - [x] Add policy-gated shell layer (run_command)
 - [x] Add machine-readable tool outputs
-- [ ] Add streaming shell execution
-- [ ] Add background jobs
+- [x] Add background jobs — `run_command` `"background": true` returns a
+  `job_id` immediately; `job_status` / `job_logs` / `job_cancel` inspect and stop
+  it. A long build/test no longer blocks the loop or hits the 120s timeout.
+- [ ] Add streaming shell execution (live console output for foreground commands)
 - [ ] Add tool result attachments
 - [ ] Add retryable vs fatal tool errors
 - [ ] Add tool chaining through structured outputs

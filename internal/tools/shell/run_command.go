@@ -2,6 +2,7 @@ package shell
 
 import (
 	"bytes"
+	"code-agent/internal/jobs"
 	"code-agent/internal/sandbox"
 	"code-agent/internal/tools"
 	"context"
@@ -26,6 +27,11 @@ type RunCommandTool struct {
 	Policy         sandbox.CommandPolicy
 	Timeout        time.Duration
 	MaxOutputBytes int
+
+	// Jobs holds background commands started with "background": true. It is
+	// shared with the job_* tools so they inspect the same set. Defaulted by
+	// NewRunCommandTool; buildRegistry overrides it with a shared registry.
+	Jobs *jobs.Registry
 }
 
 func NewRunCommandTool(workspaceRoot string) *RunCommandTool {
@@ -34,11 +40,27 @@ func NewRunCommandTool(workspaceRoot string) *RunCommandTool {
 		Policy:         sandbox.DefaultPolicy(),
 		Timeout:        120 * time.Second,
 		MaxOutputBytes: 80_000,
+		Jobs:           jobs.NewRegistry(),
 	}
 }
 
 type runCommandInput struct {
 	Command string `json:"command"`
+	// Background runs the command in a job that outlives this call: Execute
+	// returns a job_id immediately instead of blocking. Use it for long builds
+	// and test suites; poll with job_status / job_logs, stop with job_cancel.
+	Background bool `json:"background"`
+}
+
+// backgroundResult is the async shape returned when a command is launched in the
+// background — there is no exit code yet, so the fields differ from a foreground
+// commandResult to make the difference obvious to the model.
+type backgroundResult struct {
+	Command  string `json:"command"`
+	JobID    string `json:"job_id"`
+	Status   string `json:"status"`
+	Decision string `json:"decision"`
+	Note     string `json:"note"`
 }
 
 // commandResult is the structured output of a run_command call. It is marshaled
@@ -63,7 +85,8 @@ func (t *RunCommandTool) Description() string {
 	return "Run a command in the workspace and get structured output (stdout, stderr, exit_code, duration_ms). " +
 		"Read-only and build commands (ls, cat, grep, git status/diff/log, go build/test/vet, cargo check) run directly; " +
 		"commands that mutate the tree or reach the network (rm, mv, curl, git checkout/commit/push) require user confirmation; " +
-		"a few catastrophic commands are blocked. One command per call — pipes, redirection, and chaining (|, >, &&) are not supported."
+		"a few catastrophic commands are blocked. One command per call — pipes, redirection, and chaining (|, >, &&) are not supported. " +
+		`Set "background": true for a long build/test that would otherwise block — you get a job_id back immediately; then poll job_status / job_logs, or stop it with job_cancel.`
 }
 
 func (t *RunCommandTool) InputSchema() json.RawMessage {
@@ -72,14 +95,21 @@ func (t *RunCommandTool) InputSchema() json.RawMessage {
 			Type:        "string",
 			Description: `A single command to run, e.g. "go test ./..." or "git diff". No pipes/redirection/chaining.`,
 		},
+		"background": {
+			Type:        "boolean",
+			Description: `Run in the background and return a job_id immediately instead of waiting. For long builds/tests. Poll with job_status / job_logs.`,
+		},
 	}, "command").JSON()
 }
 
 func (t *RunCommandTool) Execute(ctx context.Context, input json.RawMessage) (tools.ToolResult, error) {
-	command, err := parseCommand(input)
-	if err != nil {
-		return tools.ToolResult{}, err
+	var in runCommandInput
+	if len(input) > 0 {
+		if err := json.Unmarshal(input, &in); err != nil {
+			return tools.ToolResult{}, fmt.Errorf("invalid run_command input: %w", err)
+		}
 	}
+	command := strings.TrimSpace(in.Command)
 	if command == "" {
 		return tools.ToolResult{}, fmt.Errorf("command is required")
 	}
@@ -119,6 +149,24 @@ func (t *RunCommandTool) Execute(ctx context.Context, input json.RawMessage) (to
 	rootAbs, err := filepath.Abs(t.WorkspaceRoot)
 	if err != nil {
 		return tools.ToolResult{}, err
+	}
+
+	// Background: launch the job and return its id immediately, leaving the agent
+	// free to do other work. Policy gating (block/confirm) and the operator guard
+	// above still apply; only the *waiting* is removed, and the foreground timeout
+	// does not bound the job.
+	if in.Background {
+		if t.Jobs == nil {
+			t.Jobs = jobs.NewRegistry()
+		}
+		snap := t.Jobs.Start(rootAbs, command, args).Snapshot()
+		return t.jsonResult(backgroundResult{
+			Command:  command,
+			JobID:    snap.ID,
+			Status:   string(snap.Status),
+			Decision: string(class.Decision),
+			Note:     "started in background; poll job_status / job_logs by job_id, or job_cancel to stop it",
+		})
 	}
 
 	cmdCtx, cancel := context.WithTimeout(ctx, t.Timeout)
@@ -181,7 +229,11 @@ func (t *RunCommandTool) SideEffectsFor(input json.RawMessage) bool {
 func (t *RunCommandTool) SideEffects() bool { return true }
 
 func (t *RunCommandTool) result(res commandResult) (tools.ToolResult, error) {
-	data, err := json.MarshalIndent(res, "", "  ")
+	return t.jsonResult(res)
+}
+
+func (t *RunCommandTool) jsonResult(v any) (tools.ToolResult, error) {
+	data, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
 		return tools.ToolResult{}, err
 	}
