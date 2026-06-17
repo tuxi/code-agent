@@ -91,6 +91,35 @@ func openStore(root string) (session.Store, error) {
 	return session.NewSQLiteStore(path)
 }
 
+// requestObserver records each model request to the store for transport
+// telemetry. Best-effort: a telemetry write never fails the run.
+type requestObserver struct {
+	ctx   context.Context
+	store session.Store
+}
+
+func (o requestObserver) Observe(s model.RequestStat) {
+	_ = o.store.RecordRequest(o.ctx, session.RequestRecord{
+		At:           s.At,
+		Model:        s.Model,
+		PromptTokens: s.PromptTokens,
+		Attempts:     s.Attempts,
+		Retries:      s.Retries,
+		TimedOut:     s.TimedOut,
+		Success:      s.Success,
+		ErrorClass:   s.ErrorClass,
+		LatencyMs:    s.Latency.Milliseconds(),
+	})
+}
+
+// attachObserver wires request telemetry into a provider once the store is open
+// (buildProvider always returns a *ResilientProvider, so the assertion holds).
+func attachObserver(provider model.Provider, store session.Store, ctx context.Context) {
+	if rp, ok := provider.(*model.ResilientProvider); ok {
+		rp.Observer = requestObserver{ctx: ctx, store: store}
+	}
+}
+
 // listSessions prints saved sessions, most recently updated first.
 func listSessions(ctx context.Context, cfg app.Config) error {
 	store, err := openStore(cfg.Workspace.Root)
@@ -124,26 +153,37 @@ func printSessionMetas(metas []session.Meta) {
 	}
 }
 
-// runStats prints aggregate compaction telemetry across all saved sessions.
+// runStats prints aggregate telemetry across all saved sessions.
 func runStats(ctx context.Context, cfg app.Config) error {
 	store, err := openStore(cfg.Workspace.Root)
 	if err != nil {
 		return err
 	}
 	defer store.Close()
+	return printStatsReport(ctx, store)
+}
 
-	st, err := store.Stats(ctx)
+// printStatsReport renders both telemetry sections: Context (compaction) and
+// Provider (transport). Shared by `codeagent stats` and the REPL's /stats.
+func printStatsReport(ctx context.Context, store session.Store) error {
+	cstat, err := store.Stats(ctx)
 	if err != nil {
 		return err
 	}
-	printStats(st)
+	pstat, err := store.ProviderStats(ctx)
+	if err != nil {
+		return err
+	}
+	fmt.Println("=== Context ===")
+	printContextStats(cstat)
+	fmt.Println("\n=== Provider ===")
+	printProviderStats(pstat)
 	return nil
 }
 
-// printStats renders aggregate telemetry. This is the evidence base for sizing a
-// token-aware recent window (compression varies a lot with workload), so the
-// numbers matter more than the formatting.
-func printStats(st session.Stats) {
+// printContextStats renders compaction telemetry — the evidence base for sizing
+// a token-aware recent window (compression varies a lot with workload).
+func printContextStats(st session.Stats) {
 	fmt.Printf("Sessions:           %d\n", st.Sessions)
 	fmt.Printf("Compactions:        %d\n", st.Compactions)
 	if st.Compactions == 0 {
@@ -157,6 +197,22 @@ func printStats(st session.Stats) {
 	fmt.Printf("Avg summary chars:  %.0f\n", st.AvgSummaryChars)
 	fmt.Printf("Max ratio:          %.1f%%\n", st.MaxRatio*100)
 	fmt.Printf("Min ratio:          %.1f%%\n", st.MinRatio*100)
+}
+
+// printProviderStats renders transport telemetry — the answer to "why are
+// requests slow / failing" that a bare "context deadline exceeded" cannot give.
+func printProviderStats(st session.ProviderStats) {
+	fmt.Printf("Requests:           %d\n", st.Requests)
+	if st.Requests == 0 {
+		fmt.Println("(no requests recorded yet)")
+		return
+	}
+	fmt.Printf("Successes:          %d\n", st.Successes)
+	fmt.Printf("Failures:           %d\n", st.Failures)
+	fmt.Printf("Timeouts:           %d\n", st.Timeouts)
+	fmt.Printf("Retries:            %d\n", st.Retries)
+	fmt.Printf("Avg latency:        %.1fs\n", st.AvgLatencyMs/1000)
+	fmt.Printf("Max latency:        %.1fs\n", float64(st.MaxLatencyMs)/1000)
 }
 
 // buildProvider constructs a model.Provider from a resolved model config. Only
@@ -280,6 +336,7 @@ func runAgent(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider 
 		return err
 	}
 	defer store.Close()
+	attachObserver(provider, store, ctx)
 
 	fmt.Printf("Model: %s (%s)\nSession: %s\n", mc.Name, mc.Model, sess.ID)
 

@@ -18,8 +18,37 @@ type Store interface {
 	Load(ctx context.Context, id string) (*Session, error)
 	List(ctx context.Context) ([]Meta, error)
 	Stats(ctx context.Context) (Stats, error)
+	RecordRequest(ctx context.Context, r RequestRecord) error
+	ProviderStats(ctx context.Context) (ProviderStats, error)
 	Delete(ctx context.Context, id string) error
 	Close() error
+}
+
+// RequestRecord is one persisted model request (across its retry attempts) for
+// transport telemetry. The persisted log doubles as a per-request trace.
+type RequestRecord struct {
+	At           time.Time
+	Model        string
+	PromptTokens int
+	Attempts     int
+	Retries      int
+	TimedOut     bool
+	Success      bool
+	ErrorClass   string
+	LatencyMs    int64
+}
+
+// ProviderStats is aggregate transport telemetry across all recorded requests —
+// the evidence behind "why are requests slow / failing", which a bare
+// "context deadline exceeded" cannot answer.
+type ProviderStats struct {
+	Requests     int
+	Successes    int
+	Failures     int
+	Timeouts     int
+	Retries      int
+	AvgLatencyMs float64
+	MaxLatencyMs int64
 }
 
 // Meta is a one-line summary of a stored session, for listing. The compaction

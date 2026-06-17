@@ -195,6 +195,25 @@ layer is swappable, and runs survive transient API errors.
 **Done when:** long runs do not overflow the context window, and project
 conventions persist across runs.
 
+### Phase 3.6 — Transport observability
+
+The bottleneck has moved from "will the context overflow" to "why is this
+request slow / failing". A bare `context deadline exceeded` is a black box.
+
+- [x] Provider metrics: `ResilientProvider` emits a `RequestStat` per call
+  (attempts, retries, timeouts, latency, error class) through an `Observer`; the
+  CLI persists them to a `requests` table, and `codeagent stats` / `/stats` add a
+  `=== Provider ===` section (requests, successes, failures, timeouts, retries,
+  avg/max latency). Each retry also prints a one-line notice so a slow request is
+  visible live.
+- [ ] Request trace: per-attempt detail (latency + result for each attempt),
+  built on the persisted request log.
+- [ ] Latency histogram / P95.
+- [ ] Cost metrics (token-based spend per model).
+
+**Done when:** a slow or failing run can be diagnosed from `stats` and the retry
+log instead of a bare timeout error.
+
 ### Phase 4 — Thinking & reflection
 
 - [ ] Adopt a reasoning-capable model / interleaved reasoning.

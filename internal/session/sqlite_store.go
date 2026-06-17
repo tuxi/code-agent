@@ -51,6 +51,18 @@ CREATE TABLE IF NOT EXISTS compactions (
 	summary_chars     INTEGER,
 	compacted_at      TEXT,
 	PRIMARY KEY (session_id, seq)
+);
+CREATE TABLE IF NOT EXISTS requests (
+	id            INTEGER PRIMARY KEY AUTOINCREMENT,
+	at            TEXT,
+	model         TEXT,
+	prompt_tokens INTEGER,
+	attempts      INTEGER,
+	retries       INTEGER,
+	timed_out     INTEGER,
+	success       INTEGER,
+	error_class   TEXT,
+	latency_ms    INTEGER
 );`
 
 func NewSQLiteStore(path string) (*SQLiteStore, error) {
@@ -248,6 +260,43 @@ func (s *SQLiteStore) Stats(ctx context.Context) (Stats, error) {
 		return Stats{}, err
 	}
 	return st, nil
+}
+
+// RecordRequest appends one request to the telemetry log. Best-effort by
+// convention: callers should not fail a run if this errors.
+func (s *SQLiteStore) RecordRequest(ctx context.Context, r RequestRecord) error {
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO requests (at, model, prompt_tokens, attempts, retries, timed_out, success, error_class, latency_ms)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		formatTime(r.At), r.Model, r.PromptTokens, r.Attempts, r.Retries,
+		boolToInt(r.TimedOut), boolToInt(r.Success), r.ErrorClass, r.LatencyMs)
+	return err
+}
+
+// ProviderStats aggregates the request log into transport telemetry.
+func (s *SQLiteStore) ProviderStats(ctx context.Context) (ProviderStats, error) {
+	var st ProviderStats
+	row := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*),
+		       COALESCE(SUM(success), 0),
+		       COALESCE(SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END), 0),
+		       COALESCE(SUM(timed_out), 0),
+		       COALESCE(SUM(retries), 0),
+		       COALESCE(AVG(latency_ms), 0),
+		       COALESCE(MAX(latency_ms), 0)
+		FROM requests`)
+	if err := row.Scan(&st.Requests, &st.Successes, &st.Failures, &st.Timeouts,
+		&st.Retries, &st.AvgLatencyMs, &st.MaxLatencyMs); err != nil {
+		return ProviderStats{}, err
+	}
+	return st, nil
+}
+
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }
 
 func (s *SQLiteStore) Delete(ctx context.Context, id string) error {

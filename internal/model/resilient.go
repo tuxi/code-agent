@@ -8,6 +8,7 @@ import (
 	"math/rand"
 	"net"
 	"net/http"
+	"os"
 	"time"
 )
 
@@ -35,11 +36,18 @@ type ResilientProvider struct {
 	Backoff    time.Duration
 	MaxBackoff time.Duration
 
+	// Observer, if set, receives one RequestStat per Complete call (across all of
+	// its attempts) for transport telemetry.
+	Observer Observer
+	// LogWriter receives one-line retry notices so a slow/failing request is not a
+	// black box. Defaults to os.Stderr; set to io.Discard to silence.
+	LogWriter io.Writer
+
 	// sleep is injectable for tests; nil uses an interruptible real sleep.
 	sleep func(time.Duration)
 }
 
-func (p *ResilientProvider) Complete(ctx context.Context, req Request) (Response, error) {
+func (p *ResilientProvider) Complete(ctx context.Context, req Request) (resp Response, err error) {
 	if p.Inner == nil {
 		return Response{}, errors.New("resilient provider: nil inner provider")
 	}
@@ -48,26 +56,53 @@ func (p *ResilientProvider) Complete(ctx context.Context, req Request) (Response
 		attempts = 1
 	}
 
-	var lastErr error
+	// One RequestStat per call, finalized on exit (named returns let the defer see
+	// the outcome regardless of which return path fired).
+	start := time.Now()
+	stat := RequestStat{At: start, Model: req.Model}
+	defer func() {
+		if p.Observer == nil {
+			return
+		}
+		stat.Latency = time.Since(start)
+		if stat.Retries = stat.Attempts - 1; stat.Retries < 0 {
+			stat.Retries = 0
+		}
+		stat.Success = err == nil
+		if err == nil {
+			stat.PromptTokens = resp.Usage.PromptTokens
+		} else {
+			stat.ErrorClass = errorClass(err)
+		}
+		p.Observer.Observe(stat)
+	}()
+
 	for attempt := 1; attempt <= attempts; attempt++ {
 		// Stop spending attempts the moment the caller no longer wants the work.
-		if err := ctx.Err(); err != nil {
-			return Response{}, err
+		if cerr := ctx.Err(); cerr != nil {
+			return Response{}, cerr
 		}
+		stat.Attempts = attempt
 
 		attemptCtx := ctx
 		var cancel context.CancelFunc
 		if p.Timeout > 0 {
 			attemptCtx, cancel = context.WithTimeout(ctx, p.Timeout)
 		}
-		resp, err := p.Inner.Complete(attemptCtx, req)
+		attemptStart := time.Now()
+		resp, err = p.Inner.Complete(attemptCtx, req)
+		attemptDur := time.Since(attemptStart)
 		if cancel != nil {
 			cancel()
 		}
 		if err == nil {
 			return resp, nil
 		}
-		lastErr = err
+
+		class := errorClass(err)
+		if class == "timeout" {
+			stat.TimedOut = true
+		}
 
 		// Caller cancellation/expiry (as opposed to our per-attempt timeout) is
 		// terminal — checked before classification so a base-context deadline is
@@ -81,11 +116,23 @@ func (p *ResilientProvider) Complete(ctx context.Context, req Request) (Response
 		if attempt == attempts {
 			break
 		}
-		if !p.wait(ctx, p.backoffFor(attempt)) {
+		delay := p.backoffFor(attempt)
+		p.logf("[provider] attempt %d failed: %s after %s — retrying in %s\n",
+			attempt, class, attemptDur.Round(100*time.Millisecond), delay.Round(10*time.Millisecond))
+		if !p.wait(ctx, delay) {
 			return Response{}, ctx.Err()
 		}
 	}
-	return Response{}, fmt.Errorf("model call failed after %d attempt(s): %w", attempts, lastErr)
+	return Response{}, fmt.Errorf("model call failed after %d attempt(s): %w", attempts, err)
+}
+
+// logf writes a one-line transport notice. Defaults to stderr.
+func (p *ResilientProvider) logf(format string, args ...any) {
+	w := p.LogWriter
+	if w == nil {
+		w = os.Stderr
+	}
+	fmt.Fprintf(w, format, args...)
 }
 
 // backoffFor returns the (jittered) delay before the given retry attempt

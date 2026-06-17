@@ -3,6 +3,7 @@ package model
 import (
 	"context"
 	"errors"
+	"io"
 	"net"
 	"testing"
 	"time"
@@ -50,7 +51,7 @@ func TestResilientRetriesThenSucceeds(t *testing.T) {
 		errs: []error{timeoutErr{}, &APIError{StatusCode: 503}},
 		resp: Response{Content: "ok"},
 	}
-	p := &ResilientProvider{Inner: inner, MaxRetries: 3, sleep: noSleep()}
+	p := &ResilientProvider{Inner: inner, MaxRetries: 3, sleep: noSleep(), LogWriter: io.Discard}
 
 	resp, err := p.Complete(context.Background(), Request{Messages: []Message{{Role: RoleUser, Content: "hi"}}})
 	if err != nil {
@@ -66,7 +67,7 @@ func TestResilientRetriesThenSucceeds(t *testing.T) {
 
 func TestResilientNonRetryableStopsImmediately(t *testing.T) {
 	inner := &fakeInner{errs: []error{&APIError{StatusCode: 400, Message: "bad request"}}}
-	p := &ResilientProvider{Inner: inner, MaxRetries: 3, sleep: noSleep()}
+	p := &ResilientProvider{Inner: inner, MaxRetries: 3, sleep: noSleep(), LogWriter: io.Discard}
 
 	_, err := p.Complete(context.Background(), Request{})
 	var apiErr *APIError
@@ -80,7 +81,7 @@ func TestResilientNonRetryableStopsImmediately(t *testing.T) {
 
 func TestResilientExhaustsRetries(t *testing.T) {
 	inner := &fakeInner{errs: []error{timeoutErr{}, timeoutErr{}, timeoutErr{}}}
-	p := &ResilientProvider{Inner: inner, MaxRetries: 2, sleep: noSleep()}
+	p := &ResilientProvider{Inner: inner, MaxRetries: 2, sleep: noSleep(), LogWriter: io.Discard}
 
 	_, err := p.Complete(context.Background(), Request{})
 	if err == nil {
@@ -99,7 +100,7 @@ func TestResilientStopsOnCallerCancel(t *testing.T) {
 	inner := &fakeInner{resp: Response{Content: "ok"}}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	p := &ResilientProvider{Inner: inner, MaxRetries: 3, sleep: noSleep()}
+	p := &ResilientProvider{Inner: inner, MaxRetries: 3, sleep: noSleep(), LogWriter: io.Discard}
 
 	_, err := p.Complete(ctx, Request{})
 	if !errors.Is(err, context.Canceled) {
@@ -114,7 +115,7 @@ func TestResilientStopsOnCallerCancel(t *testing.T) {
 // mutate the request's messages.
 func TestResilientReplayDoesNotMutateMessages(t *testing.T) {
 	inner := &fakeInner{errs: []error{timeoutErr{}, timeoutErr{}}, resp: Response{Content: "ok"}}
-	p := &ResilientProvider{Inner: inner, MaxRetries: 5, sleep: noSleep()}
+	p := &ResilientProvider{Inner: inner, MaxRetries: 5, sleep: noSleep(), LogWriter: io.Discard}
 
 	msgs := []Message{{Role: RoleSystem, Content: "s"}, {Role: RoleUser, Content: "u"}}
 	if _, err := p.Complete(context.Background(), Request{Messages: msgs}); err != nil {
@@ -132,7 +133,7 @@ func TestResilientReplayDoesNotMutateMessages(t *testing.T) {
 
 func TestResilientPerAttemptTimeout(t *testing.T) {
 	inner := &fakeInner{block: true} // never returns until its attempt context expires
-	p := &ResilientProvider{Inner: inner, MaxRetries: 1, Timeout: 20 * time.Millisecond, sleep: noSleep()}
+	p := &ResilientProvider{Inner: inner, MaxRetries: 1, Timeout: 20 * time.Millisecond, sleep: noSleep(), LogWriter: io.Discard}
 
 	start := time.Now()
 	_, err := p.Complete(context.Background(), Request{})
@@ -187,5 +188,63 @@ func TestBackoffGrowsAndCaps(t *testing.T) {
 		if got < upper/2 || got > upper {
 			t.Errorf("backoffFor(%d) = %v, want within [%v, %v]", attempt+1, got, upper/2, upper)
 		}
+	}
+}
+
+type capturingObserver struct{ stats []RequestStat }
+
+func (c *capturingObserver) Observe(s RequestStat) { c.stats = append(c.stats, s) }
+
+// A retried-then-succeeded call emits one stat carrying the attempt/retry count
+// and the successful response's prompt tokens.
+func TestResilientEmitsSuccessStat(t *testing.T) {
+	obs := &capturingObserver{}
+	inner := &fakeInner{
+		errs: []error{&APIError{StatusCode: 503}},
+		resp: Response{Content: "ok", Usage: Usage{PromptTokens: 1234}},
+	}
+	p := &ResilientProvider{Inner: inner, MaxRetries: 2, sleep: noSleep(), LogWriter: io.Discard, Observer: obs}
+
+	if _, err := p.Complete(context.Background(), Request{Model: "m"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(obs.stats) != 1 {
+		t.Fatalf("want 1 stat, got %d", len(obs.stats))
+	}
+	s := obs.stats[0]
+	if !s.Success || s.Attempts != 2 || s.Retries != 1 || s.Model != "m" || s.PromptTokens != 1234 || s.ErrorClass != "" {
+		t.Fatalf("unexpected stat: %+v", s)
+	}
+}
+
+func TestResilientEmitsFailureStat(t *testing.T) {
+	obs := &capturingObserver{}
+	inner := &fakeInner{errs: []error{&APIError{StatusCode: 400}}}
+	p := &ResilientProvider{Inner: inner, MaxRetries: 3, sleep: noSleep(), LogWriter: io.Discard, Observer: obs}
+
+	if _, err := p.Complete(context.Background(), Request{Model: "m"}); err == nil {
+		t.Fatal("expected an error")
+	}
+	if len(obs.stats) != 1 {
+		t.Fatalf("want 1 stat, got %d", len(obs.stats))
+	}
+	s := obs.stats[0]
+	if s.Success || s.Attempts != 1 || s.Retries != 0 || s.ErrorClass != "4xx" {
+		t.Fatalf("unexpected stat: %+v", s)
+	}
+}
+
+func TestResilientStatRecordsTimeout(t *testing.T) {
+	obs := &capturingObserver{}
+	inner := &fakeInner{block: true}
+	p := &ResilientProvider{Inner: inner, MaxRetries: 1, Timeout: 20 * time.Millisecond, sleep: noSleep(), LogWriter: io.Discard, Observer: obs}
+
+	_, _ = p.Complete(context.Background(), Request{Model: "m"})
+	if len(obs.stats) != 1 {
+		t.Fatalf("want 1 stat, got %d", len(obs.stats))
+	}
+	s := obs.stats[0]
+	if !s.TimedOut || s.ErrorClass != "timeout" || s.Attempts != 2 {
+		t.Fatalf("unexpected stat: %+v", s)
 	}
 }

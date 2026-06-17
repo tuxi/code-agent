@@ -44,6 +44,7 @@ func repl(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider mode
 		return err
 	}
 	defer store.Close()
+	attachObserver(provider, store, ctx)
 
 	rl, err := readline.NewEx(&readline.Config{
 		Prompt:                 "> ",
@@ -184,11 +185,9 @@ func handleCommand(line string, cfg app.Config, mc *app.ModelConfig, runner *age
 		return sess, false, nil
 
 	case "/stats":
-		st, err := store.Stats(context.Background())
-		if err != nil {
+		if err := printStatsReport(context.Background(), store); err != nil {
 			return sess, false, err
 		}
-		printStats(st)
 		return sess, false, nil
 
 	case "/resume":
@@ -224,6 +223,7 @@ func handleCommand(line string, cfg app.Config, mc *app.ModelConfig, runner *age
 		if err != nil {
 			return sess, false, err
 		}
+		attachObserver(newProvider, store, context.Background())
 		*mc = newMC
 		runner.Model = newProvider
 		runner.ModelName = newMC.Model

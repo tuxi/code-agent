@@ -216,6 +216,51 @@ func TestSQLiteStoreListIncludesCompactionAggregates(t *testing.T) {
 	}
 }
 
+func TestSQLiteStoreProviderStats(t *testing.T) {
+	store := newStore(t)
+	ctx := context.Background()
+	recs := []RequestRecord{
+		{Model: "m", Success: true, Attempts: 1, Retries: 0, LatencyMs: 1000, At: time.Now()},
+		{Model: "m", Success: true, Attempts: 2, Retries: 1, TimedOut: true, LatencyMs: 31000, At: time.Now()},
+		{Model: "m", Success: false, Attempts: 3, Retries: 2, TimedOut: true, ErrorClass: "timeout", LatencyMs: 90000, At: time.Now()},
+	}
+	for _, r := range recs {
+		if err := store.RecordRequest(ctx, r); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	st, err := store.ProviderStats(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Requests != 3 || st.Successes != 2 || st.Failures != 1 {
+		t.Fatalf("requests/successes/failures = %d/%d/%d, want 3/2/1", st.Requests, st.Successes, st.Failures)
+	}
+	if st.Timeouts != 2 {
+		t.Fatalf("timeouts = %d, want 2", st.Timeouts)
+	}
+	if st.Retries != 3 {
+		t.Fatalf("retries = %d, want 3 (0+1+2)", st.Retries)
+	}
+	if st.AvgLatencyMs < 40666 || st.AvgLatencyMs > 40667 {
+		t.Fatalf("avg latency = %v, want ~40666.7", st.AvgLatencyMs)
+	}
+	if st.MaxLatencyMs != 90000 {
+		t.Fatalf("max latency = %d, want 90000", st.MaxLatencyMs)
+	}
+}
+
+func TestSQLiteStoreProviderStatsEmpty(t *testing.T) {
+	st, err := newStore(t).ProviderStats(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Requests != 0 || st.MaxLatencyMs != 0 {
+		t.Fatalf("empty store should be zero: %+v", st)
+	}
+}
+
 func TestSQLiteStoreLoadMissing(t *testing.T) {
 	store := newStore(t)
 	if _, err := store.Load(context.Background(), "nope"); err == nil {
