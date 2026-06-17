@@ -2,6 +2,7 @@ package shell
 
 import (
 	"bytes"
+	"code-agent/internal/sandbox"
 	"code-agent/internal/tools"
 	"context"
 	"encoding/json"
@@ -13,24 +14,25 @@ import (
 	"time"
 )
 
+// RunCommandTool runs a shell command in the workspace. It is a controlled
+// system-shell layer rather than an open one: every command is classified by a
+// sandbox.CommandPolicy into allow / confirm / block. Allowed (read-only and
+// build) commands run directly; mutating commands are gated behind the agent's
+// confirmation prompt (via SideEffectsFor); catastrophic commands are refused
+// outright. The result is structured (stdout, stderr, exit code, duration) so
+// the model can act on it.
 type RunCommandTool struct {
-	WorkspaceRoot   string
-	AllowedCommands []string
-	Timeout         time.Duration
-	MaxOutputBytes  int
+	WorkspaceRoot  string
+	Policy         sandbox.CommandPolicy
+	Timeout        time.Duration
+	MaxOutputBytes int
 }
 
 func NewRunCommandTool(workspaceRoot string) *RunCommandTool {
 	return &RunCommandTool{
-		WorkspaceRoot: workspaceRoot,
-		AllowedCommands: []string{
-			"go test ./...",
-			"go test ./internal/...",
-			"go test ./cmd/...",
-			"go vet ./...",
-			"git status",
-		},
-		Timeout:        60 * time.Second,
+		WorkspaceRoot:  workspaceRoot,
+		Policy:         sandbox.DefaultPolicy(),
+		Timeout:        120 * time.Second,
 		MaxOutputBytes: 80_000,
 	}
 }
@@ -39,49 +41,84 @@ type runCommandInput struct {
 	Command string `json:"command"`
 }
 
+// commandResult is the structured output of a run_command call. It is marshaled
+// to JSON so the model receives machine-actionable fields rather than a prose
+// blob: exit_code drives success/failure, duration_ms is observability, and
+// decision/note explain any policy action.
+type commandResult struct {
+	Command    string `json:"command"`
+	Stdout     string `json:"stdout,omitempty"`
+	Stderr     string `json:"stderr,omitempty"`
+	ExitCode   int    `json:"exit_code"`
+	DurationMS int64  `json:"duration_ms"`
+	Decision   string `json:"decision"`       // allow | confirm | block
+	Note       string `json:"note,omitempty"` // policy reason, timeout, or exec error
+}
+
 func (t *RunCommandTool) Name() string {
 	return "run_command"
 }
 
 func (t *RunCommandTool) Description() string {
-	return "Run an allowlisted command in the workspace, such as go test or git status."
+	return "Run a command in the workspace and get structured output (stdout, stderr, exit_code, duration_ms). " +
+		"Read-only and build commands (ls, cat, grep, git status/diff/log, go build/test/vet, cargo check) run directly; " +
+		"commands that mutate the tree or reach the network (rm, mv, curl, git checkout/commit/push) require user confirmation; " +
+		"a few catastrophic commands are blocked. One command per call — pipes, redirection, and chaining (|, >, &&) are not supported."
 }
 
 func (t *RunCommandTool) InputSchema() json.RawMessage {
-	//return `{"command":"allowlisted command to run, such as go test ./..."}`
 	return tools.Object(map[string]tools.Property{
 		"command": {
 			Type:        "string",
-			Description: `An allowlisted command to run, e.g. \"go test ./...\"."`,
+			Description: `A single command to run, e.g. "go test ./..." or "git diff". No pipes/redirection/chaining.`,
 		},
 	}, "command").JSON()
 }
 
 func (t *RunCommandTool) Execute(ctx context.Context, input json.RawMessage) (tools.ToolResult, error) {
-	var in runCommandInput
-	if len(input) > 0 {
-		if err := json.Unmarshal(input, &in); err != nil {
-			return tools.ToolResult{}, fmt.Errorf("invalid run_command input: %w", err)
-		}
+	command, err := parseCommand(input)
+	if err != nil {
+		return tools.ToolResult{}, err
 	}
-
-	command := strings.TrimSpace(in.Command)
-	if len(command) == 0 {
+	if command == "" {
 		return tools.ToolResult{}, fmt.Errorf("command is required")
 	}
 
-	if !t.isAllowed(command) {
-		return tools.ToolResult{}, fmt.Errorf("command is not allowed: %s", command)
+	class := t.Policy.Classify(command)
+
+	// Blocked commands never run. Surface a structured refusal rather than a hard
+	// error so the model can read the reason and choose a different approach.
+	if class.Decision == sandbox.Block {
+		return t.result(commandResult{
+			Command:  command,
+			ExitCode: -1,
+			Decision: class.Decision.String(),
+			Note:     "refused by policy: " + class.Reason,
+		})
+	}
+
+	// We execute a single program directly (no shell), so shell operators would
+	// be passed as literal arguments and silently misbehave. Reject them clearly.
+	if sandbox.ContainsShellOperators(command) {
+		return t.result(commandResult{
+			Command:  command,
+			ExitCode: -1,
+			Decision: class.Decision.String(),
+			Note:     "pipes, redirection, and chaining are not supported; run one command at a time",
+		})
+	}
+
+	args, err := sandbox.SplitArgs(command)
+	if err != nil {
+		return tools.ToolResult{}, err
+	}
+	if len(args) == 0 {
+		return tools.ToolResult{}, fmt.Errorf("empty command")
 	}
 
 	rootAbs, err := filepath.Abs(t.WorkspaceRoot)
 	if err != nil {
 		return tools.ToolResult{}, err
-	}
-
-	args := splitCommand(in.Command)
-	if len(args) == 0 {
-		return tools.ToolResult{}, fmt.Errorf("empty command")
 	}
 
 	cmdCtx, cancel := context.WithTimeout(ctx, t.Timeout)
@@ -94,71 +131,82 @@ func (t *RunCommandTool) Execute(ctx context.Context, input json.RawMessage) (to
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
-	err = cmd.Run()
+	start := time.Now()
+	runErr := cmd.Run()
+	duration := time.Since(start)
+
+	res := commandResult{
+		Command:    command,
+		Stdout:     truncate(stdout.String(), t.MaxOutputBytes),
+		Stderr:     truncate(stderr.String(), t.MaxOutputBytes),
+		ExitCode:   0,
+		DurationMS: duration.Milliseconds(),
+		Decision:   class.Decision.String(),
+	}
+
 	if errors.Is(cmdCtx.Err(), context.DeadlineExceeded) {
-		return tools.ToolResult{}, fmt.Errorf("command timed out after %s: %s", t.Timeout, command)
+		res.ExitCode = -1
+		res.Note = fmt.Sprintf("timed out after %s", t.Timeout)
+		return t.result(res)
 	}
 
-	output := formatCommandOutput(command, stdout.String(), stderr.String(), err)
-	output = truncateOutput(output, t.MaxOutputBytes)
-	return tools.ToolResult{
-		Content: output,
-	}, nil
-}
-
-// SideEffects marks run_command as a side-effecting tool, so the runtime gates
-// it behind user confirmation.
-func (t *RunCommandTool) SideEffects() bool { return true }
-
-func formatCommandOutput(command, stdout, stderr string, err error) string {
-	var b strings.Builder
-	b.WriteString("Command: ")
-	b.WriteString(command)
-	b.WriteString("\n")
-	if err != nil {
-		b.WriteString("Status: failed\n")
-		b.WriteString("Error: ")
-		b.WriteString(err.Error())
-		b.WriteString("\n")
-	} else {
-		b.WriteString("Status: success\n")
-	}
-	if strings.TrimSpace(stdout) != "" {
-		b.WriteString("\nSTDOUT:\n")
-		b.WriteString(stdout)
-	}
-	if strings.TrimSpace(stderr) != "" {
-		b.WriteString("\nSTDERR:\n")
-		b.WriteString(stderr)
-	}
-	return b.String()
-
-}
-
-func (t *RunCommandTool) isAllowed(command string) bool {
-	command = strings.TrimSpace(command)
-	for _, item := range t.AllowedCommands {
-		if command == item {
-			return true
+	if runErr != nil {
+		var exitErr *exec.ExitError
+		if errors.As(runErr, &exitErr) {
+			res.ExitCode = exitErr.ExitCode()
+		} else {
+			// Command could not start (not found, not executable, ...).
+			res.ExitCode = -1
+			res.Note = runErr.Error()
 		}
 	}
-	return false
+
+	return t.result(res)
 }
 
-func splitCommand(cmd string) []string {
-	// P2 第一版只支持简单命令，不支持引号、管道、重定向、&&、||
-	// 因为 allowlist 是精确匹配，所以这里用 Fields 足够安全。
-	return strings.Fields(cmd)
+// SideEffectsFor makes run_command's confirmation gate command-aware: allowed
+// (read-only/build) commands and blocked commands do not prompt — the former
+// because they are safe, the latter because Execute refuses them anyway — while
+// mutating and unrecognized commands require confirmation.
+func (t *RunCommandTool) SideEffectsFor(input json.RawMessage) bool {
+	command, err := parseCommand(input)
+	if err != nil || command == "" {
+		return false // Execute will return the error; no need to prompt.
+	}
+	return t.Policy.Classify(command).Decision == sandbox.Confirm
 }
 
-func truncateOutput(s string, max int) string {
-	if len(s) <= max {
+// SideEffects keeps the static marker (always true) as a conservative fallback
+// for any caller that gates without the input. The loop uses SideEffectsFor.
+func (t *RunCommandTool) SideEffects() bool { return true }
+
+func (t *RunCommandTool) result(res commandResult) (tools.ToolResult, error) {
+	data, err := json.MarshalIndent(res, "", "  ")
+	if err != nil {
+		return tools.ToolResult{}, err
+	}
+	return tools.ToolResult{Content: string(data)}, nil
+}
+
+func parseCommand(input json.RawMessage) (string, error) {
+	var in runCommandInput
+	if len(input) > 0 {
+		if err := json.Unmarshal(input, &in); err != nil {
+			return "", fmt.Errorf("invalid run_command input: %w", err)
+		}
+	}
+	return strings.TrimSpace(in.Command), nil
+}
+
+func truncate(s string, max int) string {
+	if max <= 0 || len(s) <= max {
 		return s
 	}
 	return s[:max] + "\n...<truncated>"
 }
 
 var (
-	_ tools.Tool          = (*RunCommandTool)(nil)
-	_ tools.SideEffecting = (*RunCommandTool)(nil)
+	_ tools.Tool               = (*RunCommandTool)(nil)
+	_ tools.SideEffecting      = (*RunCommandTool)(nil)
+	_ tools.SideEffectingInput = (*RunCommandTool)(nil)
 )

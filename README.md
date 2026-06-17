@@ -63,10 +63,20 @@ does not encode task-specific sequences.
 
 ### Built-in Tools
 
+The tools form three layers of capability:
+
+- **Text** — `list_files`, `read_file`, `grep`: find and read by string.
+- **Structure** — `edit_file`, `apply_patch`, `git_diff`: modify code and inspect changes.
+- **Semantics** — `project_graph`: understand symbols, references, and rename safety.
+- **System** — `run_command`: a policy-gated shell layer for git / build / test.
+
+Full list:
+
 - list_files
 - read_file
 - edit_file
 - grep
+- project_graph
 - git_diff
 - apply_patch
 - run_command
@@ -93,6 +103,47 @@ grep answers: "where is this text"
 ProjectGraph answers: "what is this symbol and how does it relate"
 
 The model should prefer ProjectGraph over grep whenever structural understanding is needed.
+
+The `project_graph` tool exposes three actions, all returning JSON:
+
+- `find_symbol` — locate a symbol's definition by name.
+- `find_references` — find the use-sites of a symbol.
+- `rename_check` — a safety report before a rename: how many files it touches,
+  whether the target name already exists (collision), and any warnings.
+
+> ProjectGraphTool does not implement language parsing.
+> It delegates semantic understanding to language toolchains:
+> gopls, sourcekitten, rust-analyzer, pyright.
+> The system does not attempt to reimplement IDE-grade analysis.
+> It composes existing compilers and language servers into a unified interface.
+
+Each language has an adapter behind one `LanguageAdapter` interface; results are
+normalized into a single `Symbol` / `Reference` schema. Go (gopls) is
+implemented; Swift / Rust / Python are stubs that detect their toolchain and are
+filled in behind the same interface. A backend whose toolchain is not installed
+is skipped, never fatal — install e.g. `gopls` to enable Go semantics:
+
+```
+go install golang.org/x/tools/gopls@latest
+```
+
+### run_command permission model
+
+`run_command` is a controlled system-shell layer, not an open one. Every command
+is classified by a `sandbox.CommandPolicy` into one of three decisions:
+
+- **allow** — read-only and build commands run directly, with no prompt
+  (`ls`, `cat`, `grep`, `git status/diff/log`, `go build/test/vet`, `cargo check`).
+- **confirm** — commands that mutate the tree, discard work, or reach the network
+  require user confirmation (`rm`, `mv`, `curl`, `git checkout/commit/push`).
+- **block** — a small set of catastrophic commands is refused outright
+  (`rm -rf /`, fork bombs, `dd` to a disk, force-push to `main`).
+
+The confirmation gate is *command-aware*: a safe `git status` no longer prompts,
+while a destructive `rm` always does. Output is structured
+(`stdout`, `stderr`, `exit_code`, `duration_ms`, `command`, `decision`) so the
+model can act on the result rather than parse prose. One command per call —
+pipes, redirection, and chaining are a deliberate non-goal (no shell is spawned).
 
 ## Target architecture
 
@@ -435,9 +486,17 @@ This is reusable Agent-Runtime infrastructure, not CLI glue.
 ### Phase 3.9 — Tooling primitives upgrade (Claude Code parity layer)
 
 - [ ] Replace edit_file with apply_patch (multi-hunk diff model)
-- [ ] Introduce symbol index / project graph layer
-- [ ] Add structured shell execution (background + streaming)
-- [ ] Introduce tool output schemas (machine-readable results)
+- [x] Introduce symbol index / project graph layer — `project_graph` tool
+  (`find_symbol` / `find_references` / `rename_check`) delegating to language
+  toolchains (gopls implemented; sourcekitten / rust-analyzer / pyright stubbed
+  behind one adapter interface).
+- [x] Add a policy-gated shell layer — `sandbox.CommandPolicy` classifies every
+  `run_command` into allow / confirm / block; the confirmation gate is now
+  command-aware (read-only/build run free; mutating/network are confirmed).
+- [x] Introduce tool output schemas (machine-readable results) — `run_command`
+  returns structured `{stdout, stderr, exit_code, duration_ms, command,
+  decision}`; `project_graph` returns the unified `Symbol` / `Reference` schema.
+- [ ] Add streaming / background shell execution
 - [ ] Improve failure semantics (retryable vs fatal tool errors)
 - [ ] Enable tool chaining through structured outputs
 

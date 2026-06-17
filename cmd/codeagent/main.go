@@ -8,6 +8,7 @@ import (
 	"code-agent/internal/tools"
 	"code-agent/internal/tools/filesystem"
 	"code-agent/internal/tools/git"
+	projectgraph "code-agent/internal/tools/project_graph"
 	"code-agent/internal/tools/search"
 	"code-agent/internal/tools/shell"
 	"code-agent/internal/ui"
@@ -346,6 +347,7 @@ func buildRegistry(root string) (*tools.Registry, error) {
 		filesystem.NewReadFileTool(root),
 		filesystem.NewEditFileTool(root),
 		search.NewGrepTool(root),
+		projectgraph.NewProjectGraphTool(root),
 		git.NewDiffTool(root),
 		git.NewApplyPatchTool(root),
 		shell.NewRunCommandTool(root),

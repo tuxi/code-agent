@@ -208,7 +208,7 @@ func (r *Runner) RunTurn(ctx context.Context, sess *session.Session, userInput s
 			switch {
 			case !advertised[call.Function.Name] || !known:
 				execErr = fmt.Errorf("unknown tool: %s", call.Function.Name)
-			case tools.HasSideEffects(tool) && !r.approve(call.Function.Name, input):
+			case tools.HasSideEffectsFor(tool, input) && !r.approve(call.Function.Name, input):
 				observation = "The user declined to run this tool. No changes were made."
 			default:
 				observation, execErr = r.executeTool(ctx, tool, input)
