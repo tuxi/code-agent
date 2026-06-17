@@ -49,16 +49,25 @@ func (p *liveProgress) start() {
 	begin := time.Now()
 	stop := p.stop
 	go func() {
-		t := time.NewTicker(time.Second)
+		// 选用经典的工业级 Spinner 字符序列
+		frames := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+		t := time.NewTicker(time.Millisecond * 100)
 		defer t.Stop()
+		var frameIdx int
 		for {
 			select {
 			case <-stop:
 				return
 			case <-t.C:
+				elapsed := int(time.Since(begin).Seconds())
+				frame := frames[frameIdx%len(frames)]
+				frameIdx++
 				p.mu.Lock()
 				if p.active { // re-check under lock: stopAndClear may have just run
-					fmt.Fprintf(p.w, "\rThinking... %ds ", int(time.Since(begin).Seconds()))
+					//fmt.Fprintf(p.w, "\rThinking... %ds ", int(time.Since(begin).Seconds()))
+					// \r 回到行首，\033[35m...\033[0m 是品红色高亮图标（可换成你喜欢的颜色）
+					// 末尾加 \033[K 防止秒数或文本变短时产生残影
+					fmt.Fprintf(p.w, "\r\033[35m%s\033[0m Thinking... %ds\033[K", frame, elapsed)
 				}
 				p.mu.Unlock()
 			}
@@ -76,5 +85,6 @@ func (p *liveProgress) stopAndClear() {
 	}
 	close(p.stop)
 	p.active = false
-	fmt.Fprint(p.w, "\r\033[K") // carriage return + erase to end of line
+	// 清除整行并强行将光标拨回行首，确保后面的真正的 Content 输出从干净的新行开始
+	fmt.Fprint(p.w, "\r\033[K")
 }
