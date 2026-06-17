@@ -44,3 +44,11 @@ type Session struct {
 	CreatedAt time.Time
 	UpdatedAt time.Time
 }
+
+// IsEmpty reports whether the session has no conversation yet — only the initial
+// system prompt, no turns. Such a session is a throwaway (e.g. a fresh REPL
+// launch the user immediately /resume'd away from) and must not be persisted,
+// or the session list fills with empty msgs=1 entries.
+func (s *Session) IsEmpty() bool {
+	return len(s.Messages) <= 1
+}

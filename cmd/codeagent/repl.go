@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"code-agent/internal/agent"
 	"code-agent/internal/app"
 	"code-agent/internal/model"
@@ -9,16 +8,29 @@ import (
 	"code-agent/internal/ui"
 	"context"
 	"fmt"
-	"os"
+	"io"
+	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/chzyer/readline"
 )
+
+// lineReader reads one line for the given prompt. In the REPL it is backed by the
+// readline instance, so the input loop and every sub-prompt (tool approval,
+// /resume selection) share a single owner of stdin with full UTF-8 / CJK line
+// editing.
+type lineReader func(prompt string) (string, error)
 
 // repl runs an interactive session: one Session persists across turns (so the
 // model remembers earlier context) and is saved to the store after every turn
 // (so it survives exit). A non-empty resumeID loads an existing session instead
-// of starting fresh. The same stdin reader is shared with the approver so
-// confirmation prompts and the input loop don't fight over stdin.
+// of starting fresh.
+//
+// Input goes through readline (raw mode), not the terminal's cooked mode: cooked
+// mode mishandles wide CJK characters (a backspace erases one display column, so
+// half a character lingers) and can drive some terminals into buggy wide-char
+// wrap rendering.
 func repl(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider model.Provider, resumeID string) error {
 	root := cfg.Workspace.Root
 
@@ -33,7 +45,27 @@ func repl(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider mode
 	}
 	defer store.Close()
 
-	stdin := bufio.NewReader(os.Stdin)
+	rl, err := readline.NewEx(&readline.Config{
+		Prompt:                 "> ",
+		HistoryFile:            filepath.Join(root, ".codeagent", "history"),
+		HistoryLimit:           1000,
+		DisableAutoSaveHistory: true, // save only real input lines, not y/N or selections
+		InterruptPrompt:        "^C",
+		EOFPrompt:              "exit",
+	})
+	if err != nil {
+		return err
+	}
+	defer rl.Close()
+
+	// ask reads one line under a custom prompt through the same readline instance,
+	// then restores the main prompt. Used for tool approval and /resume selection
+	// so there is a single owner of stdin.
+	ask := func(prompt string) (string, error) {
+		rl.SetPrompt(prompt)
+		defer rl.SetPrompt("> ")
+		return rl.Readline()
+	}
 
 	runner := &agent.Runner{
 		Model:       provider,
@@ -41,7 +73,7 @@ func repl(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider mode
 		Temperature: mc.Temperature,
 		Tools:       registry,
 		MaxSteps:    cfg.Agent.MaxSteps,
-		Approver:    ui.ConfirmApprover{Reader: stdin},
+		Approver:    ui.ConfirmApprover{Prompt: ask},
 		Compactor:   buildCompactor(mc, provider),
 	}
 
@@ -67,19 +99,27 @@ func repl(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider mode
 	fmt.Println("Type a request, or /help for commands. /exit to quit.")
 
 	for {
-		fmt.Print("\n> ")
-		line, err := stdin.ReadString('\n')
-		if err != nil { // EOF (Ctrl-D) or read error
-			fmt.Println()
+		line, err := rl.Readline()
+		switch {
+		case err == readline.ErrInterrupt: // Ctrl-C
+			if line == "" {
+				return nil
+			}
+			continue // cancel the current input
+		case err == io.EOF: // Ctrl-D
 			return nil
+		case err != nil:
+			return err
 		}
+
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
 		}
+		_ = rl.SaveHistory(line) // real input lines only; sub-prompts bypass this
 
 		if strings.HasPrefix(line, "/") {
-			newSess, quit, cerr := handleCommand(line, cfg, &mc, runner, sess, store, stdin)
+			newSess, quit, cerr := handleCommand(line, cfg, &mc, runner, sess, store, ask)
 			if cerr != nil {
 				fmt.Println("error:", cerr)
 			}
@@ -103,11 +143,7 @@ func repl(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider mode
 		fmt.Println("\n" + res.Final)
 		if res.PromptTokens > 0 {
 			// 展示Token 预算，这样能看出离压缩还有多远
-			fmt.Printf(
-				"[context: %d / %d]\n",
-				sess.PromptTokens,
-				sess.CompactThreshold,
-			)
+			fmt.Printf("[context: %d / %d]\n", sess.PromptTokens, sess.CompactThreshold)
 		}
 	}
 }
@@ -115,8 +151,9 @@ func repl(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider mode
 // handleCommand processes a slash command. It may mutate the current model (mc),
 // the runner, and the session budget (on /use). It returns the active session —
 // usually the one passed in, but /resume swaps it for a different stored session
-// — plus quit=true for /exit and /quit.
-func handleCommand(line string, cfg app.Config, mc *app.ModelConfig, runner *agent.Runner, sess *session.Session, store session.Store, stdin *bufio.Reader) (*session.Session, bool, error) {
+// — plus quit=true for /exit and /quit. ask reads sub-prompts (e.g. /resume's
+// selection) through the shared readline instance.
+func handleCommand(line string, cfg app.Config, mc *app.ModelConfig, runner *agent.Runner, sess *session.Session, store session.Store, ask lineReader) (*session.Session, bool, error) {
 	fields := strings.Fields(line)
 	switch fields[0] {
 	case "/exit", "/quit":
@@ -146,7 +183,7 @@ func handleCommand(line string, cfg app.Config, mc *app.ModelConfig, runner *age
 		return sess, false, nil
 
 	case "/resume":
-		next, err := resumeInteractive(cfg, mc, sess, store, stdin, fields)
+		next, err := resumeInteractive(cfg, mc, sess, store, ask, fields)
 		if err != nil {
 			return sess, false, err
 		}
@@ -197,10 +234,10 @@ func handleCommand(line string, cfg app.Config, mc *app.ModelConfig, runner *age
 }
 
 // resumeInteractive switches to another saved session. With an id (`/resume id`)
-// it switches directly; otherwise it lists sessions and reads a numbered choice
-// from stdin. It returns the session to make active — the current one unchanged
-// on cancel/no-op. The current session is saved before switching away.
-func resumeInteractive(cfg app.Config, mc *app.ModelConfig, sess *session.Session, store session.Store, stdin *bufio.Reader, fields []string) (*session.Session, error) {
+// it switches directly; otherwise it lists sessions and reads a numbered choice.
+// It returns the session to make active — the current one unchanged on
+// cancel/no-op. A non-empty current session is saved before switching away.
+func resumeInteractive(cfg app.Config, mc *app.ModelConfig, sess *session.Session, store session.Store, read lineReader, fields []string) (*session.Session, error) {
 	ctx := context.Background()
 
 	target := ""
@@ -223,10 +260,9 @@ func resumeInteractive(cfg app.Config, mc *app.ModelConfig, sess *session.Sessio
 			fmt.Printf("%s[%d] %s  model=%s  msgs=%d  updated=%s\n",
 				marker, i+1, m.ID, m.Model, m.MessageCount, m.UpdatedAt.Local().Format("2006-01-02 15:04"))
 		}
-		fmt.Print("Select a number to resume (enter to cancel): ")
-		choice, err := stdin.ReadString('\n')
+		choice, err := read("Select a number to resume (enter to cancel): ")
 		if err != nil {
-			return sess, nil
+			return sess, nil // Ctrl-C / Ctrl-D cancels
 		}
 		choice = strings.TrimSpace(choice)
 		if choice == "" {
@@ -245,9 +281,12 @@ func resumeInteractive(cfg app.Config, mc *app.ModelConfig, sess *session.Sessio
 		return sess, nil
 	}
 	// Persist the current session before leaving it (it may hold state since the
-	// last turn, e.g. a /use re-budget).
-	if err := store.Save(ctx, sess); err != nil {
-		fmt.Println("warning: failed to save current session:", err)
+	// last turn, e.g. a /use re-budget) — unless it's an untouched throwaway (a
+	// fresh launch with no turns), which must not pollute the session list.
+	if !sess.IsEmpty() {
+		if err := store.Save(ctx, sess); err != nil {
+			fmt.Println("warning: failed to save current session:", err)
+		}
 	}
 	loaded, err := loadAndRebudget(ctx, cfg, *mc, store, target)
 	if err != nil {

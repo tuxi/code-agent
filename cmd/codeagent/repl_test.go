@@ -1,10 +1,8 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -46,7 +44,11 @@ func testConfigModel() (app.Config, *app.ModelConfig) {
 	return cfg, mc
 }
 
-func reader(s string) *bufio.Reader { return bufio.NewReader(strings.NewReader(s)) }
+// promptReturning is a lineReader that always returns s, standing in for the
+// readline-backed reader the REPL uses.
+func promptReturning(s string) lineReader {
+	return func(string) (string, error) { return s, nil }
+}
 
 // Interactive: list, pick a number, switch — and re-budget to the current model.
 func TestResumeInteractiveSelect(t *testing.T) {
@@ -59,7 +61,7 @@ func TestResumeInteractiveSelect(t *testing.T) {
 	current := &session.Session{ID: "sess-a", Model: "old-model"}
 
 	// List orders newest-first: [1]=sess-b, [2]=sess-a. Pick 1 => sess-b.
-	next, err := resumeInteractive(cfg, mc, current, store, reader("1\n"), []string{"/resume"})
+	next, err := resumeInteractive(cfg, mc, current, store, promptReturning("1"), []string{"/resume"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,7 +80,7 @@ func TestResumeCancelKeepsCurrent(t *testing.T) {
 	cfg, mc := testConfigModel()
 	current := &session.Session{ID: "sess-a"}
 
-	next, err := resumeInteractive(cfg, mc, current, store, reader("\n"), []string{"/resume"})
+	next, err := resumeInteractive(cfg, mc, current, store, promptReturning(""), []string{"/resume"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,12 +95,67 @@ func TestResumeDirectByID(t *testing.T) {
 	cfg, mc := testConfigModel()
 	current := &session.Session{ID: "sess-a"}
 
-	next, err := resumeInteractive(cfg, mc, current, store, reader(""), []string{"/resume", "sess-b"})
+	next, err := resumeInteractive(cfg, mc, current, store, promptReturning(""), []string{"/resume", "sess-b"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if next.ID != "sess-b" {
 		t.Fatalf("direct resume switched to %q, want sess-b", next.ID)
+	}
+}
+
+// An untouched session (only the system prompt) must not be saved when resuming
+// away from it — otherwise every launch+/resume leaks an empty msgs=1 session.
+func TestResumeDoesNotPersistEmptyCurrent(t *testing.T) {
+	store := testStore(t)
+	seedSession(t, store, "sess-b", time.Now())
+	cfg, mc := testConfigModel()
+	current := &session.Session{
+		ID:       "sess-fresh",
+		Messages: []model.Message{{Role: model.RoleSystem, Content: "sys"}},
+	}
+
+	next, err := resumeInteractive(cfg, mc, current, store, promptReturning(""), []string{"/resume", "sess-b"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if next.ID != "sess-b" {
+		t.Fatalf("should switch to sess-b, got %q", next.ID)
+	}
+	metas, _ := store.List(context.Background())
+	for _, m := range metas {
+		if m.ID == "sess-fresh" {
+			t.Fatal("an untouched session must not be persisted on resume")
+		}
+	}
+}
+
+// A session with real turns IS saved before switching away.
+func TestResumePersistsNonEmptyCurrent(t *testing.T) {
+	store := testStore(t)
+	seedSession(t, store, "sess-b", time.Now())
+	cfg, mc := testConfigModel()
+	current := &session.Session{
+		ID: "sess-cur",
+		Messages: []model.Message{
+			{Role: model.RoleSystem, Content: "sys"},
+			{Role: model.RoleUser, Content: "real work"},
+			{Role: model.RoleAssistant, Content: "done"},
+		},
+	}
+
+	if _, err := resumeInteractive(cfg, mc, current, store, promptReturning(""), []string{"/resume", "sess-b"}); err != nil {
+		t.Fatal(err)
+	}
+	metas, _ := store.List(context.Background())
+	var found bool
+	for _, m := range metas {
+		if m.ID == "sess-cur" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("a session with real turns must be persisted on resume")
 	}
 }
 
@@ -108,7 +165,7 @@ func TestResumeInvalidSelection(t *testing.T) {
 	cfg, mc := testConfigModel()
 	current := &session.Session{ID: "sess-a"}
 
-	next, err := resumeInteractive(cfg, mc, current, store, reader("99\n"), []string{"/resume"})
+	next, err := resumeInteractive(cfg, mc, current, store, promptReturning("99"), []string{"/resume"})
 	if err == nil {
 		t.Fatal("expected an error for an out-of-range selection")
 	}
