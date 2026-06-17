@@ -133,6 +133,89 @@ func TestSQLiteStoreListAndDelete(t *testing.T) {
 	}
 }
 
+func TestSQLiteStoreStats(t *testing.T) {
+	store := newStore(t)
+	ctx := context.Background()
+
+	s1 := sampleSession()
+	s1.ID = "s1"
+	s1.Compactions = []CompactionStats{
+		{BeforeTokens: 90000, AfterTokens: 30000, SavedTokens: 60000, CompressionRatio: 0.60, SummaryChars: 1000, CompactedAt: time.Now()},
+		{BeforeTokens: 80000, AfterTokens: 20000, SavedTokens: 60000, CompressionRatio: 0.75, SummaryChars: 2000, CompactedAt: time.Now()},
+		{BeforeTokens: 50000, AfterTokens: -1}, // pending — must be excluded
+	}
+	if err := store.Save(ctx, s1); err != nil {
+		t.Fatal(err)
+	}
+	s2 := sampleSession()
+	s2.ID = "s2"
+	s2.Compactions = nil
+	if err := store.Save(ctx, s2); err != nil {
+		t.Fatal(err)
+	}
+
+	st, err := store.Stats(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Sessions != 2 {
+		t.Fatalf("sessions = %d, want 2", st.Sessions)
+	}
+	if st.Compactions != 2 {
+		t.Fatalf("compactions = %d, want 2 (pending excluded)", st.Compactions)
+	}
+	if st.AvgBefore != 85000 || st.AvgAfter != 25000 || st.AvgSaved != 60000 {
+		t.Fatalf("avg before/after/saved = %.0f/%.0f/%.0f, want 85000/25000/60000",
+			st.AvgBefore, st.AvgAfter, st.AvgSaved)
+	}
+	if st.AvgRatio < 0.674 || st.AvgRatio > 0.676 {
+		t.Fatalf("avg ratio = %v, want ~0.675", st.AvgRatio)
+	}
+	if st.MaxRatio != 0.75 || st.MinRatio != 0.60 {
+		t.Fatalf("max/min ratio = %v/%v, want 0.75/0.60", st.MaxRatio, st.MinRatio)
+	}
+}
+
+func TestSQLiteStoreStatsEmpty(t *testing.T) {
+	st, err := newStore(t).Stats(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Sessions != 0 || st.Compactions != 0 || st.AvgRatio != 0 {
+		t.Fatalf("empty store should yield zeros, got %+v", st)
+	}
+}
+
+func TestSQLiteStoreListIncludesCompactionAggregates(t *testing.T) {
+	store := newStore(t)
+	ctx := context.Background()
+	s := sampleSession()
+	s.Compactions = []CompactionStats{
+		{BeforeTokens: 90000, AfterTokens: 30000, SavedTokens: 60000, CompressionRatio: 0.6, SummaryChars: 1000, CompactedAt: time.Now()},
+		{BeforeTokens: 80000, AfterTokens: 25000, SavedTokens: 55000, CompressionRatio: 0.68, SummaryChars: 1500, CompactedAt: time.Now()},
+	}
+	if err := store.Save(ctx, s); err != nil {
+		t.Fatal(err)
+	}
+
+	metas, err := store.List(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(metas) != 1 {
+		t.Fatalf("expected 1 session, got %d", len(metas))
+	}
+	if metas[0].Compactions != 2 {
+		t.Fatalf("compactions = %d, want 2", metas[0].Compactions)
+	}
+	if metas[0].TotalSaved != 115000 {
+		t.Fatalf("total saved = %d, want 115000", metas[0].TotalSaved)
+	}
+	if metas[0].LastCompacted.IsZero() {
+		t.Fatal("expected a non-zero last-compacted time")
+	}
+}
+
 func TestSQLiteStoreLoadMissing(t *testing.T) {
 	store := newStore(t)
 	if _, err := store.Load(context.Background(), "nope"); err == nil {

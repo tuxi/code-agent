@@ -37,9 +37,14 @@ func run() error {
 
 	ctx := context.Background()
 
-	// `sessions` only reads the store — no model, no API key required.
-	if len(args) > 0 && args[0] == "sessions" {
-		return listSessions(ctx, cfg)
+	// These only read the store — no model, no API key required.
+	if len(args) > 0 {
+		switch args[0] {
+		case "sessions":
+			return listSessions(ctx, cfg)
+		case "stats":
+			return runStats(ctx, cfg)
+		}
 	}
 
 	mc, err := cfg.SelectModel(modelName)
@@ -102,16 +107,56 @@ func listSessions(ctx context.Context, cfg app.Config) error {
 	return nil
 }
 
-// printSessionMetas renders a session listing, newest first.
+// printSessionMetas renders a session listing, newest first. Sessions that have
+// compacted also show how many times and how many tokens were reclaimed.
 func printSessionMetas(metas []session.Meta) {
 	if len(metas) == 0 {
 		fmt.Println("no saved sessions")
 		return
 	}
 	for _, m := range metas {
-		fmt.Printf("%s  model=%s  msgs=%d  tokens=%d  updated=%s\n",
-			m.ID, m.Model, m.MessageCount, m.PromptTokens, m.UpdatedAt.Local().Format("2006-01-02 15:04"))
+		line := fmt.Sprintf("%s  model=%s  msgs=%d  ctx=%d", m.ID, m.Model, m.MessageCount, m.PromptTokens)
+		if m.Compactions > 0 {
+			line += fmt.Sprintf("  compactions=%d  saved=%d", m.Compactions, m.TotalSaved)
+		}
+		line += "  updated=" + m.UpdatedAt.Local().Format("2006-01-02 15:04")
+		fmt.Println(line)
 	}
+}
+
+// runStats prints aggregate compaction telemetry across all saved sessions.
+func runStats(ctx context.Context, cfg app.Config) error {
+	store, err := openStore(cfg.Workspace.Root)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+
+	st, err := store.Stats(ctx)
+	if err != nil {
+		return err
+	}
+	printStats(st)
+	return nil
+}
+
+// printStats renders aggregate telemetry. This is the evidence base for sizing a
+// token-aware recent window (compression varies a lot with workload), so the
+// numbers matter more than the formatting.
+func printStats(st session.Stats) {
+	fmt.Printf("Sessions:           %d\n", st.Sessions)
+	fmt.Printf("Compactions:        %d\n", st.Compactions)
+	if st.Compactions == 0 {
+		fmt.Println("(no compactions recorded yet — run some longer sessions first)")
+		return
+	}
+	fmt.Printf("Avg before tokens:  %.0f\n", st.AvgBefore)
+	fmt.Printf("Avg after tokens:   %.0f\n", st.AvgAfter)
+	fmt.Printf("Avg saved tokens:   %.0f\n", st.AvgSaved)
+	fmt.Printf("Avg ratio:          %.1f%%\n", st.AvgRatio*100)
+	fmt.Printf("Avg summary chars:  %.0f\n", st.AvgSummaryChars)
+	fmt.Printf("Max ratio:          %.1f%%\n", st.MaxRatio*100)
+	fmt.Printf("Min ratio:          %.1f%%\n", st.MinRatio*100)
 }
 
 // buildProvider constructs a model.Provider from a resolved model config. Only
@@ -260,6 +305,7 @@ func printUsage() {
   codeagent [--model NAME] run "..."       run a single task
   codeagent [--model NAME] ask "..."       one-off question (no tools)
   codeagent sessions                       list saved sessions
+  codeagent stats                          aggregate compaction telemetry
   codeagent [--model NAME] resume <id>     resume a saved session in the REPL
 
 Sessions are stored per-project in .codeagent/sessions.db and persist across

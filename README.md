@@ -183,6 +183,15 @@ layer is swappable, and runs survive transient API errors.
   (before/after tokens, saved, ratio, summary size) on the session, finalized
   from the next call's measured prompt size — no fabricated post-compaction
   token count.
+- [x] Aggregate compaction telemetry: `codeagent stats` / `/stats` report global
+  and per-session compression ratio, saved tokens, and summary size — the
+  evidence base for sizing retention, computed from the persisted compactions.
+- [ ] **(P3.5)** Replace the fixed `KeepRecentMessages` retention (the last
+  hardcoded magic number, `50` in `buildCompactor`) with a token-based recent
+  window, sized from real telemetry rather than a guess. Deferred on purpose:
+  collect `stats` over real runs first — the data may well show `50` is already
+  enough, downgrading this from an architecture task to a config knob.
+
 **Done when:** long runs do not overflow the context window, and project
 conventions persist across runs.
 

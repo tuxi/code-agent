@@ -193,9 +193,16 @@ func (s *SQLiteStore) Load(ctx context.Context, id string) (*Session, error) {
 }
 
 func (s *SQLiteStore) List(ctx context.Context) ([]Meta, error) {
+	// Per-session compaction aggregates are computed from the compactions table
+	// (after_tokens >= 0 = finalized), not denormalized onto sessions — the data
+	// already lives there and Save rewrites it wholesale, so there is nothing to
+	// keep in sync.
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT s.id, s.model, s.prompt_tokens, s.updated_at,
-		       (SELECT COUNT(*) FROM messages m WHERE m.session_id = s.id)
+		       (SELECT COUNT(*) FROM messages m WHERE m.session_id = s.id),
+		       (SELECT COUNT(*) FROM compactions c WHERE c.session_id = s.id AND c.after_tokens >= 0),
+		       (SELECT COALESCE(SUM(c.saved_tokens), 0) FROM compactions c WHERE c.session_id = s.id AND c.after_tokens >= 0),
+		       (SELECT COALESCE(MAX(c.compacted_at), '') FROM compactions c WHERE c.session_id = s.id AND c.after_tokens >= 0)
 		FROM sessions s
 		ORDER BY s.updated_at DESC`)
 	if err != nil {
@@ -205,14 +212,42 @@ func (s *SQLiteStore) List(ctx context.Context) ([]Meta, error) {
 	var out []Meta
 	for rows.Next() {
 		var m Meta
-		var updatedAt string
-		if err := rows.Scan(&m.ID, &m.Model, &m.PromptTokens, &updatedAt, &m.MessageCount); err != nil {
+		var updatedAt, lastCompacted string
+		if err := rows.Scan(&m.ID, &m.Model, &m.PromptTokens, &updatedAt,
+			&m.MessageCount, &m.Compactions, &m.TotalSaved, &lastCompacted); err != nil {
 			return nil, err
 		}
 		m.UpdatedAt = parseTime(updatedAt)
+		m.LastCompacted = parseTime(lastCompacted)
 		out = append(out, m)
 	}
 	return out, rows.Err()
+}
+
+// Stats aggregates compaction telemetry across all sessions. Only finalized
+// compactions (after_tokens >= 0) are counted, so a pending stat awaiting its
+// next-call measurement never skews the averages.
+func (s *SQLiteStore) Stats(ctx context.Context) (Stats, error) {
+	var st Stats
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sessions`).Scan(&st.Sessions); err != nil {
+		return Stats{}, err
+	}
+	// COALESCE so aggregates over an empty set return zeros rather than NULL.
+	row := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*),
+		       COALESCE(AVG(before_tokens), 0),
+		       COALESCE(AVG(after_tokens), 0),
+		       COALESCE(AVG(saved_tokens), 0),
+		       COALESCE(AVG(compression_ratio), 0),
+		       COALESCE(AVG(summary_chars), 0),
+		       COALESCE(MAX(compression_ratio), 0),
+		       COALESCE(MIN(compression_ratio), 0)
+		FROM compactions WHERE after_tokens >= 0`)
+	if err := row.Scan(&st.Compactions, &st.AvgBefore, &st.AvgAfter, &st.AvgSaved,
+		&st.AvgRatio, &st.AvgSummaryChars, &st.MaxRatio, &st.MinRatio); err != nil {
+		return Stats{}, err
+	}
+	return st, nil
 }
 
 func (s *SQLiteStore) Delete(ctx context.Context, id string) error {

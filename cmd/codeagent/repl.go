@@ -166,6 +166,7 @@ func handleCommand(line string, cfg app.Config, mc *app.ModelConfig, runner *age
   /use NAME     switch to another configured model (keeps the conversation)
   /session      show the current session id
   /sessions     list saved sessions
+  /stats        aggregate compaction telemetry
   /resume [id]  switch to a saved session (no id => pick from a list)
   /exit, /quit  leave the REPL`)
 		return sess, false, nil
@@ -180,6 +181,14 @@ func handleCommand(line string, cfg app.Config, mc *app.ModelConfig, runner *age
 			return sess, false, err
 		}
 		printSessionMetas(metas)
+		return sess, false, nil
+
+	case "/stats":
+		st, err := store.Stats(context.Background())
+		if err != nil {
+			return sess, false, err
+		}
+		printStats(st)
 		return sess, false, nil
 
 	case "/resume":
