@@ -275,6 +275,12 @@ func (s *SQLiteStore) Stats(ctx context.Context) (Stats, error) {
 		&st.AvgRatio, &st.AvgSummaryChars, &st.MaxRatio, &st.MinRatio); err != nil {
 		return Stats{}, err
 	}
+	// Query the session with the highest prompt_tokens and its threshold.
+	_ = s.db.QueryRowContext(ctx, `
+		SELECT COALESCE(MAX(prompt_tokens), 0), compact_threshold
+		FROM sessions
+		ORDER BY prompt_tokens DESC
+		LIMIT 1`).Scan(&st.MaxPromptTokens, &st.MaxCompactThreshold)
 	return st, nil
 }
 

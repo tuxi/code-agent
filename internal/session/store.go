@@ -111,4 +111,12 @@ type Stats struct {
 	AvgSummaryChars float64
 	MaxRatio        float64
 	MinRatio        float64
+
+	// MaxPromptTokens is the largest prompt_tokens across all sessions — shows
+	// how close the busiest session has come to its compaction threshold.
+	MaxPromptTokens int
+	// MaxCompactThreshold is the compact_threshold of the session with the
+	// highest prompt_tokens, so the "how full" display is always paired with
+	// the right threshold.
+	MaxCompactThreshold int
 }

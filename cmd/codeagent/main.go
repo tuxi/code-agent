@@ -202,7 +202,7 @@ func printStatsReport(ctx context.Context, store session.Store, cfg app.Config) 
 	fmt.Println("=== Context ===")
 	printContextStats(cstat)
 	fmt.Println("\n=== Provider ===")
-	printProviderStats(pstat)
+	printProviderStats(pstat, cfg)
 	fmt.Println("\n=== Cost ===")
 	printCostReport(usage, cfg)
 	return nil
@@ -258,7 +258,10 @@ func printContextStats(st session.Stats) {
 	fmt.Printf("Sessions:           %d\n", st.Sessions)
 	fmt.Printf("Compactions:        %d\n", st.Compactions)
 	if st.Compactions == 0 {
-		fmt.Println("(no compactions recorded yet — run some longer sessions first)")
+		if st.MaxCompactThreshold > 0 {
+			pct := float64(st.MaxPromptTokens) / float64(st.MaxCompactThreshold) * 100
+			fmt.Printf("Peak context:       %d / %d (%.0f%%)\n", st.MaxPromptTokens, st.MaxCompactThreshold, pct)
+		}
 		return
 	}
 	fmt.Printf("Avg before tokens:  %.0f\n", st.AvgBefore)
@@ -272,7 +275,7 @@ func printContextStats(st session.Stats) {
 
 // printProviderStats renders transport telemetry — the answer to "why are
 // requests slow / failing" that a bare "context deadline exceeded" cannot give.
-func printProviderStats(st session.ProviderStats) {
+func printProviderStats(st session.ProviderStats, cfg app.Config) {
 	fmt.Printf("Requests:           %d\n", st.Requests)
 	if st.Requests == 0 {
 		fmt.Println("(no requests recorded yet)")
@@ -281,6 +284,7 @@ func printProviderStats(st session.ProviderStats) {
 	fmt.Printf("Successes:          %d\n", st.Successes)
 	fmt.Printf("Failures:           %d\n", st.Failures)
 	fmt.Printf("Timeouts:           %d\n", st.Timeouts)
+	fmt.Printf("Timeout:            %ds\n", cfg.Provider.RequestTimeoutSeconds)
 	fmt.Printf("Retries:            %d\n", st.Retries)
 	fmt.Printf("Avg latency:        %.1fs\n", st.AvgLatencyMs/1000)
 	fmt.Printf("P50 latency:        %.1fs\n", float64(st.P50LatencyMs)/1000)
