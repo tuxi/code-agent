@@ -3,6 +3,8 @@ package session
 import (
 	"code-agent/internal/model"
 	"code-agent/internal/prompt"
+	"crypto/rand"
+	"encoding/hex"
 	"os"
 	"path/filepath"
 	"strings"
@@ -66,6 +68,7 @@ func (b *Builder) Build() (*Session, error) {
 
 	now := time.Now()
 	return &Session{
+		ID: newSessionID(),
 		Messages: []model.Message{
 			{Role: model.RoleSystem, Content: systemContent},
 		},
@@ -75,6 +78,15 @@ func (b *Builder) Build() (*Session, error) {
 		CreatedAt:        now,
 		UpdatedAt:        now,
 	}, nil
+}
+
+// newSessionID returns a sortable, human-readable, collision-resistant id:
+// a UTC timestamp prefix for at-a-glance ordering plus random hex for
+// uniqueness within the same second.
+func newSessionID() string {
+	var b [4]byte
+	_, _ = rand.Read(b[:])
+	return time.Now().UTC().Format("20060102-150405") + "-" + hex.EncodeToString(b[:])
 }
 
 // loadProjectMemory reads CODEAGENT.md from the workspace root if present. A

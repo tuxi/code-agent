@@ -42,6 +42,7 @@ tests/**/coverage/
 
 config.yaml
 config/config.yaml
+.codeagent/
 data/
 src/bin
 src/tmp

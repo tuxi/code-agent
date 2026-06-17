@@ -14,6 +14,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -34,6 +35,13 @@ func run() error {
 		return err
 	}
 
+	ctx := context.Background()
+
+	// `sessions` only reads the store — no model, no API key required.
+	if len(args) > 0 && args[0] == "sessions" {
+		return listSessions(ctx, cfg)
+	}
+
 	mc, err := cfg.SelectModel(modelName)
 	if err != nil {
 		return err
@@ -44,9 +52,8 @@ func run() error {
 		return err
 	}
 
-	ctx := context.Background()
 	if len(args) == 0 {
-		return repl(ctx, cfg, mc, provider)
+		return repl(ctx, cfg, mc, provider, "")
 	}
 
 	command := args[0]
@@ -57,9 +64,53 @@ func run() error {
 		return runAsk(ctx, mc, provider, goal)
 	case "run":
 		return runAgent(ctx, cfg, mc, provider, goal)
+	case "resume":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: codeagent resume <session-id>  (see 'codeagent sessions')")
+		}
+		return repl(ctx, cfg, mc, provider, args[1])
 	default:
 		printUsage()
 		return fmt.Errorf("unknown command: %s", command)
+	}
+}
+
+// openStore opens (creating if needed) the per-project session database under
+// <root>/.codeagent/sessions.db. Sessions are project-local: you resume the
+// conversation for the repo you are in.
+func openStore(root string) (session.Store, error) {
+	path := filepath.Join(root, ".codeagent", "sessions.db")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return nil, fmt.Errorf("create session store dir: %w", err)
+	}
+	return session.NewSQLiteStore(path)
+}
+
+// listSessions prints saved sessions, most recently updated first.
+func listSessions(ctx context.Context, cfg app.Config) error {
+	store, err := openStore(cfg.Workspace.Root)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+
+	metas, err := store.List(ctx)
+	if err != nil {
+		return err
+	}
+	printSessionMetas(metas)
+	return nil
+}
+
+// printSessionMetas renders a session listing, newest first.
+func printSessionMetas(metas []session.Meta) {
+	if len(metas) == 0 {
+		fmt.Println("no saved sessions")
+		return
+	}
+	for _, m := range metas {
+		fmt.Printf("%s  model=%s  msgs=%d  tokens=%d  updated=%s\n",
+			m.ID, m.Model, m.MessageCount, m.PromptTokens, m.UpdatedAt.Local().Format("2006-01-02 15:04"))
 	}
 }
 
@@ -177,25 +228,43 @@ func runAgent(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider 
 	if err != nil {
 		return err
 	}
+	sess.Model = mc.Model
 
-	fmt.Printf("Model: %s (%s)\n", mc.Name, mc.Model)
-
-	res, err := runner.RunTurn(ctx, sess, goal)
+	store, err := openStore(root)
 	if err != nil {
 		return err
+	}
+	defer store.Close()
+
+	fmt.Printf("Model: %s (%s)\nSession: %s\n", mc.Name, mc.Model, sess.ID)
+
+	res, runErr := runner.RunTurn(ctx, sess, goal)
+	// Persist whatever the turn produced, even on error: the partial history is
+	// consistent and resumable.
+	if err := store.Save(ctx, sess); err != nil {
+		fmt.Fprintln(os.Stderr, "warning: failed to save session:", err)
+	}
+	if runErr != nil {
+		return runErr
 	}
 
 	fmt.Println("\nFinal:")
 	fmt.Println(res.Final)
+	fmt.Printf("\n(resume with: codeagent resume %s)\n", sess.ID)
 	return nil
 }
 
 func printUsage() {
 	fmt.Println(`Usage:
-  codeagent [--model NAME]                 start the interactive REPL
+  codeagent [--model NAME]                 start the interactive REPL (new session)
   codeagent [--model NAME] run "..."       run a single task
   codeagent [--model NAME] ask "..."       one-off question (no tools)
- 
+  codeagent sessions                       list saved sessions
+  codeagent [--model NAME] resume <id>     resume a saved session in the REPL
+
+Sessions are stored per-project in .codeagent/sessions.db and persist across
+runs, so a long conversation (and its summary) survives exit.
+
 Models are defined in config.yaml under "models:"; --model selects one
 (default: the configured default_model).`)
 }

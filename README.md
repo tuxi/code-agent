@@ -81,15 +81,15 @@ plans, or git.
 cmd/codeagent            CLI entrypoint
   ↓
 internal/agent           Loop driver (thin) + run state
-internal/context         Conversation/context manager: messages, prompt
-                         assembly, token accounting, compaction
-internal/model           Provider abstraction: tool-calling protocol, retries,
-                         (later) streaming
+internal/session         Session state + context assembly: messages, prompt
+                         assembly, token accounting, compaction, project memory
+                         (CODEAGENT.md), and SQLite persistence
+internal/model           Provider abstraction: tool-calling protocol, resilient
+                         retries/backoff, (later) streaming
 internal/tools           Tool registry (single source of truth) + tool impls
                          (filesystem / search / git / shell)
 internal/sandbox         Policy & permission layer: what is allowed, what needs
                          confirmation, allowlists
-internal/memory          Project memory (CODEAGENT.md) + session persistence
 internal/skills          Skill registry: progressive disclosure of guidance
 internal/trace           Structured event tracing
 internal/prompt          Base identity + prompt assembly (NOT the tool catalog)
@@ -168,6 +168,11 @@ layer is swappable, and runs survive transient API errors.
 
 - [x] Inject `CODEAGENT.md` as project memory at session start.
 - [x] Add token accounting; budget on tokens (keep `max_steps` as a safety cap).
+- [x] Add session persistence (SQLite) for resume and trace. Sessions are saved
+  per-project to `.codeagent/sessions.db` after every turn (full history +
+  summary + compaction trace); `codeagent sessions` lists them and
+  `codeagent resume <id>` continues one. Pure-Go driver (`modernc.org/sqlite`),
+  no cgo.
 - [x] Add compaction near the context-window limit (summarize old turns, keep
   recent ones verbatim). `LLMCompactor` folds dropped turns into a cumulative
   `Session.Summary`; history is rebuilt as system → summary → recent.
@@ -178,8 +183,6 @@ layer is swappable, and runs survive transient API errors.
   (before/after tokens, saved, ratio, summary size) on the session, finalized
   from the next call's measured prompt size — no fabricated post-compaction
   token count.
-- [ ] Add session persistence (SQLite) for resume and trace.
-
 **Done when:** long runs do not overflow the context window, and project
 conventions persist across runs.
 
@@ -238,7 +241,7 @@ without any hardcoded sequencing.
 
 ## Requirements
 
-- Go 1.22+
+- Go 1.25+ (the pure-Go SQLite driver requires a recent toolchain)
 - An API key for a model that supports function calling
 
 ## Setup
@@ -285,8 +288,18 @@ switched to glm (glm-5.1)
 > /model
 current model: glm (glm-5.1)
 
+> /resume
+  [1] 20260616-101500-a1b2c3d4  model=glm-5.1  msgs=42  updated=2026-06-16 10:15
+* [2] 20260616-093012-deadbeef  model=glm-5.1  msgs=8   updated=2026-06-16 09:31
+Select a number to resume (enter to cancel): 1
+resumed session 20260616-101500-a1b2c3d4 (42 messages)
+
 > /exit
 ```
+
+Sessions persist per-project to `.codeagent/sessions.db`. List them with
+`codeagent sessions`, resume from the shell with `codeagent resume <id>`, or
+switch between them inside the REPL with `/resume`.
 
 ### One-shot Mode
 ```bash
