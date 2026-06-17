@@ -11,30 +11,19 @@ package sandbox
 
 import "strings"
 
-// Decision is the outcome of classifying a command.
-type Decision int
+// Decision is the outcome of classifying a command. It is a string-valued enum
+// so a Classification marshals directly to readable JSON ("allow" / "confirm" /
+// "block") without a conversion step.
+type Decision string
 
 const (
 	// Allow runs the command without asking the user.
-	Allow Decision = iota
+	Allow Decision = "allow"
 	// Confirm runs the command only after explicit user confirmation.
-	Confirm
+	Confirm Decision = "confirm"
 	// Block refuses the command; it is never executed.
-	Block
+	Block Decision = "block"
 )
-
-func (d Decision) String() string {
-	switch d {
-	case Allow:
-		return "allow"
-	case Confirm:
-		return "confirm"
-	case Block:
-		return "block"
-	default:
-		return "unknown"
-	}
-}
 
 // Level is the coarse capability tier a command falls into. It mirrors the
 // permission model in the README: higher tiers are progressively more powerful
@@ -142,6 +131,10 @@ func DefaultPolicy() CommandPolicy {
 		"git push --force origin main", "git push -f origin main",
 		"git push --force origin master", "git push -f origin master",
 		"chmod -r 000", "chmod 000 /",
+		// Interpreter -c forms run an arbitrary nested script, which would slip
+		// past per-command classification entirely. The MVP runs one program per
+		// call and spawns no shell, so these are refused outright.
+		"bash -c", "sh -c", "zsh -c", "bash -lc", "/bin/sh -c",
 	}
 
 	p := CommandPolicy{levels: map[string]Level{}}
@@ -159,6 +152,17 @@ func DefaultPolicy() CommandPolicy {
 	}
 	p.BlockedCommands = blocked
 	return p
+}
+
+// defaultPolicy backs the package-level Classify. Built once: DefaultPolicy is
+// pure and immutable, so a single shared instance is safe to read concurrently.
+var defaultPolicy = DefaultPolicy()
+
+// Classify classifies a command against the built-in DefaultPolicy. It is the
+// package-level convenience for callers that do not hold their own policy;
+// run_command keeps a configurable CommandPolicy and calls the method form.
+func Classify(command string) Classification {
+	return defaultPolicy.Classify(command)
 }
 
 // Classify decides what to do with a command. Precedence: a blocked pattern

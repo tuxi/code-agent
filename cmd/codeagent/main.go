@@ -4,6 +4,7 @@ import (
 	"code-agent/internal/agent"
 	"code-agent/internal/app"
 	"code-agent/internal/model"
+	"code-agent/internal/observation"
 	"code-agent/internal/session"
 	"code-agent/internal/tools"
 	"code-agent/internal/tools/filesystem"
@@ -467,6 +468,7 @@ func runAgent(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider 
 		Tools:       registry,
 		MaxSteps:    cfg.Agent.MaxSteps,
 		Approver:    ui.ConfirmApprover{},
+		Observer:    observation.DefaultObserver{},
 		Compactor:   buildCompactor(mc, provider),
 		Emitter:     buildEmitter(),
 	}

@@ -92,7 +92,7 @@ func (t *RunCommandTool) Execute(ctx context.Context, input json.RawMessage) (to
 		return t.result(commandResult{
 			Command:  command,
 			ExitCode: -1,
-			Decision: class.Decision.String(),
+			Decision: string(class.Decision),
 			Note:     "refused by policy: " + class.Reason,
 		})
 	}
@@ -103,7 +103,7 @@ func (t *RunCommandTool) Execute(ctx context.Context, input json.RawMessage) (to
 		return t.result(commandResult{
 			Command:  command,
 			ExitCode: -1,
-			Decision: class.Decision.String(),
+			Decision: string(class.Decision),
 			Note:     "pipes, redirection, and chaining are not supported; run one command at a time",
 		})
 	}
@@ -141,7 +141,7 @@ func (t *RunCommandTool) Execute(ctx context.Context, input json.RawMessage) (to
 		Stderr:     truncate(stderr.String(), t.MaxOutputBytes),
 		ExitCode:   0,
 		DurationMS: duration.Milliseconds(),
-		Decision:   class.Decision.String(),
+		Decision:   string(class.Decision),
 	}
 
 	if errors.Is(cmdCtx.Err(), context.DeadlineExceeded) {

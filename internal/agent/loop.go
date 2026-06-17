@@ -23,6 +23,10 @@ type Runner struct {
 	// denied (see approve()). Read-only tools never consult it.
 	Approver Approver
 
+	// Observer enriches each tool result into a structured Observation (P4.1).
+	// Nil-safe: when unset, raw tool results are appended unchanged.
+	Observer Observer
+
 	Compactor session.Compactor
 
 	// Emitter, if set, receives the turn's event stream (thinking, tool calls,
@@ -225,7 +229,25 @@ func (r *Runner) RunTurn(ctx context.Context, sess *session.Session, userInput s
 				step.Error = execErr.Error()
 				observation = "Tool error: " + execErr.Error()
 			}
-			observation = TruncateObservation(observation, 9800)
+
+			// Enrich the raw result into a structured Observation (P4.1). Observe
+			// runs on the *full* output so salient lines survive truncation; the
+			// body is then truncated and a failure/summary block prepended, so the
+			// model sees the signal first. No-op when no Observer is set — the loop
+			// stays neutral and tool-agnostic.
+			if r.Observer != nil {
+				obs := r.Observer.Observe(call.Function.Name, observation)
+				observation = obs.Render(TruncateObservation(observation, 9800))
+				r.emit(Event{
+					Kind:        EventObserved,
+					Step:        step.Index,
+					ToolName:    call.Function.Name,
+					Observation: obs.Summary,
+					Failure:     string(obs.FailureType),
+				})
+			} else {
+				observation = TruncateObservation(observation, 9800)
+			}
 
 			step.Observation = observation
 			step.FinishedAt = time.Now()

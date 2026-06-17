@@ -16,6 +16,7 @@ const (
 	EventThinking      EventKind = "thinking"       // model produced reasoning text
 	EventToolStarted   EventKind = "tool_started"
 	EventToolFinished  EventKind = "tool_finished"
+	EventObserved      EventKind = "observed" // a tool result was classified (P4.1)
 	EventCompacted     EventKind = "compacted"
 	EventTurnFinished  EventKind = "turn_finished"
 )
@@ -33,11 +34,13 @@ type Event struct {
 	SessionID string
 	TurnID    string
 
-	// Tool events (ToolStarted / ToolFinished).
+	// Tool events (ToolStarted / ToolFinished / Observed). For EventObserved,
+	// Observation carries the one-line summary and Failure the FailureType.
 	Step        int
 	ToolName    string
 	ToolArgs    string
 	Observation string
+	Failure     string // EventObserved: the classified FailureType (e.g. "compile")
 
 	// Model / thinking.
 	Text         string        // reasoning text (Thinking) or final answer (TurnFinished)

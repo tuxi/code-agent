@@ -55,6 +55,51 @@ func TestDefaultPolicyClassify(t *testing.T) {
 	}
 }
 
+// TestBlocksInterpreterCForms covers the PRD requirement that bash -c / sh -c /
+// zsh -c are refused: they would run an arbitrary nested script past
+// per-command classification. A bare interactive shell still only needs
+// confirmation, and a command that merely mentions "bash -c" in a quoted
+// message is not blocked.
+func TestBlocksInterpreterCForms(t *testing.T) {
+	p := DefaultPolicy()
+
+	blocked := []string{
+		`bash -c "rm -rf /tmp/x"`,
+		`sh -c "echo hi"`,
+		`zsh -c "ls"`,
+		`/bin/sh -c "id"`,
+	}
+	for _, c := range blocked {
+		if d := p.Classify(c).Decision; d != Block {
+			t.Errorf("Classify(%q) = %v, want Block", c, d)
+		}
+	}
+
+	// A bare shell (no -c) is gated, not blocked.
+	if d := p.Classify("bash").Decision; d != Confirm {
+		t.Errorf("Classify(bash) = %v, want Confirm", d)
+	}
+	// "bash -c" inside a quoted commit message is data, not an invocation.
+	if d := p.Classify(`git commit -m "document bash -c usage"`).Decision; d == Block {
+		t.Error(`Classify(commit message mentioning "bash -c") = Block; quoted text must not block`)
+	}
+}
+
+// TestPackageLevelClassify checks the convenience entry point delegates to the
+// default policy.
+func TestPackageLevelClassify(t *testing.T) {
+	if d := Classify("git status").Decision; d != Allow {
+		t.Errorf("Classify(git status) = %v, want Allow", d)
+	}
+	if d := Classify("rm -rf /").Decision; d != Block {
+		t.Errorf("Classify(rm -rf /) = %v, want Block", d)
+	}
+	// Decision is a string-valued enum: it must equal its wire form.
+	if string(Classify("git status").Decision) != "allow" {
+		t.Errorf("Decision wire value = %q, want %q", Classify("git status").Decision, "allow")
+	}
+}
+
 func TestClassifyPrefixIsWordBounded(t *testing.T) {
 	p := DefaultPolicy()
 

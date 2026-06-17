@@ -4,6 +4,7 @@ import (
 	"code-agent/internal/agent"
 	"code-agent/internal/app"
 	"code-agent/internal/model"
+	"code-agent/internal/observation"
 	"code-agent/internal/session"
 	"code-agent/internal/ui"
 	"context"
@@ -88,6 +89,7 @@ func repl(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider mode
 		Tools:       registry,
 		MaxSteps:    cfg.Agent.MaxSteps,
 		Approver:    ui.ConfirmApprover{Prompt: ask},
+		Observer:    observation.DefaultObserver{},
 		Compactor:   buildCompactor(mc, provider),
 		Emitter:     buildEmitter(),
 	}

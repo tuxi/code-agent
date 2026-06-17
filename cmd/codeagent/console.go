@@ -38,7 +38,7 @@ func (consoleEmitter) Emit(e agent.Event) {
 	case agent.EventToolStarted:
 		fmt.Printf("\n[%d] tool=%s args=%s\n", e.Step, e.ToolName, e.ToolArgs)
 	case agent.EventToolFinished:
-		fmt.Printf("[observation]\n%s\n", e.Observation)
+		fmt.Printf("[result]\n%s\n", e.Observation)
 	case agent.EventCompacted:
 		if e.AfterTokens == 0 {
 			fmt.Printf("Context compacted: %d tokens → summary of %d chars (new size measured on next call)\n",

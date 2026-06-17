@@ -137,7 +137,14 @@ is classified by a `sandbox.CommandPolicy` into one of three decisions:
 - **confirm** — commands that mutate the tree, discard work, or reach the network
   require user confirmation (`rm`, `mv`, `curl`, `git checkout/commit/push`).
 - **block** — a small set of catastrophic commands is refused outright
-  (`rm -rf /`, fork bombs, `dd` to a disk, force-push to `main`).
+  (`rm -rf /`, fork bombs, `dd` to a disk, force-push to `main`), as are
+  interpreter forms (`bash -c`, `sh -c`, `zsh -c`) that would smuggle an
+  arbitrary nested script past per-command classification.
+
+Classification ignores the contents of quoted arguments, so a commit message
+that merely *mentions* `rm -rf /` or embeds a newline is treated as data, not
+syntax — only an actual unquoted invocation is matched. The full command is
+still shown at the confirmation prompt.
 
 The confirmation gate is *command-aware*: a safe `git status` no longer prompts,
 while a destructive `rm` always does. Output is structured
@@ -522,11 +529,16 @@ This is reusable Agent-Runtime infrastructure, not CLI glue.
 
 ### Phase 5 — Semantic code intelligence (Project Graph)
 
-- [ ] Go backend (gopls)
-- [ ] Swift backend (SourceKit / sourcekitten)
-- [ ] Rust backend (rust-analyzer)
-- [ ] Python backend (pyright)
-- [ ] ProjectGraphTool
+> Shipped but **parked**: the tool and the Go backend exist; the remaining
+> backends are deferred behind the Observation/Verify-Fix work, which is higher
+> ROI now (see Phase 4).
+
+- [x] ProjectGraphTool (`find_symbol` / `find_references` / `rename_check`,
+  unified `Symbol` / `Reference` schema, one `LanguageAdapter` interface)
+- [x] Go backend (gopls)
+- [ ] Swift backend (SourceKit / sourcekitten) — stub, detects toolchain
+- [ ] Rust backend (rust-analyzer) — stub, detects toolchain
+- [ ] Python backend (pyright) — stub, detects toolchain
 
 ### Phase 6 — Skills (progressive disclosure)
 
