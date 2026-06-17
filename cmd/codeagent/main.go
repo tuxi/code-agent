@@ -397,6 +397,7 @@ func buildRegistry(root string) (*tools.Registry, error) {
 	for _, tool := range []tools.Tool{
 		filesystem.NewListFilesTool(root),
 		filesystem.NewReadFileTool(root),
+		filesystem.NewCreateFileTool(root),
 		filesystem.NewEditFileTool(root),
 		search.NewGrepTool(root),
 		projectgraph.NewProjectGraphTool(root),
