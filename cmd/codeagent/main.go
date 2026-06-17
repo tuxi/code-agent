@@ -402,6 +402,7 @@ func buildRegistry(root string) (*tools.Registry, error) {
 		projectgraph.NewProjectGraphTool(root),
 		git.NewDiffTool(root),
 		git.NewApplyPatchTool(root),
+		git.NewGitCommitTool(root),
 		shell.NewRunCommandTool(root),
 	} {
 		if err := registry.Register(tool); err != nil {
