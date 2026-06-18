@@ -67,18 +67,20 @@ func Reflect(steps []StepView) ReflectionContext {
 			}
 		}
 
-		// Verifications and test failures (run_command only).
-		if s.Tool == "run_command" {
-			if isVerifyCommand(parseCommand(s.Input)) {
-				lastVerifyIdx = i
-				if known, ok, _ := parseObsMarker(s.Observation); known {
-					rc.LastVerifyPassed = &ok
-				} else {
-					rc.LastVerifyPassed = nil
-				}
-			}
-			if known, _, failure := parseObsMarker(s.Observation); known && failure == "test" {
-				lastTestFailIdx = i
+		// A test failure can surface from a foreground run_command OR from reading
+		// a background job's logs/status (P3.9.e) — detect it from the observation
+		// marker regardless of which tool produced it.
+		if known, _, failure := parseObsMarker(s.Observation); known && failure == "test" {
+			lastTestFailIdx = i
+		}
+
+		// A verify *command* is a run_command launch (foreground or background).
+		if s.Tool == "run_command" && isVerifyCommand(parseCommand(s.Input)) {
+			lastVerifyIdx = i
+			if known, ok, _ := parseObsMarker(s.Observation); known {
+				rc.LastVerifyPassed = &ok
+			} else {
+				rc.LastVerifyPassed = nil
 			}
 		}
 	}

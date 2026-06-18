@@ -106,6 +106,26 @@ func TestReflectReadOnlyTurnHasNoConcern(t *testing.T) {
 	}
 }
 
+// P3.9.e: a test failure surfaced from a BACKGROUND job (a job_logs step
+// enriched with failure=test) must arm TestEditedAfterFailure just like a
+// foreground run_command failure does.
+func TestReflectBackgroundTestFailure(t *testing.T) {
+	jobLogsFail := StepView{
+		Tool:        "job_logs",
+		Input:       `{"job_id":"job_1"}`,
+		Observation: "[observation] failure=test summary=\"background tests failed\"\n  --- FAIL: TestX\n---\njob job_1 [failed]\n--- FAIL: TestX",
+	}
+	steps := []StepView{
+		runCmd("go test ./...", okObs()), // background launch returns "ok" (job started)
+		jobLogsFail,                      // reading the logs reveals the failure
+		editFile("internal/app/config_test.go"),
+	}
+	rc := Reflect(steps)
+	if !rc.TestEditedAfterFailure {
+		t.Errorf("TestEditedAfterFailure = false, want true (test edited after a background test failure): %+v", rc)
+	}
+}
+
 func TestReflectApplyPatchTestFileAfterFailure(t *testing.T) {
 	patch := "--- a/internal/app/config_test.go\n+++ b/internal/app/config_test.go\n@@ -1 +1 @@\n-x\n+y\n"
 	steps := []StepView{

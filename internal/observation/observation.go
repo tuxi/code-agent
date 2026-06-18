@@ -51,13 +51,23 @@ type Observation struct {
 // Observe turns a raw tool observation into a structured Observation. It is the
 // package entry point and is pure: same input → same output, no side effects.
 //
-// run_command's result is structured JSON, so it is classified and distilled.
-// Any other tool gets a minimal Observation — OK unless the runtime marked the
-// result a tool error.
+// run_command and the background job_status / job_logs results are classified
+// and distilled (so a failed background job is a real failure, not a generic
+// OK). Any other tool gets a minimal Observation — OK unless the runtime marked
+// the result a tool error.
 func Observe(tool, raw string) Observation {
-	if tool == "run_command" {
+	switch tool {
+	case "run_command":
 		if res, ok := parseCommandResult(raw); ok {
 			return observeCommand(res)
+		}
+	case "job_status":
+		if obs, ok := observeJobStatus(raw); ok {
+			return obs
+		}
+	case "job_logs":
+		if obs, ok := observeJobLogs(raw); ok {
+			return obs
 		}
 	}
 	return observeGeneric(tool, raw)

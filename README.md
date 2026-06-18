@@ -505,12 +505,17 @@ Background-jobs arc (single-thread agent → multi-task agent):
 - [x] **(3.9.b)** Teach the agent to use it — system prompt: prefer background
   for long commands, keep working, poll sparingly. (The engine existed; the
   agent now knows the car can drive.)
+- [x] **(3.9.e)** Background Observation — `Observe` now classifies `job_status`
+  and `job_logs` results through the same entry point, so a failed background job
+  becomes a real failure (`failure=test`, salient lines) instead of a generic OK.
+  This is really *P4 Observation extended to the async world* — without it half
+  the agent's world was blind.
+- [x] **(3.9.e.1)** Reflection on background — Reflection now reads the
+  `failure=test` marker from any tool (incl. background `job_logs`), so the
+  paper-over / verify-fix signals fire on background work too.
 - [ ] **(3.9.c)** Incremental logs — `job_logs` offset/cursor so re-polling a
   large build does not re-flood the context (the token problem again).
 - [ ] **(3.9.d)** Streaming console output — live output for foreground commands.
-- [ ] **(3.9.e)** Background Observation — route `job_status` results through
-  `Observe` so a failed background test becomes `failure=test`, letting
-  Reflection / Verify-Fix act on it. Today Observation only sees `run_command`.
 - [ ] **(3.9.f)** Agent proactively schedules jobs — Claude-Code-level: start
   tests, keep analyzing, check results, fix, re-test.
 
