@@ -38,3 +38,11 @@ func HasSideEffectsFor(t Tool, input json.RawMessage) bool {
 	}
 	return HasSideEffects(t)
 }
+
+// SkillAnnouncer is implemented by a tool that loads a skill (load_skill). It
+// lets the loop emit a skill_loaded telemetry event carrying the skill's name
+// and version, without the loop knowing the tool by name — the same
+// interface-driven extension pattern as SideEffectingInput.
+type SkillAnnouncer interface {
+	AnnounceSkill(input json.RawMessage) (name, version string, loaded bool)
+}

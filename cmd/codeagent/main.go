@@ -6,12 +6,14 @@ import (
 	"code-agent/internal/model"
 	"code-agent/internal/observation"
 	"code-agent/internal/session"
+	"code-agent/internal/skills"
 	"code-agent/internal/tools"
 	"code-agent/internal/tools/filesystem"
 	"code-agent/internal/tools/git"
 	projectgraph "code-agent/internal/tools/project_graph"
 	"code-agent/internal/tools/search"
 	"code-agent/internal/tools/shell"
+	"code-agent/internal/tools/skill"
 	"code-agent/internal/ui"
 	"context"
 	"fmt"
@@ -396,9 +398,17 @@ func buildCompactor(mc app.ModelConfig, provider model.Provider) session.Compact
 	}
 }
 
-// buildRegistry registers the model-facing tool set. Shared by run and repl.
-func buildRegistry(root string) (*tools.Registry, error) {
+// buildRegistry registers the model-facing tool set and loads the skills
+// registry. Shared by run and repl. The returned skills registry feeds both the
+// load_skill tool (here) and the system-prompt index (the session builder), so
+// the index the model sees and the bodies it can load stay in sync.
+func buildRegistry(root string) (*tools.Registry, *skills.Registry, error) {
 	registry := tools.NewRegistry()
+
+	skillReg, err := skills.Load(filepath.Join(root, "skills"))
+	if err != nil {
+		return nil, nil, err
+	}
 
 	// run_command and the job_* tools share one job registry, so a job_id
 	// returned by a background run_command is resolvable by job_status/logs/cancel.
@@ -419,12 +429,13 @@ func buildRegistry(root string) (*tools.Registry, error) {
 		&shell.JobStatusTool{Jobs: jobReg},
 		&shell.JobLogsTool{Jobs: jobReg},
 		&shell.JobCancelTool{Jobs: jobReg},
+		skill.NewLoadSkillTool(skillReg),
 	} {
 		if err := registry.Register(tool); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
-	return registry, nil
+	return registry, skillReg, nil
 }
 
 // extractModelFlag pulls a --model NAME (or --model=NAME) out of args from any
@@ -465,7 +476,7 @@ func runAsk(ctx context.Context, mc app.ModelConfig, provider model.Provider, qu
 func runAgent(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider model.Provider, goal string) error {
 	root := cfg.Workspace.Root
 
-	registry, err := buildRegistry(root)
+	registry, skillReg, err := buildRegistry(root)
 	if err != nil {
 		return err
 	}
@@ -485,6 +496,7 @@ func runAgent(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider 
 
 	sess, err := session.NewBuilder(root).
 		WithBudget(mc.ContextWindow, cfg.CompactThreshold(mc)).
+		WithSkillsIndex(skillReg.PromptIndex()).
 		Build()
 	if err != nil {
 		return err

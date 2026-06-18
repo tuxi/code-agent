@@ -32,6 +32,11 @@ type Builder struct {
 
 	ContextWindow    int
 	CompactThreshold int
+
+	// SkillsIndex is the L1 skill index (names + descriptions only) appended to
+	// the system prompt. Tiny by design; bodies are loaded on demand by the model
+	// via load_skill, never baked in here (P6).
+	SkillsIndex string
 }
 
 func NewBuilder(workspaceRoot string) *Builder {
@@ -55,6 +60,12 @@ func (b *Builder) WithBudget(contextWindow, compactThreshold int) *Builder {
 	return b
 }
 
+// WithSkillsIndex sets the L1 skill index appended to the system prompt.
+func (b *Builder) WithSkillsIndex(index string) *Builder {
+	b.SkillsIndex = index
+	return b
+}
+
 func (b *Builder) Build() (*Session, error) {
 	systemContent := prompt.AgentSystemPrompt
 
@@ -64,6 +75,11 @@ func (b *Builder) Build() (*Session, error) {
 	}
 	if memory != "" {
 		systemContent += "\n\n# Project memory (from CODEAGENT.md)\n\n" + memory
+	}
+
+	// Skills index (L1): the model loads a skill's body on demand via load_skill.
+	if idx := strings.TrimSpace(b.SkillsIndex); idx != "" {
+		systemContent += "\n\n" + idx
 	}
 
 	now := time.Now()

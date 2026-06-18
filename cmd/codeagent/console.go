@@ -45,6 +45,14 @@ func (consoleEmitter) Emit(e agent.Event) {
 		}
 	case agent.EventToolFinished:
 		fmt.Printf("[result]\n%s\n", e.Observation)
+	case agent.EventSkillLoaded:
+		// Show which skill (and version) drove a behavior change, so a transcript
+		// is debuggable ("why did it test-then-fix? — it loaded verify-change").
+		name := e.ToolName
+		if e.Version != "" {
+			name += " v" + e.Version
+		}
+		fmt.Printf("\n[skill] loaded %s\n", name)
 	case agent.EventReflected:
 		// The model said it was done; a grounded self-check sent it back for one
 		// more pass. Show the human why, so the extra work reads as intent.

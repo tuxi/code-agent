@@ -272,6 +272,16 @@ func (r *Runner) RunTurn(ctx context.Context, sess *session.Session, userInput s
 				observation = "Tool error: " + execErr.Error()
 			}
 
+			// Skill telemetry (P6): if the tool loaded a skill, emit a versioned
+			// event. Interface-driven, so the loop stays tool-agnostic.
+			if known && execErr == nil {
+				if sa, ok := tool.(tools.SkillAnnouncer); ok {
+					if name, ver, loaded := sa.AnnounceSkill(input); loaded {
+						r.emit(Event{Kind: EventSkillLoaded, ToolName: name, Version: ver})
+					}
+				}
+			}
+
 			// Enrich the raw result into a structured Observation (P4.1). Observe
 			// runs on the *full* output so salient lines survive truncation; the
 			// body is then truncated and a failure/summary block prepended, so the

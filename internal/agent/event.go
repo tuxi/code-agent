@@ -16,8 +16,9 @@ const (
 	EventThinking      EventKind = "thinking"       // model produced reasoning text
 	EventToolStarted   EventKind = "tool_started"
 	EventToolFinished  EventKind = "tool_finished"
-	EventObserved      EventKind = "observed"  // a tool result was classified (P4.1)
-	EventReflected     EventKind = "reflected" // a finalize self-check fired (P4.3)
+	EventObserved      EventKind = "observed"     // a tool result was classified (P4.1)
+	EventReflected     EventKind = "reflected"    // a finalize self-check fired (P4.3)
+	EventSkillLoaded   EventKind = "skill_loaded" // a skill body was loaded (P6)
 	EventCompacted     EventKind = "compacted"
 	EventTurnFinished  EventKind = "turn_finished"
 )
@@ -42,6 +43,7 @@ type Event struct {
 	ToolArgs    string
 	Observation string
 	Failure     string // EventObserved: the classified FailureType (e.g. "compile")
+	Version     string // EventSkillLoaded: the loaded skill's version (name is in ToolName)
 
 	// Model / thinking.
 	Text         string        // reasoning text (Thinking) or final answer (TurnFinished)

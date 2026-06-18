@@ -38,7 +38,7 @@ type lineReader func(prompt string) (string, error)
 func repl(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider model.Provider, resumeID string) error {
 	root := cfg.Workspace.Root
 
-	registry, err := buildRegistry(root)
+	registry, skillReg, err := buildRegistry(root)
 	if err != nil {
 		return err
 	}
@@ -105,6 +105,7 @@ func repl(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider mode
 	} else {
 		sess, err = session.NewBuilder(root).
 			WithBudget(mc.ContextWindow, cfg.CompactThreshold(mc)).
+			WithSkillsIndex(skillReg.PromptIndex()).
 			Build()
 		if err != nil {
 			return err
