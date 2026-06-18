@@ -14,6 +14,20 @@ Grounding:
 - If the task is genuinely ambiguous, ask the user what they mean before doing
   anything irreversible.
 
+Long-running commands — start in the background, keep working, come back later:
+- The behavior pattern, not just the flag: (1) start the long command with
+  "background": true; (2) continue investigating or editing other code while it
+  runs; (3) come back and inspect the result with job_status / job_logs. Do NOT
+  wait idly for a background job to finish.
+- A full test suite, build, indexing pass, or code generation can take many
+  seconds to minutes — prefer "background": true for these. run_command returns
+  a job_id immediately instead of blocking.
+- Check progress with job_status; read job_logs only when you actually need the
+  output. Poll sparingly (not in a tight loop) — a long build does not need
+  checking every step. Stop a job you no longer need with job_cancel.
+- Only run a command in the foreground (blocking) when its result is required
+  before you can do anything else.
+
 Stopping — bias STRONGLY toward answering:
 - After EVERY tool result, ask yourself: "Can I answer the user's question
   now?" If yes, STOP calling tools and give your answer.

@@ -498,10 +498,23 @@ This is reusable Agent-Runtime infrastructure, not CLI glue.
 - [x] Add edit_file (small targeted edits)
 - [x] Add policy-gated shell layer (run_command)
 - [x] Add machine-readable tool outputs
-- [x] Add background jobs — `run_command` `"background": true` returns a
-  `job_id` immediately; `job_status` / `job_logs` / `job_cancel` inspect and stop
-  it. A long build/test no longer blocks the loop or hits the 120s timeout.
-- [ ] Add streaming shell execution (live console output for foreground commands)
+Background-jobs arc (single-thread agent → multi-task agent):
+- [x] **(3.9.a)** Background jobs — `run_command "background": true` → `job_id`;
+  `job_status` / `job_logs` / `job_cancel`. Long build/test no longer blocks the
+  loop or hits the 120s timeout. Jobs use a detached context (real background).
+- [x] **(3.9.b)** Teach the agent to use it — system prompt: prefer background
+  for long commands, keep working, poll sparingly. (The engine existed; the
+  agent now knows the car can drive.)
+- [ ] **(3.9.c)** Incremental logs — `job_logs` offset/cursor so re-polling a
+  large build does not re-flood the context (the token problem again).
+- [ ] **(3.9.d)** Streaming console output — live output for foreground commands.
+- [ ] **(3.9.e)** Background Observation — route `job_status` results through
+  `Observe` so a failed background test becomes `failure=test`, letting
+  Reflection / Verify-Fix act on it. Today Observation only sees `run_command`.
+- [ ] **(3.9.f)** Agent proactively schedules jobs — Claude-Code-level: start
+  tests, keep analyzing, check results, fix, re-test.
+
+Other Phase 3.9 items:
 - [ ] Add tool result attachments
 - [ ] Add retryable vs fatal tool errors
 - [ ] Add tool chaining through structured outputs
