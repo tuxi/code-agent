@@ -83,16 +83,17 @@ func repl(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider mode
 	}
 
 	runner := &agent.Runner{
-		Model:       provider,
-		ModelName:   mc.Model,
-		Temperature: mc.Temperature,
-		Tools:       registry,
-		MaxSteps:    cfg.Agent.MaxSteps,
-		Approver:    ui.ConfirmApprover{Prompt: ask},
-		Observer:    observation.DefaultObserver{},
-		Reflector:   agent.DefaultReflector{},
-		Compactor:   buildCompactor(mc, provider),
-		Emitter:     buildEmitter(),
+		Model:        provider,
+		ModelName:    mc.Model,
+		Temperature:  mc.Temperature,
+		Tools:        registry,
+		MaxSteps:     cfg.Agent.MaxSteps,
+		Approver:     ui.ConfirmApprover{Prompt: ask},
+		Observer:     observation.DefaultObserver{},
+		Reflector:    agent.DefaultReflector{},
+		RemindSkills: skillReg.Len() > 0,
+		Compactor:    buildCompactor(mc, provider),
+		Emitter:      buildEmitter(),
 	}
 
 	var sess *session.Session

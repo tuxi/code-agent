@@ -31,6 +31,12 @@ type Runner struct {
 	// Nil-safe: when unset, the model's first "done" is accepted as before.
 	Reflector Reflector
 
+	// RemindSkills, when true, injects a one-shot ephemeral reminder on the first
+	// model call of each turn to check the Skills list and load a matching skill
+	// (P6). It makes skill-loading consistent across models rather than depending
+	// on a model's agency. Set by the CLI when the project has skills.
+	RemindSkills bool
+
 	Compactor session.Compactor
 
 	// Emitter, if set, receives the turn's event stream (thinking, tool calls,
@@ -153,6 +159,13 @@ func (r *Runner) RunTurn(ctx context.Context, sess *session.Session, userInput s
 		if pendingReflection != "" {
 			msgs = appendEphemeralUser(msgs, pendingReflection)
 			pendingReflection = ""
+		}
+		// Skills reminder (P6): on the first model call of a turn, remind the model
+		// to load a matching skill. Ephemeral, and the model still decides — this
+		// makes skill-loading consistent across models instead of depending on a
+		// model's agency to act on the index unprompted.
+		if i == 0 && r.RemindSkills {
+			msgs = appendEphemeralUser(msgs, skillsReminder)
 		}
 
 		r.emit(Event{Kind: EventModelStarted})
@@ -341,6 +354,13 @@ func (r *Runner) nudgeThreshold() int {
 	return t
 }
 
+// skillsReminder is the ephemeral first-call nudge (P6). It is phrased to be
+// safe across turns ("not already loaded") so a skill loaded in an earlier turn
+// is not redundantly re-loaded.
+const skillsReminder = "[reminder] Before you act: check the Skills list in the system prompt. " +
+	"If this task matches a skill you have not already loaded, call load_skill(name) and follow " +
+	"it first — that is reading project guidance, not extra investigation."
+
 // withConvergenceNudge returns a copy of msgs with a transient reminder appended,
 // steering the model to answer now instead of over-investigating.
 func withConvergenceNudge(msgs []model.Message, toolCalls int) []model.Message {
@@ -358,7 +378,10 @@ func appendEphemeralUser(msgs []model.Message, content string) []model.Message {
 	return append(out, model.Message{Role: model.RoleUser, Content: content})
 }
 
-const stepLimitMessage = "Agent stopped: reached the step limit before finishing."
+const (
+	stepLimitMessage = "Agent stopped: reached the step limit before finishing."
+	stepLimitNudge   = "You've reached the step limit and cannot call more tools. Give your best final answer now, based on everything gathered so far."
+)
 
 // finalAnswerAfterLimit makes one tool-free model call so the agent answers from
 // what it already gathered when the step limit is hit. The nudge is ephemeral
@@ -372,7 +395,7 @@ func (r *Runner) finalAnswerAfterLimit(ctx context.Context, sess *session.Sessio
 	copy(msgs, sess.Messages)
 	msgs = append(msgs, model.Message{
 		Role:    model.RoleUser,
-		Content: "You've reached the step limit and cannot call more tools. Give your best final answer now, based on everything gathered so far.",
+		Content: stepLimitNudge,
 	})
 
 	r.emit(Event{Kind: EventModelStarted})

@@ -482,16 +482,17 @@ func runAgent(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider 
 	}
 
 	runner := &agent.Runner{
-		Model:       provider,
-		ModelName:   mc.Model,
-		Temperature: mc.Temperature,
-		Tools:       registry,
-		MaxSteps:    cfg.Agent.MaxSteps,
-		Approver:    ui.ConfirmApprover{},
-		Observer:    observation.DefaultObserver{},
-		Reflector:   agent.DefaultReflector{},
-		Compactor:   buildCompactor(mc, provider),
-		Emitter:     buildEmitter(),
+		Model:        provider,
+		ModelName:    mc.Model,
+		Temperature:  mc.Temperature,
+		Tools:        registry,
+		MaxSteps:     cfg.Agent.MaxSteps,
+		Approver:     ui.ConfirmApprover{},
+		Observer:     observation.DefaultObserver{},
+		Reflector:    agent.DefaultReflector{},
+		RemindSkills: skillReg.Len() > 0,
+		Compactor:    buildCompactor(mc, provider),
+		Emitter:      buildEmitter(),
 	}
 
 	sess, err := session.NewBuilder(root).
