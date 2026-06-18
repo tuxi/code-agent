@@ -26,3 +26,17 @@ type Step struct {
 	StartedAt   time.Time
 	FinishedAt  time.Time
 }
+
+// Duration returns the time taken for this step. Returns 0 if the step
+// hasn't finished or times are invalid.
+func (s *Step) Duration() time.Duration {
+	if s.StartedAt.IsZero() || s.FinishedAt.IsZero() {
+		return 0
+	}
+	return s.FinishedAt.Sub(s.StartedAt)
+}
+
+// IsSuccess returns true if the step completed without errors.
+func (s *Step) IsSuccess() bool {
+	return s.Error == ""
+}

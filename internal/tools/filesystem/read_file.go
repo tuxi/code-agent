@@ -18,7 +18,9 @@ type ReadFileTool struct {
 }
 
 type readFileInput struct {
-	Path string `json:"path"`
+	Path   string `json:"path"`
+	Offset int    `json:"offset,omitempty"`
+	Limit  int    `json:"limit,omitempty"`
 }
 
 func NewReadFileTool(workspaceRoot string) *ReadFileTool {
@@ -41,6 +43,14 @@ func (r *ReadFileTool) InputSchema() json.RawMessage {
 		"path": {
 			Type:        "string",
 			Description: "File path relative to the workspace root.",
+		},
+		"offset": {
+			Type:        "integer",
+			Description: "Optional. Byte offset to start reading from (0-based). Default 0.",
+		},
+		"limit": {
+			Type:        "integer",
+			Description: "Optional. Maximum number of bytes to read. Default reads to end of file.",
 		},
 	}, "path").JSON()
 }
@@ -102,6 +112,21 @@ func (r *ReadFileTool) Execute(ctx context.Context, input json.RawMessage) (tool
 
 	content := string(data)
 	content = strings.Replace(content, "\r\n", "\n", -1)
+
+	// Apply offset
+	if in.Offset > 0 {
+		if in.Offset >= len(content) {
+			return tools.ToolResult{
+				Content: "",
+			}, nil
+		}
+		content = content[in.Offset:]
+	}
+
+	// Apply limit
+	if in.Limit > 0 && in.Limit < len(content) {
+		content = content[:in.Limit]
+	}
 
 	return tools.ToolResult{
 		Content: content,
