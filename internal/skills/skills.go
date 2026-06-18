@@ -113,9 +113,10 @@ func (r *Registry) PromptIndex() string {
 		return ""
 	}
 	var b strings.Builder
-	b.WriteString("Skills — task-specific playbooks for this project. When the task matches one, " +
-		"call load_skill(name) to load its full instructions before proceeding. Do not guess a " +
-		"skill's contents; load it.\n")
+	b.WriteString("Skills — task-specific playbooks for this project. If the task matches a " +
+		"skill's description below, call load_skill(name) and follow it BEFORE you start — even " +
+		"if the change looks obvious. This is reading project-specific guidance, not " +
+		"over-investigation. Do not guess a skill's contents; load it.\n")
 	for _, name := range r.order {
 		m := r.skills[name].Meta
 		fmt.Fprintf(&b, "- %s: %s\n", m.Name, m.Description)
