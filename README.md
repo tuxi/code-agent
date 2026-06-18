@@ -513,11 +513,26 @@ Background-jobs arc (single-thread agent → multi-task agent):
 - [x] **(3.9.e.1)** Reflection on background — Reflection now reads the
   `failure=test` marker from any tool (incl. background `job_logs`), so the
   paper-over / verify-fix signals fire on background work too.
+- [x] **(3.9.f)** Agent proactively schedules jobs — **emergent, validated**: on
+  real runs the agent autonomously backgrounds a slow test, fixes the root cause
+  (not the test), and re-verifies in the background before finishing. True
+  concurrency (work-while-waiting across multiple jobs) is a *narrow* case — Go
+  already parallelizes test packages and readable bugs make "read-all → fix-all →
+  verify-once" optimal — so it is **not pursued** until a real workload rewards it
+  (an unavoidably-long command running alongside independent work).
+
+Dormant (deferred until a real signal — both are largely designed away by 3.9.b/e):
 - [ ] **(3.9.c)** Incremental logs — `job_logs` offset/cursor so re-polling a
-  large build does not re-flood the context (the token problem again).
-- [ ] **(3.9.d)** Streaming console output — live output for foreground commands.
-- [ ] **(3.9.f)** Agent proactively schedules jobs — Claude-Code-level: start
-  tests, keep analyzing, check results, fix, re-test.
+  high-output job does not re-flood the context. **Latent**: 3.9.e gives the
+  agent a `failure=test` summary from `job_status`, so it reads `job_logs` once,
+  not in a loop — the flood does not happen yet. Cheap to add. *Trigger:*
+  transcripts show repeated `job_logs` polls on a chatty long command.
+- [ ] **(3.9.d)** Streaming console output — live output for a long *foreground*
+  command. **Shrinking niche**: background is now the path for long commands, so
+  foreground commands are short; and the model can't consume a stream mid-call,
+  so this is pure human-UX at a real architectural cost (coupling the tool to the
+  emitter). *Trigger:* users report long foreground commands feel hung, or a
+  "follow a background job's output live" console feature is wanted.
 
 Other Phase 3.9 items:
 - [ ] Add tool result attachments
