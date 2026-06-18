@@ -1,6 +1,7 @@
 package filesystem
 
 import (
+	"bufio"
 	"code-agent/internal/tools"
 	"code-agent/internal/workspace"
 	"context"
@@ -20,7 +21,7 @@ type ReadFileTool struct {
 
 // lineNumber accepts both a JSON number (42) and a JSON string containing a
 // number ("42"). Providers sometimes pass numeric fields as quoted strings,
-// which would cause json.Unmarshal into int to fail.
+// which would otherwise fail to unmarshal into an int.
 type lineNumber int
 
 func (l *lineNumber) UnmarshalJSON(data []byte) error {
@@ -33,7 +34,7 @@ func (l *lineNumber) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, &s); err != nil {
 		return fmt.Errorf("line number must be a number or string number, got %s", string(data))
 	}
-	n, err := strconv.Atoi(s)
+	n, err := strconv.Atoi(strings.TrimSpace(s))
 	if err != nil {
 		return fmt.Errorf("invalid line number %q: %w", s, err)
 	}
@@ -59,7 +60,10 @@ func (r *ReadFileTool) Name() string {
 }
 
 func (r *ReadFileTool) Description() string {
-	return "Read a UTF-8 text file from the current workspace."
+	return "Read a UTF-8 text file from the workspace. Each line is prefixed with its 1-based line " +
+		"number and a tab — these are for reference only and are NOT part of the file; do not include " +
+		"them when editing. Use offset (1-based start line) and limit (line count) to read a window — " +
+		"this works even on files too large to read whole, so prefer it for big files."
 }
 
 func (r *ReadFileTool) InputSchema() json.RawMessage {
@@ -70,11 +74,11 @@ func (r *ReadFileTool) InputSchema() json.RawMessage {
 		},
 		"offset": {
 			Type:        "integer",
-			Description: "Optional. Line number (1-based) to start reading from. Default reads from line 1. Also accepts string numbers.",
+			Description: "Optional. 1-based line number to start reading from. Default 1. Accepts a string number too.",
 		},
 		"limit": {
 			Type:        "integer",
-			Description: "Optional. Maximum number of lines to read. Default reads to end of file. Also accepts string numbers.",
+			Description: "Optional. Maximum number of lines to read from offset. Default reads to end of file. Accepts a string number too.",
 		},
 	}, "path").JSON()
 }
@@ -86,26 +90,22 @@ func (r *ReadFileTool) Execute(ctx context.Context, input json.RawMessage) (tool
 			return tools.ToolResult{}, fmt.Errorf("invalid read_file input: %w", err)
 		}
 	}
-
 	if in.Path == "" {
 		return tools.ToolResult{}, fmt.Errorf("invalid read_file input: path is required")
 	}
-
-	select {
-	case <-ctx.Done():
-		return tools.ToolResult{}, ctx.Err()
-	default:
-
+	if ctx != nil {
+		select {
+		case <-ctx.Done():
+			return tools.ToolResult{}, ctx.Err()
+		default:
+		}
 	}
 
 	rootAbs, err := filepath.Abs(r.WorkspaceRoot)
-
 	if err != nil {
 		return tools.ToolResult{}, err
 	}
-	targetAbs := filepath.Join(rootAbs, filepath.Clean(in.Path))
-
-	targetAbs, err = filepath.Abs(targetAbs)
+	targetAbs, err := filepath.Abs(filepath.Join(rootAbs, filepath.Clean(in.Path)))
 	if err != nil {
 		return tools.ToolResult{}, err
 	}
@@ -117,51 +117,80 @@ func (r *ReadFileTool) Execute(ctx context.Context, input json.RawMessage) (tool
 	if err != nil {
 		return tools.ToolResult{}, err
 	}
-
 	if info.IsDir() {
 		return tools.ToolResult{}, fmt.Errorf("path is a directory: %s", in.Path)
 	}
-	if info.Size() > r.MaxBytes {
-		return tools.ToolResult{}, fmt.Errorf("file too large: %s size=%d max=%d", in.Path, info.Size(), r.MaxBytes)
+
+	startLine := int(in.Offset)
+	if startLine < 1 {
+		startLine = 1
+	}
+	limit := int(in.Limit)
+	windowed := startLine > 1 || limit > 0
+
+	// A full read of a file larger than the budget is rejected, with a hint to
+	// read a window instead. A *windowed* read streams and is bounded by the
+	// window, so it works on files of any size.
+	if !windowed && info.Size() > r.MaxBytes {
+		return tools.ToolResult{}, fmt.Errorf("file too large to read whole: %s size=%d max=%d — read a window with offset/limit",
+			in.Path, info.Size(), r.MaxBytes)
 	}
 
-	data, err := os.ReadFile(targetAbs)
+	f, err := os.Open(targetAbs)
 	if err != nil {
 		return tools.ToolResult{}, err
 	}
+	defer f.Close()
 
-	if !utf8.Valid(data) {
-		return tools.ToolResult{}, fmt.Errorf("file is not valid UTF-8 Text: %s", in.Path)
+	type line struct {
+		no   int
+		text string
 	}
+	var collected []line
+	var bytesOut int64
+	truncated := false
 
-	content := string(data)
-	content = strings.Replace(content, "\r\n", "\n", -1)
-
-	// Apply offset (line-based, 1-indexed).
-	lines := strings.Split(content, "\n")
-	startLine := 0
-	if in.Offset > 0 {
-		startLine = int(in.Offset) - 1 // 1-based → 0-indexed
-	}
-	if startLine >= len(lines) {
-		return tools.ToolResult{Content: ""}, nil
-	}
-	if startLine < 0 {
-		startLine = 0
-	}
-	lines = lines[startLine:]
-
-	// Apply limit (line count).
-	if in.Limit > 0 {
-		n := int(in.Limit)
-		if n < len(lines) {
-			lines = lines[:n]
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024) // tolerate long lines
+	lineNo := 0
+	for scanner.Scan() {
+		lineNo++
+		if lineNo < startLine {
+			continue
 		}
+		if limit > 0 && len(collected) >= limit {
+			break
+		}
+		text := scanner.Text()
+		if !utf8.ValidString(text) {
+			return tools.ToolResult{}, fmt.Errorf("file is not valid UTF-8 text: %s", in.Path)
+		}
+		// Bound a windowed read's output so a huge limit (or long lines) cannot
+		// blow the budget; surface that it was cut.
+		bytesOut += int64(len(text)) + 1
+		if windowed && bytesOut > r.MaxBytes {
+			truncated = true
+			break
+		}
+		collected = append(collected, line{lineNo, text})
+	}
+	if err := scanner.Err(); err != nil {
+		return tools.ToolResult{}, err
 	}
 
-	content = strings.Join(lines, "\n")
+	if len(collected) == 0 {
+		return tools.ToolResult{Content: ""}, nil // offset past EOF, or empty file
+	}
 
-	return tools.ToolResult{
-		Content: content,
-	}, nil
+	// Right-align the line numbers to the width of the largest one shown.
+	width := len(strconv.Itoa(collected[len(collected)-1].no))
+	var b strings.Builder
+	for _, l := range collected {
+		fmt.Fprintf(&b, "%*d\t%s\n", width, l.no, l.text)
+	}
+	out := strings.TrimRight(b.String(), "\n")
+	if truncated {
+		out += "\n... (output truncated; read fewer lines with limit, or continue with a higher offset)"
+	}
+	return tools.ToolResult{Content: out}, nil
 }

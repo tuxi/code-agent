@@ -1,6 +1,6 @@
 ---
 name: codeagent-conventions
-version: "1"
+version: "2"
 description: Non-obvious rules and real gotchas for THIS repo (code-agent). Load before editing this project's Go — especially internal/agent (the loop), internal/tools, internal/observation, internal/reflection, or the system prompt.
 ---
 
@@ -41,3 +41,6 @@ These are real pitfalls hit while working here — append new ones as they happe
   touch the loop. If a change makes you edit the loop to add a tool, reconsider.
 - New event kinds go through the `Emitter`; the loop emits, it never writes to
   stdout. Rendering belongs in the console emitter, not the loop.
+- `read_file` prefixes every line with `N\t` (a 1-based line number + tab) for
+  reference. Those prefixes are NOT part of the file — strip them when building
+  an `edit_file` / `apply_patch` `old` string, or the match will fail.
