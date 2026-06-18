@@ -584,13 +584,35 @@ Design docs: [docs/p4.1-observation.md](docs/p4.1-observation.md),
 - [ ] Rust backend (rust-analyzer) — stub, detects toolchain
 - [ ] Python backend (pyright) — stub, detects toolchain
 
-### Phase 6 — Skills (progressive disclosure)
+### Phase 6 — Skills (progressive disclosure)  *(shipped + validated)*
 
-- [ ] A skill = a named instruction document (+ optionally scoped tools) loaded
-  into context only when relevant.
-- [ ] Task-specific guidance lives in skills, not the base system prompt.
+The third leg of the Claude-Code triad — **Tool** (capability) + **Observation /
+Reflection** (correction) + **Skill** (experience). Design + applied methodology:
+[docs/p6-skills.md](docs/p6-skills.md).
 
-**Done when:** the base system prompt stays small as capabilities grow.
+- [x] **(P6.a)** `internal/skills` registry — `SKILL.md` (frontmatter + body),
+  `Meta{name, description, version}`, `Index()` / `Get()`. `PromptIndex` renders
+  *only* name+description (a test guards against any body leaking into the base
+  prompt — the progressive-disclosure north star).
+- [x] **(P6.b)** `load_skill` tool (model-pull) + the L1 index injected into the
+  system prompt + `EventSkillLoaded{name, version}` telemetry. A skill is loaded
+  because the *model* chose to, never auto-injected.
+- [x] **(P6.c)** Seed skills, chosen to change behavior not restate common sense:
+  `codeagent-conventions`, `verify-change`, `review-change`.
+- [x] **(P6 nudge)** A first-call ephemeral reminder makes skill-loading
+  *consistent across models* (deepseek self-loads; glm needed the nudge) without
+  forcing it — the model still pulls.
+
+**Validated on real runs:** the agent self-loads a matching skill (and composes
+several), but only on tasks that match a description — investigation tasks load
+nothing. Proactive *and* discriminating.
+
+**Done when:** the base system prompt stays small as capabilities grow. ✅ — only
+the tiny index is ever in the base prompt; bodies load on demand.
+
+> Telemetry-driven finding worth keeping: proactive skill use is model-dependent
+> (agentic models self-load; weaker ones treat the index as passive), and a low
+> trigger rate is a *description* problem first — fix the trigger, not the body.
 
 ### Later / parallel
 
