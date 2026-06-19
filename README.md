@@ -670,12 +670,24 @@ diff inside `internal/agent`, it was done wrong.
   Sessions older than the EventStore resume with context intact but no visible
   back-scroll. The renderer is extracted into a shared `transcript` type
   (`transcript.go`) used by both live rendering and replay.
-- [ ] **(Next)** `/use` (between-turns model swap), step-grouped output tuning,
-  and the deferred expand (`Thought for Ns` → reasoning) once we design it.
-- [ ] **(M3 — "trust it")** Approval UX: the channel `Approver` wired to a richer
+- [x] **(`/use`)** A model **picker** in the live region: ↑/↓ select, Enter
+  switches. The model swap is a `modelSwap` channel (the same between-turns safety
+  as `/resume`): the run-loop goroutine calls the `ModelSwapFunc` callback, which
+  rebuilds the provider/compactor and re-budgets the session — the exact `/use`
+  logic from the REPL, run inside the goroutine.
+- [x] **(M3 — "trust it")** Approval UX: the approval card (↑/↓ select y/n,
+  argument preview) + `[v]` **diff preview**: pressing 'v' toggles a diff-like
+  view below the card — `edit_file` shows `- old` / `+ new`, `apply_patch` shows
+  the patch with +/- coloring, `create_file` shows the file content,
+  `run_command` shows the command. Each format live-renders; dismissed on Esc/
+  Enter.
   approval prompt with a diff **preview**; fills the placeholder
   `internal/ui/diff.go`. (Paused behind the inline-workspace P0s.)
-- [ ] **(M4 — "feel it's an IDE")** Workspace awareness: git panel, files panel.
+- [x] **(M4 — "feel it's an IDE")** Workspace awareness: a git status summary
+  (branch + modified/untracked files) printed on startup, after each turn, and
+  after `/resume`. Runs `git branch --show-current` and `git status --short`;
+  formatted as a compact dim line like `── main · M loop.go · ?? new.go ──`.
+  Capped at 10 files so a noisy workspace stays readable.
 
 **Done when:** swapping into `tui` changes the UX without a single diff inside
 `internal/agent` — the same north star as P3.7, one layer up.

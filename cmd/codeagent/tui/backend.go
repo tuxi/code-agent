@@ -19,32 +19,50 @@ type Backend struct {
 	Emitter  agent.Emitter
 	Approver agent.Approver
 
-	events    chan agent.Event
-	approvals chan approvalReq
-	inputs    chan string
-	done      chan error
-	swap      chan *session.Session // /resume hands the run loop a new session
+	events          chan agent.Event
+	approvals       chan approvalReq
+	inputs          chan string
+	done            chan error
+	sessSwap        chan *session.Session // /resume hands the run loop a new session
+	modelSwap       chan string           // /use: TUI → run loop (model name to switch to)
+	modelSwapResult chan modelSwappedMsg  // /use: run loop → TUI (result)
 }
 
 // NewBackend wires the channels. events is buffered so a fast burst from the loop
 // never blocks it; inputs has room for one queued prompt so submitting never
 // blocks the UI; approvals is unbuffered (the loop must wait for an answer); done
-// signals turn completion (even on error, where no EventTurnFinished is emitted).
+// signals turn completion (even on error, where no EventTurnFinished is emitted);
+// modelSwap is buffered (cap 1) so the UI never blocks posting a model name.
 func NewBackend() *Backend {
 	events := make(chan agent.Event, 256)
 	approvals := make(chan approvalReq)
 	inputs := make(chan string, 1)
 	done := make(chan error, 1)
-	swap := make(chan *session.Session, 1)
+	sessSwap := make(chan *session.Session, 1)
+	mSwap := make(chan string, 1)
+	mSwapResult := make(chan modelSwappedMsg, 1)
 	return &Backend{
-		Emitter:   tuiEmitter{ch: events},
-		Approver:  tuiApprover{ch: approvals},
-		events:    events,
-		approvals: approvals,
-		inputs:    inputs,
-		done:      done,
-		swap:      swap,
+		Emitter:         tuiEmitter{ch: events},
+		Approver:        tuiApprover{ch: approvals},
+		events:          events,
+		approvals:       approvals,
+		inputs:          inputs,
+		done:            done,
+		sessSwap:        sessSwap,
+		modelSwap:       mSwap,
+		modelSwapResult: mSwapResult,
 	}
+}
+
+// modelSwappedMsg carries the result of a /use model switch so the TUI can update
+// its header and gauge. nil header means the switch failed (err is set).
+type modelSwappedMsg struct {
+	header HeaderInfo
+	err    error
+}
+
+func waitForModelSwapResult(ch chan modelSwappedMsg) tea.Cmd {
+	return func() tea.Msg { m, _ := <-ch; return m }
 }
 
 // doneMsg signals that a turn finished (err non-nil if it failed). It is the

@@ -41,15 +41,17 @@ type model struct {
 	// /resume history replay (transcript.go).
 	tr transcript
 
-	cmdIdx int            // selected slash-command in the palette
-	src    sessionSource  // saved-session access for /sessions and /resume
-	picker *sessionPicker // /resume overlay; nil when closed
+	cmdIdx    int            // selected slash-command in the palette
+	src       sessionSource  // saved-session / model access for slash commands
+	picker    *sessionPicker // /resume overlay; nil when closed
+	modelPick *modelPicker   // /use overlay; nil when closed
 
-	pending    *approvalReq // set while a side-effecting tool awaits y/n
-	approveIdx int          // 0 = approve (y), 1 = deny (n) — ↑/↓ switches
-	busy       bool         // a turn is running; submit is locked
-	thinking   bool         // a model call is in flight; show the spinner
-	lastErr    error
+	pending     *approvalReq // set while a side-effecting tool awaits y/n
+	approveIdx  int          // 0 = approve (y), 1 = deny (n) — ↑/↓ switches
+	showPreview bool         // 'v' toggles the diff preview below the approval card
+	busy        bool         // a turn is running; submit is locked
+	thinking    bool         // a model call is in flight; show the spinner
+	lastErr     error
 
 	promptTokens int             // latest prompt size (from EventModelFinished) for the gauge
 	skills       map[string]bool // distinct skills loaded this session
@@ -88,14 +90,20 @@ func newModel(b *Backend, header HeaderInfo, src sessionSource) model {
 }
 
 func (m model) Init() tea.Cmd {
-	return tea.Batch(
-		tea.Println(m.banner()),
+	cmds := []tea.Cmd{
 		textarea.Blink,
 		m.spinner.Tick,
 		waitForEvent(m.b.events),
 		waitForApproval(m.b.approvals),
 		waitForDone(m.b.done),
-	)
+	}
+	// Banner + git summary printed once, then the composer is ready.
+	gline := gitSummaryLine()
+	banner := m.banner()
+	if gline != "" {
+		banner += "\n" + gline
+	}
+	return tea.Batch(append([]tea.Cmd{tea.Println(banner)}, cmds...)...)
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -119,6 +127,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.picker != nil {
 			return m.handlePickerKey(msg)
 		}
+		if m.modelPick != nil {
+			return m.handleModelPickerKey(msg)
+		}
 		if m.paletteActive() {
 			if handled, mm, cmd := m.handlePaletteKey(msg); handled {
 				return mm, cmd
@@ -137,8 +148,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case approvalMsg:
 		req := approvalReq(msg)
-		m.pending, m.approveIdx = &req, 0
+		m.pending, m.approveIdx, m.showPreview = &req, 0, false
 		return m, waitForApproval(m.b.approvals)
+
+	case modelSwappedMsg:
+		if msg.err != nil {
+			return m, tea.Println(styleFail.Render("model switch failed: " + msg.err.Error()))
+		}
+		m.header = msg.header
+		m.promptTokens = 0 // gauge will update on the next model call
+		return m, tea.Println(styleMeta.Render(fmt.Sprintf("switched to %s", msg.header.Model)))
 
 	case doneMsg:
 		m.busy = false
@@ -148,6 +167,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds := []tea.Cmd{waitForDone(m.b.done)}
 		if len(out) > 0 {
 			cmds = append([]tea.Cmd{tea.Println(strings.Join(out, "\n"))}, cmds...)
+		}
+		// Print a fresh git summary so the user can see the workspace state after
+		// the agent's changes without leaving the TUI.
+		if gs := gitSummaryLine(); gs != "" {
+			cmds = append(cmds, tea.Println(gs))
 		}
 		return m, tea.Batch(cmds...)
 
@@ -214,15 +238,17 @@ func (m model) handleApprovalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.approveIdx = 0
 	case "down", "j", "ctrl+n":
 		m.approveIdx = 1
+	case "v", "V":
+		m.showPreview = !m.showPreview
 	case "enter", "y", "Y":
 		m.pending.reply <- true
-		m.pending, m.approveIdx = nil, 0
+		m.pending, m.approveIdx, m.showPreview = nil, 0, false
 	case "n", "N", "esc":
 		m.pending.reply <- false
-		m.pending, m.approveIdx = nil, 0
+		m.pending, m.approveIdx, m.showPreview = nil, 0, false
 	case "ctrl+c":
 		m.pending.reply <- false
-		m.pending, m.approveIdx = nil, 0
+		m.pending, m.approveIdx, m.showPreview = nil, 0, false
 		return m, tea.Quit
 	}
 	return m, nil
@@ -350,7 +376,7 @@ func (m *model) resume(meta session.Meta) tea.Cmd {
 	if err != nil {
 		return tea.Println("resume failed: " + err.Error())
 	}
-	m.b.swap <- sess // buffered (cap 1); the run loop applies it between turns
+	m.b.sessSwap <- sess // buffered (cap 1); the run loop applies it between turns
 	m.header.Session = sess.ID
 	m.promptTokens = sess.PromptTokens
 	m.skills = map[string]bool{}
@@ -374,6 +400,9 @@ func (m *model) resume(meta session.Meta) tea.Cmd {
 			lines = append(lines, hist...)
 			m.tr.started = true // separate the next live turn from the replayed history
 		}
+	}
+	if gs := gitSummaryLine(); gs != "" {
+		lines = append(lines, gs)
 	}
 	return tea.Println(strings.Join(lines, "\n"))
 }
@@ -399,6 +428,58 @@ func clampInt(n, lo, hi int) int {
 	return n
 }
 
+// --- /use model picker ---------------------------------------------------
+
+// openUse opens the model picker (no arg) or switches model directly (with a
+// name). Refuses mid-turn — the swap lands at a turn boundary via modelSwap.
+func (m *model) openUse(args string) tea.Cmd {
+	if m.busy {
+		return tea.Println("finish the current turn before switching models")
+	}
+	if args != "" {
+		return m.useModel(args)
+	}
+	if len(m.src.modelNames) == 0 {
+		return tea.Println("no other configured models")
+	}
+	m.modelPick = &modelPicker{models: m.src.modelNames}
+	return nil
+}
+
+func (m model) handleModelPickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	p := m.modelPick
+	switch msg.String() {
+	case "up", "k", "ctrl+p":
+		if p.idx > 0 {
+			p.idx--
+		}
+	case "down", "j", "ctrl+n":
+		if p.idx < len(p.models)-1 {
+			p.idx++
+		}
+	case "enter":
+		if len(p.models) == 0 {
+			m.modelPick = nil
+			return m, nil
+		}
+		return m, m.useModel(p.models[p.idx].name)
+	case "esc":
+		m.modelPick = nil
+	}
+	return m, nil
+}
+
+// useModel sends the model name to the run-loop goroutine (swapped between
+// turns), then awaits the result — the same async-safety pattern as /resume.
+func (m *model) useModel(name string) tea.Cmd {
+	m.modelPick = nil
+	if m.src.modelSwap == nil {
+		return tea.Println("model switch not available")
+	}
+	m.b.modelSwap <- name // buffered; the run loop applies it between turns
+	return waitForModelSwapResult(m.b.modelSwapResult)
+}
+
 // --- live region --------------------------------------------------------
 
 func (m model) View() string {
@@ -409,8 +490,13 @@ func (m model) View() string {
 	switch {
 	case m.pending != nil:
 		lines = append(lines, renderApprovalCard(*m.pending, m.approveIdx, m.width)...)
+		if m.showPreview {
+			lines = append(lines, renderApprovalPreview(*m.pending, m.width)...)
+		}
 	case m.picker != nil:
 		lines = append(lines, renderPicker(*m.picker, m.width)...)
+	case m.modelPick != nil:
+		lines = append(lines, renderModelPicker(*m.modelPick, m.width)...)
 	case m.paletteActive():
 		cmds := filterCommands(m.composer.Value())
 		lines = append(lines, renderPalette(cmds, clampInt(m.cmdIdx, 0, len(cmds)-1), m.width)...)

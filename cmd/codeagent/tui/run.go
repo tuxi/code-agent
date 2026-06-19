@@ -27,20 +27,35 @@ type Store interface {
 // (provided by the cmd layer, which owns the config). Used by /resume.
 type ResumeFunc func(id string) (*session.Session, error)
 
+// ModelSwapFunc switches the runner to a new model by name, rebuilding the
+// provider/compactor and re-budgeting the session. Called inside the run-loop
+// goroutine between turns (the same select safety as /resume). Returns the
+// updated header info for the TUI, or an error.
+type ModelSwapFunc func(name string) (HeaderInfo, error)
+
+// modelInfo is one selectable model for the /use picker.
+type modelInfo struct {
+	name string
+}
+
 // sessionSource is the cmd-layer's window into saved sessions for /sessions and
 // /resume: list them, load+rebudget one, and replay one's events.
 type sessionSource struct {
 	list   func() []session.Meta
 	resume ResumeFunc
 	events func(id string) []agent.Event
+
+	modelNames   []modelInfo          // for the /use picker
+	modelSwap    ModelSwapFunc        // switches the model between turns
+	modelSwapped chan modelSwappedMsg // the TUI awaits this after posting a model name
 }
 
 // Run starts the workspace. The runner must already be wired to b.Emitter and
 // b.Approver (via buildRunner). One background goroutine pulls a prompt off
-// b.inputs, runs the turn, persists, and signals done — and swaps the session on
-// /resume. The BubbleTea program owns the terminal. Run blocks until the user
-// quits.
-func Run(ctx context.Context, b *Backend, runner *agent.Runner, sess *session.Session, store Store, header HeaderInfo, resume ResumeFunc) error {
+// b.inputs, runs the turn, persists, and signals done — and handles
+// session/model swaps between turns. The BubbleTea program owns the terminal.
+// Run blocks until the user quits.
+func Run(ctx context.Context, b *Backend, runner *agent.Runner, sess *session.Session, store Store, header HeaderInfo, resume ResumeFunc, modelSwap ModelSwapFunc, modelNames []string) error {
 	// Cancelling on quit stops an in-flight turn rather than orphaning it.
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -59,7 +74,7 @@ func Run(ctx context.Context, b *Backend, runner *agent.Runner, sess *session.Se
 					err = serr
 				}
 				b.done <- err
-			case ns := <-b.swap:
+			case ns := <-b.sessSwap:
 				// /resume swaps the active session between turns. The select can't
 				// fire mid-RunTurn, so a swap always lands at a turn boundary — no
 				// hot-swap of a running turn. Persist the outgoing session first.
@@ -67,10 +82,17 @@ func Run(ctx context.Context, b *Backend, runner *agent.Runner, sess *session.Se
 					_ = store.Save(ctx, sess)
 				}
 				sess = ns
+			case name := <-b.modelSwap:
+				h, err := modelSwap(name)
+				b.modelSwapResult <- modelSwappedMsg{header: h, err: err}
 			}
 		}
 	}()
 
+	models := make([]modelInfo, len(modelNames))
+	for i, n := range modelNames {
+		models[i] = modelInfo{name: n}
+	}
 	src := sessionSource{
 		list: func() []session.Meta {
 			metas, err := store.List(ctx)
@@ -94,6 +116,9 @@ func Run(ctx context.Context, b *Backend, runner *agent.Runner, sess *session.Se
 			}
 			return out
 		},
+		modelNames:   models,
+		modelSwap:    modelSwap,
+		modelSwapped: b.modelSwapResult,
 	}
 	// Inline mode (no alt-screen, no mouse capture): finalized output goes to the
 	// terminal's own scrollback, so native select/copy, scroll, and Ctrl+R search

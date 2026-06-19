@@ -105,3 +105,22 @@ func ago(n int, unit string) string {
 	}
 	return fmt.Sprintf("%d %ss ago", n, unit)
 }
+
+// --- /use model picker --------------------------------------------------
+
+type modelPicker struct {
+	models []modelInfo
+	idx    int
+}
+
+func renderModelPicker(p modelPicker, width int) []string {
+	lines := []string{styleMeta.Render("switch model  (↑/↓ select · enter confirm · esc cancel)")}
+	for i, m := range p.models {
+		cursor, ts := "  ", styleMeta
+		if i == p.idx {
+			cursor, ts = stylePaletteSel.Render("❯ "), stylePaletteSel
+		}
+		lines = append(lines, cursor+ts.Render(runewidth.Truncate(m.name, width-2, "…")))
+	}
+	return lines
+}

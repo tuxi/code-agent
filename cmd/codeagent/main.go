@@ -618,7 +618,35 @@ func runTUI(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider mo
 	resume := func(id string) (*session.Session, error) {
 		return loadAndRebudget(ctx, cfg, mc, store, id)
 	}
-	return tui.Run(ctx, backend, runner, sess, store, header, resume)
+	// /use switches the runner to a new model between turns — the same logic as
+	// the REPL's /use, but inside the run-loop goroutine via modelSwap.
+	modelSwap := func(name string) (tui.HeaderInfo, error) {
+		newMC, err := cfg.SelectModel(name)
+		if err != nil {
+			return tui.HeaderInfo{}, err
+		}
+		newProvider, err := buildProvider(newMC, cfg.Provider)
+		if err != nil {
+			return tui.HeaderInfo{}, err
+		}
+		attachObserver(newProvider, store, ctx)
+		runner.Model = newProvider
+		runner.ModelName = newMC.Model
+		runner.Temperature = newMC.Temperature
+		runner.Compactor = buildCompactor(newMC, newProvider)
+		// Re-budget the session to the new model's window — same semantics as /use
+		// in the REPL.
+		sess.ContextWindow = newMC.ContextWindow
+		sess.CompactThreshold = cfg.CompactThreshold(newMC)
+		sess.Model = newMC.Model
+		return tui.HeaderInfo{
+			Model:            newMC.Name,
+			Workspace:        filepath.Base(root),
+			Session:          sess.ID,
+			CompactThreshold: cfg.CompactThreshold(newMC),
+		}, nil
+	}
+	return tui.Run(ctx, backend, runner, sess, store, header, resume, modelSwap, cfg.ModelNames())
 }
 
 func printUsage() {

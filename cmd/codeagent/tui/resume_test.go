@@ -44,7 +44,7 @@ func TestResumeOpensPickerNavigatesAndSwaps(t *testing.T) {
 		t.Fatalf("header should switch to s2, got %q", m.header.Session)
 	}
 	select {
-	case got := <-m.b.swap:
+	case got := <-m.b.sessSwap:
 		if got.ID != "s2" {
 			t.Fatalf("run loop should receive s2, got %q", got.ID)
 		}

@@ -351,6 +351,107 @@ func previewLines(s string, width, max int) []string {
 	return out
 }
 
+// renderApprovalPreview renders a diff-like preview of what the tool will do
+// when approved — toggled by 'v' in the approval card.
+func renderApprovalPreview(req approvalReq, width int) []string {
+	innerW := width - 4
+	if innerW < 20 {
+		innerW = 20
+	}
+	var raw map[string]any
+	json.Unmarshal([]byte(req.input), &raw)
+
+	switch req.tool {
+	case "edit_file":
+		return renderEditPreview(raw, innerW)
+	case "apply_patch":
+		return renderPatchPreview(raw, innerW)
+	case "create_file":
+		return renderCreatePreview(raw, innerW)
+	case "run_command":
+		return renderCommandPreview(raw, innerW)
+	default:
+		return renderJSONPreview(raw, innerW)
+	}
+}
+
+func renderEditPreview(raw map[string]any, width int) []string {
+	old, _ := raw["old"].(string)
+	new, _ := raw["new"].(string)
+	if old == "" && new == "" {
+		return nil
+	}
+	lines := []string{styleMeta.Render("── diff preview ──")}
+	if old != "" && new != "" {
+		for _, ln := range strings.Split(old, "\n") {
+			lines = append(lines, styleFail.Render(runewidth.Truncate("- "+ln, width, "…")))
+		}
+		for _, ln := range strings.Split(new, "\n") {
+			lines = append(lines, styleOK.Render(runewidth.Truncate("+ "+ln, width, "…")))
+		}
+	} else if old != "" {
+		lines = append(lines, styleFail.Render("removing:"))
+		for _, ln := range strings.Split(old, "\n") {
+			lines = append(lines, styleFail.Render(runewidth.Truncate("- "+ln, width, "…")))
+		}
+	}
+	return lines
+}
+
+func renderPatchPreview(raw map[string]any, width int) []string {
+	patch, _ := raw["patch"].(string)
+	if patch == "" {
+		return nil
+	}
+	lines := []string{styleMeta.Render("── patch preview ──")}
+	for _, ln := range strings.Split(strings.TrimRight(patch, "\n"), "\n") {
+		trunc := runewidth.Truncate(ln, width, "…")
+		if strings.HasPrefix(ln, "+") {
+			lines = append(lines, styleOK.Render(trunc))
+		} else if strings.HasPrefix(ln, "-") {
+			lines = append(lines, styleFail.Render(trunc))
+		} else {
+			lines = append(lines, styleBody.Render(trunc))
+		}
+	}
+	return lines
+}
+
+func renderCreatePreview(raw map[string]any, width int) []string {
+	content, _ := raw["content"].(string)
+	if content == "" {
+		return nil
+	}
+	lines := []string{styleMeta.Render("── file content ──")}
+	preview := strings.Split(strings.TrimRight(content, "\n"), "\n")
+	if len(preview) > 20 {
+		preview = append(preview[:20:20], styleMeta.Render(fmt.Sprintf("… %d more lines", len(preview)-20)))
+	}
+	for _, ln := range preview {
+		lines = append(lines, styleBody.Render(runewidth.Truncate(ln, width, "…")))
+	}
+	return lines
+}
+
+func renderCommandPreview(raw map[string]any, width int) []string {
+	cmd, _ := raw["command"].(string)
+	if cmd == "" {
+		return nil
+	}
+	return []string{
+		styleMeta.Render("── command ──"),
+		styleOK.Render(runewidth.Truncate("$ "+cmd, width, "…")),
+	}
+}
+
+func renderJSONPreview(raw map[string]any, width int) []string {
+	lines := []string{styleMeta.Render("── tool input ──")}
+	for k, v := range raw {
+		lines = append(lines, styleBody.Render(runewidth.Truncate(fmt.Sprintf("  %s: %v", k, v), width, "…")))
+	}
+	return lines
+}
+
 // approvalSelector shows y/n with the active choice highlighted — the ↑/↓
 // movable cursor the approveIdx field drives.
 func approvalSelector(idx int) string {
@@ -360,5 +461,5 @@ func approvalSelector(idx int) string {
 	} else {
 		y, n = styleApproveDim.Render("  [y]"), styleApproveHl.Render("▶ [n]")
 	}
-	return fmt.Sprintf("%s approve  %s deny  %s", y, n, styleMeta.Render("(↑/↓ select · enter confirm · esc cancel)"))
+	return fmt.Sprintf("%s approve  %s deny  %s  %s", y, n, styleMeta.Render("[v]"), styleMeta.Render("preview  (↑/↓ select · enter confirm · esc cancel)"))
 }

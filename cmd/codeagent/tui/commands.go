@@ -34,7 +34,8 @@ var commandRegistry = []command{
 		run: func(m *model, _ string) tea.Cmd { return tea.ClearScreen }},
 	{name: "/resume", desc: "resume a saved session", ready: true,
 		run: func(m *model, args string) tea.Cmd { return m.openResume(args) }},
-	{name: "/use", desc: "switch model", ready: false, run: deferNotice},
+	{name: "/use", desc: "switch to another configured model", ready: true,
+		run: func(m *model, args string) tea.Cmd { return m.openUse(args) }},
 	{name: "/exit", aliases: []string{"/quit"}, desc: "quit", ready: true,
 		run: func(m *model, _ string) tea.Cmd { return tea.Quit }},
 }
@@ -114,15 +115,12 @@ const helpText = `Commands
   /help        show this help
   /sessions    list saved sessions
   /model       show the current model
-  /clear       clear the timeline view (session history is kept)
-  /resume      resume a saved session (relaunch: codeagent resume <id>)
-  /use         switch model (relaunch: codeagent --model NAME tui)
+  /clear       clear the screen
+  /resume      resume a saved session
+  /use         switch to another configured model
   /exit /quit  leave the workspace
 
 Keys
   enter            send  ·  alt+enter / ctrl+j  newline
-  tab              switch focus to the timeline (and back)
-  ↑/↓ or j/k       move the timeline cursor (when focused)
-  enter            expand / collapse the focused card
-  pgup/pgdn        scroll  ·  ctrl+z suspend (fg resumes)  ·  ctrl+c quit
+  ctrl+z           suspend (fg resumes)  ·  ctrl+c quit
   / at line start  open this command menu`
