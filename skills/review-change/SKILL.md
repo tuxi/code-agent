@@ -11,6 +11,10 @@ extra reads up front beat a wrong fix.
 
 Before editing:
 
+- **Honor user read/edit boundaries first.** If the user says not to inspect a
+  dependency, path, or file class, do not read it via `read_file`, `run_command`,
+  grep, or any workaround. Investigate with the allowed project code and call out
+  uncertainty instead of crossing the boundary.
 - **Read the related implementation first**, not just the failing line.
   Understand the call chain and why the current code is shaped the way it is.
 - **Check whether something similar already exists** — a helper, a pattern, an

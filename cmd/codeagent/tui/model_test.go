@@ -6,6 +6,7 @@ import (
 
 	"code-agent/internal/agent"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/mattn/go-runewidth"
 )
 
 func newTestModel() model {
@@ -102,6 +103,37 @@ func TestSubmitNoopWhenBusy(t *testing.T) {
 	_, cmd := m.submit()
 	if cmd != nil {
 		t.Fatal("submit while a turn is running should be a no-op")
+	}
+}
+
+func TestComposerPromptHasStableWidth(t *testing.T) {
+	if got, want := runewidth.StringWidth(composerPrompt), len(composerPrompt); got != want {
+		t.Fatalf("composerPrompt display width = %d, want byte/rune width %d for stable IME placement", got, want)
+	}
+}
+
+func TestComposerWidthLeavesRightPaddingOnly(t *testing.T) {
+	if got := composerWidth(80); got != 79 {
+		t.Fatalf("composerWidth(80) = %d, want 79", got)
+	}
+	if got := composerWidth(1); got != 1 {
+		t.Fatalf("composerWidth(1) = %d, want 1", got)
+	}
+}
+
+func TestComposerCursorColumnUsesCJKDisplayWidth(t *testing.T) {
+	m := readyModel(t)
+	m.composer.SetValue("你好啊,")
+	if got, want := m.composerCursorColumn(), 10; got != want {
+		t.Fatalf("composerCursorColumn() = %d, want %d", got, want)
+	}
+}
+
+func TestComposerCursorColumnUsesLastLine(t *testing.T) {
+	m := readyModel(t)
+	m.composer.SetValue("first\n好")
+	if got, want := m.composerCursorColumn(), 5; got != want {
+		t.Fatalf("composerCursorColumn() = %d, want %d", got, want)
 	}
 }
 

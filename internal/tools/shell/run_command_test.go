@@ -3,6 +3,8 @@ package shell
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -107,5 +109,50 @@ func TestRunCommandSideEffectsFor(t *testing.T) {
 		if got := tool.SideEffectsFor(in); got != tc.want {
 			t.Errorf("SideEffectsFor(%q) = %v, want %v", tc.cmd, got, tc.want)
 		}
+	}
+}
+
+func TestRunCommandRefusesReadPathOutsideWorkspace(t *testing.T) {
+	root := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "secret.txt")
+	if err := os.WriteFile(outside, []byte("nope"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	tool := NewRunCommandTool(root)
+	in := json.RawMessage(`{"command":` + strconv.Quote("cat "+outside) + `}`)
+	res, err := tool.Execute(context.Background(), in)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	r := decodeResult(t, res.Content)
+	if r.ExitCode != -1 {
+		t.Fatalf("exit_code = %d, want -1", r.ExitCode)
+	}
+	if !strings.Contains(r.Note, "inside the workspace") {
+		t.Fatalf("note = %q, want workspace refusal", r.Note)
+	}
+	if r.Stdout != "" {
+		t.Fatalf("stdout = %q, want empty because outside file must not be read", r.Stdout)
+	}
+}
+
+func TestRunCommandAllowsReadPathInsideWorkspace(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "ok.txt"), []byte("yes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	tool := NewRunCommandTool(root)
+	res, err := tool.Execute(context.Background(), json.RawMessage(`{"command":"cat ok.txt"}`))
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	r := decodeResult(t, res.Content)
+	if r.ExitCode != 0 {
+		t.Fatalf("exit_code = %d, want 0 (note=%q)", r.ExitCode, r.Note)
+	}
+	if !strings.Contains(r.Stdout, "yes") {
+		t.Fatalf("stdout = %q, want file content", r.Stdout)
 	}
 }

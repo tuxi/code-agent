@@ -5,6 +5,7 @@ import (
 	"code-agent/internal/jobs"
 	"code-agent/internal/sandbox"
 	"code-agent/internal/tools"
+	"code-agent/internal/workspace"
 	"context"
 	"encoding/json"
 	"errors"
@@ -172,6 +173,14 @@ func (t *RunCommandTool) Execute(ctx context.Context, input json.RawMessage) (to
 	if err != nil {
 		return tools.ToolResult{}, err
 	}
+	if note := outsideWorkspaceRead(args, rootAbs); note != "" {
+		return t.result(commandResult{
+			Command:  command,
+			ExitCode: -1,
+			Decision: string(class.Decision),
+			Note:     note,
+		})
+	}
 
 	// Background: launch the job and return its id immediately, leaving the agent
 	// free to do other work. Policy gating (block/confirm) and the operator guard
@@ -277,6 +286,52 @@ func truncate(s string, max int) string {
 		return s
 	}
 	return s[:max] + "\n...<truncated>"
+}
+
+func outsideWorkspaceRead(args []string, rootAbs string) string {
+	if len(args) == 0 || !isReadPathCommand(args[0]) {
+		return ""
+	}
+	for _, arg := range args[1:] {
+		if arg == "" || strings.HasPrefix(arg, "-") {
+			continue
+		}
+		target, ok := commandPathTarget(arg, rootAbs)
+		if !ok {
+			continue
+		}
+		if !workspace.IsSubPath(rootAbs, target) {
+			return fmt.Sprintf("refused: %s may only read paths inside the workspace; use project tools for workspace files and respect user-scoped read limits", args[0])
+		}
+	}
+	return ""
+}
+
+func isReadPathCommand(name string) bool {
+	switch filepath.Base(name) {
+	case "cat", "head", "tail", "wc", "file", "stat", "ls", "tree", "find", "grep", "rg", "sed", "awk":
+		return true
+	default:
+		return false
+	}
+}
+
+func commandPathTarget(arg, rootAbs string) (string, bool) {
+	if strings.HasPrefix(arg, "~") {
+		return filepath.Clean(arg), true
+	}
+	if filepath.IsAbs(arg) {
+		return filepath.Clean(arg), true
+	}
+	clean := filepath.Clean(arg)
+	if clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		target, err := filepath.Abs(filepath.Join(rootAbs, clean))
+		if err != nil {
+			return "", false
+		}
+		return target, true
+	}
+	return "", false
 }
 
 var (

@@ -11,6 +11,7 @@ import (
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textarea"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/mattn/go-runewidth"
 )
 
 // HeaderInfo is the "where am I" content. The live context gauge needs the
@@ -25,6 +26,9 @@ type HeaderInfo struct {
 const (
 	minComposerLines = 1 // composer starts one line tall (cursor on the bottom row → IME-friendly)
 	maxComposerLines = 8 // and grows with content up to here, then scrolls internally
+
+	composerPrompt       = "> "
+	composerRightPadding = 1
 )
 
 // model is the inline BubbleTea program (no alt-screen): an "enhanced terminal",
@@ -69,7 +73,7 @@ func newModel(b *Backend, header HeaderInfo, src sessionSource) model {
 	ta := textarea.New()
 	ta.Placeholder = "Type a message…  (/ for commands)"
 	ta.ShowLineNumbers = false
-	ta.Prompt = "┃ "
+	ta.Prompt = composerPrompt
 	ta.CharLimit = 0
 	// Edit-first composer: Enter sends (handled in Update), so newline moves to
 	// Alt+Enter / Ctrl+J — the cross-terminal-reliable combo.
@@ -110,7 +114,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
-		m.composer.SetWidth(msg.Width - 2)
+		m.composer.SetWidth(composerWidth(msg.Width))
 		m.ready = true
 		return m, nil
 
@@ -447,6 +451,10 @@ func (m *model) syncComposer() {
 	}
 }
 
+func composerWidth(terminalWidth int) int {
+	return clampInt(terminalWidth-composerRightPadding, 1, terminalWidth)
+}
+
 func clampInt(n, lo, hi int) int {
 	if n < lo {
 		return lo
@@ -558,6 +566,27 @@ func (m model) View() string {
 	// overlaying scrollback. Three leading empty lines shift the live region down
 	// so the clear-to-end-of-line + composer text don't bleed into the transcript.
 	return "\n\n\n" + strings.Join(lines, "\n")
+}
+
+func (m model) composerCursorColumn() int {
+	value := m.composer.Value()
+	if i := strings.LastIndex(value, "\n"); i >= 0 {
+		value = value[i+1:]
+	}
+	textWidth := runewidth.StringWidth(value)
+	promptWidth := runewidth.StringWidth(composerPrompt)
+	contentWidth := composerWidth(m.width) - promptWidth
+	if contentWidth < 1 {
+		contentWidth = 1
+	}
+	visualCol := textWidth
+	if visualCol > contentWidth {
+		visualCol %= contentWidth
+		if visualCol == 0 {
+			visualCol = contentWidth
+		}
+	}
+	return clampInt(promptWidth+visualCol+1, 1, m.width)
 }
 
 // statusLine is the one live status row: what's happening on the left, the
