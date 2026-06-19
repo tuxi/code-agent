@@ -1,0 +1,120 @@
+package tui
+
+import (
+	"encoding/json"
+
+	"code-agent/internal/agent"
+	"code-agent/internal/session"
+	tea "github.com/charmbracelet/bubbletea"
+)
+
+// Backend is the channel seam between the agent runner (which runs on a
+// background goroutine) and the BubbleTea program (which owns stdin and the
+// render loop on the main goroutine). It carries the two existing interfaces —
+// Emitter and Approver — as channel-backed implementations. Neither interface
+// signature changes; only where the bytes go (§5).
+//
+// Construct it, hand Emitter/Approver to buildRunner, then pass it to Run.
+type Backend struct {
+	Emitter  agent.Emitter
+	Approver agent.Approver
+
+	events    chan agent.Event
+	approvals chan approvalReq
+	inputs    chan string
+	done      chan error
+	swap      chan *session.Session // /resume hands the run loop a new session
+}
+
+// NewBackend wires the channels. events is buffered so a fast burst from the loop
+// never blocks it; inputs has room for one queued prompt so submitting never
+// blocks the UI; approvals is unbuffered (the loop must wait for an answer); done
+// signals turn completion (even on error, where no EventTurnFinished is emitted).
+func NewBackend() *Backend {
+	events := make(chan agent.Event, 256)
+	approvals := make(chan approvalReq)
+	inputs := make(chan string, 1)
+	done := make(chan error, 1)
+	swap := make(chan *session.Session, 1)
+	return &Backend{
+		Emitter:   tuiEmitter{ch: events},
+		Approver:  tuiApprover{ch: approvals},
+		events:    events,
+		approvals: approvals,
+		inputs:    inputs,
+		done:      done,
+		swap:      swap,
+	}
+}
+
+// doneMsg signals that a turn finished (err non-nil if it failed). It is the
+// single source of "the composer is free again" — robust to the error path,
+// where the loop returns without an EventTurnFinished.
+type doneMsg struct{ err error }
+
+func waitForDone(ch chan error) tea.Cmd {
+	return func() tea.Msg {
+		err, ok := <-ch
+		if !ok {
+			return nil
+		}
+		return doneMsg{err: err}
+	}
+}
+
+// --- Emitter -------------------------------------------------------------
+
+// eventMsg carries one agent event into the BubbleTea update loop.
+type eventMsg agent.Event
+
+// tuiEmitter forwards loop events to the program over a buffered channel. Emit is
+// called on the runner goroutine; the program drains them as eventMsg on the main
+// goroutine. (Same decoupling as consoleEmitter — see cmd/codeagent/live.go.)
+type tuiEmitter struct{ ch chan agent.Event }
+
+func (e tuiEmitter) Emit(ev agent.Event) { e.ch <- ev }
+
+// waitForEvent blocks for the next event and delivers it as an eventMsg. The
+// Update loop re-issues it after each event to keep draining.
+func waitForEvent(ch chan agent.Event) tea.Cmd {
+	return func() tea.Msg {
+		ev, ok := <-ch
+		if !ok {
+			return nil
+		}
+		return eventMsg(ev)
+	}
+}
+
+// --- Approver ------------------------------------------------------------
+
+// approvalReq is a side-effecting tool awaiting the user's decision. The runner
+// goroutine blocks on reply until the UI answers — the same pause the REPL gets
+// from a readline y/N, but async now that the render loop owns stdin (§5.2).
+type approvalReq struct {
+	tool  string
+	input json.RawMessage
+	reply chan bool
+}
+
+type approvalMsg approvalReq
+
+// tuiApprover is the agent.Approver for the TUI: Approve runs on the runner
+// goroutine, posts a request, and blocks until the UI sends a decision back.
+type tuiApprover struct{ ch chan approvalReq }
+
+func (a tuiApprover) Approve(tool string, input json.RawMessage) bool {
+	reply := make(chan bool, 1)
+	a.ch <- approvalReq{tool: tool, input: input, reply: reply}
+	return <-reply
+}
+
+func waitForApproval(ch chan approvalReq) tea.Cmd {
+	return func() tea.Msg {
+		req, ok := <-ch
+		if !ok {
+			return nil
+		}
+		return approvalMsg(req)
+	}
+}

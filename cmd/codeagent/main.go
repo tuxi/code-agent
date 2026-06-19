@@ -1,6 +1,7 @@
 package main
 
 import (
+	"code-agent/cmd/codeagent/tui"
 	"code-agent/internal/agent"
 	"code-agent/internal/app"
 	"code-agent/internal/model"
@@ -16,6 +17,7 @@ import (
 	"code-agent/internal/tools/skill"
 	"code-agent/internal/ui"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -82,6 +84,8 @@ func run() error {
 		return runAsk(ctx, mc, provider, goal)
 	case "run":
 		return runAgent(ctx, cfg, mc, provider, goal)
+	case "tui":
+		return runTUI(ctx, cfg, mc, provider)
 	case "resume":
 		if len(args) < 2 {
 			return fmt.Errorf("usage: codeagent resume <session-id>  (see 'codeagent sessions')")
@@ -141,6 +145,38 @@ func attachObserver(provider model.Provider, store session.Store, ctx context.Co
 	if rp, ok := provider.(*model.ResilientProvider); ok {
 		rp.Observer = requestObserver{ctx: ctx, store: store}
 	}
+}
+
+// eventStoreEmitter persists each agent event to the session store (the P7
+// EventStore — the raw, replayable runtime stream) and forwards it to the next
+// renderer unchanged. A pure decorator, the same shape as liveProgress: it adds
+// persistence with zero changes to the loop or the renderer it wraps. Best-effort
+// like requestObserver — a telemetry write never fails a run.
+type eventStoreEmitter struct {
+	ctx   context.Context
+	store session.Store
+	next  agent.Emitter
+}
+
+func (e eventStoreEmitter) Emit(ev agent.Event) {
+	if payload, err := json.Marshal(ev); err == nil {
+		_ = e.store.RecordEvent(e.ctx, session.EventRecord{
+			SessionID: ev.SessionID,
+			TurnID:    ev.TurnID,
+			Kind:      string(ev.Kind),
+			At:        ev.At,
+			Payload:   payload,
+		})
+	}
+	if e.next != nil {
+		e.next.Emit(ev)
+	}
+}
+
+// withEventStore wraps a renderer so every event is persisted before it renders.
+// Shared by run/repl/tui so all three log the event stream identically.
+func withEventStore(next agent.Emitter, store session.Store, ctx context.Context) agent.Emitter {
+	return eventStoreEmitter{ctx: ctx, store: store, next: next}
 }
 
 // listSessions prints saved sessions, most recently updated first.
@@ -386,6 +422,28 @@ func buildProvider(mc app.ModelConfig, pc app.ProviderConfig) (model.Provider, e
 	}, nil
 }
 
+// buildRunner assembles the agent.Runner shared by `run`, `repl`, and `tui`. The
+// only things that differ between entry points are the Approver (how the user
+// confirms a side-effecting tool) and the Emitter (how the event stream is
+// rendered) — everything else (tools, observation, reflection, the skills nudge,
+// compaction, the step cap) is identical, so it lives here and the three callers
+// cannot drift apart.
+func buildRunner(cfg app.Config, mc app.ModelConfig, provider model.Provider, registry *tools.Registry, skillReg *skills.Registry, approver agent.Approver, emitter agent.Emitter) *agent.Runner {
+	return &agent.Runner{
+		Model:        provider,
+		ModelName:    mc.Model,
+		Temperature:  mc.Temperature,
+		Tools:        registry,
+		MaxSteps:     cfg.Agent.MaxSteps,
+		Approver:     approver,
+		Observer:     observation.DefaultObserver{},
+		Reflector:    agent.DefaultReflector{},
+		RemindSkills: skillReg.Len() > 0,
+		Compactor:    buildCompactor(mc, provider),
+		Emitter:      emitter,
+	}
+}
+
 // buildCompactor builds the summary compactor used to keep long sessions inside
 // the context window. It summarizes with the same provider/model the agent is
 // running, so switching models (`/use`) must rebuild it. Shared by run and repl.
@@ -481,19 +539,14 @@ func runAgent(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider 
 		return err
 	}
 
-	runner := &agent.Runner{
-		Model:        provider,
-		ModelName:    mc.Model,
-		Temperature:  mc.Temperature,
-		Tools:        registry,
-		MaxSteps:     cfg.Agent.MaxSteps,
-		Approver:     ui.ConfirmApprover{},
-		Observer:     observation.DefaultObserver{},
-		Reflector:    agent.DefaultReflector{},
-		RemindSkills: skillReg.Len() > 0,
-		Compactor:    buildCompactor(mc, provider),
-		Emitter:      buildEmitter(),
+	store, err := openStore(root)
+	if err != nil {
+		return err
 	}
+	defer store.Close()
+	attachObserver(provider, store, ctx)
+
+	runner := buildRunner(cfg, mc, provider, registry, skillReg, ui.ConfirmApprover{}, withEventStore(buildEmitter(), store, ctx))
 
 	sess, err := session.NewBuilder(root).
 		WithBudget(mc.ContextWindow, cfg.CompactThreshold(mc)).
@@ -503,13 +556,6 @@ func runAgent(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider 
 		return err
 	}
 	sess.Model = mc.Model
-
-	store, err := openStore(root)
-	if err != nil {
-		return err
-	}
-	defer store.Close()
-	attachObserver(provider, store, ctx)
 
 	fmt.Printf("Model: %s (%s)\nSession: %s\n", mc.Name, mc.Model, sess.ID)
 
@@ -529,9 +575,54 @@ func runAgent(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider 
 	return nil
 }
 
+// runTUI launches the Phase 7 BubbleTea workspace (M1). It builds the same runner
+// as `run`/`repl` (buildRunner) but with channel-backed Emitter/Approver, so the
+// loop runs on a background goroutine while the program owns the terminal. The
+// agent is unchanged; only the renderer differs.
+func runTUI(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider model.Provider) error {
+	root := cfg.Workspace.Root
+
+	registry, skillReg, err := buildRegistry(root)
+	if err != nil {
+		return err
+	}
+
+	store, err := openStore(root)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+	attachObserver(provider, store, ctx)
+
+	sess, err := session.NewBuilder(root).
+		WithBudget(mc.ContextWindow, cfg.CompactThreshold(mc)).
+		WithSkillsIndex(skillReg.PromptIndex()).
+		Build()
+	if err != nil {
+		return err
+	}
+	sess.Model = mc.Model
+
+	backend := tui.NewBackend()
+	runner := buildRunner(cfg, mc, provider, registry, skillReg, backend.Approver, withEventStore(backend.Emitter, store, ctx))
+	header := tui.HeaderInfo{
+		Model:            mc.Name,
+		Workspace:        filepath.Base(root),
+		Session:          sess.ID,
+		CompactThreshold: cfg.CompactThreshold(mc),
+	}
+	// /resume loads a stored session and re-budgets it to the current model — the
+	// same helper the REPL's /resume uses.
+	resume := func(id string) (*session.Session, error) {
+		return loadAndRebudget(ctx, cfg, mc, store, id)
+	}
+	return tui.Run(ctx, backend, runner, sess, store, header, resume)
+}
+
 func printUsage() {
 	fmt.Println(`Usage:
   codeagent [--model NAME]                 start the interactive REPL (new session)
+  codeagent [--model NAME] tui              start the TUI workspace (new session)
   codeagent [--model NAME] run "..."       run a single task
   codeagent [--model NAME] ask "..."       one-off question (no tools)
   codeagent sessions                       list saved sessions

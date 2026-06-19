@@ -614,6 +614,72 @@ the tiny index is ever in the base prompt; bodies load on demand.
 > (agentic models self-load; weaker ones treat the index as passive), and a low
 > trigger rate is a *description* problem first — fix the trigger, not the body.
 
+### Phase 7 — Terminal UX Runtime (TUI workspace)  *(design, signed off)*
+
+Every phase so far raised the agent's *capability*. P7 is the first to work on the
+**Human ↔ Agent interface** — turning a command executor into a **Workspace** you'd
+open every morning. It adds **no agent capability**: it is a *third renderer* of the
+event stream the runtime already emits (the same seam that made `liveProgress` a
+pure decorator — P3.7), plus a second `Approver`. Shipped as a new `codeagent tui`
+(BubbleTea); `codeagent repl` stays as the headless/CI path. Design PRD:
+[docs/p7-tui.md](docs/p7-tui.md).
+
+North star: **Timeline First, Chat Second** — the user watches *what the agent
+did*, not reads *what it said*; tools, skills, reflections, and the reply are all
+timeline events, rendered uniformly. Architecture guardrail: if P7 ends with a
+diff inside `internal/agent`, it was done wrong.
+
+- [x] **(M1 — "use it")** Workspace skeleton (`cmd/codeagent/tui`, run with
+  `codeagent tui`): the async seam (channel `Emitter` + `Approver`, `RunTurn` on a
+  background goroutine — *no interface signature changes*), an edit-first
+  multi-line composer, the unified event **timeline** with Event Collapse, and a
+  minimal y/n approval footer. Reducer + model unit-tested; live-terminal
+  validation pending.
+- [x] **(EventStore — the durable seed)** A `session_events` table persists the
+  raw `agent.Event` stream (`RecordEvent` / `SessionEvents`), written by a
+  composable `eventStoreEmitter` decorator that `run` / `repl` / `tui` all wrap in.
+  The domain event (`agent.Event`) is the replayable truth; the timeline is a
+  lossy projection of it. Foundation for replay / search / analytics / export.
+  See [docs/p7-tui.md §7.1](docs/p7-tui.md).
+- [x] **(M2 — "understand it")** Structured event cards: tool cards (✓/✗,
+  duration; a failure prints its body, a success prints just its header), skill,
+  reflection, and assistant cards, and a live status line (context gauge +
+  skills). The card formatters + reducer are unit-tested.
+- [x] **(Inline-mode pivot)** The headline architecture change from real use:
+  **dropped alt-screen for inline mode** — finalized events print to the
+  terminal's own **scrollback**, so native select/copy, scroll, and Ctrl+R search
+  all just work. The program only owns a small live region (status + composer).
+  This is "an enhanced terminal," not a full-screen TUI — the comfort behind
+  Claude Code. (Cost: M2's *in-place* cursor-nav / expand-collapse and *live*
+  Event-Collapse don't apply to immutable scrollback; the collapse library is
+  retained for a future turn-end batch.)
+- [x] **(Composer)** Auto-growing 1→8 rows (one line keeps the cursor on the
+  bottom row — the *root* IME fix, not a mitigation), Enter sends / Alt+Enter
+  newline, `ctrl+z` suspends.
+- [x] **(Command registry)** `/` opens a filtered palette backed by a command
+  registry (data + run-func + aliases, not a switch): `/help /sessions /model
+  /clear /resume /exit`; commands are intercepted, never sent as chat.
+- [x] **(`/resume` with history replay)** A session **picker** in the live
+  region: ↑/↓ select, Enter resumes. Each row shows the session's first message +
+  relative time · model · msgs (a new `Meta.Title` from the first user message).
+  Selecting hands the loaded+re-budgeted session to the run loop over a `swap`
+  channel — applied at the next turn boundary (no hot-swap), reusing the REPL's
+  `loadAndRebudget`. Resumed sessions **replay their history** to scrollback:
+  persisted `agent.Event` records are re-rendered through the same `transcript`
+  renderer as live output, so they read exactly as they did when they ran.
+  Sessions older than the EventStore resume with context intact but no visible
+  back-scroll. The renderer is extracted into a shared `transcript` type
+  (`transcript.go`) used by both live rendering and replay.
+- [ ] **(Next)** `/use` (between-turns model swap), step-grouped output tuning,
+  and the deferred expand (`Thought for Ns` → reasoning) once we design it.
+- [ ] **(M3 — "trust it")** Approval UX: the channel `Approver` wired to a richer
+  approval prompt with a diff **preview**; fills the placeholder
+  `internal/ui/diff.go`. (Paused behind the inline-workspace P0s.)
+- [ ] **(M4 — "feel it's an IDE")** Workspace awareness: git panel, files panel.
+
+**Done when:** swapping into `tui` changes the UX without a single diff inside
+`internal/agent` — the same north star as P3.7, one layer up.
+
 ### Later / parallel
 
 - [ ] MCP adapter — consume and expose tools through a standard protocol,

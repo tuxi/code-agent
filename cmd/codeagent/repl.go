@@ -4,7 +4,6 @@ import (
 	"code-agent/internal/agent"
 	"code-agent/internal/app"
 	"code-agent/internal/model"
-	"code-agent/internal/observation"
 	"code-agent/internal/session"
 	"code-agent/internal/ui"
 	"context"
@@ -82,19 +81,7 @@ func repl(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider mode
 		return rl.Readline()
 	}
 
-	runner := &agent.Runner{
-		Model:        provider,
-		ModelName:    mc.Model,
-		Temperature:  mc.Temperature,
-		Tools:        registry,
-		MaxSteps:     cfg.Agent.MaxSteps,
-		Approver:     ui.ConfirmApprover{Prompt: ask},
-		Observer:     observation.DefaultObserver{},
-		Reflector:    agent.DefaultReflector{},
-		RemindSkills: skillReg.Len() > 0,
-		Compactor:    buildCompactor(mc, provider),
-		Emitter:      buildEmitter(),
-	}
+	runner := buildRunner(cfg, mc, provider, registry, skillReg, ui.ConfirmApprover{Prompt: ask}, withEventStore(buildEmitter(), store, ctx))
 
 	var sess *session.Session
 	if resumeID != "" {

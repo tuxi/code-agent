@@ -67,7 +67,16 @@ CREATE TABLE IF NOT EXISTS requests (
 	error_class       TEXT,
 	latency_ms        INTEGER,
 	trace             TEXT
-);`
+);
+CREATE TABLE IF NOT EXISTS session_events (
+	id         INTEGER PRIMARY KEY AUTOINCREMENT,
+	session_id TEXT,
+	turn_id    TEXT,
+	kind       TEXT,
+	at         TEXT,
+	payload    TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_session_events_session ON session_events(session_id, id);`
 
 func NewSQLiteStore(path string) (*SQLiteStore, error) {
 	db, err := sql.Open("sqlite", path)
@@ -228,6 +237,7 @@ func (s *SQLiteStore) List(ctx context.Context) ([]Meta, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT s.id, s.model, s.prompt_tokens, s.updated_at,
 		       (SELECT COUNT(*) FROM messages m WHERE m.session_id = s.id),
+		       (SELECT COALESCE((SELECT content FROM messages m WHERE m.session_id = s.id AND m.role = 'user' ORDER BY m.seq LIMIT 1), '')),
 		       (SELECT COUNT(*) FROM compactions c WHERE c.session_id = s.id AND c.after_tokens >= 0),
 		       (SELECT COALESCE(SUM(c.saved_tokens), 0) FROM compactions c WHERE c.session_id = s.id AND c.after_tokens >= 0),
 		       (SELECT COALESCE(MAX(c.compacted_at), '') FROM compactions c WHERE c.session_id = s.id AND c.after_tokens >= 0)
@@ -242,7 +252,7 @@ func (s *SQLiteStore) List(ctx context.Context) ([]Meta, error) {
 		var m Meta
 		var updatedAt, lastCompacted string
 		if err := rows.Scan(&m.ID, &m.Model, &m.PromptTokens, &updatedAt,
-			&m.MessageCount, &m.Compactions, &m.TotalSaved, &lastCompacted); err != nil {
+			&m.MessageCount, &m.Title, &m.Compactions, &m.TotalSaved, &lastCompacted); err != nil {
 			return nil, err
 		}
 		m.UpdatedAt = parseTime(updatedAt)
@@ -301,6 +311,42 @@ func (s *SQLiteStore) RecordRequest(ctx context.Context, r RequestRecord) error 
 		formatTime(r.At), r.Model, r.PromptTokens, r.CompletionTokens, r.Attempts, r.Retries,
 		boolToInt(r.TimedOut), boolToInt(r.Success), r.ErrorClass, r.LatencyMs, trace)
 	return err
+}
+
+// RecordEvent appends one agent event to the per-session event log. Best-effort
+// by convention: callers should not fail a run if this errors.
+func (s *SQLiteStore) RecordEvent(ctx context.Context, e EventRecord) error {
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO session_events (session_id, turn_id, kind, at, payload)
+		VALUES (?, ?, ?, ?, ?)`,
+		e.SessionID, e.TurnID, e.Kind, formatTime(e.At), string(e.Payload))
+	return err
+}
+
+// SessionEvents returns a session's events in emission order (the autoincrement
+// id is monotonic with insertion) — the raw stream a replay/analytics pass reads.
+func (s *SQLiteStore) SessionEvents(ctx context.Context, sessionID string) ([]EventRecord, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT session_id, turn_id, kind, at, COALESCE(payload, '')
+		FROM session_events WHERE session_id=? ORDER BY id`, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []EventRecord
+	for rows.Next() {
+		var e EventRecord
+		var at, payload string
+		if err := rows.Scan(&e.SessionID, &e.TurnID, &e.Kind, &at, &payload); err != nil {
+			return nil, err
+		}
+		e.At = parseTime(at)
+		if payload != "" {
+			e.Payload = json.RawMessage(payload)
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
 }
 
 // TokenUsageByModel returns per-model token totals (most tokens first) — the
@@ -464,6 +510,7 @@ func (s *SQLiteStore) Delete(ctx context.Context, id string) error {
 	for _, q := range []string{
 		`DELETE FROM messages WHERE session_id=?`,
 		`DELETE FROM compactions WHERE session_id=?`,
+		`DELETE FROM session_events WHERE session_id=?`,
 		`DELETE FROM sessions WHERE id=?`,
 	} {
 		if _, err := tx.ExecContext(ctx, q, id); err != nil {

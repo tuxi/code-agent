@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 )
 
@@ -22,8 +23,31 @@ type Store interface {
 	ProviderStats(ctx context.Context) (ProviderStats, error)
 	RecentRequests(ctx context.Context, limit int) ([]RequestRecord, error)
 	TokenUsageByModel(ctx context.Context) ([]ModelUsage, error)
+
+	// RecordEvent appends one agent event to the per-session event log (the P7
+	// EventStore). SessionEvents reads them back in order — the foundation for
+	// timeline replay/search/analytics. Best-effort by convention, like
+	// RecordRequest: a telemetry write never fails a run.
+	RecordEvent(ctx context.Context, e EventRecord) error
+	SessionEvents(ctx context.Context, sessionID string) ([]EventRecord, error)
+
 	Delete(ctx context.Context, id string) error
 	Close() error
+}
+
+// EventRecord is one persisted agent event — the raw, *unfolded* runtime stream.
+// Where messages capture the model's view of a conversation, events capture the
+// process: tool calls, observations, reflections, skills, compaction. The folded
+// timeline a UI shows is a projection of these; replay/search/export need the
+// originals, so the event — not the projection — is what we persist. Payload is
+// the full event as JSON (the source of truth); Kind/At are denormalized as the
+// query index.
+type EventRecord struct {
+	SessionID string
+	TurnID    string
+	Kind      string
+	At        time.Time
+	Payload   json.RawMessage
 }
 
 // RequestRecord is one persisted model request (across its retry attempts) for
@@ -88,6 +112,7 @@ type LatencyBucket struct {
 // fields are aggregated from the session's compactions, not stored separately.
 type Meta struct {
 	ID           string
+	Title        string // first user message, truncated — a human label for pickers
 	Model        string
 	MessageCount int
 	PromptTokens int
