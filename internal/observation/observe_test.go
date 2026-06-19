@@ -86,3 +86,46 @@ func TestRenderOK(t *testing.T) {
 		t.Errorf("ok render should start with '[observation] ok', got:\n%s", rendered)
 	}
 }
+
+func TestObserveEditFileRecoverableFailure(t *testing.T) {
+	cases := []string{
+		"Could not find the 'old' text in main.go. It must match the file exactly, including whitespace and indentation. Re-read the file and copy the text verbatim.",
+		"The 'old' text appears 3 times in main.go, so the edit is ambiguous. Include more surrounding context so it matches exactly once.",
+		"The 'old' text is empty. Provide the exact text to replace.",
+		"Could not open /tmp/nonexistent: stat /tmp/nonexistent: no such file or directory",
+		"main.go is a directory, not a file.",
+		"main.go is not a UTF-8 text file.",
+	}
+	for _, raw := range cases {
+		obs := Observe("edit_file", raw)
+		if obs.OK {
+			t.Errorf("edit_file recoverable failure should not be OK:\n  raw: %q\n  obs: %+v", raw, obs)
+		}
+		if obs.FailureType != FailureRuntime {
+			t.Errorf("expected FailureRuntime, got %q for: %q", obs.FailureType, raw)
+		}
+	}
+}
+
+func TestObserveCreateFileRecoverableFailure(t *testing.T) {
+	cases := []string{
+		"main.go already exists. Use edit_file to modify an existing file.",
+		"Content too large: 500000 bytes (max 200000).",
+	}
+	for _, raw := range cases {
+		obs := Observe("create_file", raw)
+		if obs.OK {
+			t.Errorf("create_file recoverable failure should not be OK:\n  raw: %q\n  obs: %+v", raw, obs)
+		}
+	}
+}
+
+func TestObserveReadFileStillOK(t *testing.T) {
+	// read_file is NOT in the failure list — a "Could not open" from read_file
+	// would come with a go error, not as a recoverable observation. This just
+	// guards against false positives.
+	obs := Observe("read_file", "package agent\n")
+	if !obs.OK {
+		t.Errorf("read_file success should still be OK")
+	}
+}

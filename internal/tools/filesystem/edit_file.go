@@ -35,7 +35,7 @@ func (t *EditFileTool) Name() string {
 }
 
 func (t *EditFileTool) Description() string {
-	return "Replace an exact, unique span of text in a file. Provide 'old' (the text to find, copied verbatim from the file including indentation) and 'new' (the replacement; leave empty to delete). The 'old' text must occur exactly once — include enough surrounding context to make it unique. No line numbers or diff formatting are needed; just quote the code."
+	return "Replace an exact, unique span of text in a file. Provide 'old' (the text to find, copied verbatim from the file including indentation) and 'new' (the replacement; leave empty to delete). The 'old' text must occur exactly once — include enough surrounding context to make it unique. IMPORTANT: strip the line-number prefix (e.g. '142\\t') that read_file adds to each line — the actual file does not contain these prefixes, so including them will cause 'Could not find the old text'."
 }
 
 func (t *EditFileTool) InputSchema() json.RawMessage {
@@ -152,13 +152,13 @@ func editDiff(oldContent, newContent, oldStr, newStr string, oldStart, ctx int) 
 	oldLines := strings.Split(oldContent, "\n")
 	newContLines := strings.Split(newContent, "\n")
 
-	oldLine := lineAt(oldContent, oldStart)             // 0-based line index of the old text start
+	oldLine := lineAt(oldContent, oldStart)            // 0-based line index of the old text start
 	oldEnd := lineAt(oldContent, oldStart+len(oldStr)) // 0-based line index of old text end
 
 	newStrLines := strings.Split(newStr, "\n")
-	added := len(newStrLines)                                 // lines in the new text
-	removed := oldEnd - oldLine + 1                           // lines removed
-	lineShift := added - removed                              // how much later lines shift
+	added := len(newStrLines)       // lines in the new text
+	removed := oldEnd - oldLine + 1 // lines removed
+	lineShift := added - removed    // how much later lines shift
 
 	from := oldLine - ctx
 	if from < 0 {

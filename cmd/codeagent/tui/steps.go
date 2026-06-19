@@ -143,8 +143,10 @@ func toolAction(it Item) string {
 		return "Grep(" + arg + ")"
 	case "run_command":
 		return "$ " + arg
-	case "edit_file", "apply_patch":
-		return it.Name + "(" + arg + ")"
+	case "edit_file":
+		return "Update(" + arg + ")"
+	case "apply_patch":
+		return "Apply Patch(" + arg + ")"
 	case "create_file":
 		return "Create(" + arg + ")"
 	default:

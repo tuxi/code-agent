@@ -167,6 +167,26 @@ func observeCommand(res commandResult) Observation {
 	return obs
 }
 
+// filesystemFailureMarkers are substrings that, when present in an edit_file /
+// create_file / apply_patch observation, mark it as a recoverable failure — the
+// tool returned a nil go error (so the model can adjust and retry), but from the
+// human's perspective the action did not succeed. Matched case-sensitively: these
+// are our own messages, not model output.
+var filesystemFailureMarkers = []string{
+	"Could not find the 'old' text",          // edit_file: text not in file
+	"The 'old' text appears ",                // edit_file: ambiguous match (note trailing space: avoids matching the success message)
+	"The 'old' text is empty",                // edit_file: no old string
+	"The 'old' and 'new' text are identical", // edit_file: nothing to change
+	"Could not open ",                        // edit_file: file not found
+	"is a directory, not a file.",            // edit_file / create_file
+	"is not a UTF-8 text file.",              // edit_file
+	"File too large to edit",                 // edit_file
+	"already exists. Use edit_file",          // create_file
+	"Content too large:",                     // create_file
+	"Patch failed",                           // apply_patch
+	"Patch does not apply",                   // apply_patch
+}
+
 func observeGeneric(tool, raw string) Observation {
 	raw = strings.TrimSpace(raw)
 	// The agent loop prefixes a failed tool call's observation with "Tool error:".
@@ -178,7 +198,27 @@ func observeGeneric(tool, raw string) Observation {
 			Summary:     firstLine(raw),
 		}
 	}
+	// Filesystem tools return recoverable failures as observations (nil go error)
+	// so the model can adjust and retry. Classify them as failures for the user:
+	// a ✗ in the transcript, and the body shown without requiring expansion.
+	if isFilesystemFailure(raw) {
+		return Observation{
+			Tool:        tool,
+			OK:          false,
+			FailureType: FailureRuntime,
+			Summary:     firstLine(raw),
+		}
+	}
 	return Observation{Tool: tool, OK: true, FailureType: FailureNone}
+}
+
+func isFilesystemFailure(raw string) bool {
+	for _, m := range filesystemFailureMarkers {
+		if strings.Contains(raw, m) {
+			return true
+		}
+	}
+	return false
 }
 
 func firstLine(s string) string {

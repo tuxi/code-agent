@@ -46,10 +46,10 @@ type model struct {
 	picker *sessionPicker // /resume overlay; nil when closed
 
 	pending    *approvalReq // set while a side-effecting tool awaits y/n
-	approveIdx int           // 0 = approve (y), 1 = deny (n) — ↑/↓ switches
-	busy       bool          // a turn is running; submit is locked
-	thinking bool         // a model call is in flight; show the spinner
-	lastErr  error
+	approveIdx int          // 0 = approve (y), 1 = deny (n) — ↑/↓ switches
+	busy       bool         // a turn is running; submit is locked
+	thinking   bool         // a model call is in flight; show the spinner
+	lastErr    error
 
 	promptTokens int             // latest prompt size (from EventModelFinished) for the gauge
 	skills       map[string]bool // distinct skills loaded this session
