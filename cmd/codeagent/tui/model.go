@@ -97,13 +97,8 @@ func (m model) Init() tea.Cmd {
 		waitForApproval(m.b.approvals),
 		waitForDone(m.b.done),
 	}
-	// Banner + git summary printed once, then the composer is ready.
-	gline := gitSummaryLine()
-	banner := m.banner()
-	if gline != "" {
-		banner += "\n" + gline
-	}
-	return tea.Batch(append([]tea.Cmd{tea.Println(banner)}, cmds...)...)
+	// Banner printed once at startup — no git summary here (it follows each turn).
+	return tea.Batch(append([]tea.Cmd{tea.Println(m.banner())}, cmds...)...)
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -163,10 +158,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.busy = false
 		m.thinking = false
 		m.lastErr = msg.err
-		out := m.tr.flush(m.width) // a turn that errored never sent TurnFinished
-		cmds := []tea.Cmd{waitForDone(m.b.done)}
+		out := m.tr.flush(m.width)               // a turn that errored never sent TurnFinished
+		cmds := []tea.Cmd{waitForDone(m.b.done)} // re-issue THIS listener only
 		if len(out) > 0 {
-			cmds = append([]tea.Cmd{tea.Println(strings.Join(out, "\n"))}, cmds...)
+			cmds = append(cmds, tea.Println(strings.Join(out, "\n")))
 		}
 		// Print a fresh git summary so the user can see the workspace state after
 		// the agent's changes without leaving the TUI.
@@ -178,6 +173,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case spinner.TickMsg:
 		var cmd tea.Cmd
 		m.spinner, cmd = m.spinner.Update(msg)
+		return m, cmd
+	}
+	// Forward any unhandled message (cursor.BlinkMsg etc.) to the composer so the
+	// textarea's blink/cursor tracking stays alive — critical for IME positioning.
+	if !m.busy {
+		var cmd tea.Cmd
+		m.composer, cmd = m.composer.Update(msg)
 		return m, cmd
 	}
 	return m, nil
@@ -204,11 +206,13 @@ func (m model) handleEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 	}
 
 	out := m.tr.render(ev, m.width)
-	cmds := []tea.Cmd{waitForEvent(m.b.events)}
 	if len(out) > 0 {
-		cmds = append([]tea.Cmd{tea.Println(strings.Join(out, "\n"))}, cmds...)
+		return m, tea.Batch(
+			tea.Println(strings.Join(out, "\n")),
+			waitForEvent(m.b.events), // re-issue THIS listener only
+		)
 	}
-	return m, tea.Batch(cmds...)
+	return m, waitForEvent(m.b.events)
 }
 
 // submit hands the composed input to the runner goroutine and locks the composer
@@ -243,9 +247,11 @@ func (m model) handleApprovalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "enter", "y", "Y":
 		m.pending.reply <- true
 		m.pending, m.approveIdx, m.showPreview = nil, 0, false
+		return m, nil // listeners stay alive independently (approvalMsg already re-issued waitForApproval)
 	case "n", "N", "esc":
 		m.pending.reply <- false
 		m.pending, m.approveIdx, m.showPreview = nil, 0, false
+		return m, nil
 	case "ctrl+c":
 		m.pending.reply <- false
 		m.pending, m.approveIdx, m.showPreview = nil, 0, false
@@ -401,9 +407,6 @@ func (m *model) resume(meta session.Meta) tea.Cmd {
 			m.tr.started = true // separate the next live turn from the replayed history
 		}
 	}
-	if gs := gitSummaryLine(); gs != "" {
-		lines = append(lines, gs)
-	}
 	return tea.Println(strings.Join(lines, "\n"))
 }
 
@@ -427,6 +430,15 @@ func clampInt(n, lo, hi int) int {
 	}
 	return n
 }
+
+// Listener discipline (the architecture that makes events flow): the three
+// channel listeners — waitForEvent / waitForApproval / waitForDone — are started
+// once in Init and each runs in its own goroutine. A Cmd returned from Update is
+// ADDED (a new goroutine), never replaces the others. So each message handler
+// must re-issue ONLY its own listener (event→waitForEvent, etc.); re-issuing all
+// three would duplicate the other two and leak goroutines. Slash commands and
+// picker actions just print — they don't touch the listeners, which stay alive
+// independently.
 
 // --- /use model picker ---------------------------------------------------
 
@@ -503,7 +515,15 @@ func (m model) View() string {
 	default:
 		lines = append(lines, styleMeta.Render(m.hint()))
 	}
-	lines = append(lines, m.composer.View()) // composer LAST (IME-friendly)
+	// Strip the trailing newline: textarea.View() ends with \n, which parks the
+	// terminal cursor at column 0 of the next line.  macOS IME reads that
+	// position and puts the pinyin / composition window at the start of the
+	// line instead of inline after the text.
+	cv := m.composer.View()
+	if len(cv) > 0 && cv[len(cv)-1] == '\n' {
+		cv = cv[:len(cv)-1]
+	}
+	lines = append(lines, cv)
 	return strings.Join(lines, "\n")
 }
 
