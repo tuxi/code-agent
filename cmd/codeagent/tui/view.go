@@ -359,7 +359,10 @@ func renderApprovalPreview(req approvalReq, width int) []string {
 		innerW = 20
 	}
 	var raw map[string]any
-	json.Unmarshal([]byte(req.input), &raw)
+	if err := json.Unmarshal([]byte(req.input), &raw); err != nil {
+		// JSON parse failure — show raw input as a string instead of crashing
+		return previewLines(string(req.input), innerW, 20)
+	}
 
 	switch req.tool {
 	case "edit_file":
