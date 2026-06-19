@@ -692,11 +692,69 @@ diff inside `internal/agent`, it was done wrong.
 **Done when:** swapping into `tui` changes the UX without a single diff inside
 `internal/agent` — the same north star as P3.7, one layer up.
 
+### Phase 8 — Agent platform: interop, delegation, extensibility
+
+Every phase so far made CodeAgent a more capable *single* agent. Phase 8 opens it
+up — to external tools (MCP), to sub-agents (delegation + context isolation), to
+user customization (hooks, task structure) — plus the two model-layer gaps
+(streaming UX, cache-accurate cost). This is the real distance between CodeAgent
+and a Claude-Code-class platform.
+
+The payoff of the harness discipline shows here: most of these plug into existing
+nil-safe seams (the `Registry`; the `Approver` / `Observer` / `Reflector` /
+`Emitter` interfaces; `jobs`) **without touching the loop**. Only streaming
+reaches into the `Provider` interface. Items are ordered by value × fit × effort.
+
+- [ ] **(8.1) Cache-accurate cost** *(easy — quick win)* — parse cached-input
+  usage (`prompt_cache_hit_tokens` / `prompt_tokens_details.cached_tokens`,
+  per-provider) into `model.Usage`; add `cache_input_price_per_million` and split
+  cost into cached/uncached. Fixes the cost over-estimate. Honest caveat: this
+  *measures* spend accurately, it does not *reduce* it — and compaction churns the
+  prompt prefix, which busts the provider cache (a real tension to surface, not
+  hide). Seam: `Usage` + the openai usage parser + the `requests` table.
+- [ ] **(8.2) MCP adapter** *(medium — highest strategic value)* — consume
+  external MCP servers via the official Go SDK: `tools/list`, then wrap each
+  remote tool as an ordinary `tools.Tool` (`Execute` → `tools/call`) in the same
+  Registry — so MCP tools are gated by the same policy layer and enriched by the
+  same Observation. The Registry being the single source of truth is what makes
+  this drop-in. Risk: MCP server subprocess lifecycle, schema-translation edges,
+  and treating remote tools as side-effecting (approval) by default. Exposing our
+  own tools *as* an MCP server is a smaller later follow-on.
+- [ ] **(8.3) Subagent / Task** *(medium — highest architectural fit)* — a `task`
+  tool that runs a nested `RunTurn` on an *isolated* session and returns its final
+  answer as the tool result. Not just Claude-Code parity: it is the root fix for
+  context hygiene — push dirty/exploratory work into a sub-agent whose verbose
+  investigation never pollutes the parent's context; only the conclusion comes
+  back. The pieces exist (Runner, isolated Session, `jobs` for parallelism,
+  `Emitter` with SessionID/TurnID for nested correlation). Design questions: the
+  subagent's toolset (read-only by default), a recursion-depth cap, approval
+  propagation.
+- [ ] **(8.4) Plan / Todo** *(easy–medium — pairs with the TUI)* — a `todo_write`
+  tool the model uses to track a multi-step task; the list lives on the Session
+  and emits `EventTodoUpdated`, rendered as a live checklist on the timeline-first
+  TUI. A "soft" tool — its value depends on the model actually using it
+  (model-dependent, like skill self-loading) — but cheap, and it gives long tasks
+  a visible spine.
+- [ ] **(8.5) Hooks** *(medium — extensibility)* — user-configured pre/post-tool
+  commands (auto-`gofmt` after `edit_file`, guardrails, context injection). The
+  loop already consults nil-safe interface hooks (Approver before, Observer after
+  each tool); a `ToolHook` is the same pattern with a runner that executes
+  configured commands (still under the sandbox). Decide semantics up front: can a
+  hook block a call, rewrite args, or amend the result?
+- [ ] **(8.6) Streaming** *(medium–high — lowest ROI, defer)* — stream model
+  tokens (SSE) into token-delta events the renderer appends live. Honest caveat:
+  the model cannot consume a stream mid-call, so this is *pure human UX*, and the
+  `liveProgress` ticker already answers "is it hung?". It also reaches into the
+  `Provider` interface and complicates `ResilientProvider`'s replay (you cannot
+  replay half a stream). Do it only when "watching a long answer render" becomes a
+  real complaint.
+
+**Done when:** CodeAgent can register an external MCP tool, delegate a sub-task to
+an isolated sub-agent, and report cache-accurate cost — i.e. it is a platform, not
+just an agent.
+
 ### Later / parallel
 
-- [ ] MCP adapter — consume and expose tools through a standard protocol,
-  registering them into the same Registry.
-- [ ] Streaming output.
 - [ ] Local/cloud runtime split — remote tool runtime, workspace adapter,
   server-side sandbox experiment.
 - [ ] GUI.
