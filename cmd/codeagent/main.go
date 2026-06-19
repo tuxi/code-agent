@@ -73,7 +73,7 @@ func run() error {
 	}
 
 	if len(args) == 0 {
-		return repl(ctx, cfg, mc, provider, "")
+		return runTUI(ctx, cfg, mc, provider)
 	}
 
 	command := args[0]
@@ -86,6 +86,8 @@ func run() error {
 		return runAgent(ctx, cfg, mc, provider, goal)
 	case "tui":
 		return runTUI(ctx, cfg, mc, provider)
+	case "repl":
+		return repl(ctx, cfg, mc, provider, "")
 	case "resume":
 		if len(args) < 2 {
 			return fmt.Errorf("usage: codeagent resume <session-id>  (see 'codeagent sessions')")
@@ -621,14 +623,14 @@ func runTUI(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider mo
 
 func printUsage() {
 	fmt.Println(`Usage:
-  codeagent [--model NAME]                 start the interactive REPL (new session)
-  codeagent [--model NAME] tui              start the TUI workspace (new session)
+  codeagent [--model NAME]                 start the TUI workspace (new session)
+  codeagent [--model NAME] repl            start the interactive REPL (new session)
   codeagent [--model NAME] run "..."       run a single task
   codeagent [--model NAME] ask "..."       one-off question (no tools)
   codeagent sessions                       list saved sessions
   codeagent stats                          aggregate compaction + provider telemetry
   codeagent trace [N]                      show the last N requests, per attempt
-  codeagent [--model NAME] resume <id>     resume a saved session in the REPL
+  codeagent [--model NAME] resume <id>     resume a saved session
 
 Sessions are stored per-project in .codeagent/sessions.db and persist across
 runs, so a long conversation (and its summary) survives exit.

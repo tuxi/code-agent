@@ -62,7 +62,7 @@ func TestHumanDuration(t *testing.T) {
 	}
 }
 
-// A failure prints its body (the signal); a success prints only its command line.
+// A failure prints its body — it is the signal.
 func TestStepDetailShowsFailureBody(t *testing.T) {
 	fail := Item{Kind: ItemTool, Name: "run_command", Args: `{"command":"go test"}`,
 		Status: StatusFail, Failure: "test", Text: "FAILED: boom"}
@@ -70,12 +70,28 @@ func TestStepDetailShowsFailureBody(t *testing.T) {
 	if !strings.Contains(out, "boom") {
 		t.Fatalf("a failed tool should print its body:\n%s", out)
 	}
+}
 
+// A mutation tool (edit/create/apply/commit) prints its body even on success —
+// the user needs to see what changed, same as the old REPL.
+func TestMutationToolShowsBodyOnSuccess(t *testing.T) {
+	for _, name := range []string{"edit_file", "create_file", "apply_patch", "git_commit"} {
+		it := okTool(name, `{"path":"loop.go"}`)
+		it.Text = "THE_DIFF_CONTENT"
+		out := strings.Join(toolDetailLines(it, 80), "\n")
+		if !strings.Contains(out, "THE_DIFF_CONTENT") {
+			t.Errorf("%s (mutation) should show its body on success:\n%s", name, out)
+		}
+	}
+}
+
+// A read-only tool hides its body on success — only the command line shows.
+func TestReadOnlyToolHidesBodyOnSuccess(t *testing.T) {
 	ok := okTool("read_file", `{"path":"x"}`)
 	ok.Text = "SECRET_BODY"
-	out = strings.Join(toolDetailLines(ok, 80), "\n")
+	out := strings.Join(toolDetailLines(ok, 80), "\n")
 	if strings.Contains(out, "SECRET_BODY") {
-		t.Fatalf("a successful tool should not print its body:\n%s", out)
+		t.Fatalf("a successful read_file should not print its body:\n%s", out)
 	}
 }
 

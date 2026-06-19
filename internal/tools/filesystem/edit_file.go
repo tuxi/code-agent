@@ -137,30 +137,65 @@ func (t *EditFileTool) Execute(ctx context.Context, input json.RawMessage) (tool
 		return tools.ToolResult{}, err
 	}
 
-	snippet := snippetAround(newContent, idx, len(in.New), 3)
+	lineNum := lineAt(content, idx) + 1 // 1-based
+	diff := editDiff(content, newContent, in.Old, in.New, idx, 3)
 	return tools.ToolResult{
-		Content: fmt.Sprintf("Edited %s. Updated region:\n%s", in.Path, snippet),
+		Content: fmt.Sprintf("Edited %s at line %d:\n%s", in.Path, lineNum, diff),
 	}, nil
 }
 
-// snippetAround returns the lines covering [start, start+length) in content,
-// plus ctx lines of context on each side, with 1-based line numbers.
-func snippetAround(content string, start, length, ctx int) string {
-	lines := strings.Split(content, "\n")
+// editDiff renders a unified-diff-like view of an edit: context before (plain),
+// old text (-), new text (+), and context after (plain, from the new content so
+// line numbers are correct). Each line carries a 1-based line number — the reader
+// can see what was there, what it became, and what surrounds it.
+func editDiff(oldContent, newContent, oldStr, newStr string, oldStart, ctx int) string {
+	oldLines := strings.Split(oldContent, "\n")
+	newContLines := strings.Split(newContent, "\n")
 
-	from := lineAt(content, start) - ctx
+	oldLine := lineAt(oldContent, oldStart)             // 0-based line index of the old text start
+	oldEnd := lineAt(oldContent, oldStart+len(oldStr)) // 0-based line index of old text end
+
+	newStrLines := strings.Split(newStr, "\n")
+	added := len(newStrLines)                                 // lines in the new text
+	removed := oldEnd - oldLine + 1                           // lines removed
+	lineShift := added - removed                              // how much later lines shift
+
+	from := oldLine - ctx
 	if from < 0 {
 		from = 0
 	}
-	to := lineAt(content, start+length) + ctx
-	if to > len(lines)-1 {
-		to = len(lines) - 1
+	toOld := oldEnd + ctx
+	if toOld > len(oldLines)-1 {
+		toOld = len(oldLines) - 1
 	}
 
 	var b strings.Builder
-	for i := from; i <= to; i++ {
-		_, _ = fmt.Fprintf(&b, "%d\t%s\n", i+1, lines[i])
+
+	// Context before (from old content — these lines are unchanged).
+	for i := from; i < oldLine; i++ {
+		_, _ = fmt.Fprintf(&b, " %d\t%s\n", i+1, oldLines[i])
 	}
+
+	// Old lines (removed, from old content).
+	for i := oldLine; i <= oldEnd; i++ {
+		_, _ = fmt.Fprintf(&b, "-%d\t%s\n", i+1, oldLines[i])
+	}
+
+	// New lines (added).
+	for j, nl := range newStrLines {
+		_, _ = fmt.Fprintf(&b, "+%d\t%s\n", oldLine+1+j, nl)
+	}
+
+	// Context after (from new content, with corrected line numbers).
+	newAfter := oldEnd + lineShift + 1 // first unchanged line after the edit in newContent
+	toNew := oldEnd + lineShift + ctx
+	if toNew > len(newContLines)-1 {
+		toNew = len(newContLines) - 1
+	}
+	for i := newAfter; i <= toNew; i++ {
+		_, _ = fmt.Fprintf(&b, " %d\t%s\n", i+1, newContLines[i])
+	}
+
 	return strings.TrimRight(b.String(), "\n")
 }
 

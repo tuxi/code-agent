@@ -71,6 +71,25 @@ func TestEditFileDeletes(t *testing.T) {
 	}
 }
 
+func TestEditDiffFormat(t *testing.T) {
+	oldContent := "package p\n\n// old comment\noldCode()\n\n// after\n"
+	newContent := "package p\n\n// new comment\nnewCode()\n\n// after\n"
+	got := editDiff(oldContent, newContent, "// old comment\noldCode()", "// new comment\nnewCode()", 13, 1)
+
+	if !strings.Contains(got, "-3\t// old comment") {
+		t.Errorf("should show removed line with -:\n%s", got)
+	}
+	if !strings.Contains(got, "+3\t// new comment") {
+		t.Errorf("should show added line with +:\n%s", got)
+	}
+	if !strings.Contains(got, " 2\t") {
+		t.Errorf("should show context before with plain prefix:\n%s", got)
+	}
+	if !strings.Contains(got, "// after") {
+		t.Errorf("should show context after:\n%s", got)
+	}
+}
+
 func TestEditFilePathEscapeIsError(t *testing.T) {
 	root, _ := writeTemp(t, "f.txt", "hi\n")
 	if _, err := runEdit(t, root, map[string]any{"path": "../escape.txt", "old": "hi", "new": "bye"}); err == nil {

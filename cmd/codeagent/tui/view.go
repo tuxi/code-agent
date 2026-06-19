@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -27,6 +28,9 @@ var (
 	styleBody       = lipgloss.NewStyle().Faint(true)
 	stylePaletteSel = lipgloss.NewStyle().Bold(true).Foreground(accent)
 	styleSoon       = lipgloss.NewStyle().Faint(true).Italic(true)
+	styleApproveBox = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(styleFail.GetForeground())
+	styleApproveHl  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.AdaptiveColor{Light: "#005f87", Dark: "#5fafff"})
+	styleApproveDim = lipgloss.NewStyle().Faint(true)
 )
 
 const failBodyLines = 12 // a failed tool prints this many body lines (the failure is the signal)
@@ -65,7 +69,8 @@ func renderEntry(e Item, width int) []string {
 
 func entryTool(e Item, width int) []string {
 	lines := []string{toolHeader(e)}
-	if e.Status == StatusFail && strings.TrimSpace(e.Text) != "" {
+	show := e.Status == StatusFail || mutationTools[e.Name]
+	if show && strings.TrimSpace(e.Text) != "" {
 		lines = append(lines, indentBody(e.Text, width, failBodyLines)...)
 	}
 	return lines
@@ -267,4 +272,93 @@ func humanK(n int) string {
 		return fmt.Sprintf("%.1fk", float64(n)/1000)
 	}
 	return fmt.Sprintf("%d", n)
+}
+
+// --- approval card (M3) --------------------------------------------------
+
+const maxPreviewLines = 8 // max rows shown per argument in the preview
+
+// renderApprovalCard renders the approval dialog in the live region: a bordered
+// card showing the tool name + a readable argument preview, plus the y/n
+// selector the user navigates with ↑/↓ and confirms with Enter.
+func renderApprovalCard(req approvalReq, approveIdx, width int) []string {
+	innerW := width - 4 // border takes 2 on each side
+	if innerW < 20 {
+		innerW = 20
+	}
+	preview := approvalPreview(req.tool, string(req.input), innerW)
+	sel := approvalSelector(approveIdx)
+	lines := append(preview, "", sel)
+	return strings.Split(styleApproveBox.Width(innerW).Render(strings.Join(lines, "\n")), "\n")
+}
+
+// approvalPreview renders the tool input as readable key-value lines so the user
+// can see what they're approving — the REPl's per-field display, now in the TUI.
+func approvalPreview(tool string, input string, width int) []string {
+	var raw map[string]any
+	json.Unmarshal([]byte(input), &raw)
+
+	var lines []string
+	// The tool name gets a bold header line.
+	lines = append(lines, styleFail.Render("▸ run "+tool+"?"))
+
+	// Ordered fields: show the primary ones first, then the rest.
+	for _, key := range []string{"command", "path", "old", "new", "patch", "message"} {
+		v, ok := raw[key]
+		if !ok {
+			continue
+		}
+		s := fmt.Sprint(v)
+		if s == "" {
+			lines = append(lines, styleMeta.Render(fmt.Sprintf("  %s: (empty)", key)))
+		} else {
+			lines = append(lines, styleMeta.Render(fmt.Sprintf("  %s:", key)))
+			for _, ln := range previewLines(s, width-4, maxPreviewLines) {
+				lines = append(lines, styleBody.Render("    "+ln))
+			}
+		}
+		delete(raw, key)
+	}
+	// Remaining fields (if any) in alphabetical order.
+	var rest []string
+	for k := range raw {
+		rest = append(rest, k)
+	}
+	// The keys are arbitrary so order doesn't matter; just don't skip useful info.
+	for _, k := range rest {
+		s := fmt.Sprint(raw[k])
+		if s == "" {
+			continue
+		}
+		lines = append(lines, styleMeta.Render(fmt.Sprintf("  %s:", k)))
+		for _, ln := range previewLines(s, width-4, 4) {
+			lines = append(lines, styleBody.Render("    "+ln))
+		}
+	}
+	return lines
+}
+
+func previewLines(s string, width, max int) []string {
+	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
+	if len(lines) > max {
+		extra := len(lines) - max
+		lines = append(lines[:max:max], styleMeta.Render(fmt.Sprintf("  … %d more lines", extra)))
+	}
+	out := make([]string, len(lines))
+	for i, ln := range lines {
+		out[i] = runewidth.Truncate(ln, width, "…")
+	}
+	return out
+}
+
+// approvalSelector shows y/n with the active choice highlighted — the ↑/↓
+// movable cursor the approveIdx field drives.
+func approvalSelector(idx int) string {
+	y, n := " ", " "
+	if idx == 0 {
+		y, n = styleApproveHl.Render("▶ [y]"), styleApproveDim.Render("  [n]")
+	} else {
+		y, n = styleApproveDim.Render("  [y]"), styleApproveHl.Render("▶ [n]")
+	}
+	return fmt.Sprintf("%s approve  %s deny  %s", y, n, styleMeta.Render("(↑/↓ select · enter confirm · esc cancel)"))
 }

@@ -45,8 +45,9 @@ type model struct {
 	src    sessionSource  // saved-session access for /sessions and /resume
 	picker *sessionPicker // /resume overlay; nil when closed
 
-	pending  *approvalReq // set while a side-effecting tool awaits y/n
-	busy     bool         // a turn is running; submit is locked
+	pending    *approvalReq // set while a side-effecting tool awaits y/n
+	approveIdx int           // 0 = approve (y), 1 = deny (n) — ↑/↓ switches
+	busy       bool          // a turn is running; submit is locked
 	thinking bool         // a model call is in flight; show the spinner
 	lastErr  error
 
@@ -136,7 +137,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case approvalMsg:
 		req := approvalReq(msg)
-		m.pending = &req
+		m.pending, m.approveIdx = &req, 0
 		return m, waitForApproval(m.b.approvals)
 
 	case doneMsg:
@@ -205,17 +206,23 @@ func (m model) submit() (tea.Model, tea.Cmd) {
 	return m, func() tea.Msg { b.inputs <- input; return nil }
 }
 
+// handleApprovalKey drives the approval card: ↑/↓ switches between approve and
+// deny, Enter confirms, Esc denies. Direct y/n keys still work.
 func (m model) handleApprovalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
-	case "y", "Y":
+	case "up", "k", "ctrl+p":
+		m.approveIdx = 0
+	case "down", "j", "ctrl+n":
+		m.approveIdx = 1
+	case "enter", "y", "Y":
 		m.pending.reply <- true
-		m.pending = nil
+		m.pending, m.approveIdx = nil, 0
 	case "n", "N", "esc":
 		m.pending.reply <- false
-		m.pending = nil
+		m.pending, m.approveIdx = nil, 0
 	case "ctrl+c":
 		m.pending.reply <- false
-		m.pending = nil
+		m.pending, m.approveIdx = nil, 0
 		return m, tea.Quit
 	}
 	return m, nil
@@ -400,6 +407,8 @@ func (m model) View() string {
 	}
 	lines := []string{m.statusLine()}
 	switch {
+	case m.pending != nil:
+		lines = append(lines, renderApprovalCard(*m.pending, m.approveIdx, m.width)...)
 	case m.picker != nil:
 		lines = append(lines, renderPicker(*m.picker, m.width)...)
 	case m.paletteActive():
@@ -417,8 +426,6 @@ func (m model) View() string {
 func (m model) statusLine() string {
 	var left string
 	switch {
-	case m.pending != nil:
-		return styleFail.Render("⚠ run "+m.pending.tool+"?") + "   " + styleMeta.Render("[y] run   [n] skip")
 	case m.thinking:
 		left = m.spinner.View() + styleMeta.Render(" thinking…")
 	case m.busy:

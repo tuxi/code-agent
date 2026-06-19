@@ -88,8 +88,18 @@ func stepVerb(tool string, n int) string {
 	}
 }
 
-// toolDetailLines renders one tool as its actual action (the real command), with
-// a failure printing its body (the signal).
+// mutationTools are the tools whose output the user always wants to see, even on
+// success — what was edited/created/applied/committed is the primary signal.
+var mutationTools = map[string]bool{
+	"edit_file":   true,
+	"create_file": true,
+	"apply_patch": true,
+	"git_commit":  true,
+}
+
+// toolDetailLines renders one tool as its actual action (the real command). A
+// failure always prints its body (the signal); a mutation tool prints its body
+// even on success — the user needs to see what changed.
 func toolDetailLines(it Item, width int) []string {
 	mark := styleOK.Render("✓")
 	if it.Status == StatusFail {
@@ -100,8 +110,13 @@ func toolDetailLines(it Item, width int) []string {
 		line += "  " + styleMeta.Render(fmt.Sprintf("(%.1fs)", d.Seconds()))
 	}
 	lines := []string{line}
-	if it.Status == StatusFail && strings.TrimSpace(it.Text) != "" {
-		for _, b := range indentBody(it.Text, width-3, failBodyLines) {
+	show := it.Status == StatusFail || mutationTools[it.Name]
+	if show && strings.TrimSpace(it.Text) != "" {
+		limit := failBodyLines
+		if it.Status != StatusFail {
+			limit = 20 // a successful edit may have more useful output (diff, new content)
+		}
+		for _, b := range indentBody(it.Text, width-3, limit) {
 			lines = append(lines, "   "+b)
 		}
 	}
@@ -128,8 +143,10 @@ func toolAction(it Item) string {
 		return "Grep(" + arg + ")"
 	case "run_command":
 		return "$ " + arg
-	case "edit_file", "create_file", "apply_patch":
+	case "edit_file", "apply_patch":
 		return it.Name + "(" + arg + ")"
+	case "create_file":
+		return "Create(" + arg + ")"
 	default:
 		if a := briefArgs(it.Args); a != "" {
 			return it.Name + " " + a
