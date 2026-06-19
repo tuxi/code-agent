@@ -12,27 +12,52 @@ import (
 // header with the real commands beneath it. It does NOT merge events (each tool
 // keeps its own detail line); it only groups them for the header.
 type stepBuf struct {
-	active  bool
-	elapsed time.Duration // model-call duration → "Thought for Ns"
-	tools   []Item        // the tools (and skills) run in this step, in order
+	active   bool
+	elapsed  time.Duration // model-call duration → "Thought for Ns"
+	thinking string        // the model's reasoning text, shown when the step is expanded
+	tools    []Item        // the tools (and skills) run in this step, in order
 }
 
 // renderStep formats a completed step: a "Thought for Ns, <summary>" header and
 // one indented detail line per tool showing the actual command — so the agent's
-// actions are visible, not a black box.
-func renderStep(s stepBuf, width int) []string {
+// actions are visible, not a black box. When expanded, the reasoning text is
+// shown beneath the header (the live region's per-step expand; in committed
+// scrollback steps are always collapsed).
+func renderStep(s stepBuf, width int, expanded bool) []string {
 	if !s.active || (s.elapsed == 0 && len(s.tools) == 0) {
 		return nil
 	}
-	header := "Thought for " + humanDuration(s.elapsed)
+	caret := "  "
+	if s.thinking != "" {
+		caret = "▸ "
+		if expanded {
+			caret = "▾ "
+		}
+	}
+	header := caret + "Thought for " + humanDuration(s.elapsed)
 	if sum := summarizeTools(s.tools); sum != "" {
 		header += ", " + sum
 	}
 	lines := []string{styleThinking.Render(header)}
+	if expanded && s.thinking != "" {
+		for _, ln := range wrapProse(s.thinking, width-4) {
+			lines = append(lines, "    "+styleBody.Render(ln))
+		}
+	}
 	for _, it := range s.tools {
 		lines = append(lines, toolDetailLines(it, width)...)
 	}
 	return lines
+}
+
+// fmtStepHeader returns the "Thought for Ns, read 1 file" header for the current
+// step — used by View() to show thinking in the live region. Pure; no I/O.
+func fmtStepHeader(s stepBuf) string {
+	h := "Thought for " + humanDuration(s.elapsed)
+	if sum := summarizeTools(s.tools); sum != "" {
+		h += ", " + sum
+	}
+	return h
 }
 
 func humanDuration(d time.Duration) string {
@@ -133,28 +158,72 @@ func toolAction(it Item) string {
 		}
 		return styleSkill.Render(s)
 	}
-	arg := firstArg(it.Args)
 	switch it.Name {
 	case "read_file":
-		return "Read(" + arg + ")"
+		return "Read(" + readFileDesc(it.Args) + ")"
 	case "list_files":
-		return "List(" + arg + ")"
+		return "List(" + firstArg(it.Args) + ")"
 	case "grep":
-		return "Grep(" + arg + ")"
+		return "Grep(" + firstArg(it.Args) + ")"
 	case "run_command":
-		return "$ " + arg
+		return "$ " + firstArg(it.Args)
 	case "edit_file":
-		return "Update(" + arg + ")"
+		return "Update(" + firstArg(it.Args) + ")"
 	case "apply_patch":
-		return "Apply Patch(" + arg + ")"
+		return "Apply Patch(" + firstArg(it.Args) + ")"
 	case "create_file":
-		return "Create(" + arg + ")"
+		return "Create(" + firstArg(it.Args) + ")"
 	default:
 		if a := briefArgs(it.Args); a != "" {
 			return it.Name + " " + a
 		}
 		return it.Name
 	}
+}
+
+// readFileDesc builds a description of a read_file call with its path and any
+// offset/limit so consecutive reads of the same file are distinguishable.
+func readFileDesc(args string) string {
+	var m map[string]any
+	if err := json.Unmarshal([]byte(args), &m); err != nil {
+		return firstArg(args)
+	}
+	path, _ := m["path"].(string)
+	offset, hasOff := numArg(m, "offset")
+	limit, hasLim := numArg(m, "limit")
+	var parts []string
+	if path != "" {
+		parts = append(parts, path)
+	}
+	if hasOff && offset > 1 {
+		parts = append(parts, fmt.Sprintf("L%d", offset))
+	}
+	if hasLim {
+		parts = append(parts, fmt.Sprintf("+%d", limit))
+	}
+	if len(parts) == 0 {
+		return firstArg(args)
+	}
+	return strings.Join(parts, ", ")
+}
+
+// numArg extracts a numeric argument from the tool input. float64 is what
+// encoding/json produces for JSON numbers.
+func numArg(m map[string]any, key string) (int, bool) {
+	v, ok := m[key]
+	if !ok {
+		return 0, false
+	}
+	switch n := v.(type) {
+	case float64:
+		return int(n), true
+	case string:
+		var i int
+		if _, err := fmt.Sscanf(n, "%d", &i); err == nil {
+			return i, true
+		}
+	}
+	return 0, false
 }
 
 // firstArg pulls the primary argument out of a tool's JSON args (the path /

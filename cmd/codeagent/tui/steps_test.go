@@ -15,13 +15,54 @@ func okTool(name, args string) Item {
 func TestRenderStepHeaderAndCommand(t *testing.T) {
 	s := stepBuf{active: true, elapsed: 2 * time.Second,
 		tools: []Item{okTool("read_file", `{"path":"internal/agent/tool_defs.go"}`)}}
-	out := strings.Join(renderStep(s, 80), "\n")
+	out := strings.Join(renderStep(s, 80, false), "\n")
 
 	if !strings.Contains(out, "Thought for 2s, read 1 file") {
 		t.Fatalf("missing step header:\n%s", out)
 	}
 	if !strings.Contains(out, "Read(internal/agent/tool_defs.go)") {
 		t.Fatalf("missing the actual command:\n%s", out)
+	}
+}
+
+// Expanded steps show the reasoning text beneath the header with a ▾ caret.
+func TestRenderStepExpandedShowsThinking(t *testing.T) {
+	s := stepBuf{active: true, elapsed: 3 * time.Second,
+		thinking: "I suspect the issue is in the renderer. Let me check standard_renderer.go.",
+		tools:    []Item{okTool("read_file", `{"path":"renderer.go"}`)}}
+	out := strings.Join(renderStep(s, 80, true), "\n")
+
+	if !strings.Contains(out, "▾ Thought for 3s") {
+		t.Fatalf("expanded step should show ▾ caret:\n%s", out)
+	}
+	if !strings.Contains(out, "I suspect the issue") {
+		t.Fatalf("expanded step should show thinking text:\n%s", out)
+	}
+}
+
+// Collapsed steps with thinking show ▸ but hide the reasoning text.
+func TestRenderStepCollapsedHidesThinking(t *testing.T) {
+	s := stepBuf{active: true, elapsed: 1 * time.Second,
+		thinking: "SECRET_REASONING",
+		tools:    []Item{okTool("grep", `{"pattern":"test"}`)}}
+	out := strings.Join(renderStep(s, 80, false), "\n")
+
+	if strings.Contains(out, "SECRET_REASONING") {
+		t.Fatalf("collapsed step must NOT show thinking:\n%s", out)
+	}
+	if !strings.Contains(out, "▸ Thought for 1s") {
+		t.Fatalf("collapsed step with thinking should show ▸:\n%s", out)
+	}
+}
+
+// A step with no thinking text uses no caret at all (clean header).
+func TestRenderStepNoThinkingNoCaret(t *testing.T) {
+	s := stepBuf{active: true, elapsed: 2 * time.Second,
+		tools: []Item{okTool("run_command", `{"command":"go test"}`)}}
+	out := strings.Join(renderStep(s, 80, false), "\n")
+
+	if strings.Contains(out, "▸") || strings.Contains(out, "▾") {
+		t.Fatalf("step with no thinking should have no caret:\n%s", out)
 	}
 }
 
@@ -95,8 +136,20 @@ func TestReadOnlyToolHidesBodyOnSuccess(t *testing.T) {
 	}
 }
 
+func TestReadFileDescWithOffset(t *testing.T) {
+	if got := readFileDesc(`{"path":"loop.go","offset":200,"limit":100}`); got != "loop.go, L200, +100" {
+		t.Fatalf("read with offset+limit = %q", got)
+	}
+	if got := readFileDesc(`{"path":"loop.go"}`); got != "loop.go" {
+		t.Fatalf("read without offset = %q", got)
+	}
+	if got := readFileDesc(`{"path":"loop.go","offset":1}`); got != "loop.go" {
+		t.Fatalf("offset=1 should be hidden (line 1 is the default) = %q", got)
+	}
+}
+
 func TestEmptyStepRendersNothing(t *testing.T) {
-	if got := renderStep(stepBuf{}, 80); got != nil {
+	if got := renderStep(stepBuf{}, 80, false); got != nil {
 		t.Fatalf("an inactive/empty step should render nothing, got %v", got)
 	}
 }

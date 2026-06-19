@@ -27,11 +27,14 @@ func (tr *transcript) render(ev agent.Event, width int) []string {
 		out = append(out, renderEntry(Item{Kind: ItemUser, Text: ev.Text}, width)...)
 
 	case agent.EventModelStarted:
-		out = append(out, renderStep(tr.step, width)...) // flush the previous step
+		out = append(out, renderStep(tr.step, width, false)...) // flush the previous step
 		tr.step = stepBuf{active: true}
 
 	case agent.EventModelFinished:
 		tr.step.elapsed = ev.Elapsed
+
+	case agent.EventThinking:
+		tr.step.thinking += ev.Text // captured for step expand in the live region
 
 	case agent.EventToolStarted, agent.EventObserved:
 		tr.timeline.Apply(ev)
@@ -63,9 +66,10 @@ func (tr *transcript) render(ev agent.Event, width int) []string {
 	return out
 }
 
-// flush renders the buffered step (if any) and clears it.
+// flush renders the buffered step (if any) and clears it. Committed steps are
+// always collapsed (scrollback is immutable — no expand there).
 func (tr *transcript) flush(width int) []string {
-	lines := renderStep(tr.step, width)
+	lines := renderStep(tr.step, width, false)
 	tr.step = stepBuf{}
 	return lines
 }

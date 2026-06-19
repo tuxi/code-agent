@@ -67,9 +67,18 @@ func Run(ctx context.Context, b *Backend, runner *agent.Runner, sess *session.Se
 				if !ok {
 					return
 				}
-				_, err := runner.RunTurn(ctx, sess, input)
-				// Persist whatever the turn produced, even on error: the partial
-				// history is consistent and resumable (same contract as run/repl).
+				turnCtx, cancel := context.WithCancel(ctx)
+				b.mu.Lock()
+				b.turnCancel = cancel
+				b.mu.Unlock()
+				_, err := runner.RunTurn(turnCtx, sess, input)
+				cancel() // always clean up
+				b.mu.Lock()
+				b.turnCancel = nil
+				b.mu.Unlock()
+				// Persist whatever the turn produced, even on error (including
+				// context.Canceled from ctrl+c): the partial history is consistent
+				// and resumable (same contract as run/repl).
 				if serr := store.Save(ctx, sess); serr != nil && err == nil {
 					err = serr
 				}

@@ -1,7 +1,9 @@
 package tui
 
 import (
+	"context"
 	"encoding/json"
+	"sync"
 
 	"code-agent/internal/agent"
 	"code-agent/internal/session"
@@ -26,6 +28,19 @@ type Backend struct {
 	sessSwap        chan *session.Session // /resume hands the run loop a new session
 	modelSwap       chan string           // /use: TUI → run loop (model name to switch to)
 	modelSwapResult chan modelSwappedMsg  // /use: run loop → TUI (result)
+
+	mu         sync.Mutex
+	turnCancel context.CancelFunc // set by the run loop before RunTurn; nil when idle
+}
+
+// CancelTurn cancels the in-flight turn (if any). The run loop saves the partial
+// session and signals done — the TUI stays alive, the conversation is preserved.
+func (b *Backend) CancelTurn() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.turnCancel != nil {
+		b.turnCancel()
+	}
 }
 
 // NewBackend wires the channels. events is buffered so a fast burst from the loop

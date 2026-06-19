@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"code-agent/internal/agent"
 	"code-agent/internal/session"
@@ -41,6 +42,9 @@ type model struct {
 	// /resume history replay (transcript.go).
 	tr transcript
 
+	showThinking bool      // ctrl+o toggle: show current step's thinking in the live region (on by default)
+	lastEsc      time.Time // double-Esc clears the composer (like Claude Code)
+
 	cmdIdx    int            // selected slash-command in the palette
 	src       sessionSource  // saved-session / model access for slash commands
 	picker    *sessionPicker // /resume overlay; nil when closed
@@ -63,7 +67,7 @@ type model struct {
 
 func newModel(b *Backend, header HeaderInfo, src sessionSource) model {
 	ta := textarea.New()
-	ta.Placeholder = "Ask, paste, or describe a change…  (Enter to send, Alt+Enter for a newline)"
+	ta.Placeholder = "Type a message…  (/ for commands)"
 	ta.ShowLineNumbers = false
 	ta.Prompt = "┃ "
 	ta.CharLimit = 0
@@ -85,6 +89,7 @@ func newModel(b *Backend, header HeaderInfo, src sessionSource) model {
 		spinner:        sp,
 		skills:         map[string]bool{},
 		src:            src,
+		showThinking:   true, // on by default — thinking is the signal, ctrl+o hides it
 		composerHeight: minComposerLines,
 	}
 }
@@ -115,9 +120,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		switch msg.String() {
 		case "ctrl+c":
+			if m.busy {
+				m.b.CancelTurn() // cancel the in-flight turn; save + done signal follow
+				return m, nil
+			}
 			return m, tea.Quit
 		case "ctrl+z":
 			return m, tea.Suspend // job-control suspend; the shell's `fg` resumes
+		case "ctrl+o":
+			m.showThinking = !m.showThinking
 		}
 		if m.picker != nil {
 			return m.handlePickerKey(msg)
@@ -130,6 +141,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return mm, cmd
 			}
 		}
+		if msg.String() == "esc" && m.composer.Value() != "" {
+			now := time.Now()
+			if m.lastEsc.IsZero() || now.Sub(m.lastEsc) > 500*time.Millisecond {
+				m.lastEsc = now
+				return m, nil
+			}
+			m.lastEsc = time.Time{}
+			m.composer.Reset()
+			m.syncComposer()
+			return m, nil
+		}
+		m.lastEsc = time.Time{}
 		if msg.String() == "enter" {
 			return m.submit()
 		}
@@ -209,10 +232,11 @@ func (m model) handleEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 	if len(out) > 0 {
 		return m, tea.Batch(
 			tea.Println(strings.Join(out, "\n")),
-			waitForEvent(m.b.events), // re-issue THIS listener only
+			waitForEvent(m.b.events),
 		)
 	}
 	return m, waitForEvent(m.b.events)
+
 }
 
 // submit hands the composed input to the runner goroutine and locks the composer
@@ -230,6 +254,7 @@ func (m model) submit() (tea.Model, tea.Cmd) {
 	m.syncComposer()
 	m.busy = true
 	m.lastErr = nil
+	m.lastEsc = time.Time{}
 	b := m.b
 	return m, func() tea.Msg { b.inputs <- input; return nil }
 }
@@ -306,6 +331,7 @@ func (m model) runCommand(name, args string) (tea.Model, tea.Cmd) {
 	m.composer.Reset()
 	m.syncComposer()
 	m.cmdIdx = 0
+	m.lastEsc = time.Time{}
 	cmd, ok := lookupCommand(name)
 	if !ok {
 		return m, tea.Println("unknown command: " + name)
@@ -498,7 +524,15 @@ func (m model) View() string {
 	if !m.ready {
 		return ""
 	}
-	lines := []string{m.statusLine()}
+	lines := []string{}
+	if m.showThinking && m.busy && m.tr.step.thinking != "" {
+		header := "▾ " + fmtStepHeader(m.tr.step)
+		lines = append(lines, styleThinking.Render(header))
+		for _, ln := range wrapProse(m.tr.step.thinking, m.width-4) {
+			lines = append(lines, "    "+styleBody.Render(ln))
+		}
+	}
+	lines = append(lines, m.statusLine())
 	switch {
 	case m.pending != nil:
 		lines = append(lines, renderApprovalCard(*m.pending, m.approveIdx, m.width)...)
@@ -515,16 +549,15 @@ func (m model) View() string {
 	default:
 		lines = append(lines, styleMeta.Render(m.hint()))
 	}
-	// Strip the trailing newline: textarea.View() ends with \n, which parks the
-	// terminal cursor at column 0 of the next line.  macOS IME reads that
-	// position and puts the pinyin / composition window at the start of the
-	// line instead of inline after the text.
 	cv := m.composer.View()
-	if len(cv) > 0 && cv[len(cv)-1] == '\n' {
-		cv = cv[:len(cv)-1]
+	if l := len(cv); l > 0 && cv[l-1] == '\n' {
+		cv = cv[:l-1]
 	}
 	lines = append(lines, cv)
-	return strings.Join(lines, "\n")
+	// BubbleTea inline mode positions the View one line above where it belongs,
+	// overlaying scrollback. Three leading empty lines shift the live region down
+	// so the clear-to-end-of-line + composer text don't bleed into the transcript.
+	return "\n\n\n" + strings.Join(lines, "\n")
 }
 
 // statusLine is the one live status row: what's happening on the left, the
@@ -555,7 +588,7 @@ func (m model) statusLine() string {
 }
 
 func (m model) hint() string {
-	return "enter send · alt+enter newline · / commands · ctrl+z suspend (fg resumes) · ctrl+c quit"
+	return "enter send · alt+enter newline · / commands · ctrl+o hide thinking · ctrl+z suspend (fg resumes) · ctrl+c quit"
 }
 
 func (m model) banner() string {

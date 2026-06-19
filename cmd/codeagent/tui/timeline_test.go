@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -130,6 +131,18 @@ func TestItemIDsAndDuration(t *testing.T) {
 			t.Fatalf("duplicate item ID %q", it.ID)
 		}
 		seen[it.ID] = true
+	}
+}
+
+// EventThinking appends to the step's thinking field.
+func TestTranscriptCapturesThinking(t *testing.T) {
+	var tr transcript
+	tr.render(agent.Event{Kind: agent.EventModelStarted}, 80)
+	tr.render(agent.Event{Kind: agent.EventThinking, Text: "I think the bug is in loop.go"}, 80)
+	tr.render(agent.Event{Kind: agent.EventModelFinished, Elapsed: 3 * time.Second}, 80)
+
+	if !strings.Contains(tr.step.thinking, "loop.go") {
+		t.Fatalf("step should capture thinking text, got %q", tr.step.thinking)
 	}
 }
 
