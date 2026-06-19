@@ -66,8 +66,26 @@ func TestRunCommandShellOperatorsRejected(t *testing.T) {
 	if r.ExitCode != -1 {
 		t.Errorf("exit_code = %d, want -1", r.ExitCode)
 	}
-	if !strings.Contains(r.Note, "not supported") {
-		t.Errorf("note = %q, want it to explain operators are not supported", r.Note)
+	if !strings.Contains(r.Note, "pipes") {
+		t.Errorf("note = %q, want it to mention pipes", r.Note)
+	}
+}
+
+// The rejection note is tailored to the operator used, so the model learns the
+// concrete single-command alternative instead of retrying the same broken shape.
+func TestRunCommandHintIsTailored(t *testing.T) {
+	cases := []struct {
+		command  string
+		wantHint string
+	}{
+		{"cd cmd/foo && go vet", "path"},      // cd/&& → "pass a path"
+		{"go test ./... 2>&1 | head", "head"}, // pipe → "no | head"
+		{"a > b", "redirection"},              // redirection
+	}
+	for _, c := range cases {
+		if got := shellOperatorHint(c.command); !strings.Contains(got, c.wantHint) {
+			t.Errorf("shellOperatorHint(%q) = %q, want to contain %q", c.command, got, c.wantHint)
+		}
 	}
 }
 

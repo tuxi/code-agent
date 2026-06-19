@@ -85,7 +85,11 @@ func (t *RunCommandTool) Description() string {
 	return "Run a command in the workspace and get structured output (stdout, stderr, exit_code, duration_ms). " +
 		"Read-only and build commands (ls, cat, grep, git status/diff/log, go build/test/vet, cargo check) run directly; " +
 		"commands that mutate the tree or reach the network (rm, mv, curl, git checkout/commit/push) require user confirmation; " +
-		"a few catastrophic commands are blocked. One command per call — pipes, redirection, and chaining (|, >, &&) are not supported. " +
+		"a few catastrophic commands are blocked. " +
+		"ONE plain command per call — NO pipes (|), redirection (>, 2>&1), or chaining (&&, ;). " +
+		"Instead: (1) the command runs from the workspace ROOT, so pass a path argument rather than `cd` (use `go vet ./cmd/foo/`, not `cd cmd/foo && go vet`); " +
+		"(2) output is already captured and truncated for you, so DON'T pipe to head/tail/grep — just run the bare command and read the result; " +
+		"(3) to filter, run the tool's own flag (e.g. `go test -run TestName`) rather than piping. " +
 		`Set "background": true for a long build/test that would otherwise block — you get a job_id back immediately; then poll job_status / job_logs, or stop it with job_cancel.`
 }
 
@@ -100,6 +104,22 @@ func (t *RunCommandTool) InputSchema() json.RawMessage {
 			Description: `Run in the background and return a job_id immediately instead of waiting. For long builds/tests. Poll with job_status / job_logs.`,
 		},
 	}, "command").JSON()
+}
+
+// shellOperatorHint returns a rejection note tailored to the shell operator the
+// model used, telling it the concrete single-command alternative — so it doesn't
+// retry the same broken shape.
+func shellOperatorHint(command string) string {
+	switch {
+	case strings.Contains(command, "&&") || strings.Contains(command, ";") || strings.Contains(command, "cd "):
+		return "no command chaining (&&, ;) — and no `cd`: commands run from the workspace root. " +
+			"Pass a path instead, e.g. `go vet ./cmd/foo/` rather than `cd cmd/foo && go vet`."
+	case strings.Contains(command, "|"), strings.Contains(command, "2>"), strings.Contains(command, ">"):
+		return "no pipes or redirection (|, >, 2>&1): the full output is already captured and truncated for you. " +
+			"Run the bare command (no `| head`/`| grep`); use the tool's own filter flag if you need less output."
+	default:
+		return "pipes, redirection, and chaining are not supported; run one plain command from the workspace root."
+	}
 }
 
 func (t *RunCommandTool) Execute(ctx context.Context, input json.RawMessage) (tools.ToolResult, error) {
@@ -128,13 +148,15 @@ func (t *RunCommandTool) Execute(ctx context.Context, input json.RawMessage) (to
 	}
 
 	// We execute a single program directly (no shell), so shell operators would
-	// be passed as literal arguments and silently misbehave. Reject them clearly.
+	// be passed as literal arguments and silently misbehave. Reject them clearly,
+	// with a concrete fix for the operator that was used (the model retries the
+	// same shape otherwise — the generic "not supported" line isn't enough).
 	if sandbox.ContainsShellOperators(command) {
 		return t.result(commandResult{
 			Command:  command,
 			ExitCode: -1,
 			Decision: string(class.Decision),
-			Note:     "pipes, redirection, and chaining are not supported; run one command at a time",
+			Note:     shellOperatorHint(command),
 		})
 	}
 

@@ -21,8 +21,11 @@ are not Go common sense — they are this project's spine.
   decision state machines in the loop.
 - **run_command has no shell.** It execs one program directly: no pipes,
   redirection, `&&`, or globbing — one command per call. Quoted args survive
-  (commit messages), but `a | b` will not work. Long commands go in the
-  background (`"background": true`).
+  (commit messages), but `a | b` will not work. Instead: it runs from the
+  workspace **root**, so pass a path (`go vet ./cmd/foo/`) rather than
+  `cd cmd/foo && go vet`; and output is already captured + truncated, so never
+  `| head`/`| grep` — run the bare command, or use the tool's own flag
+  (`go test -run X`). Long commands go in the background (`"background": true`).
 - **Comments explain why, not what**, and match the surrounding density and
   voice. Don't add narration the rest of the file wouldn't.
 - **Commits**: end the message with the `Co-Authored-By: Claude ...` trailer
