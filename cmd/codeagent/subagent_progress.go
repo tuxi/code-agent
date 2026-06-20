@@ -19,6 +19,8 @@ import (
 type taskProgress struct {
 	w      io.Writer
 	active bool
+	step   int    // model calls so far — the loop ITERATION count, which the budget bounds
+	tool   string // the tool the current iteration is running, if any
 }
 
 func newTaskProgress(w io.Writer) *taskProgress { return &taskProgress{w: w} }
@@ -26,12 +28,29 @@ func newTaskProgress(w io.Writer) *taskProgress { return &taskProgress{w: w} }
 func (p *taskProgress) Emit(e agent.Event) {
 	switch e.Kind {
 	case agent.EventTaskStarted:
+		p.step, p.tool = 0, ""
 		p.show("⟳ subagent starting…")
+	case agent.EventModelStarted:
+		// One model call == one loop iteration; this is the unit subAgentMaxSteps
+		// bounds. Counting it (not EventToolStarted.Step, which is the cumulative
+		// tool-call ordinal and batches many-per-iteration) keeps the heartbeat's
+		// "step N/M" honest against the budget.
+		p.step++
+		p.render()
 	case agent.EventToolStarted:
-		p.show(fmt.Sprintf("⟳ subagent · step %d · %s", e.Step, e.ToolName))
+		p.tool = e.ToolName
+		p.render()
 	case agent.EventTaskFinished:
 		p.erase()
 	}
+}
+
+func (p *taskProgress) render() {
+	s := fmt.Sprintf("⟳ subagent · step %d/%d", p.step, subAgentMaxSteps)
+	if p.tool != "" {
+		s += " · " + p.tool
+	}
+	p.show(s)
 }
 
 // show overwrites the current line (\r + clear-to-end) with s.

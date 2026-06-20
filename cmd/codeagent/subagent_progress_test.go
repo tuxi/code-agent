@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -14,12 +15,18 @@ func TestTaskProgressShowsStepsAndErases(t *testing.T) {
 	p := newTaskProgress(&buf)
 
 	p.Emit(agent.Event{Kind: agent.EventTaskStarted})
+	p.Emit(agent.Event{Kind: agent.EventModelStarted}) // iteration 1 — the budgeted unit
 	p.Emit(agent.Event{Kind: agent.EventToolStarted, Step: 3, ToolName: "read_file"})
 	p.Emit(agent.Event{Kind: agent.EventTaskFinished})
 
 	out := buf.String()
-	if !strings.Contains(out, "subagent") || !strings.Contains(out, "step 3") || !strings.Contains(out, "read_file") {
-		t.Fatalf("heartbeat should show the current step/tool, got: %q", out)
+	// "step" tracks iterations vs the budget — NOT the tool-call ordinal (Step:3).
+	want := fmt.Sprintf("step 1/%d", subAgentMaxSteps)
+	if !strings.Contains(out, "subagent") || !strings.Contains(out, want) || !strings.Contains(out, "read_file") {
+		t.Fatalf("heartbeat should show %q and the current tool, got: %q", want, out)
+	}
+	if strings.Contains(out, "step 3/") {
+		t.Fatalf("heartbeat must not use the tool-call ordinal as the step count, got: %q", out)
 	}
 	// Every update overwrites in place (\r) and the final state erases the line.
 	if !strings.Contains(out, "\r\x1b[K") {
@@ -33,12 +40,13 @@ func TestTaskProgressShowsStepsAndErases(t *testing.T) {
 func TestTaskProgressIgnoresUnrelatedEvents(t *testing.T) {
 	var buf bytes.Buffer
 	p := newTaskProgress(&buf)
-	// Model/thinking events of the subagent are noise for a heartbeat — only
-	// tool starts and the task bookends drive it.
-	p.Emit(agent.Event{Kind: agent.EventModelStarted})
+	// Only the task bookends, model-call starts (iterations), and tool starts
+	// drive the heartbeat; everything else is noise for it.
 	p.Emit(agent.Event{Kind: agent.EventThinking, Text: "hmm"})
+	p.Emit(agent.Event{Kind: agent.EventToolFinished})
+	p.Emit(agent.Event{Kind: agent.EventObserved})
 	if buf.Len() != 0 {
-		t.Fatalf("non-tool events should not render, got: %q", buf.String())
+		t.Fatalf("events unrelated to the heartbeat should not render, got: %q", buf.String())
 	}
 }
 
