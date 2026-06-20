@@ -77,5 +77,20 @@ mcp:
       args: ["-y", "@modelcontextprotocol/server-filesystem", "."]
       # env: { KEY: value }   # optional, appended to the server's environment
 
+# Web browsing tools: web_search and web_fetch.
+# Both are optional — omit the block and the tools still register but
+# web_search returns an error if no provider is configured.
+web:
+  search:
+    provider: searxng           # "searxng" (default) or "brave"
+    # fallback_provider: brave   # optional fallback
+    searxng_base_url: "https://searx.be"
+    # brave_api_key_env: BRAVE_API_KEY
+    top_k: 5
+    timeout_seconds: 10
+  fetch:
+    timeout_seconds: 30
+    cache_ttl_seconds: 600     # 10 minutes
+
 workspace:
   root: "."

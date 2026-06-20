@@ -53,3 +53,5 @@ deploy/
 assets/
 swag-docs/
 main
+
+/codeagent

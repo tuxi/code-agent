@@ -40,6 +40,10 @@ type Config struct {
 	// this unit). Defaults to "$".
 	Currency string `yaml:"currency"`
 
+	// Web configures the built-in web_search and web_fetch tools. Empty (the
+	// default) disables search providers; web_fetch degrades gracefully.
+	Web WebConfig `yaml:"web"`
+
 	// MCP configures external Model Context Protocol servers whose tools are
 	// registered alongside the built-in ones. Empty (the default) disables it.
 	MCP mcp.Config `yaml:"mcp"`
@@ -101,6 +105,51 @@ type AgentConfig struct {
 
 type WorkspaceConfig struct {
 	Root string `yaml:"root"`
+}
+
+// WebConfig configures the built-in web_search and web_fetch tools. When empty,
+// the tools degrade gracefully: web_search returns an error advising the user to
+// configure a search provider, and web_fetch still fetches URLs but without
+// caching (since no cache TTL is configured).
+type WebConfig struct {
+	Search WebSearchConfig `yaml:"search"`
+	Fetch  WebFetchConfig  `yaml:"fetch"`
+}
+
+type WebSearchConfig struct {
+	Provider         string `yaml:"provider"`          // "searxng" (default) or "brave"
+	FallbackProvider string `yaml:"fallback_provider"` // optional fallback
+	SearXNGBaseURL   string `yaml:"searxng_base_url"`  // SearXNG instance base URL (single or comma-separated)
+	BraveAPIKeyEnv   string `yaml:"brave_api_key_env"` // env var holding Brave API key
+	TopK             int    `yaml:"top_k"`             // max results, default 5
+	TimeoutSeconds   int    `yaml:"timeout_seconds"`   // HTTP timeout, default 10
+}
+
+// SearXNGInstances returns the list of SearXNG instances from config.
+// If searxng_base_url is set, it is split on commas to form the list.
+// Otherwise the built-in defaults are used.
+func (c WebSearchConfig) SearXNGInstances() []string {
+	if c.SearXNGBaseURL != "" {
+		parts := strings.Split(c.SearXNGBaseURL, ",")
+		for i := range parts {
+			parts[i] = strings.TrimSpace(parts[i])
+		}
+		return parts
+	}
+	return nil // caller uses defaults
+}
+
+// BraveAPIKey returns the resolved Brave API key, if configured.
+func (c WebSearchConfig) BraveAPIKey() string {
+	if c.BraveAPIKeyEnv == "" {
+		return ""
+	}
+	return os.Getenv(c.BraveAPIKeyEnv)
+}
+
+type WebFetchConfig struct {
+	TimeoutSeconds  int `yaml:"timeout_seconds"`   // HTTP timeout, default 30
+	CacheTTLSeconds int `yaml:"cache_ttl_seconds"` // URL cache TTL, 0 disables
 }
 
 func LoadConfig(path string) (Config, error) {
@@ -189,6 +238,23 @@ func LoadConfig(path string) (Config, error) {
 
 	if _, ok := cfg.Models[cfg.DefaultModel]; !ok {
 		return Config{}, fmt.Errorf("default_model %q is not defined under models", cfg.DefaultModel)
+	}
+
+	if cfg.Web.Search.Provider == "" {
+		cfg.Web.Search.Provider = "searxng"
+	}
+	// SearXNG instances default to the built-in public pool when not configured.
+	if cfg.Web.Search.TopK <= 0 {
+		cfg.Web.Search.TopK = 5
+	}
+	if cfg.Web.Search.TimeoutSeconds <= 0 {
+		cfg.Web.Search.TimeoutSeconds = 10
+	}
+	if cfg.Web.Fetch.TimeoutSeconds <= 0 {
+		cfg.Web.Fetch.TimeoutSeconds = 30
+	}
+	if cfg.Web.Fetch.CacheTTLSeconds <= 0 {
+		cfg.Web.Fetch.CacheTTLSeconds = 600 // 10 minutes
 	}
 
 	// MCP servers: names must be present and unique (they namespace the tools),

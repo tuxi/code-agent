@@ -17,6 +17,8 @@ import (
 	"code-agent/internal/tools/shell"
 	"code-agent/internal/tools/skill"
 	"code-agent/internal/tools/task"
+	"code-agent/internal/tools/webfetch"
+	"code-agent/internal/tools/websearch"
 	"code-agent/internal/ui"
 	"context"
 	"encoding/json"
@@ -600,6 +602,8 @@ func buildRegistry(ctx context.Context, cfg app.Config, mc app.ModelConfig, prov
 		&shell.JobLogsTool{Jobs: jobReg},
 		&shell.JobCancelTool{Jobs: jobReg},
 		skill.NewLoadSkillTool(skillReg),
+		websearch.NewTool(cfg.Web),
+		webfetch.NewTool(cfg.Web),
 	} {
 		if err := registry.Register(tool); err != nil {
 			return nil, nil, nil, err
