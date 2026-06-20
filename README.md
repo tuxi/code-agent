@@ -784,12 +784,17 @@ reaches into the `Provider` interface. Items are ordered by value × fit × effo
   `ctrl+p` (applied at the next turn boundary, with a `⏸ PLAN` status badge / `plan>`
   prompt). v1 is **plan-only** — re-run normally to execute; the approve-and-execute
   handoff (CC's `exit_plan_mode`) is a follow-on.
-- [ ] **(8.5) Hooks** *(medium — extensibility)* — user-configured pre/post-tool
-  commands (auto-`gofmt` after `edit_file`, guardrails, context injection). The
-  loop already consults nil-safe interface hooks (Approver before, Observer after
-  each tool); a `ToolHook` is the same pattern with a runner that executes
-  configured commands (still under the sandbox). Decide semantics up front: can a
-  hook block a call, rewrite args, or amend the result?
+- [x] **(8.5) Hooks** *(medium — extensibility)* — **shipped.** User-configured
+  pre/post-tool shell commands — *deterministic* control that fires every time,
+  the antidote to the soft, model-dependent behavior the rest of Phase 8 fights.
+  A nil-safe `agent.ToolHook` interface (the same pattern as `Approver` before /
+  `Observer` after), implemented by `internal/hooks` running `sh -c` commands in
+  the workspace root (tool input on stdin, name in `$CODEAGENT_TOOL_NAME`). v1
+  semantics, decided up front: **pre_tool_use can BLOCK** (non-zero exit → the
+  call is refused, e.g. guard `rm -rf`); **post_tool_use runs after** (e.g. `gofmt`
+  the change). Out of v1 (the most complex semantics): rewriting tool args,
+  amending the result, and non-tool events (`Stop`/`UserPromptSubmit`). Config:
+  the `hooks:` block, matched by tool name or `*`.
 - [ ] **(8.6) Streaming** *(medium–high — lowest ROI, defer)* — stream model
   tokens (SSE) into token-delta events the renderer appends live. Honest caveat:
   the model cannot consume a stream mid-call, so this is *pure human UX*, and the

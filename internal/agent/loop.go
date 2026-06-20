@@ -31,6 +31,10 @@ type Runner struct {
 	// Nil-safe: when unset, the model's first "done" is accepted as before.
 	Reflector Reflector
 
+	// Hook runs user-configured pre/post-tool commands (8.5). Nil-safe: when unset,
+	// tools run exactly as before.
+	Hook ToolHook
+
 	// RemindSkills, when true, injects a one-shot ephemeral reminder on the first
 	// model call of each turn to check the Skills list and load a matching skill
 	// (P6). It makes skill-loading consistent across models rather than depending
@@ -297,16 +301,31 @@ func (r *Runner) RunTurn(ctx context.Context, sess *session.Session, userInput s
 			})
 
 			tool, known := activeTools.Get(call.Function.Name)
+			valid := advertised[call.Function.Name] && known
+
+			// Pre-tool hook (8.5): a configured command may block the call. Only
+			// consulted for a real tool, so an unknown call still reports plainly.
+			var blockReason string
+			if valid {
+				blockReason = r.preHookBlock(ctx, call.Function.Name, input)
+			}
 
 			var observation string
 			var execErr error
 			switch {
-			case !advertised[call.Function.Name] || !known:
+			case !valid:
 				execErr = fmt.Errorf("unknown tool: %s", call.Function.Name)
+			case blockReason != "":
+				observation = "The tool call was blocked by a configured hook. " + blockReason
 			case tools.HasSideEffectsFor(tool, input) && !r.approve(call.Function.Name, input):
 				observation = "The user declined to run this tool. No changes were made."
 			default:
 				observation, execErr = r.executeTool(ctx, tool, input)
+				if execErr == nil {
+					// Post-tool hook (8.5): react to the change (format/lint). It runs
+					// the configured command but does not alter the result in v1.
+					r.postHook(ctx, call.Function.Name, input, observation)
+				}
 			}
 			if execErr != nil {
 				step.Error = execErr.Error()

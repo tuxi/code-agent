@@ -4,6 +4,7 @@ import (
 	"code-agent/cmd/codeagent/tui"
 	"code-agent/internal/agent"
 	"code-agent/internal/app"
+	"code-agent/internal/hooks"
 	"code-agent/internal/mcp"
 	"code-agent/internal/model"
 	"code-agent/internal/observation"
@@ -535,6 +536,12 @@ func buildProvider(mc app.ModelConfig, pc app.ProviderConfig) (model.Provider, e
 // compaction, the step cap) is identical, so it lives here and the three callers
 // cannot drift apart.
 func buildRunner(cfg app.Config, mc app.ModelConfig, provider model.Provider, registry *tools.Registry, skillReg *skills.Registry, approver agent.Approver, emitter agent.Emitter) *agent.Runner {
+	// Assign the hook runner only when non-nil, so an absent config stays a nil
+	// interface (not a typed-nil that would defeat the loop's nil-safe check).
+	var hook agent.ToolHook
+	if hr := hooks.New(cfg.Hooks, cfg.Workspace.Root); hr != nil {
+		hook = hr
+	}
 	return &agent.Runner{
 		Model:        provider,
 		ModelName:    mc.Model,
@@ -546,6 +553,7 @@ func buildRunner(cfg app.Config, mc app.ModelConfig, provider model.Provider, re
 		Reflector:    agent.DefaultReflector{},
 		RemindSkills: skillReg.Len() > 0,
 		PlanTools:    tools.Subset(registry, planModeToolNames...),
+		Hook:         hook,
 		Compactor:    buildCompactor(mc, provider),
 		Emitter:      emitter,
 	}

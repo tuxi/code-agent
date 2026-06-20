@@ -77,5 +77,19 @@ mcp:
       args: ["-y", "@modelcontextprotocol/server-filesystem", "."]
       # env: { KEY: value }   # optional, appended to the server's environment
 
+# Hooks: shell commands run automatically around tool calls (8.5) — deterministic
+# rules that fire every time, regardless of the model. `event` is pre_tool_use
+# (a non-zero exit BLOCKS the call) or post_tool_use (e.g. format after an edit).
+# `match` is a tool name or "*". The tool input arrives on stdin as JSON and the
+# tool name in $CODEAGENT_TOOL_NAME. Commands run via `sh -c` in the workspace
+# root. Optional.
+# hooks:
+#   - event: post_tool_use
+#     match: edit_file
+#     command: gofmt -w .
+#   - event: pre_tool_use
+#     match: run_command
+#     command: 'if grep -q "rm -rf"; then echo "blocked: refusing rm -rf"; exit 1; fi'
+
 workspace:
   root: "."
