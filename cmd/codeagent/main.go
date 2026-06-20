@@ -728,7 +728,12 @@ func runTUI(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider mo
 	defer store.Close()
 	attachObserver(provider, store, ctx)
 
-	registry, skillReg, mcpMgr, err := buildRegistry(ctx, cfg, mc, provider, store, nil)
+	// Created up front so the subagent can route its condensed heartbeat through the
+	// TUI's emitter — the model distinguishes sub-session events by SessionID and
+	// renders them as a status line, never the transcript.
+	backend := tui.NewBackend()
+
+	registry, skillReg, mcpMgr, err := buildRegistry(ctx, cfg, mc, provider, store, backend.Emitter)
 	if err != nil {
 		return err
 	}
@@ -748,13 +753,13 @@ func runTUI(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider mo
 	}
 	sess.Model = mc.Model
 
-	backend := tui.NewBackend()
 	runner := buildRunner(cfg, mc, provider, registry, skillReg, backend.Approver, withEventStore(backend.Emitter, store, ctx))
 	header := tui.HeaderInfo{
 		Model:            mc.Name,
 		Workspace:        filepath.Base(root),
 		Session:          sess.ID,
 		CompactThreshold: cfg.CompactThreshold(mc),
+		SubagentBudget:   subAgentMaxSteps,
 	}
 	// /resume loads a stored session and re-budgets it to the current model — the
 	// same helper the REPL's /resume uses.
