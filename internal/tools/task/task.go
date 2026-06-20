@@ -39,12 +39,17 @@ func NewTool(agent SubAgent) *Tool { return &Tool{agent: agent} }
 func (t *Tool) Name() string { return "task" }
 
 func (t *Tool) Description() string {
-	return "Delegate a self-contained, read-only investigation to a subagent that runs in its " +
-		"own isolated context and returns only its conclusion. Use this to keep verbose " +
-		"exploration — reading many files, wide searches — out of the main conversation. " +
-		"The subagent sees NOTHING of this conversation: its only input is your prompt, so " +
-		"include every file path, error message, and the precise question it needs to answer. " +
-		"It is read-only — it cannot modify files or run commands. Returns the subagent's findings."
+	return "Delegate ONE broad, self-contained, read-only investigation to a subagent that runs in " +
+		"its own isolated context and returns only its conclusion — so the verbose exploration never " +
+		"enters this conversation. " +
+		"Use it when answering would otherwise mean reading MANY files you won't reference again " +
+		"(e.g. 'trace how X flows across the codebase', 'find everywhere Y is configured'). " +
+		"Do NOT use it to read a single file or run one search — do that yourself; spinning up a " +
+		"subagent per file is pure overhead. And TRUST what it returns: do not re-read or re-investigate " +
+		"the files it already covered. " +
+		"The subagent sees NOTHING of this conversation — its only input is your prompt, so put every " +
+		"file path, error message, and the precise question into that prompt. It is read-only (no edits, " +
+		"no commands). Returns the subagent's findings."
 }
 
 func (t *Tool) InputSchema() json.RawMessage {
