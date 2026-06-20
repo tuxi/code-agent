@@ -22,6 +22,7 @@ type HeaderInfo struct {
 	Workspace        string
 	Session          string
 	CompactThreshold int
+	SubagentBudget   int // the subagent's iteration cap, for the "step N/M" heartbeat
 }
 
 const (
@@ -64,6 +65,13 @@ type model struct {
 
 	promptTokens int             // latest prompt size (from EventModelFinished) for the gauge
 	skills       map[string]bool // distinct skills loaded this session
+
+	// Subagent heartbeat: a delegated `task` runs in its own session, so its events
+	// arrive with a different SessionID. We surface them as a condensed status line
+	// (never the transcript — that would re-flood what delegation keeps out).
+	subActive bool
+	subStep   int    // subagent loop iterations (EventModelStarted count)
+	subTool   string // the tool the subagent's current iteration is running
 
 	composerHeight int  // current composer rows (auto-grows with content)
 	width          int  // terminal width (for wrapping printed output)
@@ -232,6 +240,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // the turn ends. User prompts, the reply, reflections, and compaction print as
 // their own cards.
 func (m model) handleEvent(ev agent.Event) (tea.Model, tea.Cmd) {
+	// A delegated subagent runs in its own session, so its events carry a different
+	// SessionID. Route them to a condensed heartbeat in the status line — NEVER the
+	// transcript, which would re-flood exactly what delegation keeps out.
+	if ev.SessionID != "" && m.header.Session != "" && ev.SessionID != m.header.Session {
+		return m.handleSubagentEvent(ev)
+	}
+
 	// Live UI state (spinner, gauge, skills) — separate from transcript rendering.
 	switch ev.Kind {
 	case agent.EventModelStarted:
@@ -254,6 +269,23 @@ func (m model) handleEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 	}
 	return m, waitForEvent(m.b.events)
 
+}
+
+// handleSubagentEvent folds a delegated subagent's event stream into the live
+// status line — step count and current tool — and prints nothing to the
+// transcript, so the parent's scrollback stays clean (default-quiet).
+func (m model) handleSubagentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
+	switch ev.Kind {
+	case agent.EventTaskStarted:
+		m.subActive, m.subStep, m.subTool = true, 0, ""
+	case agent.EventModelStarted:
+		m.subStep++ // one model call == one loop iteration (the budgeted unit)
+	case agent.EventToolStarted:
+		m.subTool = ev.ToolName
+	case agent.EventTaskFinished:
+		m.subActive, m.subStep, m.subTool = false, 0, ""
+	}
+	return m, waitForEvent(m.b.events)
 }
 
 // submit hands the composed input to the runner goroutine and locks the composer
@@ -643,6 +675,15 @@ func (m model) composerCursorColumn() int {
 func (m model) statusLine() string {
 	var left string
 	switch {
+	case m.subActive:
+		s := fmt.Sprintf(" subagent · step %d", m.subStep)
+		if m.header.SubagentBudget > 0 {
+			s += fmt.Sprintf("/%d", m.header.SubagentBudget)
+		}
+		if m.subTool != "" {
+			s += " · " + m.subTool
+		}
+		left = m.spinner.View() + styleMeta.Render(s)
 	case m.thinking:
 		left = m.spinner.View() + styleMeta.Render(" thinking…")
 	case m.busy:

@@ -49,6 +49,11 @@ type chatCompletionResponse struct {
 		PromptTokens     int `json:"prompt_tokens"`
 		CompletionTokens int `json:"completion_tokens"`
 		TotalTokens      int `json:"total_tokens"`
+		// Cached-input accounting, reported under different keys per provider:
+		PromptCacheHitTokens int `json:"prompt_cache_hit_tokens"` // deepseek
+		PromptTokensDetails  struct {
+			CachedTokens int `json:"cached_tokens"` // openai-style
+		} `json:"prompt_tokens_details"`
 	} `json:"usage"`
 	Error *struct {
 		Message string `json:"message"`
@@ -128,15 +133,23 @@ func (p *OpenAICompatibleProvider) Complete(ctx context.Context, req Request) (R
 		return Response{}, fmt.Errorf("model api returned no choices: raw=%s", string(raw))
 	}
 
+	// Cached-prompt tokens: prefer deepseek's explicit field, fall back to the
+	// OpenAI-style nested detail. Either way it is a portion of PromptTokens.
+	cached := decoded.Usage.PromptCacheHitTokens
+	if cached == 0 {
+		cached = decoded.Usage.PromptTokensDetails.CachedTokens
+	}
+
 	choice := decoded.Choices[0]
 	return Response{
 		Content:      strings.TrimSpace(choice.Message.Content),
 		ToolCalls:    choice.Message.ToolCalls,
 		FinishReason: choice.FinishReason,
 		Usage: Usage{
-			PromptTokens:     decoded.Usage.PromptTokens,
-			CompletionTokens: decoded.Usage.CompletionTokens,
-			TotalTokens:      decoded.Usage.TotalTokens,
+			PromptTokens:       decoded.Usage.PromptTokens,
+			CompletionTokens:   decoded.Usage.CompletionTokens,
+			TotalTokens:        decoded.Usage.TotalTokens,
+			CachedPromptTokens: cached,
 		},
 		Raw: raw,
 	}, nil

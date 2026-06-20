@@ -137,17 +137,18 @@ func (o requestObserver) Observe(s model.RequestStat) {
 		trace[i] = session.AttemptRecord{LatencyMs: a.Latency.Milliseconds(), Result: result}
 	}
 	_ = o.store.RecordRequest(o.ctx, session.RequestRecord{
-		At:               s.At,
-		Model:            s.Model,
-		PromptTokens:     s.PromptTokens,
-		CompletionTokens: s.CompletionTokens,
-		Attempts:         s.Attempts,
-		Retries:          s.Retries,
-		TimedOut:         s.TimedOut,
-		Success:          s.Success,
-		ErrorClass:       s.ErrorClass,
-		LatencyMs:        s.Latency.Milliseconds(),
-		Trace:            trace,
+		At:                 s.At,
+		Model:              s.Model,
+		PromptTokens:       s.PromptTokens,
+		CachedPromptTokens: s.CachedPromptTokens,
+		CompletionTokens:   s.CompletionTokens,
+		Attempts:           s.Attempts,
+		Retries:            s.Retries,
+		TimedOut:           s.TimedOut,
+		Success:            s.Success,
+		ErrorClass:         s.ErrorClass,
+		LatencyMs:          s.Latency.Milliseconds(),
+		Trace:              trace,
 	})
 }
 
@@ -259,10 +260,24 @@ func printStatsReport(ctx context.Context, store session.Store, cfg app.Config) 
 	return nil
 }
 
-// computeCost is the per-model spend: tokens × price-per-million, in the
-// configured currency.
-func computeCost(promptTokens, completionTokens int64, inPerM, outPerM float64) float64 {
-	return (float64(promptTokens)*inPerM + float64(completionTokens)*outPerM) / 1_000_000
+// computeCost is the per-model spend in the configured currency. Prompt tokens
+// are split: the cached portion is billed at cacheInPerM, the rest at inPerM. When
+// cacheInPerM is 0 (cache price unconfigured), cached tokens fall back to the full
+// input price — so an unconfigured cache price reproduces the old estimate rather
+// than under-counting. cachedTokens is a portion of promptTokens, clamped so a
+// quirky provider value cannot push the uncached count negative.
+func computeCost(promptTokens, cachedTokens, completionTokens int64, inPerM, cacheInPerM, outPerM float64) float64 {
+	if cachedTokens > promptTokens {
+		cachedTokens = promptTokens
+	}
+	if cachedTokens < 0 {
+		cachedTokens = 0
+	}
+	if cacheInPerM == 0 {
+		cacheInPerM = inPerM
+	}
+	uncached := promptTokens - cachedTokens
+	return (float64(uncached)*inPerM + float64(cachedTokens)*cacheInPerM + float64(completionTokens)*outPerM) / 1_000_000
 }
 
 // printCostReport joins per-model token usage with the configured prices. A
@@ -288,13 +303,14 @@ func printCostReport(usage []session.ModelUsage, cfg app.Config) {
 		mc, ok := priced[u.Model]
 		costStr := "unpriced"
 		if ok && (mc.InputPricePerM > 0 || mc.OutputPricePerM > 0) {
-			cost := computeCost(u.PromptTokens, u.CompletionTokens, mc.InputPricePerM, mc.OutputPricePerM)
+			cost := computeCost(u.PromptTokens, u.CachedPromptTokens, u.CompletionTokens,
+				mc.InputPricePerM, mc.CacheInputPricePerM, mc.OutputPricePerM)
 			total += cost
 			anyPriced = true
 			costStr = fmt.Sprintf("%s%.4f", cur, cost)
 		}
-		fmt.Printf("  %-18s reqs=%-4d in=%-9d out=%-9d %s\n",
-			u.Model, u.Requests, u.PromptTokens, u.CompletionTokens, costStr)
+		fmt.Printf("  %-18s reqs=%-4d in=%-9d cached=%-9d out=%-9d %s\n",
+			u.Model, u.Requests, u.PromptTokens, u.CachedPromptTokens, u.CompletionTokens, costStr)
 	}
 	if anyPriced {
 		fmt.Printf("  TOTAL: %s%.4f\n", cur, total)
@@ -728,7 +744,12 @@ func runTUI(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider mo
 	defer store.Close()
 	attachObserver(provider, store, ctx)
 
-	registry, skillReg, mcpMgr, err := buildRegistry(ctx, cfg, mc, provider, store, nil)
+	// Created up front so the subagent can route its condensed heartbeat through the
+	// TUI's emitter — the model distinguishes sub-session events by SessionID and
+	// renders them as a status line, never the transcript.
+	backend := tui.NewBackend()
+
+	registry, skillReg, mcpMgr, err := buildRegistry(ctx, cfg, mc, provider, store, backend.Emitter)
 	if err != nil {
 		return err
 	}
@@ -748,13 +769,13 @@ func runTUI(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider mo
 	}
 	sess.Model = mc.Model
 
-	backend := tui.NewBackend()
 	runner := buildRunner(cfg, mc, provider, registry, skillReg, backend.Approver, withEventStore(backend.Emitter, store, ctx))
 	header := tui.HeaderInfo{
 		Model:            mc.Name,
 		Workspace:        filepath.Base(root),
 		Session:          sess.ID,
 		CompactThreshold: cfg.CompactThreshold(mc),
+		SubagentBudget:   subAgentMaxSteps,
 	}
 	// /resume loads a stored session and re-budgets it to the current model — the
 	// same helper the REPL's /resume uses.

@@ -705,13 +705,15 @@ nil-safe seams (the `Registry`; the `Approver` / `Observer` / `Reflector` /
 `Emitter` interfaces; `jobs`) **without touching the loop**. Only streaming
 reaches into the `Provider` interface. Items are ordered by value × fit × effort.
 
-- [ ] **(8.1) Cache-accurate cost** *(easy — quick win)* — parse cached-input
+- [x] **(8.1) Cache-accurate cost** *(easy — quick win)* — **shipped.** Cached-input
   usage (`prompt_cache_hit_tokens` / `prompt_tokens_details.cached_tokens`,
-  per-provider) into `model.Usage`; add `cache_input_price_per_million` and split
-  cost into cached/uncached. Fixes the cost over-estimate. Honest caveat: this
-  *measures* spend accurately, it does not *reduce* it — and compaction churns the
-  prompt prefix, which busts the provider cache (a real tension to surface, not
-  hide). Seam: `Usage` + the openai usage parser + the `requests` table.
+  per-provider) is parsed into `model.Usage.CachedPromptTokens`, threaded through
+  the request telemetry into the `requests` table (additive `cached_prompt_tokens`
+  column), and `cache_input_price_per_million` splits cost into cached/uncached in
+  the `stats` cost report. When the cache price is unset, cached tokens fall back to
+  the full input price — so the estimate never silently under-counts. Honest caveat
+  that still holds: this *measures* spend accurately, it does not *reduce* it — and
+  compaction churns the prompt prefix, which busts the provider cache.
 - **(8.2) MCP adapter** *(medium — highest strategic value)* — consume
   external MCP servers via the official Go SDK: `tools/list`, then wrap each
   remote tool as an ordinary `tools.Tool` (`Execute` → `tools/call`) in the same
@@ -791,6 +793,14 @@ just an agent.
 
 ### Later / parallel
 
+- [ ] **Robustness: tool-call markup leak at the step limit** — when a turn hits
+  `max_steps`, `finalAnswerAfterLimit` asks the model to answer with no tools, but
+  some models (deepseek) emit their tool-call markup (`DSML`) as text instead of a
+  real answer. The subagent already sanitizes this (8.3,
+  [`looksLikeToolCallLeak`](cmd/codeagent/subagent.go)), but the **main** loop's
+  final-answer path surfaces the garbage to the *user*. Detect and strip it (or
+  re-prompt) in `finalAnswerAfterLimit` — a loop-level fix, so it stays generic
+  across providers.
 - [ ] Local/cloud runtime split — remote tool runtime, workspace adapter,
   server-side sandbox experiment.
 - [ ] GUI.
