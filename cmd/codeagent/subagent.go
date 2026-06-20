@@ -12,12 +12,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 )
 
-// subAgentMaxSteps bounds one delegated investigation. Small on purpose: a
-// read-only subagent should converge quickly, and this caps its cost and latency.
-const subAgentMaxSteps = 12
+// subAgentMaxSteps bounds one delegated investigation, counted in loop iterations
+// (each of which may batch several tool calls). Broad, multi-file investigation is
+// the subagent's primary job, so this is generous enough to converge on a wide
+// trace while still capping cost — 12 proved too tight for "map everything" tasks.
+const subAgentMaxSteps = 20
 
 // readOnlyToolNames is the subagent's allow-list: the built-in tools that only
 // read. It is an explicit allow-list (default-deny via tools.Subset) — a tool
@@ -36,6 +39,20 @@ var readOnlyToolNames = []string{
 type denyAll struct{}
 
 func (denyAll) Approve(string, json.RawMessage) bool { return false }
+
+// looksLikeToolCallLeak reports whether s is a model's tool-call syntax leaked as
+// plain text rather than a real answer. It happens when a provider is asked to
+// answer with no tools but the model still "wants" to call one — deepseek emits
+// its DSML tool-call markup into the content field. Such text is noise, not a
+// conclusion, so we replace it with a clean failure message.
+func looksLikeToolCallLeak(s string) bool {
+	for _, marker := range []string{"DSML", "invoke name=", "tool_calls", "<｜"} {
+		if strings.Contains(s, marker) {
+			return true
+		}
+	}
+	return false
+}
 
 // subAgent is the concrete task.SubAgent: each Run builds a fresh, isolated,
 // ephemeral session and a read-only sub-runner, executes one turn, and returns
@@ -126,10 +143,20 @@ func (s *subAgent) Run(ctx context.Context, taskPrompt string) (string, error) {
 
 	conclusion := res.Final
 	if res.HitStepLimit {
-		// Don't pass off a non-convergent run as a clean answer; mark it so the
-		// parent can decide to narrow the task and retry (PRD §5.4).
-		conclusion = fmt.Sprintf("[subagent did not converge within %d steps — partial findings only]\n\n%s",
-			subAgentMaxSteps, res.Final)
+		switch {
+		case looksLikeToolCallLeak(res.Final):
+			// The final tool-free answer is the model's tool-call markup leaked as
+			// text (deepseek does this when forced to answer with no tools). Don't
+			// hand the parent noise — fail gracefully so it can make a good call.
+			conclusion = fmt.Sprintf("[subagent could not complete this investigation within %d steps. "+
+				"It may be too broad to delegate — narrow it (fewer files, one focused question) or "+
+				"investigate directly.]", subAgentMaxSteps)
+		default:
+			// A genuine partial answer: hand it back, marked, so the parent can
+			// narrow the task and retry (PRD §5.4).
+			conclusion = fmt.Sprintf("[subagent did not converge within %d steps — partial findings only]\n\n%s",
+				subAgentMaxSteps, res.Final)
+		}
 	}
 	if emitter != nil {
 		emitter.Emit(agent.Event{Kind: agent.EventTaskFinished, SessionID: sess.ID, At: time.Now(), Text: conclusion})

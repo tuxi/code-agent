@@ -30,6 +30,21 @@ func (loopingProvider) Complete(context.Context, model.Request) (model.Response,
 	}}}, nil
 }
 
+// leakyProvider mimics deepseek leaking tool-call markup as text on the forced,
+// tool-free final answer: it requests a tool while tools are offered, but emits
+// DSML markup as content once finalAnswerAfterLimit asks it to answer with none.
+type leakyProvider struct{}
+
+func (leakyProvider) Complete(_ context.Context, req model.Request) (model.Response, error) {
+	if len(req.Tools) == 0 {
+		return model.Response{Content: `<｜｜DSML｜｜tool_calls><｜｜DSML｜｜invoke name="read_file">x`}, nil
+	}
+	return model.Response{ToolCalls: []model.ToolCall{{
+		ID: "c1", Type: "function",
+		Function: model.FunctionCall{Name: "nope", Arguments: "{}"},
+	}}}, nil
+}
+
 type namedTool struct{ name string }
 
 func (n namedTool) Name() string                 { return n.name }
@@ -119,6 +134,25 @@ func TestSubAgentRunFlagsNonConvergence(t *testing.T) {
 	}
 	if !strings.Contains(out, "did not converge") {
 		t.Fatalf("a non-convergent run should be flagged, got: %q", out)
+	}
+}
+
+func TestSubAgentCleansLeakedToolCallsOnNonConvergence(t *testing.T) {
+	// A non-empty registry so tools are advertised during the loop; leakyProvider
+	// then leaks DSML only on the forced, tool-free final call (the real bug).
+	reg := tools.NewRegistry()
+	_ = reg.Register(namedTool{"nope"})
+	sa := testSubAgent(leakyProvider{}, t.TempDir())
+	sa.readOnly = reg
+	out, err := sa.Run(context.Background(), "a task too broad to finish")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if strings.Contains(out, "DSML") || strings.Contains(out, "invoke name=") {
+		t.Fatalf("leaked tool-call markup must not reach the parent: %q", out)
+	}
+	if !strings.Contains(out, "could not complete") {
+		t.Fatalf("a garbage non-convergence should fail gracefully, got: %q", out)
 	}
 }
 
