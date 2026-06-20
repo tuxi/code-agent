@@ -7,6 +7,7 @@ import (
 
 	"code-agent/internal/agent"
 	"code-agent/internal/session"
+
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textarea"
@@ -75,11 +76,16 @@ func newModel(b *Backend, header HeaderInfo, src sessionSource) model {
 	ta.ShowLineNumbers = false
 	ta.Prompt = composerPrompt
 	ta.CharLimit = 0
+
+	// 显式指定这是一个支持多行的组件
+	ta.SetHeight(minComposerLines)
+
 	// Edit-first composer: Enter sends (handled in Update), so newline moves to
 	// Alt+Enter / Ctrl+J — the cross-terminal-reliable combo.
 	ta.KeyMap.InsertNewline = key.NewBinding(key.WithKeys("alt+enter", "ctrl+j"))
-	ta.MaxHeight = maxComposerLines
-	ta.SetHeight(minComposerLines)
+	// 不要在这里限制 ta.MaxHeight 导致组件内部裁剪逻辑冲突
+	//ta.MaxHeight = maxComposerLines
+
 	ta.Focus()
 
 	sp := spinner.New()
@@ -116,6 +122,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.composer.SetWidth(composerWidth(msg.Width))
 		m.ready = true
+		m.syncComposer() // <- 宽度变了，折行数也会变，必须同步！
 		return m, nil
 
 	case tea.KeyMsg:
@@ -160,9 +167,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.String() == "enter" {
 			return m.submit()
 		}
+
+		// 普通字符输入
 		var cmd tea.Cmd
+		// 正常的字符输入处理
 		m.composer, cmd = m.composer.Update(msg)
-		m.syncComposer() // grow/shrink the composer with its content
+		// 根据新内容计算并设置新高度
+		// grow/shrink the composer with its content
+		m.syncComposer()
+
 		return m, cmd
 
 	case eventMsg:
@@ -443,11 +456,47 @@ func (m *model) resume(meta session.Meta) tea.Cmd {
 // syncComposer grows/shrinks the composer to fit its content (1..max rows). A
 // one-line composer keeps the cursor on the terminal's bottom row, where the IME
 // candidate window has room below it — the root fix for the IME overlap.
+//func (m *model) syncComposer() {
+//	n := clampInt(strings.Count(m.composer.Value(), "\n")+1, minComposerLines, maxComposerLines)
+//	if n != m.composerHeight {
+//		m.composerHeight = n
+//		m.composer.SetHeight(n)
+//	}
+//}
+
 func (m *model) syncComposer() {
-	n := clampInt(strings.Count(m.composer.Value(), "\n")+1, minComposerLines, maxComposerLines)
-	if n != m.composerHeight {
-		m.composerHeight = n
-		m.composer.SetHeight(n)
+	// 1. 获取当前输入框的实际可用文本宽度
+	promptWidth := runewidth.StringWidth(composerPrompt)
+	availableWidth := m.width - composerRightPadding - promptWidth
+	if availableWidth < 10 { // 防御性代码，防止终端过窄导致除以0
+		availableWidth = 40
+	}
+	// 2. 精准计算视觉总行数
+	visualLines := 0
+	// 按用户的硬换行 (\n) 切割
+	lines := strings.Split(m.composer.Value(), "\n")
+	for _, line := range lines {
+		if line == "" {
+			visualLines++
+			continue
+		}
+		// 计算这一行文字的绝对显示宽度
+		w := runewidth.StringWidth(line)
+		// 向上取整计算折行数。例如可用宽度 40，字宽 41，则占 2 行
+		chunks := (w + availableWidth - 1) / availableWidth
+		if chunks == 0 {
+			chunks = 1
+		}
+		visualLines += chunks
+	}
+
+	// 3. 限制在最小和最大行数之间
+	targetHeight := clampInt(visualLines, minComposerLines, maxComposerLines)
+
+	// 4. 当高度真正发生变化时，同步更新组件
+	if targetHeight != m.composerHeight {
+		m.composerHeight = targetHeight
+		m.composer.SetHeight(targetHeight)
 	}
 }
 
