@@ -37,6 +37,12 @@ type Builder struct {
 	// the system prompt. Tiny by design; bodies are loaded on demand by the model
 	// via load_skill, never baked in here (P6).
 	SkillsIndex string
+
+	// SystemPrompt, when non-empty, replaces the default agent identity
+	// (prompt.AgentSystemPrompt). A read-only subagent (8.3) uses this to install
+	// its own short, strict instructions in place of the full interactive-agent
+	// prompt. Project memory and the skills index, if present, are still appended.
+	SystemPrompt string
 }
 
 func NewBuilder(workspaceRoot string) *Builder {
@@ -66,8 +72,18 @@ func (b *Builder) WithSkillsIndex(index string) *Builder {
 	return b
 }
 
+// WithSystemPrompt overrides the default agent system identity. Empty leaves the
+// default in place. Used by the subagent (8.3) to run with its own focused prompt.
+func (b *Builder) WithSystemPrompt(p string) *Builder {
+	b.SystemPrompt = p
+	return b
+}
+
 func (b *Builder) Build() (*Session, error) {
 	systemContent := prompt.AgentSystemPrompt
+	if b.SystemPrompt != "" {
+		systemContent = b.SystemPrompt
+	}
 
 	memory, err := b.loadProjectMemory()
 	if err != nil {

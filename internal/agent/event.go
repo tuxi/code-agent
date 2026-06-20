@@ -21,6 +21,15 @@ const (
 	EventSkillLoaded   EventKind = "skill_loaded" // a skill body was loaded (P6)
 	EventCompacted     EventKind = "compacted"
 	EventTurnFinished  EventKind = "turn_finished"
+
+	// Subagent delegation (8.3). A `task` tool call brackets a nested run on an
+	// isolated session with these events, so a renderer can present the delegation
+	// distinctly (and keep the subagent's own event stream — tagged with its own
+	// SessionID — in a collapsed sub-stream) instead of flooding the parent
+	// timeline. Text carries the delegated prompt (Started) and the returned
+	// conclusion (Finished).
+	EventTaskStarted  EventKind = "task_started"
+	EventTaskFinished EventKind = "task_finished"
 )
 
 // Event is a single point in a turn — a discriminated union where Kind selects

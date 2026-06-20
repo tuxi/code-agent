@@ -78,3 +78,26 @@ func (r *Registry) Names() []string {
 	sort.Strings(names)
 	return names
 }
+
+// Subset returns a new Registry containing only the named tools from r, in the
+// order given. Names not present in r are skipped.
+//
+// This is how an unattended context — a read-only subagent (8.3) — gets a
+// deliberately narrow toolset: it is an ALLOW-LIST, default-deny. A tool is
+// included only if explicitly named here, so anything added to the parent
+// registry later (a new write tool, an external MCP tool) is excluded by default
+// rather than leaking into the subagent. That fail-closed direction is the whole
+// point — it must never be inverted into "everything except the side-effecting
+// ones", which would silently admit a tool that forgot to mark itself.
+func Subset(r *Registry, names ...string) *Registry {
+	sub := NewRegistry()
+	for _, name := range names {
+		if tool, ok := r.tools[name]; ok {
+			// Ignore the error: duplicate names in the allow-list just keep the
+			// first registration, and the tool is known non-nil with a non-empty
+			// name (it came from r).
+			_ = sub.register(tool, r.internal[name])
+		}
+	}
+	return sub
+}
