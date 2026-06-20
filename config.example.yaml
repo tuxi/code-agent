@@ -56,5 +56,17 @@ provider:
 # display symbol for cost reporting (the price fields are in this unit). Optional (default "$").
 currency: "$"
 
+# External MCP servers. Each is launched over stdio (v1 supports stdio only) and
+# its tools are registered alongside the built-ins, named `mcp__<server>__<tool>`
+# and shown in logs as `mcp.<server>.<tool>`. Every remote tool is treated as
+# side-effecting, so each call is confirmed. Optional; omit the block to disable.
+# Set CODEAGENT_MCP_DEBUG=1 to trace raw tool I/O.
+mcp:
+  servers:
+    - name: fs
+      command: npx
+      args: ["-y", "@modelcontextprotocol/server-filesystem", "."]
+      # env: { KEY: value }   # optional, appended to the server's environment
+
 workspace:
   root: "."

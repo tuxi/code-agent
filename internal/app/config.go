@@ -7,6 +7,8 @@ import (
 	"sort"
 	"strings"
 
+	"code-agent/internal/mcp"
+
 	"gopkg.in/yaml.v3"
 )
 
@@ -37,6 +39,10 @@ type Config struct {
 	// Currency is the display symbol for cost reporting (the price fields are in
 	// this unit). Defaults to "$".
 	Currency string `yaml:"currency"`
+
+	// MCP configures external Model Context Protocol servers whose tools are
+	// registered alongside the built-in ones. Empty (the default) disables it.
+	MCP mcp.Config `yaml:"mcp"`
 }
 
 // ProviderConfig tunes the transport resilience layer (ResilientProvider):
@@ -171,6 +177,22 @@ func LoadConfig(path string) (Config, error) {
 
 	if _, ok := cfg.Models[cfg.DefaultModel]; !ok {
 		return Config{}, fmt.Errorf("default_model %q is not defined under models", cfg.DefaultModel)
+	}
+
+	// MCP servers: names must be present and unique (they namespace the tools),
+	// and a command is required to launch the stdio server. Fail at load with a
+	// clear message rather than letting a duplicate name collide at registration.
+	seenMCP := make(map[string]bool, len(cfg.MCP.Servers))
+	for i, s := range cfg.MCP.Servers {
+		switch {
+		case s.Name == "":
+			return Config{}, fmt.Errorf("mcp.servers[%d]: name is required", i)
+		case s.Command == "":
+			return Config{}, fmt.Errorf("mcp server %q: command is required", s.Name)
+		case seenMCP[s.Name]:
+			return Config{}, fmt.Errorf("mcp server %q: duplicate name", s.Name)
+		}
+		seenMCP[s.Name] = true
 	}
 
 	return cfg, nil

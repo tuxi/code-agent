@@ -4,6 +4,7 @@ import (
 	"code-agent/cmd/codeagent/tui"
 	"code-agent/internal/agent"
 	"code-agent/internal/app"
+	"code-agent/internal/mcp"
 	"code-agent/internal/model"
 	"code-agent/internal/observation"
 	"code-agent/internal/session"
@@ -19,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -458,16 +460,19 @@ func buildCompactor(mc app.ModelConfig, provider model.Provider) session.Compact
 	}
 }
 
-// buildRegistry registers the model-facing tool set and loads the skills
-// registry. Shared by run and repl. The returned skills registry feeds both the
+// buildRegistry registers the model-facing tool set, loads the skills registry,
+// and connects any configured MCP servers — registering their tools into the
+// SAME registry, so remote tools are gated and observed exactly like built-ins.
+// Shared by run, repl, and tui. The returned skills registry feeds both the
 // load_skill tool (here) and the system-prompt index (the session builder), so
-// the index the model sees and the bodies it can load stay in sync.
-func buildRegistry(root string) (*tools.Registry, *skills.Registry, error) {
+// the index the model sees and the bodies it can load stay in sync. The returned
+// Manager owns the MCP subprocesses; the caller must Close it.
+func buildRegistry(ctx context.Context, root string, mcpCfg mcp.Config) (*tools.Registry, *skills.Registry, *mcp.Manager, error) {
 	registry := tools.NewRegistry()
 
 	skillReg, err := skills.Load(filepath.Join(root, "skills"))
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
 	// run_command and the job_* tools share one job registry, so a job_id
@@ -492,10 +497,39 @@ func buildRegistry(root string) (*tools.Registry, *skills.Registry, error) {
 		skill.NewLoadSkillTool(skillReg),
 	} {
 		if err := registry.Register(tool); err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 	}
-	return registry, skillReg, nil
+
+	// MCP tools are registered AFTER the built-ins, so they appear after them in
+	// the advertised list (the Registry preserves registration order). A server
+	// that fails to start is skipped inside Connect; a name collision surfaces
+	// here as a registration error.
+	mgr := mcp.NewManager(mcpTraceWriter())
+	if n := len(mcpCfg.Servers); n > 0 {
+		fmt.Fprintf(os.Stderr, "[mcp] connecting to %d server(s)…\n", n)
+	}
+	if err := mgr.Connect(ctx, mcpCfg.Servers); err != nil {
+		mgr.Close()
+		return nil, nil, nil, err
+	}
+	for _, tool := range mgr.Tools() {
+		if err := registry.Register(tool); err != nil {
+			mgr.Close()
+			return nil, nil, nil, fmt.Errorf("register mcp tool: %w", err)
+		}
+	}
+	return registry, skillReg, mgr, nil
+}
+
+// mcpTraceWriter is where the MCP adapter writes its per-call raw I/O trace.
+// Off by default (it would spam normal runs); set CODEAGENT_MCP_DEBUG to enable.
+// The startup summary is separate from this and always shown.
+func mcpTraceWriter() io.Writer {
+	if os.Getenv("CODEAGENT_MCP_DEBUG") != "" {
+		return os.Stderr
+	}
+	return io.Discard
 }
 
 // extractModelFlag pulls a --model NAME (or --model=NAME) out of args from any
@@ -536,9 +570,13 @@ func runAsk(ctx context.Context, mc app.ModelConfig, provider model.Provider, qu
 func runAgent(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider model.Provider, goal string) error {
 	root := cfg.Workspace.Root
 
-	registry, skillReg, err := buildRegistry(root)
+	registry, skillReg, mcpMgr, err := buildRegistry(ctx, root, cfg.MCP)
 	if err != nil {
 		return err
+	}
+	defer mcpMgr.Close()
+	if s := mcpMgr.Summary(); s != "" {
+		fmt.Fprintln(os.Stderr, s)
 	}
 
 	store, err := openStore(root)
@@ -584,9 +622,15 @@ func runAgent(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider 
 func runTUI(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider model.Provider) error {
 	root := cfg.Workspace.Root
 
-	registry, skillReg, err := buildRegistry(root)
+	registry, skillReg, mcpMgr, err := buildRegistry(ctx, root, cfg.MCP)
 	if err != nil {
 		return err
+	}
+	defer mcpMgr.Close()
+	// Printed before the BubbleTea program takes the screen, so the summary lands
+	// on the normal terminal rather than corrupting the alt-screen.
+	if s := mcpMgr.Summary(); s != "" {
+		fmt.Fprintln(os.Stderr, s)
 	}
 
 	store, err := openStore(root)

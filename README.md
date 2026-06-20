@@ -712,14 +712,34 @@ reaches into the `Provider` interface. Items are ordered by value × fit × effo
   *measures* spend accurately, it does not *reduce* it — and compaction churns the
   prompt prefix, which busts the provider cache (a real tension to surface, not
   hide). Seam: `Usage` + the openai usage parser + the `requests` table.
-- [ ] **(8.2) MCP adapter** *(medium — highest strategic value)* — consume
+- **(8.2) MCP adapter** *(medium — highest strategic value)* — consume
   external MCP servers via the official Go SDK: `tools/list`, then wrap each
   remote tool as an ordinary `tools.Tool` (`Execute` → `tools/call`) in the same
   Registry — so MCP tools are gated by the same policy layer and enriched by the
   same Observation. The Registry being the single source of truth is what makes
   this drop-in. Risk: MCP server subprocess lifecycle, schema-translation edges,
-  and treating remote tools as side-effecting (approval) by default. Exposing our
-  own tools *as* an MCP server is a smaller later follow-on.
+  and treating remote tools as side-effecting (approval) by default. Shipped in
+  iterations:
+  - [x] **First slice** — stdio transport; `tools/list` → wrap each remote tool in
+    the same Registry; `tools/call` with raw-JSON arg passthrough; text content
+    (non-text → placeholder); every remote tool side-effecting; wire name
+    `mcp__server__tool` vs. display label `mcp.server.tool` (function names must
+    match `^[a-zA-Z0-9_-]+$`, so the dotted form is display-only); three error
+    classes (protocol / tool / invalid-args); per-server connect timeout +
+    skip-and-summarize. Lives in `internal/mcp`, **zero changes to the loop**.
+  - [ ] **Async / lazy connect (next)** — today `buildRegistry` blocks startup on
+    the handshake (a cold `npx` is ~12s of frozen UI; bounded by a 30s timeout but
+    still synchronous). Launch the UI immediately and connect servers in the
+    background, registering each server's tools when it comes up; surface
+    connect progress/failure as timeline events instead of a stderr line. Design
+    questions: a Registry that accepts late tool additions concurrency-safely (the
+    loop snapshots `toolDefinitions` per turn, so additions must be safe and ideally
+    land before the first turn), and what the model is told if it reaches for a tool
+    whose server is not ready yet.
+  - [ ] **Later follow-ons** — SSE / streamable-HTTP transport; real multimodal
+    passthrough (blocked on `model.Message` carrying content parts, not a plain
+    string); expose our *own* tools as an MCP server; show the label rather than the
+    wire name in the approval prompt.
 - [ ] **(8.3) Subagent / Task** *(medium — highest architectural fit)* — a `task`
   tool that runs a nested `RunTurn` on an *isolated* session and returns its final
   answer as the tool result. Not just Claude-Code parity: it is the root fix for
