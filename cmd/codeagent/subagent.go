@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"time"
 )
 
 // subAgentMaxSteps bounds one delegated investigation. Small on purpose: a
@@ -47,13 +48,14 @@ type subAgent struct {
 	cfg         app.Config
 	readOnly    *tools.Registry
 	skillsIndex string
+	store       session.Store // for observability: persists the sub-session transcript
 }
 
 // newSubAgent builds the subagent backing the `task` tool. It picks the subagent
 // model (agent.subagent_model, falling back to the parent) and freezes the
 // read-only tool subset from the parent registry as it stands now — so tools added
 // to the parent later (task itself, MCP tools) are never in the subagent's set.
-func newSubAgent(cfg app.Config, mc app.ModelConfig, parent model.Provider, root string, full *tools.Registry, skillsIndex string) *subAgent {
+func newSubAgent(cfg app.Config, mc app.ModelConfig, parent model.Provider, root string, full *tools.Registry, skillsIndex string, store session.Store) *subAgent {
 	provider, subMC := resolveSubAgentModel(cfg, mc, parent)
 	return &subAgent{
 		root:        root,
@@ -62,6 +64,7 @@ func newSubAgent(cfg app.Config, mc app.ModelConfig, parent model.Provider, root
 		cfg:         cfg,
 		readOnly:    tools.Subset(full, readOnlyToolNames...),
 		skillsIndex: skillsIndex,
+		store:       store,
 	}
 }
 
@@ -80,6 +83,18 @@ func (s *subAgent) Run(ctx context.Context, taskPrompt string) (string, error) {
 	}
 	sess.Model = s.mc.Model
 
+	// Observability: the sub-runner emits to a STORE-ONLY emitter, so its full
+	// investigation is persisted under the sub-session's id — inspect it with
+	// `codeagent task-trace <id>` — WITHOUT rendering into the parent's live view,
+	// so default-quiet is preserved. task_started/finished bracket the transcript
+	// and index the delegation for `codeagent tasks`. A nil store (e.g. in tests)
+	// degrades to fully quiet.
+	var emitter agent.Emitter
+	if s.store != nil {
+		emitter = eventStoreEmitter{ctx: ctx, store: s.store}
+		emitter.Emit(agent.Event{Kind: agent.EventTaskStarted, SessionID: sess.ID, At: time.Now(), Text: taskPrompt})
+	}
+
 	sub := &agent.Runner{
 		Model:       s.provider,
 		ModelName:   s.mc.Model,
@@ -90,20 +105,25 @@ func (s *subAgent) Run(ctx context.Context, taskPrompt string) (string, error) {
 		Observer:    observation.DefaultObserver{},
 		Reflector:   agent.DefaultReflector{},
 		Compactor:   buildCompactor(s.mc, s.provider),
-		// Emitter intentionally nil — see the doc comment above.
+		Emitter:     emitter, // store-only (or nil) — never the parent's live renderer
 	}
 
 	res, err := sub.RunTurn(ctx, sess, taskPrompt)
 	if err != nil {
 		return "", err
 	}
+
+	conclusion := res.Final
 	if res.HitStepLimit {
 		// Don't pass off a non-convergent run as a clean answer; mark it so the
 		// parent can decide to narrow the task and retry (PRD §5.4).
-		return fmt.Sprintf("[subagent did not converge within %d steps — partial findings only]\n\n%s",
-			subAgentMaxSteps, res.Final), nil
+		conclusion = fmt.Sprintf("[subagent did not converge within %d steps — partial findings only]\n\n%s",
+			subAgentMaxSteps, res.Final)
 	}
-	return res.Final, nil
+	if emitter != nil {
+		emitter.Emit(agent.Event{Kind: agent.EventTaskFinished, SessionID: sess.ID, At: time.Now(), Text: conclusion})
+	}
+	return conclusion, nil
 }
 
 // resolveSubAgentModel returns the provider + config the subagent should use.

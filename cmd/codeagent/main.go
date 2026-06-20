@@ -62,6 +62,13 @@ func run() error {
 				}
 			}
 			return runTrace(ctx, cfg, limit)
+		case "tasks":
+			return runTasks(ctx, cfg)
+		case "task-trace":
+			if len(args) < 2 {
+				return fmt.Errorf("usage: codeagent task-trace <sub-session-id>  (see 'codeagent tasks')")
+			}
+			return runTaskTrace(ctx, cfg, args[1])
 		}
 	}
 
@@ -403,6 +410,83 @@ func printTrace(recs []session.RequestRecord) {
 	}
 }
 
+// runTasks lists recent subagent delegations. Each `task` call writes a
+// task_started event whose session_id is the isolated sub-session that holds the
+// full (otherwise invisible) investigation. Inspect one with `codeagent
+// task-trace <id>`.
+func runTasks(ctx context.Context, cfg app.Config) error {
+	store, err := openStore(cfg.Workspace.Root)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+
+	recs, err := store.RecentEventsByKind(ctx, string(agent.EventTaskStarted), 20)
+	if err != nil {
+		return err
+	}
+	if len(recs) == 0 {
+		fmt.Println("no subagent delegations recorded yet")
+		return nil
+	}
+	for _, r := range recs {
+		var ev agent.Event
+		_ = json.Unmarshal(r.Payload, &ev)
+		fmt.Printf("%s  %s\n    %s\n",
+			r.At.Local().Format("2006-01-02 15:04"), r.SessionID, truncateOneLine(ev.Text, 100))
+	}
+	return nil
+}
+
+// runTaskTrace replays a sub-session's persisted event stream through the same
+// console renderer the live run uses — so you can see exactly what the subagent
+// did (its reads, searches, observations), which is invisible by design while it
+// runs (default-quiet).
+func runTaskTrace(ctx context.Context, cfg app.Config, sessionID string) error {
+	store, err := openStore(cfg.Workspace.Root)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+
+	recs, err := store.SessionEvents(ctx, sessionID)
+	if err != nil {
+		return err
+	}
+	if len(recs) == 0 {
+		fmt.Printf("no events for session %q (is it a subagent sub-session? see 'codeagent tasks')\n", sessionID)
+		return nil
+	}
+	em := consoleEmitter{}
+	for _, r := range recs {
+		var ev agent.Event
+		if err := json.Unmarshal(r.Payload, &ev); err != nil {
+			continue
+		}
+		switch ev.Kind {
+		case agent.EventTaskStarted:
+			fmt.Printf("── subagent %s ──\nprompt: %s\n", sessionID, ev.Text)
+		case agent.EventTaskFinished:
+			fmt.Printf("\n── conclusion ──\n%s\n", ev.Text)
+		default:
+			em.Emit(ev)
+		}
+	}
+	return nil
+}
+
+// truncateOneLine collapses s to its first line and caps its length, for compact
+// listings.
+func truncateOneLine(s string, max int) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		s = s[:i]
+	}
+	if len(s) > max {
+		s = s[:max] + "…"
+	}
+	return s
+}
+
 // buildProvider constructs a model.Provider from a resolved model config. Only
 // OpenAI-compatible endpoints are wired today; this is the extension point for
 // Anthropic, Gemini, Ollama, etc.
@@ -471,7 +555,7 @@ func buildCompactor(mc app.ModelConfig, provider model.Provider) session.Compact
 // threaded so the read-only subagent (8.3) can be wired here too — it needs the
 // model provider and the read-only tool subset, both of which are most naturally
 // assembled alongside the registry.
-func buildRegistry(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider model.Provider) (*tools.Registry, *skills.Registry, *mcp.Manager, error) {
+func buildRegistry(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider model.Provider, store session.Store) (*tools.Registry, *skills.Registry, *mcp.Manager, error) {
 	root := cfg.Workspace.Root
 	registry := tools.NewRegistry()
 
@@ -511,7 +595,7 @@ func buildRegistry(ctx context.Context, cfg app.Config, mc app.ModelConfig, prov
 	// the PARENT. Because the subset is taken now, `task` can never be in it, so a
 	// subagent cannot spawn a subagent: recursion is capped at depth 1 by
 	// construction (see tools.Subset / newSubAgent).
-	sub := newSubAgent(cfg, mc, provider, root, registry, skillReg.PromptIndex())
+	sub := newSubAgent(cfg, mc, provider, root, registry, skillReg.PromptIndex(), store)
 	if err := registry.Register(task.NewTool(sub)); err != nil {
 		return nil, nil, nil, err
 	}
@@ -585,7 +669,14 @@ func runAsk(ctx context.Context, mc app.ModelConfig, provider model.Provider, qu
 func runAgent(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider model.Provider, goal string) error {
 	root := cfg.Workspace.Root
 
-	registry, skillReg, mcpMgr, err := buildRegistry(ctx, cfg, mc, provider)
+	store, err := openStore(root)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+	attachObserver(provider, store, ctx)
+
+	registry, skillReg, mcpMgr, err := buildRegistry(ctx, cfg, mc, provider, store)
 	if err != nil {
 		return err
 	}
@@ -593,13 +684,6 @@ func runAgent(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider 
 	if s := mcpMgr.Summary(); s != "" {
 		fmt.Fprintln(os.Stderr, s)
 	}
-
-	store, err := openStore(root)
-	if err != nil {
-		return err
-	}
-	defer store.Close()
-	attachObserver(provider, store, ctx)
 
 	runner := buildRunner(cfg, mc, provider, registry, skillReg, ui.ConfirmApprover{}, withEventStore(buildEmitter(), store, ctx))
 
@@ -637,7 +721,14 @@ func runAgent(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider 
 func runTUI(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider model.Provider) error {
 	root := cfg.Workspace.Root
 
-	registry, skillReg, mcpMgr, err := buildRegistry(ctx, cfg, mc, provider)
+	store, err := openStore(root)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+	attachObserver(provider, store, ctx)
+
+	registry, skillReg, mcpMgr, err := buildRegistry(ctx, cfg, mc, provider, store)
 	if err != nil {
 		return err
 	}
@@ -647,13 +738,6 @@ func runTUI(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider mo
 	if s := mcpMgr.Summary(); s != "" {
 		fmt.Fprintln(os.Stderr, s)
 	}
-
-	store, err := openStore(root)
-	if err != nil {
-		return err
-	}
-	defer store.Close()
-	attachObserver(provider, store, ctx)
 
 	sess, err := session.NewBuilder(root).
 		WithBudget(mc.ContextWindow, cfg.CompactThreshold(mc)).

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"code-agent/internal/agent"
 	"code-agent/internal/app"
 	"code-agent/internal/model"
 	"code-agent/internal/tools"
@@ -59,6 +60,57 @@ func TestSubAgentRunReturnsConclusion(t *testing.T) {
 	}
 }
 
+func TestSubAgentPersistsTranscript(t *testing.T) {
+	store := testStore(t)
+	sa := &subAgent{
+		root:     t.TempDir(),
+		provider: answerProvider{content: "answer at loop.go:42"},
+		mc:       app.ModelConfig{Name: "test", Model: "test-model", ContextWindow: 128000, Temperature: 0.2},
+		cfg:      app.Config{Agent: app.AgentConfig{CompactRatio: 0.5}},
+		readOnly: tools.NewRegistry(),
+		store:    store,
+	}
+	ctx := context.Background()
+	if _, err := sa.Run(ctx, "investigate the step limit"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	// The delegation is indexed by a task_started event carrying the prompt.
+	started, err := store.RecentEventsByKind(ctx, string(agent.EventTaskStarted), 10)
+	if err != nil {
+		t.Fatalf("RecentEventsByKind: %v", err)
+	}
+	if len(started) != 1 {
+		t.Fatalf("expected 1 task_started event, got %d", len(started))
+	}
+	var ev agent.Event
+	_ = json.Unmarshal(started[0].Payload, &ev)
+	if ev.Text != "investigate the step limit" {
+		t.Fatalf("task_started should carry the prompt, got %q", ev.Text)
+	}
+
+	// The sub-session's transcript is retrievable and bracketed by start/finish.
+	evs, err := store.SessionEvents(ctx, started[0].SessionID)
+	if err != nil {
+		t.Fatalf("SessionEvents: %v", err)
+	}
+	kinds := map[string]bool{}
+	for _, r := range evs {
+		kinds[r.Kind] = true
+	}
+	if !kinds[string(agent.EventTaskStarted)] || !kinds[string(agent.EventTaskFinished)] {
+		t.Fatalf("transcript should be bracketed by task_started/finished; got %v", kinds)
+	}
+}
+
+func TestSubAgentNilStoreStaysQuiet(t *testing.T) {
+	// No store wired (e.g. a bare construction) must not panic and must emit nothing.
+	sa := testSubAgent(answerProvider{content: "x"}, t.TempDir())
+	if _, err := sa.Run(context.Background(), "go"); err != nil {
+		t.Fatalf("Run with nil store: %v", err)
+	}
+}
+
 func TestSubAgentRunFlagsNonConvergence(t *testing.T) {
 	sa := testSubAgent(loopingProvider{}, t.TempDir())
 	out, err := sa.Run(context.Background(), "dig forever")
@@ -75,7 +127,7 @@ func TestNewSubAgentReadOnlySetIsFailClosed(t *testing.T) {
 	for _, name := range []string{"read_file", "grep", "edit_file", "run_command", "git_commit"} {
 		_ = full.Register(namedTool{name})
 	}
-	sa := newSubAgent(app.Config{}, app.ModelConfig{Name: "m"}, answerProvider{}, t.TempDir(), full, "")
+	sa := newSubAgent(app.Config{}, app.ModelConfig{Name: "m"}, answerProvider{}, t.TempDir(), full, "", nil)
 
 	for _, want := range []string{"read_file", "grep"} {
 		if _, ok := sa.readOnly.Get(want); !ok {

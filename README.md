@@ -753,10 +753,16 @@ reaches into the `Provider` interface. Items are ordered by value × fit × effo
     `subagent_model`, a step budget with a non-convergence return, and default-quiet
     output. `internal/tools/task` + `cmd/codeagent/subagent.go`; one additive field
     on the loop's `TurnResult`, otherwise the loop is untouched.
+  - [x] **Observability** — the subagent persists its full transcript to the
+    store under its own sub-session id (default-quiet preserved: the sub-stream is
+    store-only, never the parent's live view), bracketed by `task_started/finished`
+    events. `codeagent tasks` lists delegations; `codeagent task-trace <id>` replays
+    exactly what the subagent did — the reads/searches that are invisible by design
+    while it runs.
   - [ ] **Later follow-ons** — a writable subagent with approval propagation;
-    parallel subagents (`jobs`); persisted/resumable sub-sessions; lifting the
-    depth-1 cap (Claude Code allows depth-5); telemetry for a distinct
-    `subagent_model` so its tokens land in the cost report.
+    parallel subagents (`jobs`); resumable sub-sessions; lifting the depth-1 cap
+    (Claude Code allows depth-5); telemetry for a distinct `subagent_model` so its
+    tokens land in the cost report.
 - [ ] **(8.4) Plan / Todo** *(easy–medium — pairs with the TUI)* — a `todo_write`
   tool the model uses to track a multi-step task; the list lives on the Session
   and emits `EventTodoUpdated`, rendered as a live checklist on the timeline-first
