@@ -82,10 +82,11 @@ mcp:
 # web_search returns an error if no provider is configured.
 web:
   search:
-    provider: searxng           # "searxng" (default) or "brave"
-    # fallback_provider: brave   # optional fallback
-    searxng_base_url: "https://searx.be"
+    provider: tavily            # "tavily" (default), "brave", or "searxng"
+    tavily_api_key_env: TAVILY_API_KEY   # env var holding your Tavily key (free tier at https://tavily.com)
+    # fallback_provider: searxng          # optional fallback
     # brave_api_key_env: BRAVE_API_KEY
+    # searxng_base_url: "http://127.0.0.1:8080"  # self-hosted SearXNG with json format enabled
     top_k: 5
     timeout_seconds: 10
   fetch:

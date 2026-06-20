@@ -6,10 +6,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"strings"
+	"syscall"
 	"time"
 
 	"code-agent/internal/app"
@@ -19,14 +23,34 @@ import (
 	"golang.org/x/net/html"
 )
 
-// Tool implements the web_fetch tool.
-type Tool struct {
-	client *http.Client
-	cache  *cache.Cache
+// errBlockedAddress marks an SSRF-blocked dial. web_fetch never falls back to a
+// server-side extractor on this — doing so would hand an internal URL to a third
+// party.
+var errBlockedAddress = errors.New("blocked non-public address")
+
+// contentFallback retrieves a URL's content through a server-side service when a
+// direct fetch can't reach the host (e.g. the URL is blocked from this network).
+type contentFallback interface {
+	Extract(ctx context.Context, url string) (string, error)
 }
 
-// NewTool builds a web_fetch tool from the web section of config.
+// Tool implements the web_fetch tool.
+type Tool struct {
+	client   *http.Client
+	cache    *cache.Cache
+	fallback contentFallback // optional; nil means direct-fetch only
+}
+
+// NewTool builds a web_fetch tool from the web section of config. The HTTP
+// client it builds always blocks non-public dial targets (SSRF protection).
 func NewTool(cfg app.WebConfig) *Tool {
+	return newTool(cfg, false)
+}
+
+// newTool is the internal constructor. allowPrivate disables the SSRF dial
+// guard and is for tests only (httptest servers bind to loopback); production
+// always reaches this via NewTool with allowPrivate=false.
+func newTool(cfg app.WebConfig, allowPrivate bool) *Tool {
 	timeout := cfg.Fetch.TimeoutSeconds
 	if timeout <= 0 {
 		timeout = 30
@@ -36,11 +60,66 @@ func NewTool(cfg app.WebConfig) *Tool {
 		ttl = 10 * time.Minute
 	}
 
-	return &Tool{
+	// Clone the default transport so we keep its proxy/TLS defaults, then inject
+	// a dial-time SSRF guard that runs after DNS resolution for every connection.
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.DialContext = (&net.Dialer{
+		Timeout:   10 * time.Second,
+		KeepAlive: 30 * time.Second,
+		Control:   dialGuard(allowPrivate),
+	}).DialContext
+
+	t := &Tool{
 		client: &http.Client{
-			Timeout: time.Duration(timeout) * time.Second,
+			Timeout:   time.Duration(timeout) * time.Second,
+			Transport: transport,
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				if len(via) >= 5 {
+					return fmt.Errorf("web_fetch: stopped after 5 redirects")
+				}
+				if s := req.URL.Scheme; s != "http" && s != "https" {
+					return fmt.Errorf("web_fetch: disallowed redirect scheme %q", s)
+				}
+				return nil
+			},
 		},
 		cache: cache.New(ttl),
+	}
+	// Server-side fetch fallback: when a direct fetch can't reach a host (blocked
+	// network / GFW), retrieve content via Tavily /extract using the same key as
+	// web_search. Optional — no key means direct-only.
+	if key := cfg.Search.TavilyAPIKey(); key != "" {
+		t.fallback = newTavilyExtractor(key, timeout)
+	}
+	return t
+}
+
+// dialGuard returns a net.Dialer Control func that runs at TCP dial time —
+// after DNS resolution, for every connection including redirect hops — and
+// rejects any non-public destination. Validating the *resolved IP* here
+// (rather than the URL host) is what defeats both redirect-to-internal and
+// DNS-rebinding SSRF: every dial passes through this hook with the concrete IP
+// about to be contacted.
+func dialGuard(allowPrivate bool) func(network, address string, c syscall.RawConn) error {
+	return func(_, address string, _ syscall.RawConn) error {
+		if allowPrivate {
+			return nil
+		}
+		host, _, err := net.SplitHostPort(address)
+		if err != nil {
+			return err
+		}
+		ip := net.ParseIP(host)
+		if ip == nil {
+			return fmt.Errorf("web_fetch: cannot parse dial address %q", host)
+		}
+		// IsLinkLocalUnicast covers 169.254.0.0/16 (cloud metadata) and
+		// fe80::/10; IsPrivate covers RFC 1918 and IPv6 unique-local (fc00::/7).
+		if ip.IsLoopback() || ip.IsPrivate() || ip.IsUnspecified() ||
+			ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
+			return fmt.Errorf("web_fetch: %w %s", errBlockedAddress, ip)
+		}
+		return nil
 	}
 }
 
@@ -102,6 +181,16 @@ func (t *Tool) Execute(ctx context.Context, input json.RawMessage) (tools.ToolRe
 }
 
 func (t *Tool) fetch(ctx context.Context, urlStr string) (*fetchOutput, error) {
+	// 0. Only http/https. The dial-time guard (blockPrivateIP) covers internal
+	// addresses and redirects; this rejects file://, gopher://, etc. up front.
+	parsed, err := url.Parse(urlStr)
+	if err != nil {
+		return nil, fmt.Errorf("fetch: invalid URL: %w", err)
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return nil, fmt.Errorf("fetch: unsupported URL scheme %q (only http/https allowed)", parsed.Scheme)
+	}
+
 	// 1. Check cache.
 	if entry, ok := t.cache.Load(urlStr); ok {
 		return t.parseHTML(entry.Body, urlStr)
@@ -117,6 +206,14 @@ func (t *Tool) fetch(ctx context.Context, urlStr string) (*fetchOutput, error) {
 
 	resp, err := t.client.Do(req)
 	if err != nil {
+		// Direct fetch failed at the transport layer (unreachable / blocked /
+		// timeout). Try the server-side fallback — but never on an SSRF block,
+		// which would leak the internal URL to a third party.
+		if t.fallback != nil && !errors.Is(err, errBlockedAddress) {
+			if out, ferr := t.fetchViaFallback(ctx, urlStr); ferr == nil {
+				return out, nil
+			}
+		}
 		return nil, fmt.Errorf("fetch: request failed: %w", err)
 	}
 	defer resp.Body.Close()
@@ -148,6 +245,29 @@ func (t *Tool) fetch(ctx context.Context, urlStr string) (*fetchOutput, error) {
 		return t.parseJSON(body, urlStr)
 	}
 	return t.parseHTML(body, urlStr)
+}
+
+// fetchViaFallback retrieves urlStr through the configured server-side extractor
+// (Tavily /extract). The content comes back already cleaned, so it bypasses the
+// HTML pipeline. Used only when a direct fetch can't reach the host.
+func (t *Tool) fetchViaFallback(ctx context.Context, urlStr string) (*fetchOutput, error) {
+	content, err := t.fallback.Extract(ctx, urlStr)
+	if err != nil {
+		return nil, err
+	}
+	const maxFallback = 200_000 // chars — guard against a huge page blowing context
+	if len(content) > maxFallback {
+		content = content[:maxFallback]
+	}
+	return &fetchOutput{
+		Title:      urlStr,
+		Summary:    "Direct fetch failed; content retrieved via server-side extractor (Tavily).",
+		KeyPoints:  []string{},
+		CodeBlocks: []codeBlock{},
+		Content:    content,
+		Markdown:   content,
+		Links:      []string{},
+	}, nil
 }
 
 func (t *Tool) parseHTML(body []byte, _ string) (*fetchOutput, error) {

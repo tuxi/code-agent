@@ -19,6 +19,11 @@ type Runner struct {
 	Tools       *tools.Registry
 	MaxSteps    int
 
+	// MaxWebSearches caps web_search calls within one user turn (0 = default).
+	// A search-happy model that keeps reformulating instead of answering gets a
+	// "stop searching" result past the cap; the counter resets each turn.
+	MaxWebSearches int
+
 	// Approver gates side-effecting tool calls. If nil, side-effecting tools are
 	// denied (see approve()). Read-only tools never consult it.
 	Approver Approver
@@ -84,6 +89,15 @@ type TurnResult struct {
 
 const defaultMaxSteps = 24
 
+// webSearchToolName is the search tool subject to the per-turn budget below.
+const webSearchToolName = "web_search"
+
+// defaultMaxWebSearches caps web_search calls per user turn. Search-happy models
+// reformulate the same query many ways instead of answering; the cap forces them
+// to stop and use what they have. Set above a typical real need so it only bites
+// genuine thrash.
+const defaultMaxWebSearches = 5
+
 // toolCallSeq backs synthetic tool_call ids (see RunTurn). Process-global and
 // monotonic so synthesized ids never collide within a session.
 var toolCallSeq atomic.Uint64
@@ -138,6 +152,11 @@ func (r *Runner) RunTurn(ctx context.Context, sess *session.Session, userInput s
 	// ephemeral nudge to apply on the next request once it fires.
 	reflected := false
 	pendingReflection := ""
+
+	// Per-turn web_search budget. Counts continuously across this turn (it resets
+	// when Run returns and the next user turn starts a fresh counter). A
+	// search-happy model reformulating the same query is cut off past the cap.
+	webSearches := 0
 
 	for i := 0; i < r.MaxSteps; i++ {
 		// A canceled context (Ctrl-C) must stop the turn at the step boundary
@@ -276,11 +295,24 @@ func (r *Runner) RunTurn(ctx context.Context, sess *session.Session, userInput s
 
 			tool, known := r.Tools.Get(call.Function.Name)
 
+			// Per-turn web_search budget: count every search call, then refuse
+			// further ones past the cap so a search-happy model stops reformulating
+			// and answers with what it has.
+			if call.Function.Name == webSearchToolName {
+				webSearches++
+			}
+
 			var observation string
 			var execErr error
 			switch {
 			case !advertised[call.Function.Name] || !known:
 				execErr = fmt.Errorf("unknown tool: %s", call.Function.Name)
+			case call.Function.Name == webSearchToolName && webSearches > r.maxWebSearches():
+				observation = fmt.Sprintf(
+					"Search budget reached: %d web searches already this turn (limit %d). "+
+						"Stop searching — reformulating the query will not surface new results. "+
+						"Answer with the results you already have, or web_fetch a specific URL.",
+					webSearches-1, r.maxWebSearches())
 			case tools.HasSideEffectsFor(tool, input) && !r.approve(call.Function.Name, input):
 				observation = "The user declined to run this tool. No changes were made."
 			default:
@@ -359,6 +391,14 @@ func (r *Runner) nudgeThreshold() int {
 		t = 6
 	}
 	return t
+}
+
+// maxWebSearches is the per-turn web_search budget (configurable, with a default).
+func (r *Runner) maxWebSearches() int {
+	if r.MaxWebSearches > 0 {
+		return r.MaxWebSearches
+	}
+	return defaultMaxWebSearches
 }
 
 // skillsReminder is the ephemeral first-call nudge (P6). It is phrased to be

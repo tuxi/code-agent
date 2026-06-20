@@ -99,6 +99,9 @@ func (b *Builder) Build() (*Session, error) {
 	}
 
 	now := time.Now()
+	// Inject the current date so the model anchors time-sensitive reasoning and
+	// search queries to today rather than its training-era default.
+	systemContent += "\n\nThe current date is " + now.Format("2006-01-02 (Monday)") + "."
 	return &Session{
 		ID: newSessionID(),
 		Messages: []model.Message{

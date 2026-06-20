@@ -113,9 +113,8 @@ func TestToolExecute(t *testing.T) {
 	defer srv.Close()
 
 	tool := &Tool{
-		Primary:  NewSearXNG([]string{srv.URL}, 10),
-		TopK:     5,
-		rewriter: &Rewriter{},
+		Primary: NewSearXNG([]string{srv.URL}, 10),
+		TopK:    5,
 	}
 
 	input := json.RawMessage(`{"query": "test query"}`)
@@ -140,9 +139,8 @@ func TestToolExecute(t *testing.T) {
 
 func TestToolExecuteMissingQuery(t *testing.T) {
 	tool := &Tool{
-		Primary:  NewSearXNG([]string{"https://searx.be"}, 10),
-		TopK:     5,
-		rewriter: &Rewriter{},
+		Primary: NewSearXNG([]string{"https://searx.be"}, 10),
+		TopK:    5,
 	}
 	_, err := tool.Execute(context.Background(), json.RawMessage(`{}`))
 	if err == nil || !strings.Contains(err.Error(), "query") {
@@ -151,7 +149,7 @@ func TestToolExecuteMissingQuery(t *testing.T) {
 }
 
 func TestToolExecuteNoProvider(t *testing.T) {
-	tool := &Tool{TopK: 5, rewriter: &Rewriter{}}
+	tool := &Tool{TopK: 5}
 	_, err := tool.Execute(context.Background(), json.RawMessage(`{"query": "test"}`))
 	if err == nil {
 		t.Fatal("expected error when no provider configured")
@@ -175,9 +173,8 @@ func TestToolTopKCap(t *testing.T) {
 	defer srv.Close()
 
 	tool := &Tool{
-		Primary:  NewSearXNG([]string{srv.URL}, 10),
-		TopK:     2,
-		rewriter: &Rewriter{},
+		Primary: NewSearXNG([]string{srv.URL}, 10),
+		TopK:    2,
 	}
 
 	result, err := tool.Execute(context.Background(), json.RawMessage(`{"query": "test"}`))

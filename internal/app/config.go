@@ -117,12 +117,13 @@ type WebConfig struct {
 }
 
 type WebSearchConfig struct {
-	Provider         string `yaml:"provider"`          // "searxng" (default) or "brave"
-	FallbackProvider string `yaml:"fallback_provider"` // optional fallback
-	SearXNGBaseURL   string `yaml:"searxng_base_url"`  // SearXNG instance base URL (single or comma-separated)
-	BraveAPIKeyEnv   string `yaml:"brave_api_key_env"` // env var holding Brave API key
-	TopK             int    `yaml:"top_k"`             // max results, default 5
-	TimeoutSeconds   int    `yaml:"timeout_seconds"`   // HTTP timeout, default 10
+	Provider         string `yaml:"provider"`           // "tavily" (default), "brave", or "searxng"
+	FallbackProvider string `yaml:"fallback_provider"`  // optional fallback
+	SearXNGBaseURL   string `yaml:"searxng_base_url"`   // SearXNG instance base URL (single or comma-separated)
+	BraveAPIKeyEnv   string `yaml:"brave_api_key_env"`  // env var holding Brave API key
+	TavilyAPIKeyEnv  string `yaml:"tavily_api_key_env"` // env var holding Tavily API key
+	TopK             int    `yaml:"top_k"`              // max results, default 5
+	TimeoutSeconds   int    `yaml:"timeout_seconds"`    // HTTP timeout, default 10
 }
 
 // SearXNGInstances returns the list of SearXNG instances from config.
@@ -145,6 +146,14 @@ func (c WebSearchConfig) BraveAPIKey() string {
 		return ""
 	}
 	return os.Getenv(c.BraveAPIKeyEnv)
+}
+
+// TavilyAPIKey returns the resolved Tavily API key, if configured.
+func (c WebSearchConfig) TavilyAPIKey() string {
+	if c.TavilyAPIKeyEnv == "" {
+		return ""
+	}
+	return os.Getenv(c.TavilyAPIKeyEnv)
 }
 
 type WebFetchConfig struct {
@@ -241,7 +250,7 @@ func LoadConfig(path string) (Config, error) {
 	}
 
 	if cfg.Web.Search.Provider == "" {
-		cfg.Web.Search.Provider = "searxng"
+		cfg.Web.Search.Provider = "tavily"
 	}
 	// SearXNG instances default to the built-in public pool when not configured.
 	if cfg.Web.Search.TopK <= 0 {

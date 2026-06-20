@@ -17,7 +17,6 @@ type Tool struct {
 	Primary  SearchProvider
 	Fallback SearchProvider
 	TopK     int
-	rewriter *Rewriter
 }
 
 // NewTool builds a web_search tool from the web section of config. It returns
@@ -25,8 +24,7 @@ type Tool struct {
 // model won't see it).
 func NewTool(cfg app.WebConfig) *Tool {
 	t := &Tool{
-		TopK:     cfg.Search.TopK,
-		rewriter: &Rewriter{}, // heuristic always active; LLM fallback injectable later
+		TopK: cfg.Search.TopK,
 	}
 	if t.TopK <= 0 {
 		t.TopK = 5
@@ -42,14 +40,22 @@ func NewTool(cfg app.WebConfig) *Tool {
 		if key := cfg.Search.BraveAPIKey(); key != "" {
 			t.Primary = NewBrave(key, timeout)
 		}
-	default: // "searxng" or empty
+	case "searxng":
 		t.Primary = NewSearXNG(cfg.Search.SearXNGInstances(), timeout)
+	default: // "tavily" or empty — Tavily is the default provider
+		if key := cfg.Search.TavilyAPIKey(); key != "" {
+			t.Primary = NewTavily(key, timeout)
+		}
 	}
 
 	switch cfg.Search.FallbackProvider {
 	case "brave":
 		if key := cfg.Search.BraveAPIKey(); key != "" {
 			t.Fallback = NewBrave(key, timeout)
+		}
+	case "tavily":
+		if key := cfg.Search.TavilyAPIKey(); key != "" {
+			t.Fallback = NewTavily(key, timeout)
 		}
 	case "searxng":
 		t.Fallback = NewSearXNG(cfg.Search.SearXNGInstances(), timeout)
@@ -92,18 +98,15 @@ func (t *Tool) Execute(ctx context.Context, input json.RawMessage) (tools.ToolRe
 		in.TopK = t.TopK
 	}
 
-	rewrittenQuery := t.rewriter.Rewrite(ctx, in.Query)
-
-	results, err := t.search(ctx, rewrittenQuery, in.TopK)
+	results, err := t.search(ctx, in.Query, in.TopK)
 	if err != nil {
 		return tools.ToolResult{}, err
 	}
 
 	b, err := json.MarshalIndent(struct {
-		OriginalQuery  string   `json:"original_query"`
-		RewrittenQuery string   `json:"rewritten_query"`
-		Results        []Result `json:"results"`
-	}{OriginalQuery: in.Query, RewrittenQuery: rewrittenQuery, Results: results}, "", "  ")
+		Query   string   `json:"query"`
+		Results []Result `json:"results"`
+	}{Query: in.Query, Results: results}, "", "  ")
 	if err != nil {
 		return tools.ToolResult{}, fmt.Errorf("marshal results: %w", err)
 	}
@@ -114,7 +117,9 @@ func (t *Tool) Execute(ctx context.Context, input json.RawMessage) (tools.ToolRe
 func (t *Tool) search(ctx context.Context, query string, topK int) ([]Result, error) {
 	if t.Primary == nil {
 		return nil, fmt.Errorf(
-			"no search provider configured; set web.search.provider in config.yaml (supported: searxng, brave)")
+			"no search provider configured: the default provider is tavily but no API key was found. " +
+				"Set web.search.tavily_api_key_env in config.yaml to an env var holding your Tavily key " +
+				"(free tier at https://tavily.com), or switch web.search.provider to searxng/brave")
 	}
 
 	var results []Result
@@ -140,9 +145,9 @@ func (t *Tool) search(ctx context.Context, query string, topK int) ([]Result, er
 		return nil, fmt.Errorf("no results found for %q", query)
 	}
 
-	// Deduplicate by URL, then rerank by authority + freshness + relevance.
+	// Deduplicate by URL, then cap. Provider order is preserved — relevance and
+	// quality ranking are left to the provider and the calling model.
 	results = dedup(results)
-	results = rerank(query, results)
 	if len(results) > topK {
 		results = results[:topK]
 	}
