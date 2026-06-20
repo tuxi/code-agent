@@ -555,7 +555,7 @@ func buildCompactor(mc app.ModelConfig, provider model.Provider) session.Compact
 // threaded so the read-only subagent (8.3) can be wired here too — it needs the
 // model provider and the read-only tool subset, both of which are most naturally
 // assembled alongside the registry.
-func buildRegistry(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider model.Provider, store session.Store) (*tools.Registry, *skills.Registry, *mcp.Manager, error) {
+func buildRegistry(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider model.Provider, store session.Store, progress agent.Emitter) (*tools.Registry, *skills.Registry, *mcp.Manager, error) {
 	root := cfg.Workspace.Root
 	registry := tools.NewRegistry()
 
@@ -595,7 +595,7 @@ func buildRegistry(ctx context.Context, cfg app.Config, mc app.ModelConfig, prov
 	// the PARENT. Because the subset is taken now, `task` can never be in it, so a
 	// subagent cannot spawn a subagent: recursion is capped at depth 1 by
 	// construction (see tools.Subset / newSubAgent).
-	sub := newSubAgent(cfg, mc, provider, root, registry, skillReg.PromptIndex(), store)
+	sub := newSubAgent(cfg, mc, provider, root, registry, skillReg.PromptIndex(), store, progress)
 	if err := registry.Register(task.NewTool(sub)); err != nil {
 		return nil, nil, nil, err
 	}
@@ -676,7 +676,7 @@ func runAgent(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider 
 	defer store.Close()
 	attachObserver(provider, store, ctx)
 
-	registry, skillReg, mcpMgr, err := buildRegistry(ctx, cfg, mc, provider, store)
+	registry, skillReg, mcpMgr, err := buildRegistry(ctx, cfg, mc, provider, store, subagentProgress())
 	if err != nil {
 		return err
 	}
@@ -728,7 +728,7 @@ func runTUI(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider mo
 	defer store.Close()
 	attachObserver(provider, store, ctx)
 
-	registry, skillReg, mcpMgr, err := buildRegistry(ctx, cfg, mc, provider, store)
+	registry, skillReg, mcpMgr, err := buildRegistry(ctx, cfg, mc, provider, store, nil)
 	if err != nil {
 		return err
 	}

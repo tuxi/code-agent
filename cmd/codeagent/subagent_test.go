@@ -127,7 +127,7 @@ func TestNewSubAgentReadOnlySetIsFailClosed(t *testing.T) {
 	for _, name := range []string{"read_file", "grep", "edit_file", "run_command", "git_commit"} {
 		_ = full.Register(namedTool{name})
 	}
-	sa := newSubAgent(app.Config{}, app.ModelConfig{Name: "m"}, answerProvider{}, t.TempDir(), full, "", nil)
+	sa := newSubAgent(app.Config{}, app.ModelConfig{Name: "m"}, answerProvider{}, t.TempDir(), full, "", nil, nil)
 
 	for _, want := range []string{"read_file", "grep"} {
 		if _, ok := sa.readOnly.Get(want); !ok {

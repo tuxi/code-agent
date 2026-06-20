@@ -48,14 +48,15 @@ type subAgent struct {
 	cfg         app.Config
 	readOnly    *tools.Registry
 	skillsIndex string
-	store       session.Store // for observability: persists the sub-session transcript
+	store       session.Store // observability: persists the sub-session transcript
+	progress    agent.Emitter // observability: live, condensed heartbeat (nil = none)
 }
 
 // newSubAgent builds the subagent backing the `task` tool. It picks the subagent
 // model (agent.subagent_model, falling back to the parent) and freezes the
 // read-only tool subset from the parent registry as it stands now — so tools added
 // to the parent later (task itself, MCP tools) are never in the subagent's set.
-func newSubAgent(cfg app.Config, mc app.ModelConfig, parent model.Provider, root string, full *tools.Registry, skillsIndex string, store session.Store) *subAgent {
+func newSubAgent(cfg app.Config, mc app.ModelConfig, parent model.Provider, root string, full *tools.Registry, skillsIndex string, store session.Store, progress agent.Emitter) *subAgent {
 	provider, subMC := resolveSubAgentModel(cfg, mc, parent)
 	return &subAgent{
 		root:        root,
@@ -65,6 +66,7 @@ func newSubAgent(cfg app.Config, mc app.ModelConfig, parent model.Provider, root
 		readOnly:    tools.Subset(full, readOnlyToolNames...),
 		skillsIndex: skillsIndex,
 		store:       store,
+		progress:    progress,
 	}
 }
 
@@ -83,15 +85,24 @@ func (s *subAgent) Run(ctx context.Context, taskPrompt string) (string, error) {
 	}
 	sess.Model = s.mc.Model
 
-	// Observability: the sub-runner emits to a STORE-ONLY emitter, so its full
-	// investigation is persisted under the sub-session's id — inspect it with
-	// `codeagent task-trace <id>` — WITHOUT rendering into the parent's live view,
-	// so default-quiet is preserved. task_started/finished bracket the transcript
-	// and index the delegation for `codeagent tasks`. A nil store (e.g. in tests)
-	// degrades to fully quiet.
-	var emitter agent.Emitter
+	// Observability, two sinks fanned out by multiEmitter:
+	//   - store: persists the FULL transcript under the sub-session's id (inspect
+	//     later with `codeagent task-trace <id>`), and indexes the delegation.
+	//   - progress: a CONDENSED live heartbeat (run/repl), so `task` is not a black
+	//     box while it runs.
+	// Crucially, NEITHER is the parent's live renderer, so the full sub-stream
+	// never floods the parent — default-quiet holds. task_started/finished bracket
+	// the run. Both sinks nil (e.g. tests / piped output) degrades to fully quiet.
+	sinks := make(multiEmitter, 0, 2)
 	if s.store != nil {
-		emitter = eventStoreEmitter{ctx: ctx, store: s.store}
+		sinks = append(sinks, eventStoreEmitter{ctx: ctx, store: s.store})
+	}
+	if s.progress != nil {
+		sinks = append(sinks, s.progress)
+	}
+	var emitter agent.Emitter
+	if len(sinks) > 0 {
+		emitter = sinks
 		emitter.Emit(agent.Event{Kind: agent.EventTaskStarted, SessionID: sess.ID, At: time.Now(), Text: taskPrompt})
 	}
 

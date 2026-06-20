@@ -753,12 +753,14 @@ reaches into the `Provider` interface. Items are ordered by value × fit × effo
     `subagent_model`, a step budget with a non-convergence return, and default-quiet
     output. `internal/tools/task` + `cmd/codeagent/subagent.go`; one additive field
     on the loop's `TurnResult`, otherwise the loop is untouched.
-  - [x] **Observability** — the subagent persists its full transcript to the
-    store under its own sub-session id (default-quiet preserved: the sub-stream is
-    store-only, never the parent's live view), bracketed by `task_started/finished`
-    events. `codeagent tasks` lists delegations; `codeagent task-trace <id>` replays
-    exactly what the subagent did — the reads/searches that are invisible by design
-    while it runs.
+  - [x] **Observability** — two views of the subagent, neither of which floods the
+    parent (default-quiet holds, because the parent's live renderer never sees the
+    raw sub-stream): a **live condensed heartbeat** (`⟳ subagent · step N · tool`)
+    on run/repl so a `task` call isn't a black box while it runs, and the **full
+    transcript** persisted under the sub-session's id — `codeagent tasks` lists
+    delegations, `codeagent task-trace <id>` replays exactly what the subagent did.
+    Both are fanned out from the same sub-stream (store + heartbeat), bracketed by
+    `task_started/finished`. (A TUI heartbeat is a follow-on.)
   - [ ] **Later follow-ons** — a writable subagent with approval propagation;
     parallel subagents (`jobs`); resumable sub-sessions; lifting the depth-1 cap
     (Claude Code allows depth-5); telemetry for a distinct `subagent_model` so its

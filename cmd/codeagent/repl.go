@@ -44,7 +44,7 @@ func repl(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider mode
 	defer store.Close()
 	attachObserver(provider, store, ctx)
 
-	registry, skillReg, mcpMgr, err := buildRegistry(ctx, cfg, mc, provider, store)
+	registry, skillReg, mcpMgr, err := buildRegistry(ctx, cfg, mc, provider, store, subagentProgress())
 	if err != nil {
 		return err
 	}
