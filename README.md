@@ -740,16 +740,23 @@ reaches into the `Provider` interface. Items are ordered by value × fit × effo
     passthrough (blocked on `model.Message` carrying content parts, not a plain
     string); expose our *own* tools as an MCP server; show the label rather than the
     wire name in the approval prompt.
-- [ ] **(8.3) Subagent / Task** *(medium — highest architectural fit)* — a `task`
+- **(8.3) Subagent / Task** *(medium — highest architectural fit)* — a `task`
   tool that runs a nested `RunTurn` on an *isolated* session and returns its final
   answer as the tool result. Not just Claude-Code parity: it is the root fix for
   context hygiene — push dirty/exploratory work into a sub-agent whose verbose
   investigation never pollutes the parent's context; only the conclusion comes
-  back. The pieces exist (Runner, isolated Session, `jobs` for parallelism,
-  `Emitter` with SessionID/TurnID for nested correlation). Design questions: the
-  subagent's toolset (read-only by default), a recursion-depth cap, approval
-  propagation. Full design (verified against Claude Code's current subagent
-  behavior): [docs/p8.3-subagent.md](docs/p8.3-subagent.md).
+  back. Full design (verified against Claude Code's current subagent behavior):
+  [docs/p8.3-subagent.md](docs/p8.3-subagent.md).
+  - [x] **First slice** — a read-only, Explore-class subagent on an isolated,
+    ephemeral session: a name-based, fail-closed allow-list toolset (no writes, no
+    `task` ⇒ depth-1), a dedicated terse system prompt, an optional cheaper
+    `subagent_model`, a step budget with a non-convergence return, and default-quiet
+    output. `internal/tools/task` + `cmd/codeagent/subagent.go`; one additive field
+    on the loop's `TurnResult`, otherwise the loop is untouched.
+  - [ ] **Later follow-ons** — a writable subagent with approval propagation;
+    parallel subagents (`jobs`); persisted/resumable sub-sessions; lifting the
+    depth-1 cap (Claude Code allows depth-5); telemetry for a distinct
+    `subagent_model` so its tokens land in the cost report.
 - [ ] **(8.4) Plan / Todo** *(easy–medium — pairs with the TUI)* — a `todo_write`
   tool the model uses to track a multi-step task; the list lives on the Session
   and emits `EventTodoUpdated`, rendered as a live checklist on the timeline-first

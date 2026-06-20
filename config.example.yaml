@@ -1,4 +1,4 @@
-default_model: glm
+default_model: deepseek-pro
 
 models:
   deepseek:
@@ -44,6 +44,11 @@ agent:
   # compact when the prompt reaches this fraction of the model's context_window.
   # Optional (default 0.5); values outside (0,1) fall back to the default.
   compact_ratio: 0.5
+  # Model the read-only `task` subagent (8.3) runs on. Optional — empty inherits
+  # the main model. Point it at a cheaper model to make delegated read-only
+  # investigation fast and cheap. An unknown/key-less name falls back to the main
+  # model at runtime.
+  subagent_model: deepseek
 
 # Transport resilience: each model call gets a per-attempt timeout and retries
 # transient failures (timeout, 429, 5xx) with exponential backoff. All optional.

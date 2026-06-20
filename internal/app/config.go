@@ -85,6 +85,12 @@ type AgentConfig struct {
 	// session compacts. Defaults to defaultCompactRatio; values outside (0,1) are
 	// treated as unset.
 	CompactRatio float64 `yaml:"compact_ratio"`
+
+	// SubagentModel names the model a delegated read-only subagent (the `task`
+	// tool, 8.3) runs on. Empty inherits the main model; point it at a cheaper
+	// model (e.g. a flash-class one) to make read-only investigation cheap. An
+	// unknown or key-less name falls back to the main model at runtime.
+	SubagentModel string `yaml:"subagent_model"`
 }
 
 type WorkspaceConfig struct {

@@ -16,6 +16,7 @@ import (
 	"code-agent/internal/tools/search"
 	"code-agent/internal/tools/shell"
 	"code-agent/internal/tools/skill"
+	"code-agent/internal/tools/task"
 	"code-agent/internal/ui"
 	"context"
 	"encoding/json"
@@ -466,8 +467,12 @@ func buildCompactor(mc app.ModelConfig, provider model.Provider) session.Compact
 // Shared by run, repl, and tui. The returned skills registry feeds both the
 // load_skill tool (here) and the system-prompt index (the session builder), so
 // the index the model sees and the bodies it can load stay in sync. The returned
-// Manager owns the MCP subprocesses; the caller must Close it.
-func buildRegistry(ctx context.Context, root string, mcpCfg mcp.Config) (*tools.Registry, *skills.Registry, *mcp.Manager, error) {
+// Manager owns the MCP subprocesses; the caller must Close it. cfg/mc/provider are
+// threaded so the read-only subagent (8.3) can be wired here too — it needs the
+// model provider and the read-only tool subset, both of which are most naturally
+// assembled alongside the registry.
+func buildRegistry(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider model.Provider) (*tools.Registry, *skills.Registry, *mcp.Manager, error) {
+	root := cfg.Workspace.Root
 	registry := tools.NewRegistry()
 
 	skillReg, err := skills.Load(filepath.Join(root, "skills"))
@@ -501,15 +506,25 @@ func buildRegistry(ctx context.Context, root string, mcpCfg mcp.Config) (*tools.
 		}
 	}
 
+	// Subagent (8.3): freeze the read-only subset from the built-ins ONLY — before
+	// `task` and the MCP tools are registered — then register the `task` tool into
+	// the PARENT. Because the subset is taken now, `task` can never be in it, so a
+	// subagent cannot spawn a subagent: recursion is capped at depth 1 by
+	// construction (see tools.Subset / newSubAgent).
+	sub := newSubAgent(cfg, mc, provider, root, registry, skillReg.PromptIndex())
+	if err := registry.Register(task.NewTool(sub)); err != nil {
+		return nil, nil, nil, err
+	}
+
 	// MCP tools are registered AFTER the built-ins, so they appear after them in
 	// the advertised list (the Registry preserves registration order). A server
 	// that fails to start is skipped inside Connect; a name collision surfaces
 	// here as a registration error.
 	mgr := mcp.NewManager(mcpTraceWriter())
-	if n := len(mcpCfg.Servers); n > 0 {
+	if n := len(cfg.MCP.Servers); n > 0 {
 		fmt.Fprintf(os.Stderr, "[mcp] connecting to %d server(s)…\n", n)
 	}
-	if err := mgr.Connect(ctx, mcpCfg.Servers); err != nil {
+	if err := mgr.Connect(ctx, cfg.MCP.Servers); err != nil {
 		mgr.Close()
 		return nil, nil, nil, err
 	}
@@ -570,7 +585,7 @@ func runAsk(ctx context.Context, mc app.ModelConfig, provider model.Provider, qu
 func runAgent(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider model.Provider, goal string) error {
 	root := cfg.Workspace.Root
 
-	registry, skillReg, mcpMgr, err := buildRegistry(ctx, root, cfg.MCP)
+	registry, skillReg, mcpMgr, err := buildRegistry(ctx, cfg, mc, provider)
 	if err != nil {
 		return err
 	}
@@ -622,7 +637,7 @@ func runAgent(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider 
 func runTUI(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider model.Provider) error {
 	root := cfg.Workspace.Root
 
-	registry, skillReg, mcpMgr, err := buildRegistry(ctx, root, cfg.MCP)
+	registry, skillReg, mcpMgr, err := buildRegistry(ctx, cfg, mc, provider)
 	if err != nil {
 		return err
 	}

@@ -37,7 +37,7 @@ type lineReader func(prompt string) (string, error)
 func repl(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider model.Provider, resumeID string) error {
 	root := cfg.Workspace.Root
 
-	registry, skillReg, mcpMgr, err := buildRegistry(ctx, root, cfg.MCP)
+	registry, skillReg, mcpMgr, err := buildRegistry(ctx, cfg, mc, provider)
 	if err != nil {
 		return err
 	}
