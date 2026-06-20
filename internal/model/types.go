@@ -9,6 +9,13 @@ type Usage struct {
 	PromptTokens     int `json:"prompt_tokens"`
 	CompletionTokens int `json:"completion_tokens"`
 	TotalTokens      int `json:"total_tokens"`
+
+	// CachedPromptTokens is the portion of PromptTokens served from the provider's
+	// prompt cache (a stable prefix billed at a lower rate). Parsed per-provider by
+	// the openai adapter (deepseek's prompt_cache_hit_tokens / OpenAI's
+	// prompt_tokens_details.cached_tokens). 0 when the provider reports nothing.
+	// It is a breakdown of PromptTokens, NOT additional tokens.
+	CachedPromptTokens int `json:"-"`
 }
 
 type Role string

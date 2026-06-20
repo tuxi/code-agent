@@ -95,6 +95,7 @@ func NewSQLiteStore(path string) (*SQLiteStore, error) {
 	for _, stmt := range []string{
 		`ALTER TABLE requests ADD COLUMN trace TEXT`,
 		`ALTER TABLE requests ADD COLUMN completion_tokens INTEGER`,
+		`ALTER TABLE requests ADD COLUMN cached_prompt_tokens INTEGER`,
 	} {
 		if _, err := db.Exec(stmt); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			db.Close()
@@ -306,9 +307,9 @@ func (s *SQLiteStore) RecordRequest(ctx context.Context, r RequestRecord) error 
 		trace = string(b)
 	}
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO requests (at, model, prompt_tokens, completion_tokens, attempts, retries, timed_out, success, error_class, latency_ms, trace)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		formatTime(r.At), r.Model, r.PromptTokens, r.CompletionTokens, r.Attempts, r.Retries,
+		INSERT INTO requests (at, model, prompt_tokens, cached_prompt_tokens, completion_tokens, attempts, retries, timed_out, success, error_class, latency_ms, trace)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		formatTime(r.At), r.Model, r.PromptTokens, r.CachedPromptTokens, r.CompletionTokens, r.Attempts, r.Retries,
 		boolToInt(r.TimedOut), boolToInt(r.Success), r.ErrorClass, r.LatencyMs, trace)
 	return err
 }
@@ -379,7 +380,7 @@ func (s *SQLiteStore) RecentEventsByKind(ctx context.Context, kind string, limit
 // basis for cost accounting.
 func (s *SQLiteStore) TokenUsageByModel(ctx context.Context) ([]ModelUsage, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT model, COUNT(*), COALESCE(SUM(prompt_tokens), 0), COALESCE(SUM(completion_tokens), 0)
+		SELECT model, COUNT(*), COALESCE(SUM(prompt_tokens), 0), COALESCE(SUM(cached_prompt_tokens), 0), COALESCE(SUM(completion_tokens), 0)
 		FROM requests
 		GROUP BY model
 		ORDER BY SUM(prompt_tokens) + SUM(completion_tokens) DESC`)
@@ -390,7 +391,7 @@ func (s *SQLiteStore) TokenUsageByModel(ctx context.Context) ([]ModelUsage, erro
 	var out []ModelUsage
 	for rows.Next() {
 		var u ModelUsage
-		if err := rows.Scan(&u.Model, &u.Requests, &u.PromptTokens, &u.CompletionTokens); err != nil {
+		if err := rows.Scan(&u.Model, &u.Requests, &u.PromptTokens, &u.CachedPromptTokens, &u.CompletionTokens); err != nil {
 			return nil, err
 		}
 		out = append(out, u)

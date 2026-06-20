@@ -73,6 +73,12 @@ type ModelConfig struct {
 	InputPricePerM  float64 `yaml:"input_price_per_million"`
 	OutputPricePerM float64 `yaml:"output_price_per_million"`
 
+	// CacheInputPricePerM is the (lower) price per 1,000,000 prompt tokens served
+	// from the provider's prompt cache. Optional; when 0, cached tokens are billed
+	// at InputPricePerM (the conservative pre-cache estimate), so cost reporting
+	// never silently under-counts a model whose cache price is unconfigured.
+	CacheInputPricePerM float64 `yaml:"cache_input_price_per_million"`
+
 	// Resolved at load time, not read from YAML.
 	Name   string `yaml:"-"` // the friendly name (the map key)
 	APIKey string `yaml:"-"` // resolved from APIKeyEnv

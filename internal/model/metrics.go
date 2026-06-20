@@ -13,17 +13,18 @@ import (
 // set. This is the data behind "why are requests slow / failing", which a bare
 // "context deadline exceeded" cannot answer.
 type RequestStat struct {
-	At               time.Time
-	Model            string
-	PromptTokens     int  // from the successful response; 0 on failure
-	CompletionTokens int  // output tokens, for cost accounting
-	Attempts         int  // inner calls made (>= 1)
-	Retries          int  // Attempts - 1
-	TimedOut         bool // any attempt hit a timeout
-	Success          bool
-	ErrorClass       string        // "" on success; else timeout/429/5xx/4xx/network/...
-	Latency          time.Duration // total wall time across attempts
-	Trace            []Attempt     // per-attempt detail, in order
+	At                 time.Time
+	Model              string
+	PromptTokens       int  // from the successful response; 0 on failure
+	CachedPromptTokens int  // portion of PromptTokens served from the prompt cache
+	CompletionTokens   int  // output tokens, for cost accounting
+	Attempts           int  // inner calls made (>= 1)
+	Retries            int  // Attempts - 1
+	TimedOut           bool // any attempt hit a timeout
+	Success            bool
+	ErrorClass         string        // "" on success; else timeout/429/5xx/4xx/network/...
+	Latency            time.Duration // total wall time across attempts
+	Trace              []Attempt     // per-attempt detail, in order
 }
 
 // Attempt is one try within a Complete call — the per-attempt detail behind the

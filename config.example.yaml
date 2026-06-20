@@ -14,6 +14,10 @@ models:
     # Optional — omit to leave a model "unpriced".
     input_price_per_million: 0.27
     output_price_per_million: 1.10
+    # lower price for prompt tokens served from the provider's cache (cache hit).
+    # Optional — when omitted, cached tokens are billed at input_price_per_million
+    # (the conservative estimate), so cost is never under-counted.
+    cache_input_price_per_million: 0.027
 
   deepseek-pro:
     provider: openai
