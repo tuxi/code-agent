@@ -349,6 +349,32 @@ func (s *SQLiteStore) SessionEvents(ctx context.Context, sessionID string) ([]Ev
 	return out, rows.Err()
 }
 
+// RecentEventsByKind returns the most recent events of one kind across all
+// sessions, newest first — the index behind `codeagent tasks`.
+func (s *SQLiteStore) RecentEventsByKind(ctx context.Context, kind string, limit int) ([]EventRecord, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT session_id, turn_id, kind, at, COALESCE(payload, '')
+		FROM session_events WHERE kind=? ORDER BY id DESC LIMIT ?`, kind, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []EventRecord
+	for rows.Next() {
+		var e EventRecord
+		var at, payload string
+		if err := rows.Scan(&e.SessionID, &e.TurnID, &e.Kind, &at, &payload); err != nil {
+			return nil, err
+		}
+		e.At = parseTime(at)
+		if payload != "" {
+			e.Payload = json.RawMessage(payload)
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
 // TokenUsageByModel returns per-model token totals (most tokens first) — the
 // basis for cost accounting.
 func (s *SQLiteStore) TokenUsageByModel(ctx context.Context) ([]ModelUsage, error) {

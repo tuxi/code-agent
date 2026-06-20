@@ -31,6 +31,12 @@ type Store interface {
 	RecordEvent(ctx context.Context, e EventRecord) error
 	SessionEvents(ctx context.Context, sessionID string) ([]EventRecord, error)
 
+	// RecentEventsByKind returns the most recent events of one kind across all
+	// sessions, newest first. It indexes a class of event without scanning every
+	// session — e.g. each subagent delegation writes a task_started event, so this
+	// lists recent delegations (and their sub-session ids) for `codeagent tasks`.
+	RecentEventsByKind(ctx context.Context, kind string, limit int) ([]EventRecord, error)
+
 	Delete(ctx context.Context, id string) error
 	Close() error
 }

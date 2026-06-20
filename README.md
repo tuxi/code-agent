@@ -712,23 +712,59 @@ reaches into the `Provider` interface. Items are ordered by value × fit × effo
   *measures* spend accurately, it does not *reduce* it — and compaction churns the
   prompt prefix, which busts the provider cache (a real tension to surface, not
   hide). Seam: `Usage` + the openai usage parser + the `requests` table.
-- [ ] **(8.2) MCP adapter** *(medium — highest strategic value)* — consume
+- **(8.2) MCP adapter** *(medium — highest strategic value)* — consume
   external MCP servers via the official Go SDK: `tools/list`, then wrap each
   remote tool as an ordinary `tools.Tool` (`Execute` → `tools/call`) in the same
   Registry — so MCP tools are gated by the same policy layer and enriched by the
   same Observation. The Registry being the single source of truth is what makes
   this drop-in. Risk: MCP server subprocess lifecycle, schema-translation edges,
-  and treating remote tools as side-effecting (approval) by default. Exposing our
-  own tools *as* an MCP server is a smaller later follow-on.
-- [ ] **(8.3) Subagent / Task** *(medium — highest architectural fit)* — a `task`
+  and treating remote tools as side-effecting (approval) by default. Shipped in
+  iterations:
+  - [x] **First slice** — stdio transport; `tools/list` → wrap each remote tool in
+    the same Registry; `tools/call` with raw-JSON arg passthrough; text content
+    (non-text → placeholder); every remote tool side-effecting; wire name
+    `mcp__server__tool` vs. display label `mcp.server.tool` (function names must
+    match `^[a-zA-Z0-9_-]+$`, so the dotted form is display-only); three error
+    classes (protocol / tool / invalid-args); per-server connect timeout +
+    skip-and-summarize. Lives in `internal/mcp`, **zero changes to the loop**.
+  - [ ] **Async / lazy connect (next)** — today `buildRegistry` blocks startup on
+    the handshake (a cold `npx` is ~12s of frozen UI; bounded by a 30s timeout but
+    still synchronous). Launch the UI immediately and connect servers in the
+    background, registering each server's tools when it comes up; surface
+    connect progress/failure as timeline events instead of a stderr line. Design
+    questions: a Registry that accepts late tool additions concurrency-safely (the
+    loop snapshots `toolDefinitions` per turn, so additions must be safe and ideally
+    land before the first turn), and what the model is told if it reaches for a tool
+    whose server is not ready yet.
+  - [ ] **Later follow-ons** — SSE / streamable-HTTP transport; real multimodal
+    passthrough (blocked on `model.Message` carrying content parts, not a plain
+    string); expose our *own* tools as an MCP server; show the label rather than the
+    wire name in the approval prompt.
+- **(8.3) Subagent / Task** *(medium — highest architectural fit)* — a `task`
   tool that runs a nested `RunTurn` on an *isolated* session and returns its final
   answer as the tool result. Not just Claude-Code parity: it is the root fix for
   context hygiene — push dirty/exploratory work into a sub-agent whose verbose
   investigation never pollutes the parent's context; only the conclusion comes
-  back. The pieces exist (Runner, isolated Session, `jobs` for parallelism,
-  `Emitter` with SessionID/TurnID for nested correlation). Design questions: the
-  subagent's toolset (read-only by default), a recursion-depth cap, approval
-  propagation.
+  back. Full design (verified against Claude Code's current subagent behavior):
+  [docs/p8.3-subagent.md](docs/p8.3-subagent.md).
+  - [x] **First slice** — a read-only, Explore-class subagent on an isolated,
+    ephemeral session: a name-based, fail-closed allow-list toolset (no writes, no
+    `task` ⇒ depth-1), a dedicated terse system prompt, an optional cheaper
+    `subagent_model`, a step budget with a non-convergence return, and default-quiet
+    output. `internal/tools/task` + `cmd/codeagent/subagent.go`; one additive field
+    on the loop's `TurnResult`, otherwise the loop is untouched.
+  - [x] **Observability** — two views of the subagent, neither of which floods the
+    parent (default-quiet holds, because the parent's live renderer never sees the
+    raw sub-stream): a **live condensed heartbeat** (`⟳ subagent · step N · tool`)
+    on run/repl so a `task` call isn't a black box while it runs, and the **full
+    transcript** persisted under the sub-session's id — `codeagent tasks` lists
+    delegations, `codeagent task-trace <id>` replays exactly what the subagent did.
+    Both are fanned out from the same sub-stream (store + heartbeat), bracketed by
+    `task_started/finished`. (A TUI heartbeat is a follow-on.)
+  - [ ] **Later follow-ons** — a writable subagent with approval propagation;
+    parallel subagents (`jobs`); resumable sub-sessions; lifting the depth-1 cap
+    (Claude Code allows depth-5); telemetry for a distinct `subagent_model` so its
+    tokens land in the cost report.
 - [ ] **(8.4) Plan / Todo** *(easy–medium — pairs with the TUI)* — a `todo_write`
   tool the model uses to track a multi-step task; the list lives on the Session
   and emits `EventTodoUpdated`, rendered as a live checklist on the timeline-first

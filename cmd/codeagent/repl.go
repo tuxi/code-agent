@@ -37,17 +37,21 @@ type lineReader func(prompt string) (string, error)
 func repl(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider model.Provider, resumeID string) error {
 	root := cfg.Workspace.Root
 
-	registry, skillReg, err := buildRegistry(root)
-	if err != nil {
-		return err
-	}
-
 	store, err := openStore(root)
 	if err != nil {
 		return err
 	}
 	defer store.Close()
 	attachObserver(provider, store, ctx)
+
+	registry, skillReg, mcpMgr, err := buildRegistry(ctx, cfg, mc, provider, store, subagentProgress())
+	if err != nil {
+		return err
+	}
+	defer mcpMgr.Close()
+	if s := mcpMgr.Summary(); s != "" {
+		fmt.Fprintln(os.Stderr, s)
+	}
 
 	// Bracketed-paste: tell the terminal to wrap pasted text in ESC[200~ …
 	// ESC[201~ so our paste filter can flatten multi-line pastes into one input.

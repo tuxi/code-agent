@@ -74,6 +74,12 @@ type TurnResult struct {
 	Final        string
 	Steps        []Step
 	PromptTokens int
+
+	// HitStepLimit is true when the turn exhausted MaxSteps and Final came from the
+	// best-effort tool-free answer rather than the model finishing on its own. A
+	// caller that delegates a turn (the subagent, 8.3) uses it to avoid passing off
+	// a non-convergent run as a clean conclusion.
+	HitStepLimit bool
 }
 
 const defaultMaxSteps = 24
@@ -340,6 +346,7 @@ func (r *Runner) RunTurn(ctx context.Context, sess *session.Session, userInput s
 	// what it has — instead of a useless "stopped" message that forces the user to
 	// re-ask (and re-pay for the whole investigation).
 	turn.Final = r.finalAnswerAfterLimit(ctx, sess)
+	turn.HitStepLimit = true
 	r.emit(Event{Kind: EventTurnFinished, Text: turn.Final})
 	return turn, nil
 }

@@ -4,6 +4,7 @@ import (
 	"code-agent/cmd/codeagent/tui"
 	"code-agent/internal/agent"
 	"code-agent/internal/app"
+	"code-agent/internal/mcp"
 	"code-agent/internal/model"
 	"code-agent/internal/observation"
 	"code-agent/internal/session"
@@ -15,10 +16,12 @@ import (
 	"code-agent/internal/tools/search"
 	"code-agent/internal/tools/shell"
 	"code-agent/internal/tools/skill"
+	"code-agent/internal/tools/task"
 	"code-agent/internal/ui"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -59,6 +62,13 @@ func run() error {
 				}
 			}
 			return runTrace(ctx, cfg, limit)
+		case "tasks":
+			return runTasks(ctx, cfg)
+		case "task-trace":
+			if len(args) < 2 {
+				return fmt.Errorf("usage: codeagent task-trace <sub-session-id>  (see 'codeagent tasks')")
+			}
+			return runTaskTrace(ctx, cfg, args[1])
 		}
 	}
 
@@ -400,6 +410,83 @@ func printTrace(recs []session.RequestRecord) {
 	}
 }
 
+// runTasks lists recent subagent delegations. Each `task` call writes a
+// task_started event whose session_id is the isolated sub-session that holds the
+// full (otherwise invisible) investigation. Inspect one with `codeagent
+// task-trace <id>`.
+func runTasks(ctx context.Context, cfg app.Config) error {
+	store, err := openStore(cfg.Workspace.Root)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+
+	recs, err := store.RecentEventsByKind(ctx, string(agent.EventTaskStarted), 20)
+	if err != nil {
+		return err
+	}
+	if len(recs) == 0 {
+		fmt.Println("no subagent delegations recorded yet")
+		return nil
+	}
+	for _, r := range recs {
+		var ev agent.Event
+		_ = json.Unmarshal(r.Payload, &ev)
+		fmt.Printf("%s  %s\n    %s\n",
+			r.At.Local().Format("2006-01-02 15:04"), r.SessionID, truncateOneLine(ev.Text, 100))
+	}
+	return nil
+}
+
+// runTaskTrace replays a sub-session's persisted event stream through the same
+// console renderer the live run uses — so you can see exactly what the subagent
+// did (its reads, searches, observations), which is invisible by design while it
+// runs (default-quiet).
+func runTaskTrace(ctx context.Context, cfg app.Config, sessionID string) error {
+	store, err := openStore(cfg.Workspace.Root)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+
+	recs, err := store.SessionEvents(ctx, sessionID)
+	if err != nil {
+		return err
+	}
+	if len(recs) == 0 {
+		fmt.Printf("no events for session %q (is it a subagent sub-session? see 'codeagent tasks')\n", sessionID)
+		return nil
+	}
+	em := consoleEmitter{}
+	for _, r := range recs {
+		var ev agent.Event
+		if err := json.Unmarshal(r.Payload, &ev); err != nil {
+			continue
+		}
+		switch ev.Kind {
+		case agent.EventTaskStarted:
+			fmt.Printf("── subagent %s ──\nprompt: %s\n", sessionID, ev.Text)
+		case agent.EventTaskFinished:
+			fmt.Printf("\n── conclusion ──\n%s\n", ev.Text)
+		default:
+			em.Emit(ev)
+		}
+	}
+	return nil
+}
+
+// truncateOneLine collapses s to its first line and caps its length, for compact
+// listings.
+func truncateOneLine(s string, max int) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		s = s[:i]
+	}
+	if len(s) > max {
+		s = s[:max] + "…"
+	}
+	return s
+}
+
 // buildProvider constructs a model.Provider from a resolved model config. Only
 // OpenAI-compatible endpoints are wired today; this is the extension point for
 // Anthropic, Gemini, Ollama, etc.
@@ -458,16 +545,23 @@ func buildCompactor(mc app.ModelConfig, provider model.Provider) session.Compact
 	}
 }
 
-// buildRegistry registers the model-facing tool set and loads the skills
-// registry. Shared by run and repl. The returned skills registry feeds both the
+// buildRegistry registers the model-facing tool set, loads the skills registry,
+// and connects any configured MCP servers — registering their tools into the
+// SAME registry, so remote tools are gated and observed exactly like built-ins.
+// Shared by run, repl, and tui. The returned skills registry feeds both the
 // load_skill tool (here) and the system-prompt index (the session builder), so
-// the index the model sees and the bodies it can load stay in sync.
-func buildRegistry(root string) (*tools.Registry, *skills.Registry, error) {
+// the index the model sees and the bodies it can load stay in sync. The returned
+// Manager owns the MCP subprocesses; the caller must Close it. cfg/mc/provider are
+// threaded so the read-only subagent (8.3) can be wired here too — it needs the
+// model provider and the read-only tool subset, both of which are most naturally
+// assembled alongside the registry.
+func buildRegistry(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider model.Provider, store session.Store, progress agent.Emitter) (*tools.Registry, *skills.Registry, *mcp.Manager, error) {
+	root := cfg.Workspace.Root
 	registry := tools.NewRegistry()
 
 	skillReg, err := skills.Load(filepath.Join(root, "skills"))
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
 	// run_command and the job_* tools share one job registry, so a job_id
@@ -492,10 +586,49 @@ func buildRegistry(root string) (*tools.Registry, *skills.Registry, error) {
 		skill.NewLoadSkillTool(skillReg),
 	} {
 		if err := registry.Register(tool); err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 	}
-	return registry, skillReg, nil
+
+	// Subagent (8.3): freeze the read-only subset from the built-ins ONLY — before
+	// `task` and the MCP tools are registered — then register the `task` tool into
+	// the PARENT. Because the subset is taken now, `task` can never be in it, so a
+	// subagent cannot spawn a subagent: recursion is capped at depth 1 by
+	// construction (see tools.Subset / newSubAgent).
+	sub := newSubAgent(cfg, mc, provider, root, registry, skillReg.PromptIndex(), store, progress)
+	if err := registry.Register(task.NewTool(sub)); err != nil {
+		return nil, nil, nil, err
+	}
+
+	// MCP tools are registered AFTER the built-ins, so they appear after them in
+	// the advertised list (the Registry preserves registration order). A server
+	// that fails to start is skipped inside Connect; a name collision surfaces
+	// here as a registration error.
+	mgr := mcp.NewManager(mcpTraceWriter())
+	if n := len(cfg.MCP.Servers); n > 0 {
+		fmt.Fprintf(os.Stderr, "[mcp] connecting to %d server(s)…\n", n)
+	}
+	if err := mgr.Connect(ctx, cfg.MCP.Servers); err != nil {
+		mgr.Close()
+		return nil, nil, nil, err
+	}
+	for _, tool := range mgr.Tools() {
+		if err := registry.Register(tool); err != nil {
+			mgr.Close()
+			return nil, nil, nil, fmt.Errorf("register mcp tool: %w", err)
+		}
+	}
+	return registry, skillReg, mgr, nil
+}
+
+// mcpTraceWriter is where the MCP adapter writes its per-call raw I/O trace.
+// Off by default (it would spam normal runs); set CODEAGENT_MCP_DEBUG to enable.
+// The startup summary is separate from this and always shown.
+func mcpTraceWriter() io.Writer {
+	if os.Getenv("CODEAGENT_MCP_DEBUG") != "" {
+		return os.Stderr
+	}
+	return io.Discard
 }
 
 // extractModelFlag pulls a --model NAME (or --model=NAME) out of args from any
@@ -536,17 +669,21 @@ func runAsk(ctx context.Context, mc app.ModelConfig, provider model.Provider, qu
 func runAgent(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider model.Provider, goal string) error {
 	root := cfg.Workspace.Root
 
-	registry, skillReg, err := buildRegistry(root)
-	if err != nil {
-		return err
-	}
-
 	store, err := openStore(root)
 	if err != nil {
 		return err
 	}
 	defer store.Close()
 	attachObserver(provider, store, ctx)
+
+	registry, skillReg, mcpMgr, err := buildRegistry(ctx, cfg, mc, provider, store, subagentProgress())
+	if err != nil {
+		return err
+	}
+	defer mcpMgr.Close()
+	if s := mcpMgr.Summary(); s != "" {
+		fmt.Fprintln(os.Stderr, s)
+	}
 
 	runner := buildRunner(cfg, mc, provider, registry, skillReg, ui.ConfirmApprover{}, withEventStore(buildEmitter(), store, ctx))
 
@@ -584,17 +721,23 @@ func runAgent(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider 
 func runTUI(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider model.Provider) error {
 	root := cfg.Workspace.Root
 
-	registry, skillReg, err := buildRegistry(root)
-	if err != nil {
-		return err
-	}
-
 	store, err := openStore(root)
 	if err != nil {
 		return err
 	}
 	defer store.Close()
 	attachObserver(provider, store, ctx)
+
+	registry, skillReg, mcpMgr, err := buildRegistry(ctx, cfg, mc, provider, store, nil)
+	if err != nil {
+		return err
+	}
+	defer mcpMgr.Close()
+	// Printed before the BubbleTea program takes the screen, so the summary lands
+	// on the normal terminal rather than corrupting the alt-screen.
+	if s := mcpMgr.Summary(); s != "" {
+		fmt.Fprintln(os.Stderr, s)
+	}
 
 	sess, err := session.NewBuilder(root).
 		WithBudget(mc.ContextWindow, cfg.CompactThreshold(mc)).

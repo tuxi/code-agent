@@ -1,4 +1,4 @@
-default_model: glm
+default_model: deepseek-pro
 
 models:
   deepseek:
@@ -44,6 +44,11 @@ agent:
   # compact when the prompt reaches this fraction of the model's context_window.
   # Optional (default 0.5); values outside (0,1) fall back to the default.
   compact_ratio: 0.5
+  # Model the read-only `task` subagent (8.3) runs on. Optional — empty inherits
+  # the main model. Point it at a cheaper model to make delegated read-only
+  # investigation fast and cheap. An unknown/key-less name falls back to the main
+  # model at runtime.
+  subagent_model: deepseek
 
 # Transport resilience: each model call gets a per-attempt timeout and retries
 # transient failures (timeout, 429, 5xx) with exponential backoff. All optional.
@@ -55,6 +60,18 @@ provider:
 
 # display symbol for cost reporting (the price fields are in this unit). Optional (default "$").
 currency: "$"
+
+# External MCP servers. Each is launched over stdio (v1 supports stdio only) and
+# its tools are registered alongside the built-ins, named `mcp__<server>__<tool>`
+# and shown in logs as `mcp.<server>.<tool>`. Every remote tool is treated as
+# side-effecting, so each call is confirmed. Optional; omit the block to disable.
+# Set CODEAGENT_MCP_DEBUG=1 to trace raw tool I/O.
+mcp:
+  servers:
+    - name: fs
+      command: npx
+      args: ["-y", "@modelcontextprotocol/server-filesystem", "."]
+      # env: { KEY: value }   # optional, appended to the server's environment
 
 workspace:
   root: "."
