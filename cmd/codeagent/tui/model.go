@@ -7,6 +7,7 @@ import (
 
 	"code-agent/internal/agent"
 	"code-agent/internal/session"
+	"code-agent/internal/tools"
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textarea"
@@ -71,6 +72,10 @@ type model struct {
 	subActive bool
 	subStep   int    // subagent loop iterations (EventModelStarted count)
 	subTool   string // the tool the subagent's current iteration is running
+
+	// todos is the model's current task checklist (8.4), shown as a live panel in
+	// the live region and updated whole-list on each EventTodoUpdated.
+	todos []tools.Todo
 
 	composerHeight int  // current composer rows (auto-grows with content)
 	width          int  // terminal width (for wrapping printed output)
@@ -232,6 +237,13 @@ func (m model) handleEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 	// transcript, which would re-flood exactly what delegation keeps out.
 	if ev.SessionID != "" && m.header.Session != "" && ev.SessionID != m.header.Session {
 		return m.handleSubagentEvent(ev)
+	}
+
+	// The checklist lives in the live region (a panel), never the scrollback — so
+	// updating it is just live state, with no transcript output.
+	if ev.Kind == agent.EventTodoUpdated {
+		m.todos = ev.Todos
+		return m, waitForEvent(m.b.events)
 	}
 
 	// Live UI state (spinner, gauge, skills) — separate from transcript rendering.
@@ -572,6 +584,7 @@ func (m model) View() string {
 			lines = append(lines, "    "+styleBody.Render(ln))
 		}
 	}
+	lines = append(lines, m.todoPanel()...)
 	lines = append(lines, m.statusLine())
 	switch {
 	case m.pending != nil:
@@ -655,6 +668,41 @@ func (m model) statusLine() string {
 		return left
 	}
 	return left + "   " + styleMeta.Render(strings.Join(right, " · "))
+}
+
+// todoPanel renders the model's checklist as a compact live panel (8.4): a header
+// with the done/total count plus one line per item. The in-progress item is
+// highlighted and shows its present-tense activeForm; completed items are dimmed.
+func (m model) todoPanel() []string {
+	if len(m.todos) == 0 {
+		return nil
+	}
+	done := 0
+	for _, td := range m.todos {
+		if td.Status == tools.TodoCompleted {
+			done++
+		}
+	}
+	out := []string{styleMeta.Render(fmt.Sprintf("Todos %d/%d", done, len(m.todos)))}
+	for _, td := range m.todos {
+		out = append(out, "  "+todoLine(td))
+	}
+	return out
+}
+
+func todoLine(td tools.Todo) string {
+	switch td.Status {
+	case tools.TodoCompleted:
+		return styleMeta.Render("☑ " + td.Content)
+	case tools.TodoInProgress:
+		label := td.Content
+		if td.ActiveForm != "" {
+			label = td.ActiveForm
+		}
+		return styleSkill.Render("▶ " + label)
+	default:
+		return styleBody.Render("☐ " + td.Content)
+	}
 }
 
 func (m model) hint() string {

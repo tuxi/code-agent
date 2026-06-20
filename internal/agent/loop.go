@@ -299,6 +299,13 @@ func (r *Runner) RunTurn(ctx context.Context, sess *session.Session, userInput s
 						r.emit(Event{Kind: EventSkillLoaded, ToolName: name, Version: ver})
 					}
 				}
+				// Todo checklist (8.4): same interface-driven pattern — the loop emits
+				// the updated list without knowing the tool by name.
+				if ta, ok := tool.(tools.TodoAnnouncer); ok {
+					if todos, ok := ta.AnnounceTodos(input); ok {
+						r.emit(Event{Kind: EventTodoUpdated, Todos: todos})
+					}
+				}
 			}
 
 			// Enrich the raw result into a structured Observation (P4.1). Observe

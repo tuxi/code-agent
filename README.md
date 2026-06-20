@@ -767,12 +767,17 @@ reaches into the `Provider` interface. Items are ordered by value × fit × effo
     parallel subagents (`jobs`); resumable sub-sessions; lifting the depth-1 cap
     (Claude Code allows depth-5); telemetry for a distinct `subagent_model` so its
     tokens land in the cost report.
-- [ ] **(8.4) Plan / Todo** *(easy–medium — pairs with the TUI)* — a `todo_write`
-  tool the model uses to track a multi-step task; the list lives on the Session
-  and emits `EventTodoUpdated`, rendered as a live checklist on the timeline-first
-  TUI. A "soft" tool — its value depends on the model actually using it
-  (model-dependent, like skill self-loading) — but cheap, and it gives long tasks
-  a visible spine.
+- [x] **(8.4) Todo** *(easy–medium — pairs with the TUI)* — **shipped.** A
+  `todo_write` tool the model maintains for a multi-step task: whole-list rewrite,
+  items `{content, status, activeForm}` — the simpler, more robust model for a
+  weak-delegation model than Claude Code's newer id-keyed Task tools (no cross-call
+  ids to track). The loop emits `EventTodoUpdated` via a `TodoAnnouncer` interface —
+  the same loop-stays-tool-agnostic pattern as `SkillAnnouncer` — rendered as a live
+  checklist panel in the TUI and inline in the console. A "soft" tool, like skills:
+  its value depends on the model using it. NOTE (verified against Claude Code):
+  "Plan" there is a *mode* (a read-only run that drafts a plan and waits for
+  approval before editing), **not** this tool — left as a separate future item,
+  closer to the Approver/permission layer than to a checklist.
 - [ ] **(8.5) Hooks** *(medium — extensibility)* — user-configured pre/post-tool
   commands (auto-`gofmt` after `edit_file`, guardrails, context injection). The
   loop already consults nil-safe interface hooks (Approver before, Observer after
