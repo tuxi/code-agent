@@ -774,10 +774,16 @@ reaches into the `Provider` interface. Items are ordered by value × fit × effo
   ids to track). The loop emits `EventTodoUpdated` via a `TodoAnnouncer` interface —
   the same loop-stays-tool-agnostic pattern as `SkillAnnouncer` — rendered as a live
   checklist panel in the TUI and inline in the console. A "soft" tool, like skills:
-  its value depends on the model using it. NOTE (verified against Claude Code):
-  "Plan" there is a *mode* (a read-only run that drafts a plan and waits for
-  approval before editing), **not** this tool — left as a separate future item,
-  closer to the Approver/permission layer than to a checklist.
+  its value depends on the model using it.
+- [x] **(8.4b) Plan mode** *(the "Plan" half — a mode, not a tool)* — **shipped.**
+  A read-only research turn: `Runner.PlanMode` swaps the toolset to the read-only
+  `PlanTools` allow-list (the subagent's read-only set + `todo_write`) and injects a
+  one-shot plan nudge, so the model researches and produces an implementation plan
+  but **cannot edit** — enforced, not advisory (a hallucinated write call is simply
+  unavailable, so it's rejected). Entered via the REPL `/plan` toggle and the TUI
+  `ctrl+p` (applied at the next turn boundary, with a `⏸ PLAN` status badge / `plan>`
+  prompt). v1 is **plan-only** — re-run normally to execute; the approve-and-execute
+  handoff (CC's `exit_plan_mode`) is a follow-on.
 - [ ] **(8.5) Hooks** *(medium — extensibility)* — user-configured pre/post-tool
   commands (auto-`gofmt` after `edit_file`, guardrails, context injection). The
   loop already consults nil-safe interface hooks (Approver before, Observer after

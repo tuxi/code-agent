@@ -37,6 +37,14 @@ type Runner struct {
 	// on a model's agency. Set by the CLI when the project has skills.
 	RemindSkills bool
 
+	// PlanMode runs the turn read-only: the model sees only PlanTools (the
+	// read-only subset) and gets a one-shot reminder to research and produce an
+	// implementation plan instead of editing. It is enforced, not advisory — a
+	// hallucinated edit_file call is rejected because the tool is not in PlanTools.
+	// Toggled between turns by the REPL's /plan and the TUI's plan key.
+	PlanMode  bool
+	PlanTools *tools.Registry
+
 	Compactor session.Compactor
 
 	// Emitter, if set, receives the turn's event stream (thinking, tool calls,
@@ -112,7 +120,16 @@ func (r *Runner) RunTurn(ctx context.Context, sess *session.Session, userInput s
 		r.MaxSteps = defaultMaxSteps
 	}
 
-	toolDefs := toolDefinitions(r.Tools)
+	// In plan mode the model is restricted to the read-only PlanTools, so it can
+	// research but cannot edit — the enforcement behind plan mode. The same
+	// registry is used for both advertising AND execution below, so a hallucinated
+	// write call is simply unknown.
+	activeTools := r.Tools
+	if r.PlanMode && r.PlanTools != nil {
+		activeTools = r.PlanTools
+	}
+
+	toolDefs := toolDefinitions(activeTools)
 
 	// Tools the model may actually call. Internal tools (registered but not
 	// advertised) must not be reachable through a model call.
@@ -172,6 +189,11 @@ func (r *Runner) RunTurn(ctx context.Context, sess *session.Session, userInput s
 		// model's agency to act on the index unprompted.
 		if i == 0 && r.RemindSkills {
 			msgs = appendEphemeralUser(msgs, skillsReminder)
+		}
+		// Plan mode (read-only): steer the model to produce a plan, not changes. The
+		// read-only toolset already prevents edits; this shapes the output.
+		if i == 0 && r.PlanMode {
+			msgs = appendEphemeralUser(msgs, planModeReminder)
 		}
 
 		r.emit(Event{Kind: EventModelStarted})
@@ -274,7 +296,7 @@ func (r *Runner) RunTurn(ctx context.Context, sess *session.Session, userInput s
 				ToolArgs: call.Function.Arguments,
 			})
 
-			tool, known := r.Tools.Get(call.Function.Name)
+			tool, known := activeTools.Get(call.Function.Name)
 
 			var observation string
 			var execErr error
@@ -374,6 +396,14 @@ func (r *Runner) nudgeThreshold() int {
 const skillsReminder = "[reminder] Before you act: check the Skills list in the system prompt. " +
 	"If this task matches a skill you have not already loaded, call load_skill(name) and follow " +
 	"it first — that is reading project guidance, not extra investigation."
+
+// planModeReminder steers a read-only planning turn. The toolset already blocks
+// edits; this tells the model what to produce instead.
+const planModeReminder = "[plan mode] You are in PLAN MODE: read-only. You can read, search, and " +
+	"inspect, but you CANNOT edit files or run commands — those tools are unavailable this turn. " +
+	"Research the task, then present a concrete implementation plan: the files to change, the " +
+	"approach, and the steps in order. Do NOT make any changes. End with the plan as your answer; " +
+	"you may track the plan's steps with todo_write."
 
 // withConvergenceNudge returns a copy of msgs with a transient reminder appended,
 // steering the model to answer now instead of over-investigating.

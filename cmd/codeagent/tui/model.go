@@ -49,6 +49,7 @@ type model struct {
 	tr transcript
 
 	showThinking bool      // ctrl+o toggle: show current step's thinking in the live region (on by default)
+	planMode     bool      // ctrl+p toggle: read-only research/planning (applied by the run loop next turn)
 	lastEsc      time.Time // double-Esc clears the composer (like Claude Code)
 
 	cmdIdx    int            // selected slash-command in the palette
@@ -146,6 +147,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Suspend // job-control suspend; the shell's `fg` resumes
 		case "ctrl+o":
 			m.showThinking = !m.showThinking
+		case "ctrl+p":
+			// Toggle read-only plan mode. The run loop applies it at the next turn
+			// boundary; the send is async so it never blocks the UI.
+			m.planMode = !m.planMode
+			desired := m.planMode
+			return m, func() tea.Msg { m.b.planToggle <- desired; return nil }
 		}
 		if m.picker != nil {
 			return m.handlePickerKey(msg)
@@ -657,6 +664,9 @@ func (m model) statusLine() string {
 	default:
 		left = styleMeta.Render("ready")
 	}
+	if m.planMode {
+		left = styleSkill.Render("⏸ PLAN") + "  " + left
+	}
 	var right []string
 	if m.header.CompactThreshold > 0 {
 		right = append(right, fmt.Sprintf("ctx %s/%s", humanK(m.promptTokens), humanK(m.header.CompactThreshold)))
@@ -706,7 +716,7 @@ func todoLine(td tools.Todo) string {
 }
 
 func (m model) hint() string {
-	return "enter send · alt+enter newline · / commands · ctrl+o hide thinking · ctrl+z suspend (fg resumes) · ctrl+c quit"
+	return "enter send · alt+enter newline · / commands · ctrl+p plan · ctrl+o hide thinking · ctrl+z suspend (fg resumes) · ctrl+c quit"
 }
 
 func (m model) banner() string {

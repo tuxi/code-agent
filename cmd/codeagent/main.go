@@ -545,6 +545,7 @@ func buildRunner(cfg app.Config, mc app.ModelConfig, provider model.Provider, re
 		Observer:     observation.DefaultObserver{},
 		Reflector:    agent.DefaultReflector{},
 		RemindSkills: skillReg.Len() > 0,
+		PlanTools:    tools.Subset(registry, planModeToolNames...),
 		Compactor:    buildCompactor(mc, provider),
 		Emitter:      emitter,
 	}

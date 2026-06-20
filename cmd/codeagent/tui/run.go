@@ -94,6 +94,10 @@ func Run(ctx context.Context, b *Backend, runner *agent.Runner, sess *session.Se
 			case name := <-b.modelSwap:
 				h, err := modelSwap(name)
 				b.modelSwapResult <- modelSwappedMsg{header: h, err: err}
+			case on := <-b.planToggle:
+				// Applied at a turn boundary (the select can't fire mid-RunTurn), so
+				// the next turn runs in the chosen mode — no hot-swap of a live turn.
+				runner.PlanMode = on
 			}
 		}
 	}()
