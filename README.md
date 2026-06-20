@@ -748,7 +748,8 @@ reaches into the `Provider` interface. Items are ordered by value × fit × effo
   back. The pieces exist (Runner, isolated Session, `jobs` for parallelism,
   `Emitter` with SessionID/TurnID for nested correlation). Design questions: the
   subagent's toolset (read-only by default), a recursion-depth cap, approval
-  propagation.
+  propagation. Full design (verified against Claude Code's current subagent
+  behavior): [docs/p8.3-subagent.md](docs/p8.3-subagent.md).
 - [ ] **(8.4) Plan / Todo** *(easy–medium — pairs with the TUI)* — a `todo_write`
   tool the model uses to track a multi-step task; the list lives on the Session
   and emits `EventTodoUpdated`, rendered as a live checklist on the timeline-first
