@@ -110,6 +110,12 @@ func repl(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider mode
 	fmt.Println("Type a request, or /help for commands. /exit to quit.")
 
 	for {
+		// The prompt reflects plan mode, so it is always clear which mode you're in.
+		if runner.PlanMode {
+			rl.SetPrompt("plan> ")
+		} else {
+			rl.SetPrompt("> ")
+		}
 		line, err := rl.Readline()
 		switch {
 		case err == readline.ErrInterrupt: // Ctrl-C
@@ -183,6 +189,7 @@ func handleCommand(line string, cfg app.Config, mc *app.ModelConfig, runner *age
   /model        show the current model
   /models       list configured models
   /use NAME     switch to another configured model (keeps the conversation)
+  /plan         toggle plan mode (read-only: research + plan, no edits)
   /session      show the current session id
   /sessions     list saved sessions
   /stats        aggregate compaction + provider telemetry
@@ -232,6 +239,15 @@ func handleCommand(line string, cfg app.Config, mc *app.ModelConfig, runner *age
 
 	case "/model":
 		fmt.Printf("current model: %s (%s)\n", mc.Name, mc.Model)
+		return sess, false, nil
+
+	case "/plan":
+		runner.PlanMode = !runner.PlanMode
+		if runner.PlanMode {
+			fmt.Println("Plan mode ON — read-only: I'll research and produce a plan, no edits. /plan again to exit.")
+		} else {
+			fmt.Println("Plan mode OFF — edits allowed again.")
+		}
 		return sess, false, nil
 
 	case "/models":

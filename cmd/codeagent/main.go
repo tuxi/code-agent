@@ -4,6 +4,7 @@ import (
 	"code-agent/cmd/codeagent/tui"
 	"code-agent/internal/agent"
 	"code-agent/internal/app"
+	"code-agent/internal/hooks"
 	"code-agent/internal/mcp"
 	"code-agent/internal/model"
 	"code-agent/internal/observation"
@@ -17,6 +18,7 @@ import (
 	"code-agent/internal/tools/shell"
 	"code-agent/internal/tools/skill"
 	"code-agent/internal/tools/task"
+	"code-agent/internal/tools/todo"
 	"code-agent/internal/tools/webfetch"
 	"code-agent/internal/tools/websearch"
 	"code-agent/internal/ui"
@@ -174,14 +176,19 @@ type eventStoreEmitter struct {
 }
 
 func (e eventStoreEmitter) Emit(ev agent.Event) {
-	if payload, err := json.Marshal(ev); err == nil {
-		_ = e.store.RecordEvent(e.ctx, session.EventRecord{
-			SessionID: ev.SessionID,
-			TurnID:    ev.TurnID,
-			Kind:      string(ev.Kind),
-			At:        ev.At,
-			Payload:   payload,
-		})
+	// Token deltas (8.6) are an ephemeral live preview, not part of the durable
+	// stream — the finalized answer is captured by EventTurnFinished. Persisting
+	// every delta would bloat the event log (hundreds per answer), so skip them.
+	if ev.Kind != agent.EventTokenDelta {
+		if payload, err := json.Marshal(ev); err == nil {
+			_ = e.store.RecordEvent(e.ctx, session.EventRecord{
+				SessionID: ev.SessionID,
+				TurnID:    ev.TurnID,
+				Kind:      string(ev.Kind),
+				At:        ev.At,
+				Payload:   payload,
+			})
+		}
 	}
 	if e.next != nil {
 		e.next.Emit(ev)
@@ -536,6 +543,12 @@ func buildProvider(mc app.ModelConfig, pc app.ProviderConfig) (model.Provider, e
 // compaction, the step cap) is identical, so it lives here and the three callers
 // cannot drift apart.
 func buildRunner(cfg app.Config, mc app.ModelConfig, provider model.Provider, registry *tools.Registry, skillReg *skills.Registry, approver agent.Approver, emitter agent.Emitter) *agent.Runner {
+	// Assign the hook runner only when non-nil, so an absent config stays a nil
+	// interface (not a typed-nil that would defeat the loop's nil-safe check).
+	var hook agent.ToolHook
+	if hr := hooks.New(cfg.Hooks, cfg.Workspace.Root); hr != nil {
+		hook = hr
+	}
 	return &agent.Runner{
 		Model:        provider,
 		ModelName:    mc.Model,
@@ -546,6 +559,8 @@ func buildRunner(cfg app.Config, mc app.ModelConfig, provider model.Provider, re
 		Observer:     observation.DefaultObserver{},
 		Reflector:    agent.DefaultReflector{},
 		RemindSkills: skillReg.Len() > 0,
+		PlanTools:    tools.Subset(registry, planModeToolNames...),
+		Hook:         hook,
 		Compactor:    buildCompactor(mc, provider),
 		Emitter:      emitter,
 	}
@@ -604,6 +619,7 @@ func buildRegistry(ctx context.Context, cfg app.Config, mc app.ModelConfig, prov
 		skill.NewLoadSkillTool(skillReg),
 		websearch.NewTool(cfg.Web),
 		webfetch.NewTool(cfg.Web),
+		todo.NewTool(),
 	} {
 		if err := registry.Register(tool); err != nil {
 			return nil, nil, nil, err
@@ -774,6 +790,7 @@ func runTUI(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider mo
 	sess.Model = mc.Model
 
 	runner := buildRunner(cfg, mc, provider, registry, skillReg, backend.Approver, withEventStore(backend.Emitter, store, ctx))
+	runner.Stream = true // 8.6: stream the model's text live (TUI only)
 	header := tui.HeaderInfo{
 		Model:            mc.Name,
 		Workspace:        filepath.Base(root),

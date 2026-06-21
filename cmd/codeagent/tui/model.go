@@ -7,7 +7,7 @@ import (
 
 	"code-agent/internal/agent"
 	"code-agent/internal/session"
-
+	"code-agent/internal/tools"
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textarea"
@@ -49,6 +49,7 @@ type model struct {
 	tr transcript
 
 	showThinking bool      // ctrl+o toggle: show current step's thinking in the live region (on by default)
+	planMode     bool      // ctrl+p toggle: read-only research/planning (applied by the run loop next turn)
 	lastEsc      time.Time // double-Esc clears the composer (like Claude Code)
 
 	cmdIdx    int            // selected slash-command in the palette
@@ -72,6 +73,15 @@ type model struct {
 	subActive bool
 	subStep   int    // subagent loop iterations (EventModelStarted count)
 	subTool   string // the tool the subagent's current iteration is running
+
+	// todos is the model's current task checklist (8.4), shown as a live panel in
+	// the live region and updated whole-list on each EventTodoUpdated.
+	todos []tools.Todo
+
+	// streaming is the live, ephemeral preview of the model's text as it generates
+	// (8.6): EventTokenDelta appends; it is reset around each model call and never
+	// enters the transcript (the finalized answer prints via EventTurnFinished).
+	streaming string
 
 	composerHeight int  // current composer rows (auto-grows with content)
 	width          int  // terminal width (for wrapping printed output)
@@ -148,6 +158,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Suspend // job-control suspend; the shell's `fg` resumes
 		case "ctrl+o":
 			m.showThinking = !m.showThinking
+		case "ctrl+p":
+			// Toggle read-only plan mode. The run loop applies it at the next turn
+			// boundary; the send is async so it never blocks the UI.
+			m.planMode = !m.planMode
+			desired := m.planMode
+			return m, func() tea.Msg { m.b.planToggle <- desired; return nil }
 		}
 		if m.picker != nil {
 			return m.handlePickerKey(msg)
@@ -247,12 +263,29 @@ func (m model) handleEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 		return m.handleSubagentEvent(ev)
 	}
 
+	// The checklist lives in the live region (a panel), never the scrollback — so
+	// updating it is just live state, with no transcript output.
+	if ev.Kind == agent.EventTodoUpdated {
+		m.todos = ev.Todos
+		return m, waitForEvent(m.b.events)
+	}
+
+	// Streamed text (8.6): an ephemeral live preview, never the transcript. It is
+	// cleared around each model call (below), so the authoritative render — the
+	// step card or the final reply printed to scrollback — takes over cleanly.
+	if ev.Kind == agent.EventTokenDelta {
+		m.streaming += ev.Text
+		return m, waitForEvent(m.b.events)
+	}
+
 	// Live UI state (spinner, gauge, skills) — separate from transcript rendering.
 	switch ev.Kind {
 	case agent.EventModelStarted:
 		m.thinking = true
+		m.streaming = ""
 	case agent.EventModelFinished:
 		m.thinking = false
+		m.streaming = ""
 		if ev.PromptTokens > 0 {
 			m.promptTokens = ev.PromptTokens
 		}
@@ -614,13 +647,21 @@ func (m model) View() string {
 		return ""
 	}
 	lines := []string{}
-	if m.showThinking && m.busy && m.tr.step.thinking != "" {
+	switch {
+	case m.streaming != "":
+		// Streamed text typing out live (8.6) — takes the live region while a call
+		// is in flight; replaced by the step card / final reply once it resolves.
+		for _, ln := range wrapProse(m.streaming, m.width-2) {
+			lines = append(lines, styleBody.Render(ln))
+		}
+	case m.showThinking && m.busy && m.tr.step.thinking != "":
 		header := "▾ " + fmtStepHeader(m.tr.step)
 		lines = append(lines, styleThinking.Render(header))
 		for _, ln := range wrapProse(m.tr.step.thinking, m.width-4) {
 			lines = append(lines, "    "+styleBody.Render(ln))
 		}
 	}
+	lines = append(lines, m.todoPanel()...)
 	lines = append(lines, m.statusLine())
 	switch {
 	case m.pending != nil:
@@ -693,6 +734,9 @@ func (m model) statusLine() string {
 	default:
 		left = styleMeta.Render("ready")
 	}
+	if m.planMode {
+		left = styleSkill.Render("⏸ PLAN") + "  " + left
+	}
 	var right []string
 	if m.header.CompactThreshold > 0 {
 		right = append(right, fmt.Sprintf("ctx %s/%s", humanK(m.promptTokens), humanK(m.header.CompactThreshold)))
@@ -706,8 +750,43 @@ func (m model) statusLine() string {
 	return left + "   " + styleMeta.Render(strings.Join(right, " · "))
 }
 
+// todoPanel renders the model's checklist as a compact live panel (8.4): a header
+// with the done/total count plus one line per item. The in-progress item is
+// highlighted and shows its present-tense activeForm; completed items are dimmed.
+func (m model) todoPanel() []string {
+	if len(m.todos) == 0 {
+		return nil
+	}
+	done := 0
+	for _, td := range m.todos {
+		if td.Status == tools.TodoCompleted {
+			done++
+		}
+	}
+	out := []string{styleMeta.Render(fmt.Sprintf("Todos %d/%d", done, len(m.todos)))}
+	for _, td := range m.todos {
+		out = append(out, "  "+todoLine(td))
+	}
+	return out
+}
+
+func todoLine(td tools.Todo) string {
+	switch td.Status {
+	case tools.TodoCompleted:
+		return styleMeta.Render("☑ " + td.Content)
+	case tools.TodoInProgress:
+		label := td.Content
+		if td.ActiveForm != "" {
+			label = td.ActiveForm
+		}
+		return styleSkill.Render("▶ " + label)
+	default:
+		return styleBody.Render("☐ " + td.Content)
+	}
+}
+
 func (m model) hint() string {
-	return "enter send · alt+enter newline · / commands · ctrl+o hide thinking · ctrl+z suspend (fg resumes) · ctrl+c quit"
+	return "enter send · alt+enter newline · / commands · ctrl+p plan · ctrl+o hide thinking · ctrl+z suspend (fg resumes) · ctrl+c quit"
 }
 
 func (m model) banner() string {

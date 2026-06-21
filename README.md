@@ -767,25 +767,48 @@ reaches into the `Provider` interface. Items are ordered by value × fit × effo
     parallel subagents (`jobs`); resumable sub-sessions; lifting the depth-1 cap
     (Claude Code allows depth-5); telemetry for a distinct `subagent_model` so its
     tokens land in the cost report.
-- [ ] **(8.4) Plan / Todo** *(easy–medium — pairs with the TUI)* — a `todo_write`
-  tool the model uses to track a multi-step task; the list lives on the Session
-  and emits `EventTodoUpdated`, rendered as a live checklist on the timeline-first
-  TUI. A "soft" tool — its value depends on the model actually using it
-  (model-dependent, like skill self-loading) — but cheap, and it gives long tasks
-  a visible spine.
-- [ ] **(8.5) Hooks** *(medium — extensibility)* — user-configured pre/post-tool
-  commands (auto-`gofmt` after `edit_file`, guardrails, context injection). The
-  loop already consults nil-safe interface hooks (Approver before, Observer after
-  each tool); a `ToolHook` is the same pattern with a runner that executes
-  configured commands (still under the sandbox). Decide semantics up front: can a
-  hook block a call, rewrite args, or amend the result?
-- [ ] **(8.6) Streaming** *(medium–high — lowest ROI, defer)* — stream model
-  tokens (SSE) into token-delta events the renderer appends live. Honest caveat:
-  the model cannot consume a stream mid-call, so this is *pure human UX*, and the
-  `liveProgress` ticker already answers "is it hung?". It also reaches into the
-  `Provider` interface and complicates `ResilientProvider`'s replay (you cannot
-  replay half a stream). Do it only when "watching a long answer render" becomes a
-  real complaint.
+- [x] **(8.4) Todo** *(easy–medium — pairs with the TUI)* — **shipped.** A
+  `todo_write` tool the model maintains for a multi-step task: whole-list rewrite,
+  items `{content, status, activeForm}` — the simpler, more robust model for a
+  weak-delegation model than Claude Code's newer id-keyed Task tools (no cross-call
+  ids to track). The loop emits `EventTodoUpdated` via a `TodoAnnouncer` interface —
+  the same loop-stays-tool-agnostic pattern as `SkillAnnouncer` — rendered as a live
+  checklist panel in the TUI and inline in the console. A "soft" tool, like skills:
+  its value depends on the model using it.
+- [x] **(8.4b) Plan mode** *(the "Plan" half — a mode, not a tool)* — **shipped.**
+  A read-only research turn: `Runner.PlanMode` swaps the toolset to the read-only
+  `PlanTools` allow-list (the subagent's read-only set + `todo_write`) and injects a
+  one-shot plan nudge, so the model researches and produces an implementation plan
+  but **cannot edit** — enforced, not advisory (a hallucinated write call is simply
+  unavailable, so it's rejected). Entered via the REPL `/plan` toggle and the TUI
+  `ctrl+p` (applied at the next turn boundary, with a `⏸ PLAN` status badge / `plan>`
+  prompt). v1 is **plan-only** — re-run normally to execute; the approve-and-execute
+  handoff (CC's `exit_plan_mode`) is a follow-on.
+- [x] **(8.5) Hooks** *(medium — extensibility)* — **shipped.** User-configured
+  pre/post-tool shell commands — *deterministic* control that fires every time,
+  the antidote to the soft, model-dependent behavior the rest of Phase 8 fights.
+  A nil-safe `agent.ToolHook` interface (the same pattern as `Approver` before /
+  `Observer` after), implemented by `internal/hooks` running `sh -c` commands in
+  the workspace root (tool input on stdin, name in `$CODEAGENT_TOOL_NAME`). v1
+  semantics, decided up front: **pre_tool_use can BLOCK** (non-zero exit → the
+  call is refused, e.g. guard `rm -rf`); **post_tool_use runs after** (e.g. `gofmt`
+  the change). Out of v1 (the most complex semantics): rewriting tool args,
+  amending the result, and non-tool events (`Stop`/`UserPromptSubmit`). Config:
+  the `hooks:` block, matched by tool name or `*`.
+- [x] **(8.6) Streaming** *(narrow slice — TUI only)* — **shipped.** The model's
+  text streams live (SSE) into `EventTokenDelta`s the TUI renders as a typing
+  preview, then finalizes to scrollback. Scoped to keep the cost contained:
+  - `model.StreamingProvider` is an **optional capability** (openai SSE parser:
+    text via `onText`, tool-call deltas accumulated, usage from the final chunk).
+    `Complete` stays the contract, so everything downstream is unchanged.
+  - the `Provider`-interface and replay tensions are resolved by making the stream
+    a **best-effort fast-path**: `ResilientProvider.CompleteStream` streams once
+    (a half-stream can't be replayed) and **falls back to the resilient `Complete`**
+    on any failure — resilience and cost telemetry untouched.
+  - deltas are **ephemeral** (not persisted — the finalized answer is the durable
+    record); a `Runner.Stream` flag the TUI sets (run/repl stay non-streamed).
+  Honest caveat unchanged: pure human UX, zero capability gain — the value is the
+  final-answer typewriter in the all-day TUI.
 
 **Done when:** CodeAgent can register an external MCP tool, delegate a sub-task to
 an isolated sub-agent, and report cache-accurate cost — i.e. it is a platform, not

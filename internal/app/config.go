@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 
+	"code-agent/internal/hooks"
 	"code-agent/internal/mcp"
 
 	"gopkg.in/yaml.v3"
@@ -47,6 +48,9 @@ type Config struct {
 	// MCP configures external Model Context Protocol servers whose tools are
 	// registered alongside the built-in ones. Empty (the default) disables it.
 	MCP mcp.Config `yaml:"mcp"`
+
+	// Hooks are user-configured pre/post-tool shell commands (8.5). Empty disables.
+	Hooks []hooks.Hook `yaml:"hooks"`
 }
 
 // ProviderConfig tunes the transport resilience layer (ResilientProvider):

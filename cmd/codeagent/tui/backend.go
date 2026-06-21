@@ -28,6 +28,7 @@ type Backend struct {
 	sessSwap        chan *session.Session // /resume hands the run loop a new session
 	modelSwap       chan string           // /use: TUI → run loop (model name to switch to)
 	modelSwapResult chan modelSwappedMsg  // /use: run loop → TUI (result)
+	planToggle      chan bool             // plan key: TUI → run loop (desired plan mode)
 
 	mu         sync.Mutex
 	turnCancel context.CancelFunc // set by the run loop before RunTurn; nil when idle
@@ -56,6 +57,7 @@ func NewBackend() *Backend {
 	sessSwap := make(chan *session.Session, 1)
 	mSwap := make(chan string, 1)
 	mSwapResult := make(chan modelSwappedMsg, 1)
+	planToggle := make(chan bool, 1)
 	return &Backend{
 		Emitter:         tuiEmitter{ch: events},
 		Approver:        tuiApprover{ch: approvals},
@@ -66,6 +68,7 @@ func NewBackend() *Backend {
 		sessSwap:        sessSwap,
 		modelSwap:       mSwap,
 		modelSwapResult: mSwapResult,
+		planToggle:      planToggle,
 	}
 }
 

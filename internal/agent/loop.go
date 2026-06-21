@@ -36,11 +36,29 @@ type Runner struct {
 	// Nil-safe: when unset, the model's first "done" is accepted as before.
 	Reflector Reflector
 
+	// Hook runs user-configured pre/post-tool commands (8.5). Nil-safe: when unset,
+	// tools run exactly as before.
+	Hook ToolHook
+
+	// Stream, when true AND the provider supports it, streams the model's text as
+	// it generates (8.6) — emitting EventTokenDelta for a renderer to show live.
+	// The returned Response is identical to the non-streamed one, so the loop is
+	// unaffected. Set by the TUI; run/repl leave it off.
+	Stream bool
+
 	// RemindSkills, when true, injects a one-shot ephemeral reminder on the first
 	// model call of each turn to check the Skills list and load a matching skill
 	// (P6). It makes skill-loading consistent across models rather than depending
 	// on a model's agency. Set by the CLI when the project has skills.
 	RemindSkills bool
+
+	// PlanMode runs the turn read-only: the model sees only PlanTools (the
+	// read-only subset) and gets a one-shot reminder to research and produce an
+	// implementation plan instead of editing. It is enforced, not advisory — a
+	// hallucinated edit_file call is rejected because the tool is not in PlanTools.
+	// Toggled between turns by the REPL's /plan and the TUI's plan key.
+	PlanMode  bool
+	PlanTools *tools.Registry
 
 	Compactor session.Compactor
 
@@ -126,7 +144,16 @@ func (r *Runner) RunTurn(ctx context.Context, sess *session.Session, userInput s
 		r.MaxSteps = defaultMaxSteps
 	}
 
-	toolDefs := toolDefinitions(r.Tools)
+	// In plan mode the model is restricted to the read-only PlanTools, so it can
+	// research but cannot edit — the enforcement behind plan mode. The same
+	// registry is used for both advertising AND execution below, so a hallucinated
+	// write call is simply unknown.
+	activeTools := r.Tools
+	if r.PlanMode && r.PlanTools != nil {
+		activeTools = r.PlanTools
+	}
+
+	toolDefs := toolDefinitions(activeTools)
 
 	// Tools the model may actually call. Internal tools (registered but not
 	// advertised) must not be reachable through a model call.
@@ -192,10 +219,15 @@ func (r *Runner) RunTurn(ctx context.Context, sess *session.Session, userInput s
 		if i == 0 && r.RemindSkills {
 			msgs = appendEphemeralUser(msgs, skillsReminder)
 		}
+		// Plan mode (read-only): steer the model to produce a plan, not changes. The
+		// read-only toolset already prevents edits; this shapes the output.
+		if i == 0 && r.PlanMode {
+			msgs = appendEphemeralUser(msgs, planModeReminder)
+		}
 
 		r.emit(Event{Kind: EventModelStarted})
 		modelStart := time.Now()
-		resp, err := r.Model.Complete(ctx, model.Request{
+		resp, err := r.complete(ctx, model.Request{
 			Model:       r.ModelName,
 			Temperature: r.Temperature,
 			Messages:    msgs,
@@ -293,7 +325,15 @@ func (r *Runner) RunTurn(ctx context.Context, sess *session.Session, userInput s
 				ToolArgs: call.Function.Arguments,
 			})
 
-			tool, known := r.Tools.Get(call.Function.Name)
+			tool, known := activeTools.Get(call.Function.Name)
+			valid := advertised[call.Function.Name] && known
+
+			// Pre-tool hook (8.5): a configured command may block the call. Only
+			// consulted for a real tool, so an unknown call still reports plainly.
+			var blockReason string
+			if valid {
+				blockReason = r.preHookBlock(ctx, call.Function.Name, input)
+			}
 
 			// Per-turn web_search budget: count every search call, then refuse
 			// further ones past the cap so a search-happy model stops reformulating
@@ -305,7 +345,7 @@ func (r *Runner) RunTurn(ctx context.Context, sess *session.Session, userInput s
 			var observation string
 			var execErr error
 			switch {
-			case !advertised[call.Function.Name] || !known:
+			case !valid:
 				execErr = fmt.Errorf("unknown tool: %s", call.Function.Name)
 			case call.Function.Name == webSearchToolName && webSearches > r.maxWebSearches():
 				observation = fmt.Sprintf(
@@ -313,10 +353,17 @@ func (r *Runner) RunTurn(ctx context.Context, sess *session.Session, userInput s
 						"Stop searching — reformulating the query will not surface new results. "+
 						"Answer with the results you already have, or web_fetch a specific URL.",
 					webSearches-1, r.maxWebSearches())
+			case blockReason != "":
+				observation = "The tool call was blocked by a configured hook. " + blockReason
 			case tools.HasSideEffectsFor(tool, input) && !r.approve(call.Function.Name, input):
 				observation = "The user declined to run this tool. No changes were made."
 			default:
 				observation, execErr = r.executeTool(ctx, tool, input)
+				if execErr == nil {
+					// Post-tool hook (8.5): react to the change (format/lint). It runs
+					// the configured command but does not alter the result in v1.
+					r.postHook(ctx, call.Function.Name, input, observation)
+				}
 			}
 			if execErr != nil {
 				step.Error = execErr.Error()
@@ -329,6 +376,13 @@ func (r *Runner) RunTurn(ctx context.Context, sess *session.Session, userInput s
 				if sa, ok := tool.(tools.SkillAnnouncer); ok {
 					if name, ver, loaded := sa.AnnounceSkill(input); loaded {
 						r.emit(Event{Kind: EventSkillLoaded, ToolName: name, Version: ver})
+					}
+				}
+				// Todo checklist (8.4): same interface-driven pattern — the loop emits
+				// the updated list without knowing the tool by name.
+				if ta, ok := tool.(tools.TodoAnnouncer); ok {
+					if todos, ok := ta.AnnounceTodos(input); ok {
+						r.emit(Event{Kind: EventTodoUpdated, Todos: todos})
 					}
 				}
 			}
@@ -408,6 +462,14 @@ const skillsReminder = "[reminder] Before you act: check the Skills list in the 
 	"If this task matches a skill you have not already loaded, call load_skill(name) and follow " +
 	"it first — that is reading project guidance, not extra investigation."
 
+// planModeReminder steers a read-only planning turn. The toolset already blocks
+// edits; this tells the model what to produce instead.
+const planModeReminder = "[plan mode] You are in PLAN MODE: read-only. You can read, search, and " +
+	"inspect, but you CANNOT edit files or run commands — those tools are unavailable this turn. " +
+	"Research the task, then present a concrete implementation plan: the files to change, the " +
+	"approach, and the steps in order. Do NOT make any changes. End with the plan as your answer; " +
+	"you may track the plan's steps with todo_write."
+
 // withConvergenceNudge returns a copy of msgs with a transient reminder appended,
 // steering the model to answer now instead of over-investigating.
 func withConvergenceNudge(msgs []model.Message, toolCalls int) []model.Message {
@@ -447,7 +509,7 @@ func (r *Runner) finalAnswerAfterLimit(ctx context.Context, sess *session.Sessio
 
 	r.emit(Event{Kind: EventModelStarted})
 	start := time.Now()
-	resp, err := r.Model.Complete(ctx, model.Request{
+	resp, err := r.complete(ctx, model.Request{
 		Model:       r.ModelName,
 		Temperature: r.Temperature,
 		Messages:    msgs,
@@ -495,6 +557,21 @@ func errString(err error) string {
 		return ""
 	}
 	return err.Error()
+}
+
+// complete calls the model, streaming its text live (8.6) when Stream is set and
+// the provider supports it — emitting EventTokenDelta for each text delta. Either
+// way it returns the same complete Response, so the loop's control flow is
+// identical whether or not streaming happened.
+func (r *Runner) complete(ctx context.Context, req model.Request) (model.Response, error) {
+	if r.Stream {
+		if sp, ok := r.Model.(model.StreamingProvider); ok {
+			return sp.CompleteStream(ctx, req, func(delta string) {
+				r.emit(Event{Kind: EventTokenDelta, Text: delta})
+			})
+		}
+	}
+	return r.Model.Complete(ctx, req)
 }
 
 func (r *Runner) executeTool(ctx context.Context, tool tools.Tool, input json.RawMessage) (string, error) {

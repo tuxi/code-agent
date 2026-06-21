@@ -1,6 +1,10 @@
 package agent
 
-import "time"
+import (
+	"time"
+
+	"code-agent/internal/tools"
+)
 
 // EventKind identifies what happened in the loop. Events are the agent runtime's
 // event stream: the loop EMITS them and a subscriber (the REPL console today, a
@@ -13,12 +17,14 @@ const (
 	EventTurnStarted   EventKind = "turn_started"
 	EventModelStarted  EventKind = "model_started"  // about to call the model
 	EventModelFinished EventKind = "model_finished" // model returned (carries latency)
+	EventTokenDelta    EventKind = "token_delta"    // a streamed text delta (8.6); ephemeral, not persisted
 	EventThinking      EventKind = "thinking"       // model produced reasoning text
 	EventToolStarted   EventKind = "tool_started"
 	EventToolFinished  EventKind = "tool_finished"
 	EventObserved      EventKind = "observed"     // a tool result was classified (P4.1)
 	EventReflected     EventKind = "reflected"    // a finalize self-check fired (P4.3)
 	EventSkillLoaded   EventKind = "skill_loaded" // a skill body was loaded (P6)
+	EventTodoUpdated   EventKind = "todo_updated" // the model's task checklist changed (8.4)
 	EventCompacted     EventKind = "compacted"
 	EventTurnFinished  EventKind = "turn_finished"
 
@@ -53,6 +59,9 @@ type Event struct {
 	Observation string
 	Failure     string // EventObserved: the classified FailureType (e.g. "compile")
 	Version     string // EventSkillLoaded: the loaded skill's version (name is in ToolName)
+
+	// Todos carries the model's current task checklist on EventTodoUpdated (8.4).
+	Todos []tools.Todo
 
 	// Model / thinking.
 	Text         string        // reasoning text (Thinking) or final answer (TurnFinished)

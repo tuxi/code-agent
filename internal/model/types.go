@@ -127,3 +127,13 @@ func (r Response) AssistantMessage() Message {
 type Provider interface {
 	Complete(ctx context.Context, request Request) (Response, error)
 }
+
+// StreamingProvider is an OPTIONAL capability on top of Provider: a provider that
+// can stream the model's text content as it is generated, calling onText for each
+// content delta, while still returning the SAME complete Response that Complete
+// would. Tool-call deltas are accumulated internally (the loop needs them whole),
+// so only human-read text streams. Callers type-assert for it and fall back to
+// Complete when absent — so Complete stays the contract everything else depends on.
+type StreamingProvider interface {
+	CompleteStream(ctx context.Context, request Request, onText func(delta string)) (Response, error)
+}

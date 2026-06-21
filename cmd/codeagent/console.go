@@ -53,6 +53,8 @@ func (consoleEmitter) Emit(e agent.Event) {
 			name += " v" + e.Version
 		}
 		fmt.Printf("\n[skill] loaded %s\n", name)
+	case agent.EventTodoUpdated:
+		fmt.Print("\n" + renderTodos(e.Todos))
 	case agent.EventReflected:
 		// The model said it was done; a grounded self-check sent it back for one
 		// more pass. Show the human why, so the extra work reads as intent.
