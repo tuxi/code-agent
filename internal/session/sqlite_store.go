@@ -20,7 +20,8 @@ import (
 // boundary) — cheap at CLI sizes and trivially consistent, with no delta
 // bookkeeping to drift.
 type SQLiteStore struct {
-	db *sql.DB
+	db   *sql.DB
+	path string
 }
 
 const schema = `
@@ -70,15 +71,26 @@ CREATE TABLE IF NOT EXISTS requests (
 );`
 
 func NewSQLiteStore(path string) (*SQLiteStore, error) {
-	db, err := sql.Open("sqlite", path)
+	s := &SQLiteStore{path: path}
+	if err := s.open(); err != nil {
+		return nil, err
+	}
+	return s, nil
+}
+
+// open (re)opens the database at s.path and applies the idempotent migrations.
+// Used at construction and to recover the connection after the file moved out
+// from under it (SQLITE_READONLY_DBMOVED) — see Save.
+func (s *SQLiteStore) open() error {
+	db, err := sql.Open("sqlite", s.path)
 	if err != nil {
-		return nil, fmt.Errorf("open sqlite %q: %w", path, err)
+		return fmt.Errorf("open sqlite %q: %w", s.path, err)
 	}
 	// Serial CLI usage: a single connection sidesteps SQLite "database is locked".
 	db.SetMaxOpenConns(1)
 	if _, err := db.Exec(schema); err != nil {
 		db.Close()
-		return nil, fmt.Errorf("migrate: %w", err)
+		return fmt.Errorf("migrate: %w", err)
 	}
 	// Additive migrations: columns added after the requests table first shipped
 	// won't come from CREATE IF NOT EXISTS. ADD COLUMN is idempotent here —
@@ -89,15 +101,49 @@ func NewSQLiteStore(path string) (*SQLiteStore, error) {
 	} {
 		if _, err := db.Exec(stmt); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			db.Close()
-			return nil, fmt.Errorf("migrate (%s): %w", stmt, err)
+			return fmt.Errorf("migrate (%s): %w", stmt, err)
 		}
 	}
-	return &SQLiteStore{db: db}, nil
+	s.db = db
+	return nil
+}
+
+// reopen closes the (possibly poisoned) connection and opens a fresh one at the
+// same path. After SQLITE_READONLY_DBMOVED the old connection is stuck; only a
+// reopen — which binds to the file currently at the path — can write again.
+func (s *SQLiteStore) reopen() error {
+	if s.db != nil {
+		_ = s.db.Close()
+	}
+	return s.open()
 }
 
 func (s *SQLiteStore) Close() error { return s.db.Close() }
 
+// Save persists a session as a wholesale snapshot. If the write fails because
+// the database file moved out from under the open connection
+// (SQLITE_READONLY_DBMOVED — classically a synced folder like iCloud replacing
+// the file), it reopens and retries once. Because Save rewrites the full session
+// every time, the retry writes the complete state into the current file and
+// loses nothing.
 func (s *SQLiteStore) Save(ctx context.Context, sess *Session) error {
+	err := s.save(ctx, sess)
+	if err != nil && isReadonlyErr(err) {
+		if rerr := s.reopen(); rerr == nil {
+			err = s.save(ctx, sess)
+		}
+	}
+	return err
+}
+
+// isReadonlyErr matches SQLite's readonly family, including
+// SQLITE_READONLY_DBMOVED (1032), whose message is "attempt to write a readonly
+// database".
+func isReadonlyErr(err error) bool {
+	return err != nil && strings.Contains(strings.ToLower(err.Error()), "readonly")
+}
+
+func (s *SQLiteStore) save(ctx context.Context, sess *Session) error {
 	if sess.ID == "" {
 		return errors.New("save: session has no ID")
 	}

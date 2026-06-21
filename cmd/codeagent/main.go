@@ -16,7 +16,10 @@ import (
 	"code-agent/internal/tools/skill"
 	"code-agent/internal/ui"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -93,15 +96,69 @@ func run() error {
 	}
 }
 
-// openStore opens (creating if needed) the per-project session database under
-// <root>/.codeagent/sessions.db. Sessions are project-local: you resume the
-// conversation for the repo you are in.
+// openStore opens (creating if needed) the per-project session database. The DB
+// lives under the user's home (see storePath), NOT inside the project directory:
+// a project under a synced folder (iCloud Drive, Dropbox, …) would otherwise have
+// its SQLite file replaced underneath the open connection, which SQLite rejects
+// as SQLITE_READONLY_DBMOVED and which can corrupt the file. Sessions stay
+// project-scoped: you resume the conversation for the repo you are in.
 func openStore(root string) (session.Store, error) {
-	path := filepath.Join(root, ".codeagent", "sessions.db")
+	path, err := storePath(root)
+	if err != nil {
+		return nil, err
+	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, fmt.Errorf("create session store dir: %w", err)
 	}
+	// One-time migration: if there is no DB at the new (non-synced) location but an
+	// old in-project .codeagent/sessions.db exists, copy it over so existing
+	// sessions are not orphaned by the move. Best-effort — a failed copy just
+	// starts the new store empty.
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		if old := filepath.Join(root, ".codeagent", "sessions.db"); old != path {
+			if _, err := os.Stat(old); err == nil {
+				_ = copyFile(old, path)
+			}
+		}
+	}
 	return session.NewSQLiteStore(path)
+}
+
+// storePath returns the session DB path for a workspace root, under the user's
+// home rather than the project dir (so it is never in a cloud-synced folder).
+// Sessions remain project-scoped via a per-project key: the basename plus a short
+// hash of the absolute path, so two projects sharing a basename do not collide.
+func storePath(root string) (string, error) {
+	abs, err := filepath.Abs(root)
+	if err != nil {
+		return "", err
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256([]byte(abs))
+	key := filepath.Base(abs) + "-" + hex.EncodeToString(sum[:])[:12]
+	return filepath.Join(home, ".codeagent", "projects", key, "sessions.db"), nil
+}
+
+// copyFile copies src to dst — a best-effort one-time migration of an existing
+// session DB snapshot to the new location.
+func copyFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+	if _, err := io.Copy(out, in); err != nil {
+		return err
+	}
+	return out.Close()
 }
 
 // requestObserver records each model request to the store for transport
