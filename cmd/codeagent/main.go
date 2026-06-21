@@ -174,14 +174,19 @@ type eventStoreEmitter struct {
 }
 
 func (e eventStoreEmitter) Emit(ev agent.Event) {
-	if payload, err := json.Marshal(ev); err == nil {
-		_ = e.store.RecordEvent(e.ctx, session.EventRecord{
-			SessionID: ev.SessionID,
-			TurnID:    ev.TurnID,
-			Kind:      string(ev.Kind),
-			At:        ev.At,
-			Payload:   payload,
-		})
+	// Token deltas (8.6) are an ephemeral live preview, not part of the durable
+	// stream — the finalized answer is captured by EventTurnFinished. Persisting
+	// every delta would bloat the event log (hundreds per answer), so skip them.
+	if ev.Kind != agent.EventTokenDelta {
+		if payload, err := json.Marshal(ev); err == nil {
+			_ = e.store.RecordEvent(e.ctx, session.EventRecord{
+				SessionID: ev.SessionID,
+				TurnID:    ev.TurnID,
+				Kind:      string(ev.Kind),
+				At:        ev.At,
+				Payload:   payload,
+			})
+		}
 	}
 	if e.next != nil {
 		e.next.Emit(ev)
@@ -781,6 +786,7 @@ func runTUI(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider mo
 	sess.Model = mc.Model
 
 	runner := buildRunner(cfg, mc, provider, registry, skillReg, backend.Approver, withEventStore(backend.Emitter, store, ctx))
+	runner.Stream = true // 8.6: stream the model's text live (TUI only)
 	header := tui.HeaderInfo{
 		Model:            mc.Name,
 		Workspace:        filepath.Base(root),

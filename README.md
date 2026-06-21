@@ -795,13 +795,20 @@ reaches into the `Provider` interface. Items are ordered by value × fit × effo
   the change). Out of v1 (the most complex semantics): rewriting tool args,
   amending the result, and non-tool events (`Stop`/`UserPromptSubmit`). Config:
   the `hooks:` block, matched by tool name or `*`.
-- [ ] **(8.6) Streaming** *(medium–high — lowest ROI, defer)* — stream model
-  tokens (SSE) into token-delta events the renderer appends live. Honest caveat:
-  the model cannot consume a stream mid-call, so this is *pure human UX*, and the
-  `liveProgress` ticker already answers "is it hung?". It also reaches into the
-  `Provider` interface and complicates `ResilientProvider`'s replay (you cannot
-  replay half a stream). Do it only when "watching a long answer render" becomes a
-  real complaint.
+- [x] **(8.6) Streaming** *(narrow slice — TUI only)* — **shipped.** The model's
+  text streams live (SSE) into `EventTokenDelta`s the TUI renders as a typing
+  preview, then finalizes to scrollback. Scoped to keep the cost contained:
+  - `model.StreamingProvider` is an **optional capability** (openai SSE parser:
+    text via `onText`, tool-call deltas accumulated, usage from the final chunk).
+    `Complete` stays the contract, so everything downstream is unchanged.
+  - the `Provider`-interface and replay tensions are resolved by making the stream
+    a **best-effort fast-path**: `ResilientProvider.CompleteStream` streams once
+    (a half-stream can't be replayed) and **falls back to the resilient `Complete`**
+    on any failure — resilience and cost telemetry untouched.
+  - deltas are **ephemeral** (not persisted — the finalized answer is the durable
+    record); a `Runner.Stream` flag the TUI sets (run/repl stay non-streamed).
+  Honest caveat unchanged: pure human UX, zero capability gain — the value is the
+  final-answer typewriter in the all-day TUI.
 
 **Done when:** CodeAgent can register an external MCP tool, delegate a sub-task to
 an isolated sub-agent, and report cache-accurate cost — i.e. it is a platform, not

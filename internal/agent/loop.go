@@ -35,6 +35,12 @@ type Runner struct {
 	// tools run exactly as before.
 	Hook ToolHook
 
+	// Stream, when true AND the provider supports it, streams the model's text as
+	// it generates (8.6) — emitting EventTokenDelta for a renderer to show live.
+	// The returned Response is identical to the non-streamed one, so the loop is
+	// unaffected. Set by the TUI; run/repl leave it off.
+	Stream bool
+
 	// RemindSkills, when true, injects a one-shot ephemeral reminder on the first
 	// model call of each turn to check the Skills list and load a matching skill
 	// (P6). It makes skill-loading consistent across models rather than depending
@@ -202,7 +208,7 @@ func (r *Runner) RunTurn(ctx context.Context, sess *session.Session, userInput s
 
 		r.emit(Event{Kind: EventModelStarted})
 		modelStart := time.Now()
-		resp, err := r.Model.Complete(ctx, model.Request{
+		resp, err := r.complete(ctx, model.Request{
 			Model:       r.ModelName,
 			Temperature: r.Temperature,
 			Messages:    msgs,
@@ -463,7 +469,7 @@ func (r *Runner) finalAnswerAfterLimit(ctx context.Context, sess *session.Sessio
 
 	r.emit(Event{Kind: EventModelStarted})
 	start := time.Now()
-	resp, err := r.Model.Complete(ctx, model.Request{
+	resp, err := r.complete(ctx, model.Request{
 		Model:       r.ModelName,
 		Temperature: r.Temperature,
 		Messages:    msgs,
@@ -511,6 +517,21 @@ func errString(err error) string {
 		return ""
 	}
 	return err.Error()
+}
+
+// complete calls the model, streaming its text live (8.6) when Stream is set and
+// the provider supports it — emitting EventTokenDelta for each text delta. Either
+// way it returns the same complete Response, so the loop's control flow is
+// identical whether or not streaming happened.
+func (r *Runner) complete(ctx context.Context, req model.Request) (model.Response, error) {
+	if r.Stream {
+		if sp, ok := r.Model.(model.StreamingProvider); ok {
+			return sp.CompleteStream(ctx, req, func(delta string) {
+				r.emit(Event{Kind: EventTokenDelta, Text: delta})
+			})
+		}
+	}
+	return r.Model.Complete(ctx, req)
 }
 
 func (r *Runner) executeTool(ctx context.Context, tool tools.Tool, input json.RawMessage) (string, error) {

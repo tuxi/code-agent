@@ -17,6 +17,7 @@ const (
 	EventTurnStarted   EventKind = "turn_started"
 	EventModelStarted  EventKind = "model_started"  // about to call the model
 	EventModelFinished EventKind = "model_finished" // model returned (carries latency)
+	EventTokenDelta    EventKind = "token_delta"    // a streamed text delta (8.6); ephemeral, not persisted
 	EventThinking      EventKind = "thinking"       // model produced reasoning text
 	EventToolStarted   EventKind = "tool_started"
 	EventToolFinished  EventKind = "tool_finished"

@@ -128,6 +128,51 @@ func (p *ResilientProvider) Complete(ctx context.Context, req Request) (resp Res
 	return Response{}, fmt.Errorf("model call failed after %d attempt(s): %w", attempts, err)
 }
 
+// CompleteStream streams the inner provider's text when it supports streaming,
+// recording one RequestStat on success. It deliberately does NOT retry a stream:
+// a half-emitted stream cannot be cleanly replayed (the renderer already showed
+// it). On any failure it falls back to the fully resilient, retried Complete — so
+// the result is always recoverable and the resilience guarantee is untouched;
+// only the live preview is best-effort.
+func (p *ResilientProvider) CompleteStream(ctx context.Context, req Request, onText func(string)) (Response, error) {
+	if p.Inner == nil {
+		return Response{}, errors.New("resilient provider: nil inner provider")
+	}
+	sp, ok := p.Inner.(StreamingProvider)
+	if !ok {
+		return p.Complete(ctx, req) // inner can't stream — fall back to resilient
+	}
+
+	attemptCtx := ctx
+	var cancel context.CancelFunc
+	if p.Timeout > 0 {
+		attemptCtx, cancel = context.WithTimeout(ctx, p.Timeout)
+	}
+	start := time.Now()
+	resp, err := sp.CompleteStream(attemptCtx, req, onText)
+	if cancel != nil {
+		cancel()
+	}
+	if err == nil {
+		if p.Observer != nil {
+			p.Observer.Observe(RequestStat{
+				At: start, Model: req.Model, Attempts: 1, Success: true,
+				Latency:            time.Since(start),
+				PromptTokens:       resp.Usage.PromptTokens,
+				CachedPromptTokens: resp.Usage.CachedPromptTokens,
+				CompletionTokens:   resp.Usage.CompletionTokens,
+				Trace:              []Attempt{{Latency: time.Since(start)}},
+			})
+		}
+		return resp, nil
+	}
+	if ctx.Err() != nil { // caller canceled — terminal, no fallback work
+		return Response{}, ctx.Err()
+	}
+	p.logf("[provider] stream failed: %s — falling back to non-streamed retry\n", errorClass(err))
+	return p.Complete(ctx, req)
+}
+
 // logf writes a one-line transport notice. Defaults to stderr.
 func (p *ResilientProvider) logf(format string, args ...any) {
 	w := p.LogWriter

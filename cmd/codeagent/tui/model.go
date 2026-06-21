@@ -78,6 +78,11 @@ type model struct {
 	// the live region and updated whole-list on each EventTodoUpdated.
 	todos []tools.Todo
 
+	// streaming is the live, ephemeral preview of the model's text as it generates
+	// (8.6): EventTokenDelta appends; it is reset around each model call and never
+	// enters the transcript (the finalized answer prints via EventTurnFinished).
+	streaming string
+
 	composerHeight int  // current composer rows (auto-grows with content)
 	width          int  // terminal width (for wrapping printed output)
 	ready          bool // a WindowSizeMsg has arrived
@@ -253,12 +258,22 @@ func (m model) handleEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 		return m, waitForEvent(m.b.events)
 	}
 
+	// Streamed text (8.6): an ephemeral live preview, never the transcript. It is
+	// cleared around each model call (below), so the authoritative render — the
+	// step card or the final reply printed to scrollback — takes over cleanly.
+	if ev.Kind == agent.EventTokenDelta {
+		m.streaming += ev.Text
+		return m, waitForEvent(m.b.events)
+	}
+
 	// Live UI state (spinner, gauge, skills) — separate from transcript rendering.
 	switch ev.Kind {
 	case agent.EventModelStarted:
 		m.thinking = true
+		m.streaming = ""
 	case agent.EventModelFinished:
 		m.thinking = false
+		m.streaming = ""
 		if ev.PromptTokens > 0 {
 			m.promptTokens = ev.PromptTokens
 		}
@@ -584,7 +599,14 @@ func (m model) View() string {
 		return ""
 	}
 	lines := []string{}
-	if m.showThinking && m.busy && m.tr.step.thinking != "" {
+	switch {
+	case m.streaming != "":
+		// Streamed text typing out live (8.6) — takes the live region while a call
+		// is in flight; replaced by the step card / final reply once it resolves.
+		for _, ln := range wrapProse(m.streaming, m.width-2) {
+			lines = append(lines, styleBody.Render(ln))
+		}
+	case m.showThinking && m.busy && m.tr.step.thinking != "":
 		header := "▾ " + fmtStepHeader(m.tr.step)
 		lines = append(lines, styleThinking.Render(header))
 		for _, ln := range wrapProse(m.tr.step.thinking, m.width-4) {
