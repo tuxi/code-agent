@@ -816,14 +816,14 @@ just an agent.
 
 ### Later / parallel
 
-- [ ] **Robustness: tool-call markup leak at the step limit** — when a turn hits
-  `max_steps`, `finalAnswerAfterLimit` asks the model to answer with no tools, but
-  some models (deepseek) emit their tool-call markup (`DSML`) as text instead of a
-  real answer. The subagent already sanitizes this (8.3,
-  [`looksLikeToolCallLeak`](cmd/codeagent/subagent.go)), but the **main** loop's
-  final-answer path surfaces the garbage to the *user*. Detect and strip it (or
-  re-prompt) in `finalAnswerAfterLimit` — a loop-level fix, so it stays generic
-  across providers.
+- [x] **Robustness: tool-call markup leak at the step limit** — **fixed.** The
+  sole no-tools call (`finalAnswerAfterLimit`) is the only place deepseek leaks its
+  `DSML` tool-call markup as text; it now falls back to the clean step-limit message
+  when `agent.LooksLikeToolCallLeak` matches, so neither the user nor the session
+  history ever sees the garbage. The detector was also tightened (matches only the
+  precise `DSML` / `<｜` markers, **not** the common word `tool_calls`, which a
+  normal code answer contains) and shared — the subagent now reuses it, so the fix
+  and the false-positive guard live in one place.
 - [ ] Local/cloud runtime split — remote tool runtime, workspace adapter,
   server-side sandbox experiment.
 - [ ] GUI.

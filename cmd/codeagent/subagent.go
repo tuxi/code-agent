@@ -12,7 +12,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"strings"
 	"time"
 )
 
@@ -45,20 +44,6 @@ var planModeToolNames = append([]string{"todo_write"}, readOnlyToolNames...)
 type denyAll struct{}
 
 func (denyAll) Approve(string, json.RawMessage) bool { return false }
-
-// looksLikeToolCallLeak reports whether s is a model's tool-call syntax leaked as
-// plain text rather than a real answer. It happens when a provider is asked to
-// answer with no tools but the model still "wants" to call one — deepseek emits
-// its DSML tool-call markup into the content field. Such text is noise, not a
-// conclusion, so we replace it with a clean failure message.
-func looksLikeToolCallLeak(s string) bool {
-	for _, marker := range []string{"DSML", "invoke name=", "tool_calls", "<｜"} {
-		if strings.Contains(s, marker) {
-			return true
-		}
-	}
-	return false
-}
 
 // subAgent is the concrete task.SubAgent: each Run builds a fresh, isolated,
 // ephemeral session and a read-only sub-runner, executes one turn, and returns
@@ -149,20 +134,12 @@ func (s *subAgent) Run(ctx context.Context, taskPrompt string) (string, error) {
 
 	conclusion := res.Final
 	if res.HitStepLimit {
-		switch {
-		case looksLikeToolCallLeak(res.Final):
-			// The final tool-free answer is the model's tool-call markup leaked as
-			// text (deepseek does this when forced to answer with no tools). Don't
-			// hand the parent noise — fail gracefully so it can make a good call.
-			conclusion = fmt.Sprintf("[subagent could not complete this investigation within %d steps. "+
-				"It may be too broad to delegate — narrow it (fewer files, one focused question) or "+
-				"investigate directly.]", subAgentMaxSteps)
-		default:
-			// A genuine partial answer: hand it back, marked, so the parent can
-			// narrow the task and retry (PRD §5.4).
-			conclusion = fmt.Sprintf("[subagent did not converge within %d steps — partial findings only]\n\n%s",
-				subAgentMaxSteps, res.Final)
-		}
+		// The loop's finalAnswerAfterLimit already sanitizes a leaked tool-call
+		// answer to a clean message (agent.LooksLikeToolCallLeak), so res.Final is
+		// never garbage here — just mark it as a non-convergent partial result so
+		// the parent can narrow the task and retry (PRD §5.4).
+		conclusion = fmt.Sprintf("[subagent did not converge within %d steps — partial findings only]\n\n%s",
+			subAgentMaxSteps, res.Final)
 	}
 	if emitter != nil {
 		emitter.Emit(agent.Event{Kind: agent.EventTaskFinished, SessionID: sess.ID, At: time.Now(), Text: conclusion})

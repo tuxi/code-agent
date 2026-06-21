@@ -476,7 +476,9 @@ func (r *Runner) finalAnswerAfterLimit(ctx context.Context, sess *session.Sessio
 		// No Tools: the model must answer with text, not request more tools.
 	})
 	r.emit(Event{Kind: EventModelFinished, PromptTokens: resp.Usage.PromptTokens, Elapsed: time.Since(start), Err: errString(err)})
-	if err != nil || resp.Content == "" {
+	// A leaked tool-call markup (deepseek, when forced to answer with no tools) is
+	// not an answer — don't show the user noise or persist it; fall back cleanly.
+	if err != nil || resp.Content == "" || LooksLikeToolCallLeak(resp.Content) {
 		return stepLimitMessage
 	}
 
