@@ -121,7 +121,20 @@ func openStore(root string) (session.Store, error) {
 			}
 		}
 	}
-	return session.NewSQLiteStore(path)
+
+	store, err := session.NewSQLiteStore(path)
+	if err != nil {
+		// The DB won't open — it may be a corrupt copy migrated from a synced
+		// folder that was being clobbered. Quarantine it (non-destructively, kept
+		// for manual recovery) and start fresh rather than block startup forever.
+		quarantine := path + ".corrupt-" + time.Now().Format("20060102-150405")
+		if os.Rename(path, quarantine) == nil {
+			fmt.Fprintf(os.Stderr, "warning: session DB unreadable (%v); moved aside to %s, starting fresh\n", err, quarantine)
+			return session.NewSQLiteStore(path)
+		}
+		return nil, err
+	}
+	return store, nil
 }
 
 // storePath returns the session DB path for a workspace root, under the user's
