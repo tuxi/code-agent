@@ -137,9 +137,11 @@ func TestSubAgentRunFlagsNonConvergence(t *testing.T) {
 	}
 }
 
-func TestSubAgentCleansLeakedToolCallsOnNonConvergence(t *testing.T) {
+func TestSubAgentNonConvergenceNeverLeaksGarbage(t *testing.T) {
 	// A non-empty registry so tools are advertised during the loop; leakyProvider
-	// then leaks DSML only on the forced, tool-free final call (the real bug).
+	// then leaks DSML only on the forced, tool-free final call. The loop's
+	// finalAnswerAfterLimit sanitizes it upstream, so the parent never sees garbage
+	// — only a clean non-convergence marker.
 	reg := tools.NewRegistry()
 	_ = reg.Register(namedTool{"nope"})
 	sa := testSubAgent(leakyProvider{}, t.TempDir())
@@ -151,8 +153,8 @@ func TestSubAgentCleansLeakedToolCallsOnNonConvergence(t *testing.T) {
 	if strings.Contains(out, "DSML") || strings.Contains(out, "invoke name=") {
 		t.Fatalf("leaked tool-call markup must not reach the parent: %q", out)
 	}
-	if !strings.Contains(out, "could not complete") {
-		t.Fatalf("a garbage non-convergence should fail gracefully, got: %q", out)
+	if !strings.Contains(out, "did not converge") {
+		t.Fatalf("a non-convergent run should be marked, got: %q", out)
 	}
 }
 
