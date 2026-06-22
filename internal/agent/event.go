@@ -21,10 +21,11 @@ const (
 	EventThinking      EventKind = "thinking"       // model produced reasoning text
 	EventToolStarted   EventKind = "tool_started"
 	EventToolFinished  EventKind = "tool_finished"
-	EventObserved      EventKind = "observed"     // a tool result was classified (P4.1)
-	EventReflected     EventKind = "reflected"    // a finalize self-check fired (P4.3)
-	EventSkillLoaded   EventKind = "skill_loaded" // a skill body was loaded (P6)
-	EventTodoUpdated   EventKind = "todo_updated" // the model's task checklist changed (8.4)
+	EventObserved      EventKind = "observed"      // a tool result was classified (P4.1)
+	EventAutoApproved  EventKind = "auto_approved" // auto mode granted a side-effecting call without a human prompt (audit; p9.1 §12.3)
+	EventReflected     EventKind = "reflected"     // a finalize self-check fired (P4.3)
+	EventSkillLoaded   EventKind = "skill_loaded"  // a skill body was loaded (P6)
+	EventTodoUpdated   EventKind = "todo_updated"  // the model's task checklist changed (8.4)
 	EventCompacted     EventKind = "compacted"
 	EventTurnFinished  EventKind = "turn_finished"
 

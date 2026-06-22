@@ -4,6 +4,7 @@ import (
 	"code-agent/cmd/codeagent/tui"
 	"code-agent/internal/agent"
 	"code-agent/internal/app"
+	"code-agent/internal/approve"
 	"code-agent/internal/hooks"
 	"code-agent/internal/mcp"
 	"code-agent/internal/model"
@@ -45,6 +46,7 @@ func main() {
 func run() error {
 	args := os.Args[1:]
 	modelName, args := extractModelFlag(args)
+	autoMode, args := extractAutoFlag(args)
 
 	cfg, err := app.LoadConfig("config.yaml")
 	if err != nil {
@@ -99,16 +101,16 @@ func run() error {
 	case "ask":
 		return runAsk(ctx, mc, provider, goal)
 	case "run":
-		return runAgent(ctx, cfg, mc, provider, goal)
+		return runAgent(ctx, cfg, mc, provider, goal, autoMode)
 	case "tui":
 		return runTUI(ctx, cfg, mc, provider)
 	case "repl":
-		return repl(ctx, cfg, mc, provider, "")
+		return repl(ctx, cfg, mc, provider, "", autoMode)
 	case "resume":
 		if len(args) < 2 {
 			return fmt.Errorf("usage: codeagent resume <session-id>  (see 'codeagent sessions')")
 		}
-		return repl(ctx, cfg, mc, provider, args[1])
+		return repl(ctx, cfg, mc, provider, args[1], autoMode)
 	default:
 		printUsage()
 		return fmt.Errorf("unknown command: %s", command)
@@ -755,6 +757,21 @@ func extractModelFlag(args []string) (string, []string) {
 	return "", args
 }
 
+// extractAutoFlag pulls a boolean `--auto` (or `-auto`) out of args, returning
+// whether auto mode should start enabled and the remaining args. It is a CLI flag,
+// not a config value, on purpose: the enable switch must come from a trusted source
+// the agent cannot write, and config.yaml lives inside the writable workspace
+// (p9.1 §12.4). Default off — auto mode is always explicit opt-in.
+func extractAutoFlag(args []string) (bool, []string) {
+	for i := 0; i < len(args); i++ {
+		if args[i] == "--auto" || args[i] == "-auto" {
+			rest := append(append([]string{}, args[:i]...), args[i+1:]...)
+			return true, rest
+		}
+	}
+	return false, args
+}
+
 func runAsk(ctx context.Context, mc app.ModelConfig, provider model.Provider, question string) error {
 	resp, err := provider.Complete(ctx, model.Request{
 		Model:       mc.Model,
@@ -771,7 +788,7 @@ func runAsk(ctx context.Context, mc app.ModelConfig, provider model.Provider, qu
 	return nil
 }
 
-func runAgent(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider model.Provider, goal string) error {
+func runAgent(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider model.Provider, goal string, autoMode bool) error {
 	root := cfg.Workspace.Root
 
 	store, err := openStore(root)
@@ -790,7 +807,11 @@ func runAgent(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider 
 		fmt.Fprintln(os.Stderr, s)
 	}
 
-	runner := buildRunner(cfg, mc, provider, registry, skillReg, ui.ConfirmApprover{}, withEventStore(buildEmitter(), store, ctx))
+	// The AutoApprover wraps the human approver; --auto seeds it on, otherwise it is
+	// a transparent pass-through (identical to before). Auto-grants are audited by
+	// the loop (correlated EventAutoApproved), so the approver itself takes no emitter.
+	approver := approve.NewAutoApprover(root, ui.ConfirmApprover{}, autoMode)
+	runner := buildRunner(cfg, mc, provider, registry, skillReg, approver, withEventStore(buildEmitter(), store, ctx))
 
 	sess, err := session.NewBuilder(root).
 		WithBudget(mc.ContextWindow, cfg.CompactThreshold(mc)).

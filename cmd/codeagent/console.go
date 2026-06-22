@@ -37,6 +37,10 @@ func (consoleEmitter) Emit(e agent.Event) {
 		fmt.Printf("\n[thinking] %s\n", e.Text)
 	case agent.EventToolStarted:
 		fmt.Printf("\n[%d] tool=%s args=%s\n", e.Step, e.ToolName, e.ToolArgs)
+	case agent.EventAutoApproved:
+		// Auto mode skipped a y/N. Show it so a transcript makes clear which
+		// side-effecting calls ran without a human prompt, and why.
+		fmt.Printf("[auto-approved] %s — %s\n", e.ToolName, e.Text)
 	case agent.EventObserved:
 		// A concise, scannable classification line printed just before the full
 		// [result]. Only failures are shown — a successful command needs no line.

@@ -3,6 +3,7 @@ package main
 import (
 	"code-agent/internal/agent"
 	"code-agent/internal/app"
+	"code-agent/internal/approve"
 	"code-agent/internal/model"
 	"code-agent/internal/session"
 	"code-agent/internal/ui"
@@ -34,7 +35,7 @@ type lineReader func(prompt string) (string, error)
 // mode mishandles wide CJK characters (a backspace erases one display column, so
 // half a character lingers) and can drive some terminals into buggy wide-char
 // wrap rendering.
-func repl(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider model.Provider, resumeID string) error {
+func repl(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider model.Provider, resumeID string, auto bool) error {
 	root := cfg.Workspace.Root
 
 	store, err := openStore(root)
@@ -85,7 +86,14 @@ func repl(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider mode
 		return rl.Readline()
 	}
 
-	runner := buildRunner(cfg, mc, provider, registry, skillReg, ui.ConfirmApprover{Prompt: ask}, withEventStore(buildEmitter(), store, ctx))
+	// The AutoApprover wraps the terminal approver and starts disabled unless --auto
+	// seeded it on; /auto on|off flips it per session. Auto-grants are audited by the
+	// loop (correlated EventAutoApproved), so the approver takes no emitter.
+	approver := approve.NewAutoApprover(root, ui.ConfirmApprover{Prompt: ask}, auto)
+	runner := buildRunner(cfg, mc, provider, registry, skillReg, approver, withEventStore(buildEmitter(), store, ctx))
+	if auto {
+		fmt.Println("auto mode: ON (in-workspace edits auto-approved; commands still confirmed) — /auto off to disable")
+	}
 
 	var sess *session.Session
 	if resumeID != "" {
@@ -190,6 +198,7 @@ func handleCommand(line string, cfg app.Config, mc *app.ModelConfig, runner *age
   /models       list configured models
   /use NAME     switch to another configured model (keeps the conversation)
   /plan         toggle plan mode (read-only: research + plan, no edits)
+  /auto [on|off] auto-approve in-workspace edits (commands still confirmed); no arg shows state
   /session      show the current session id
   /sessions     list saved sessions
   /stats        aggregate compaction + provider telemetry
@@ -247,6 +256,33 @@ func handleCommand(line string, cfg app.Config, mc *app.ModelConfig, runner *age
 			fmt.Println("Plan mode ON — read-only: I'll research and produce a plan, no edits. /plan again to exit.")
 		} else {
 			fmt.Println("Plan mode OFF — edits allowed again.")
+		}
+		return sess, false, nil
+
+	case "/auto":
+		// Auto mode is the AutoApprover wrapping the terminal approver. If some other
+		// approver is wired (it shouldn't be in the REPL), say so rather than panic.
+		auto, ok := runner.Approver.(*approve.AutoApprover)
+		if !ok {
+			return sess, false, fmt.Errorf("auto mode is not available in this session")
+		}
+		if len(fields) < 2 {
+			state := "OFF"
+			if auto.Enabled() {
+				state = "ON"
+			}
+			fmt.Printf("auto mode is %s (usage: /auto on|off)\n", state)
+			return sess, false, nil
+		}
+		switch fields[1] {
+		case "on":
+			auto.SetEnabled(true)
+			fmt.Println("auto mode ON — in-workspace edits (edit_file/create_file) auto-approved; commands, patches, and commits still confirmed.")
+		case "off":
+			auto.SetEnabled(false)
+			fmt.Println("auto mode OFF — every side-effecting tool is confirmed again.")
+		default:
+			return sess, false, fmt.Errorf("usage: /auto [on|off]")
 		}
 		return sess, false, nil
 
