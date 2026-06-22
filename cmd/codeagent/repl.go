@@ -144,6 +144,14 @@ func repl(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider mode
 		_ = rl.SaveHistory(line) // real input lines only; sub-prompts bypass this
 
 		if strings.HasPrefix(line, "/") {
+			// /goal runs turns and needs ctx (for its Ctrl-C signal context), which
+			// handleCommand does not carry, so it is dispatched here in the loop.
+			if strings.Fields(line)[0] == "/goal" {
+				if gerr := handleGoal(ctx, line, cfg, mc, runner, sess, store); gerr != nil {
+					fmt.Println("error:", gerr)
+				}
+				continue
+			}
 			newSess, quit, cerr := handleCommand(line, cfg, &mc, runner, sess, store, ask)
 			if cerr != nil {
 				fmt.Println("error:", cerr)
@@ -199,6 +207,7 @@ func handleCommand(line string, cfg app.Config, mc *app.ModelConfig, runner *age
   /use NAME     switch to another configured model (keeps the conversation)
   /plan         toggle plan mode (read-only: research + plan, no edits)
   /auto [on|off] auto-approve in-workspace edits (commands still confirmed); no arg shows state
+  /goal [obj|resume|clear]  pursue an objective until a separate judge confirms done (/auto on for hands-off)
   /session      show the current session id
   /sessions     list saved sessions
   /stats        aggregate compaction + provider telemetry

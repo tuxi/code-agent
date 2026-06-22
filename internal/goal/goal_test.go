@@ -23,9 +23,9 @@ func TestGoalRoundTripsThroughSessionStore(t *testing.T) {
 
 	sess := &session.Session{ID: "sess-1", Metadata: map[string]any{}}
 	want := &Goal{
-		SessionID:  "sess-1",
-		Objective:  "go test ./... 全绿",
-		Status:     StatusActive,
+		SessionID:   "sess-1",
+		Objective:   "go test ./... 全绿",
+		Status:      StatusActive,
 		Budget:      Budget{MaxTurns: 20, MaxWall: 30 * time.Minute},
 		Spent:       Spend{Turns: 3, Tokens: 12500, Wall: 5 * time.Minute},
 		CheckerNote: "auth_test.go 还有 2 个用例红",
@@ -69,6 +69,19 @@ func TestFromSessionEmpty(t *testing.T) {
 	g, err := FromSession(&session.Session{Metadata: map[string]any{}})
 	if err != nil || g != nil {
 		t.Fatalf("want (nil,nil), got (%v,%v)", g, err)
+	}
+}
+
+// TestClearRemovesGoal: /goal clear drops the active goal so FromSession is empty.
+func TestClearRemovesGoal(t *testing.T) {
+	sess := &session.Session{ID: "s", Metadata: map[string]any{}}
+	(&Goal{SessionID: "s", Objective: "x", Status: StatusPaused}).IntoSession(sess)
+	if g, _ := FromSession(sess); g == nil {
+		t.Fatal("precondition: goal should be present")
+	}
+	Clear(sess)
+	if g, err := FromSession(sess); err != nil || g != nil {
+		t.Fatalf("after Clear want (nil,nil), got (%v,%v)", g, err)
 	}
 }
 

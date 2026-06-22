@@ -135,3 +135,10 @@ func FromSession(sess *session.Session) (*Goal, error) {
 	}
 	return &g, nil
 }
+
+// Clear removes the active goal from the session — the command-layer `/goal clear`.
+// The caller persists the session afterwards. (Phase 1 drops the active pointer;
+// achieved-goal archiving per §11.2 is a later addition.)
+func Clear(sess *session.Session) {
+	delete(sess.Metadata, metadataKey)
+}
