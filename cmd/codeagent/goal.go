@@ -1,6 +1,7 @@
 package main
 
 import (
+	"code-agent/cmd/codeagent/tui"
 	"code-agent/internal/agent"
 	"code-agent/internal/app"
 	"code-agent/internal/approve"
@@ -90,37 +91,110 @@ func goalResume(ctx context.Context, cfg app.Config, mc app.ModelConfig, runner 
 	return pursue(ctx, engine, g)
 }
 
-// admitGoal runs the §4.7 set-time gate on the cheap independent model. A rejected
-// goal returns an error (the REPL prints it). It FAILS OPEN: if the admitter itself
-// errors, it warns and proceeds — admission is advisory UX, not the safety boundary
-// (the approver guards high-risk actions regardless).
-func admitGoal(ctx context.Context, cfg app.Config, mc app.ModelConfig, runner *agent.Runner, objective string) error {
+// admitObjective runs the §4.7 set-time gate on the cheap independent model. It
+// does NOT print — each driver surfaces the result its own way (REPL prints; TUI
+// folds it into the outcome, since printing would corrupt the render). err != nil
+// means rejected. caveat != "" means admitted-with-a-warning (fuzzy, or the
+// admitter was unavailable and we failed open). Admission is advisory UX, not the
+// safety boundary — the approver guards high-risk actions regardless.
+func admitObjective(ctx context.Context, cfg app.Config, mc app.ModelConfig, runner *agent.Runner, objective string) (caveat string, err error) {
 	provider, amc := resolveSubAgentModel(cfg, mc, runner.Model)
-	res, err := (&goal.LLMAdmitter{Provider: provider, Model: amc.Model}).Admit(ctx, objective)
-	if err != nil {
-		fmt.Printf("note: 准入判定不可用(%v),继续。\n", err)
-		return nil
+	res, aerr := (&goal.LLMAdmitter{Provider: provider, Model: amc.Model}).Admit(ctx, objective)
+	if aerr != nil {
+		return fmt.Sprintf("准入判定不可用(%v),已从宽放行。", aerr), nil
 	}
 	if !res.OK {
-		return fmt.Errorf("这个目标不适合 /goal:%s", res.Reason)
+		return "", fmt.Errorf("这个目标不适合 /goal:%s", res.Reason)
 	}
 	if res.Fuzzy {
-		fmt.Printf("注意:该目标没有干净的 verify 命令,裁判依据证据判定,可靠性低于命令式终点 — %s\n", res.Reason)
+		return "注意:该目标没有干净的 verify 命令,裁判依据证据判定,可靠性低于命令式终点 — " + res.Reason, nil
+	}
+	return "", nil
+}
+
+// newGoalEngine wires the engine with an INDEPENDENT cheap judge (the
+// agent.subagent_model knob) so the worker never grades itself. It does NOT print;
+// degraded reports that no separate model was configured (judge fell back to the
+// worker's model), which each driver surfaces its own way.
+func newGoalEngine(cfg app.Config, mc app.ModelConfig, runner *agent.Runner, sess *session.Session, store session.Store) (engine *goal.Engine, degraded bool, err error) {
+	checkerProvider, checkerMC := resolveSubAgentModel(cfg, mc, runner.Model)
+	checker := &goal.LLMChecker{Provider: checkerProvider, Model: checkerMC.Model}
+	engine, err = goal.NewEngine(sess, store, runner, checker)
+	return engine, checkerMC.Model == mc.Model, err
+}
+
+// admitGoal is the REPL wrapper around admitObjective: it prints the caveat and
+// returns the rejection error.
+func admitGoal(ctx context.Context, cfg app.Config, mc app.ModelConfig, runner *agent.Runner, objective string) error {
+	caveat, err := admitObjective(ctx, cfg, mc, runner, objective)
+	if err != nil {
+		return err
+	}
+	if caveat != "" {
+		fmt.Println(caveat)
 	}
 	return nil
 }
 
-// buildGoalEngine wires the engine. The checker runs on an INDEPENDENT cheap model
-// (the agent.subagent_model knob, via resolveSubAgentModel) so the judge is not the
-// worker grading itself. If no separate model is configured it falls back to the
-// worker's — usable for trying /goal out, but judge separation is degraded, so warn.
+// buildGoalEngine is the REPL wrapper around newGoalEngine: it prints the
+// degraded-judge warning.
 func buildGoalEngine(cfg app.Config, mc app.ModelConfig, runner *agent.Runner, sess *session.Session, store session.Store) (*goal.Engine, error) {
-	checkerProvider, checkerMC := resolveSubAgentModel(cfg, mc, runner.Model)
-	if checkerMC.Model == mc.Model {
+	engine, degraded, err := newGoalEngine(cfg, mc, runner, sess, store)
+	if degraded {
 		fmt.Println("warning: no separate judge model (agent.subagent_model) configured — the checker runs the SAME model as the worker, so judge separation is degraded.")
 	}
-	checker := &goal.LLMChecker{Provider: checkerProvider, Model: checkerMC.Model}
-	return goal.NewEngine(sess, store, runner, checker)
+	return engine, err
+}
+
+// buildPursueFunc returns the tui.PursueFunc the TUI run loop calls for /goal: it
+// admits, builds the engine, runs Pursue on the active session, and returns a
+// one-line outcome (no printing — the TUI renders it). The TUI has no interactive
+// consent prompt; hands-off relies on /auto (now available in the TUI).
+func buildPursueFunc(cfg app.Config, mc app.ModelConfig, runner *agent.Runner, store session.Store) tui.PursueFunc {
+	return func(pctx context.Context, sess *session.Session, objective string) (string, error) {
+		// The TUI can't resume/clear a goal yet, so refuse to overwrite a live one.
+		if existing, _ := goal.FromSession(sess); existing != nil &&
+			(existing.Status == goal.StatusActive || existing.Status == goal.StatusPaused) {
+			return "", fmt.Errorf("a goal is already in progress (%s); resume/clear it from the REPL for now", existing.Status)
+		}
+		caveat, err := admitObjective(pctx, cfg, mc, runner, objective)
+		if err != nil {
+			return "", err // rejected — the TUI prints it
+		}
+		engine, degraded, err := newGoalEngine(cfg, mc, runner, sess, store)
+		if err != nil {
+			return "", err
+		}
+		if degraded {
+			caveat = appendCaveat(caveat, "未配置独立裁判模型(agent.subagent_model),裁判与 worker 同模型,独立性降低。")
+		}
+		g := &goal.Goal{SessionID: sess.ID, Objective: objective, CreatedAt: time.Now()}
+		perr := engine.Pursue(pctx, g)
+		return goalSummaryLine(g, caveat), perr
+	}
+}
+
+// goalSummaryLine is the one-line outcome the TUI prints when a pursuit ends.
+func goalSummaryLine(g *goal.Goal, caveat string) string {
+	line := fmt.Sprintf("◎ /goal %s — turns %d, tokens %d, wall %s",
+		g.Status, g.Spent.Turns, g.Spent.Tokens, g.Spent.Wall.Round(time.Second))
+	if g.StatusNote != "" && g.Status != goal.StatusAchieved {
+		line += "\n  reason: " + g.StatusNote
+	}
+	if g.CheckerNote != "" {
+		line += "\n  judge: " + g.CheckerNote
+	}
+	if caveat != "" {
+		line = caveat + "\n" + line
+	}
+	return line
+}
+
+func appendCaveat(a, b string) string {
+	if a == "" {
+		return b
+	}
+	return a + "\n" + b
 }
 
 // pursue runs the loop in the foreground under a signal context: Ctrl-C cancels

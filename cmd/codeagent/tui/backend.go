@@ -29,6 +29,8 @@ type Backend struct {
 	modelSwap       chan string           // /use: TUI → run loop (model name to switch to)
 	modelSwapResult chan modelSwappedMsg  // /use: run loop → TUI (result)
 	planToggle      chan bool             // plan key: TUI → run loop (desired plan mode)
+	goalStart       chan string           // /goal: TUI → run loop (objective to pursue)
+	goalDone        chan goalDoneMsg      // /goal: run loop → TUI (outcome summary)
 
 	mu         sync.Mutex
 	turnCancel context.CancelFunc // set by the run loop before RunTurn; nil when idle
@@ -58,6 +60,8 @@ func NewBackend() *Backend {
 	mSwap := make(chan string, 1)
 	mSwapResult := make(chan modelSwappedMsg, 1)
 	planToggle := make(chan bool, 1)
+	goalStart := make(chan string, 1)
+	goalDone := make(chan goalDoneMsg, 1)
 	return &Backend{
 		Emitter:         tuiEmitter{ch: events},
 		Approver:        tuiApprover{ch: approvals},
@@ -69,7 +73,21 @@ func NewBackend() *Backend {
 		modelSwap:       mSwap,
 		modelSwapResult: mSwapResult,
 		planToggle:      planToggle,
+		goalStart:       goalStart,
+		goalDone:        goalDone,
 	}
+}
+
+// goalDoneMsg carries a finished /goal pursuit's one-line outcome (and error) to
+// the model — the goal analogue of doneMsg, on its own channel so a pursuit and a
+// plain turn never cross wires.
+type goalDoneMsg struct {
+	summary string
+	err     error
+}
+
+func waitForGoalDone(ch chan goalDoneMsg) tea.Cmd {
+	return func() tea.Msg { return <-ch }
 }
 
 // modelSwappedMsg carries the result of a /use model switch so the TUI can update

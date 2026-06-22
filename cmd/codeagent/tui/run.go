@@ -8,6 +8,7 @@ package tui
 import (
 	"context"
 	"encoding/json"
+	"errors"
 
 	"code-agent/internal/agent"
 	"code-agent/internal/session"
@@ -34,6 +35,13 @@ type AutoMode interface {
 	Enabled() bool
 	SetEnabled(bool)
 }
+
+// PursueFunc runs a /goal pursuit on the active session to a terminal state and
+// returns a one-line outcome summary. It is injected by the cmd layer, which owns
+// admission and engine/checker construction; the run loop calls it like a long
+// turn (events and approval cards flow through the existing channels). A nil
+// PursueFunc disables /goal in the TUI.
+type PursueFunc func(ctx context.Context, sess *session.Session, objective string) (summary string, err error)
 
 // ModelSwapFunc switches the runner to a new model by name, rebuilding the
 // provider/compactor and re-budgeting the session. Called inside the run-loop
@@ -65,7 +73,7 @@ type sessionSource struct {
 // b.inputs, runs the turn, persists, and signals done — and handles
 // session/model swaps between turns. The BubbleTea program owns the terminal.
 // Run blocks until the user quits.
-func Run(ctx context.Context, b *Backend, runner *agent.Runner, sess *session.Session, store Store, header HeaderInfo, resume ResumeFunc, modelSwap ModelSwapFunc, modelNames []string, auto AutoMode) error {
+func Run(ctx context.Context, b *Backend, runner *agent.Runner, sess *session.Session, store Store, header HeaderInfo, resume ResumeFunc, modelSwap ModelSwapFunc, modelNames []string, auto AutoMode, pursue PursueFunc) error {
 	// Cancelling on quit stops an in-flight turn rather than orphaning it.
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -108,6 +116,28 @@ func Run(ctx context.Context, b *Backend, runner *agent.Runner, sess *session.Se
 				// Applied at a turn boundary (the select can't fire mid-RunTurn), so
 				// the next turn runs in the chosen mode — no hot-swap of a live turn.
 				runner.PlanMode = on
+			case obj := <-b.goalStart:
+				// A /goal pursuit is a long, multi-turn turn: it drives runner.RunTurn
+				// repeatedly via the injected engine, so events and approval cards flow
+				// through the same channels. turnCancel cancels the whole pursuit, so
+				// ctrl+c pauses it (the engine settles to paused). The engine is the sole
+				// session writer, so no Save here.
+				var summary string
+				var err error
+				if pursue == nil {
+					err = errors.New("/goal is not available in this session")
+				} else {
+					turnCtx, cancel := context.WithCancel(ctx)
+					b.mu.Lock()
+					b.turnCancel = cancel
+					b.mu.Unlock()
+					summary, err = pursue(turnCtx, sess, obj)
+					cancel()
+					b.mu.Lock()
+					b.turnCancel = nil
+					b.mu.Unlock()
+				}
+				b.goalDone <- goalDoneMsg{summary: summary, err: err}
 			}
 		}
 	}()

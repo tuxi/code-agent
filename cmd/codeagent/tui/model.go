@@ -129,6 +129,7 @@ func (m model) Init() tea.Cmd {
 		waitForEvent(m.b.events),
 		waitForApproval(m.b.approvals),
 		waitForDone(m.b.done),
+		waitForGoalDone(m.b.goalDone),
 	}
 	// Banner printed once at startup — no git summary here (it follows each turn).
 	return tea.Batch(append([]tea.Cmd{tea.Println(m.banner())}, cmds...)...)
@@ -229,6 +230,25 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		// Print a fresh git summary so the user can see the workspace state after
 		// the agent's changes without leaving the TUI.
+		if gs := gitSummaryLine(); gs != "" {
+			cmds = append(cmds, tea.Println(gs))
+		}
+		return m, tea.Batch(cmds...)
+
+	case goalDoneMsg:
+		m.busy = false
+		m.thinking = false
+		m.lastErr = msg.err
+		out := m.tr.flush(m.width) // surface any buffered transcript from the last turn
+		cmds := []tea.Cmd{waitForGoalDone(m.b.goalDone)}
+		if len(out) > 0 {
+			cmds = append(cmds, tea.Println(strings.Join(out, "\n")))
+		}
+		if msg.err != nil {
+			cmds = append(cmds, tea.Println(styleFail.Render("goal: "+msg.err.Error())))
+		} else if msg.summary != "" {
+			cmds = append(cmds, tea.Println(msg.summary))
+		}
 		if gs := gitSummaryLine(); gs != "" {
 			cmds = append(cmds, tea.Println(gs))
 		}
@@ -456,6 +476,27 @@ func onOff(b bool) string {
 		return "ON"
 	}
 	return "OFF"
+}
+
+// startGoal kicks off a /goal pursuit on the run-loop goroutine and locks the
+// composer until it finishes (goalDoneMsg). The pursuit's turns render live
+// through the normal event stream; ctrl+c pauses it (CancelTurn).
+func (m *model) startGoal(args string) tea.Cmd {
+	if m.busy {
+		return tea.Println("finish the current turn before starting a goal")
+	}
+	obj := strings.TrimSpace(args)
+	if obj == "" {
+		return tea.Println("usage: /goal <objective>   e.g. /goal make go test ./... pass   (/auto on for hands-off)")
+	}
+	// resume/clear/status aren't wired in the TUI yet; don't pursue them as objectives.
+	if obj == "clear" || obj == "resume" || obj == "status" {
+		return tea.Println("/goal " + obj + " isn't available in the TUI yet — use the REPL (codeagent repl). The TUI currently supports starting a pursuit.")
+	}
+	m.busy = true
+	m.lastErr = nil
+	b := m.b
+	return func() tea.Msg { b.goalStart <- obj; return nil }
 }
 
 // --- /resume picker -----------------------------------------------------
