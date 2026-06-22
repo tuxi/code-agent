@@ -33,7 +33,8 @@ CREATE TABLE IF NOT EXISTS sessions (
 	context_window    INTEGER,
 	compact_threshold INTEGER,
 	created_at        TEXT,
-	updated_at        TEXT
+	updated_at        TEXT,
+	metadata          TEXT
 );
 CREATE TABLE IF NOT EXISTS messages (
 	session_id   TEXT,
@@ -108,6 +109,10 @@ func (s *SQLiteStore) open() error {
 		`ALTER TABLE requests ADD COLUMN trace TEXT`,
 		`ALTER TABLE requests ADD COLUMN completion_tokens INTEGER`,
 		`ALTER TABLE requests ADD COLUMN cached_prompt_tokens INTEGER`,
+		// sessions.metadata: was an in-memory-only field (Load reset it to empty,
+		// nothing persisted it). /goal is its first real consumer — it stores the
+		// goal thread-state here. Additive + idempotent like the rest.
+		`ALTER TABLE sessions ADD COLUMN metadata TEXT`,
 	} {
 		if _, err := db.Exec(stmt); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			db.Close()
@@ -163,15 +168,23 @@ func (s *SQLiteStore) save(ctx context.Context, sess *Session) error {
 	}
 	defer tx.Rollback()
 
+	metaJSON := ""
+	if len(sess.Metadata) > 0 {
+		b, err := json.Marshal(sess.Metadata)
+		if err != nil {
+			return fmt.Errorf("marshal metadata: %w", err)
+		}
+		metaJSON = string(b)
+	}
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO sessions (id, model, summary, prompt_tokens, context_window, compact_threshold, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO sessions (id, model, summary, prompt_tokens, context_window, compact_threshold, created_at, updated_at, metadata)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			model=excluded.model, summary=excluded.summary, prompt_tokens=excluded.prompt_tokens,
 			context_window=excluded.context_window, compact_threshold=excluded.compact_threshold,
-			updated_at=excluded.updated_at`,
+			updated_at=excluded.updated_at, metadata=excluded.metadata`,
 		sess.ID, sess.Model, sess.Summary, sess.PromptTokens, sess.ContextWindow, sess.CompactThreshold,
-		formatTime(sess.CreatedAt), formatTime(sess.UpdatedAt)); err != nil {
+		formatTime(sess.CreatedAt), formatTime(sess.UpdatedAt), metaJSON); err != nil {
 		return fmt.Errorf("save session row: %w", err)
 	}
 
@@ -213,12 +226,12 @@ func (s *SQLiteStore) save(ctx context.Context, sess *Session) error {
 
 func (s *SQLiteStore) Load(ctx context.Context, id string) (*Session, error) {
 	var sess Session
-	var createdAt, updatedAt string
+	var createdAt, updatedAt, metaJSON string
 	err := s.db.QueryRowContext(ctx, `
-		SELECT id, model, summary, prompt_tokens, context_window, compact_threshold, created_at, updated_at
+		SELECT id, model, summary, prompt_tokens, context_window, compact_threshold, created_at, updated_at, COALESCE(metadata, '')
 		FROM sessions WHERE id=?`, id).
 		Scan(&sess.ID, &sess.Model, &sess.Summary, &sess.PromptTokens, &sess.ContextWindow,
-			&sess.CompactThreshold, &createdAt, &updatedAt)
+			&sess.CompactThreshold, &createdAt, &updatedAt, &metaJSON)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf("session %q not found", id)
 	}
@@ -228,6 +241,11 @@ func (s *SQLiteStore) Load(ctx context.Context, id string) (*Session, error) {
 	sess.CreatedAt = parseTime(createdAt)
 	sess.UpdatedAt = parseTime(updatedAt)
 	sess.Metadata = map[string]any{}
+	if metaJSON != "" {
+		if err := json.Unmarshal([]byte(metaJSON), &sess.Metadata); err != nil {
+			return nil, fmt.Errorf("unmarshal metadata: %w", err)
+		}
+	}
 
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT role, content, tool_calls, tool_call_id FROM messages WHERE session_id=? ORDER BY seq`, id)

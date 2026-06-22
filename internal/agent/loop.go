@@ -98,6 +98,14 @@ type TurnResult struct {
 	Steps        []Step
 	PromptTokens int
 
+	// TokensUsed is the turn's CUMULATIVE token consumption: the sum over every
+	// model call this turn of prompt+completion usage. It differs from
+	// PromptTokens on purpose — PromptTokens is a GAUGE (the last call's context
+	// size, which drives compaction), TokensUsed is a COUNTER (what a turn-budget
+	// must accumulate). Summing PromptTokens across turns would conflate context
+	// size with spend; a /goal budget reads TokensUsed.
+	TokensUsed int
+
 	// HitStepLimit is true when the turn exhausted MaxSteps and Final came from the
 	// best-effort tool-free answer rather than the model finishing on its own. A
 	// caller that delegates a turn (the subagent, 8.3) uses it to avoid passing off
@@ -246,6 +254,7 @@ func (r *Runner) RunTurn(ctx context.Context, sess *session.Session, userInput s
 		}
 
 		turn.PromptTokens = resp.Usage.PromptTokens
+		turn.TokensUsed += resp.Usage.PromptTokens + resp.Usage.CompletionTokens
 		sess.PromptTokens = resp.Usage.PromptTokens
 		// This call's prompt size is the true post-compaction size if a compaction
 		// just ran, so finalize its observability stat here.
@@ -431,7 +440,9 @@ func (r *Runner) RunTurn(ctx context.Context, sess *session.Session, userInput s
 	// results in the history, so give it one final tool-free call to answer from
 	// what it has — instead of a useless "stopped" message that forces the user to
 	// re-ask (and re-pay for the whole investigation).
-	turn.Final = r.finalAnswerAfterLimit(ctx, sess)
+	final, finalTokens := r.finalAnswerAfterLimit(ctx, sess)
+	turn.Final = final
+	turn.TokensUsed += finalTokens
 	turn.HitStepLimit = true
 	r.emit(Event{Kind: EventTurnFinished, Text: turn.Final})
 	return turn, nil
@@ -496,9 +507,12 @@ const (
 // what it already gathered when the step limit is hit. The nudge is ephemeral
 // (not persisted); only the answer is appended to history, so the conversation
 // continues cleanly.
-func (r *Runner) finalAnswerAfterLimit(ctx context.Context, sess *session.Session) string {
+// finalAnswerAfterLimit returns the best-effort answer AND the tokens that one
+// call consumed, so the turn-level counter (TurnResult.TokensUsed) stays exact
+// even on the step-limit path.
+func (r *Runner) finalAnswerAfterLimit(ctx context.Context, sess *session.Session) (string, int) {
 	if ctx.Err() != nil {
-		return stepLimitMessage
+		return stepLimitMessage, 0
 	}
 	msgs := make([]model.Message, len(sess.Messages), len(sess.Messages)+1)
 	copy(msgs, sess.Messages)
@@ -516,16 +530,18 @@ func (r *Runner) finalAnswerAfterLimit(ctx context.Context, sess *session.Sessio
 		// No Tools: the model must answer with text, not request more tools.
 	})
 	r.emit(Event{Kind: EventModelFinished, PromptTokens: resp.Usage.PromptTokens, Elapsed: time.Since(start), Err: errString(err)})
+	tok := resp.Usage.PromptTokens + resp.Usage.CompletionTokens
 	// A leaked tool-call markup (deepseek, when forced to answer with no tools) is
 	// not an answer — don't show the user noise or persist it; fall back cleanly.
+	// The call still consumed tokens, so report them regardless.
 	if err != nil || resp.Content == "" || LooksLikeToolCallLeak(resp.Content) {
-		return stepLimitMessage
+		return stepLimitMessage, tok
 	}
 
 	sess.Messages = append(sess.Messages, model.Message{Role: model.RoleAssistant, Content: resp.Content})
 	sess.PromptTokens = resp.Usage.PromptTokens
 	sess.UpdatedAt = time.Now()
-	return resp.Content
+	return resp.Content, tok
 }
 
 // maybeCompact compacts the session when it has grown past the token threshold.

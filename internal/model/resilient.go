@@ -230,6 +230,13 @@ func (p *ResilientProvider) wait(ctx context.Context, d time.Duration) bool {
 	}
 }
 
+// IsRetryable exposes the transport-error classifier so higher layers (e.g. the
+// /goal pursuit loop) apply the SAME transient-vs-permanent policy the
+// ResilientProvider uses internally, instead of re-deriving the 4xx table. A
+// permanent error (auth/bad-request) should stop a loop immediately; a transient
+// one (timeout/5xx/network) is worth tolerating.
+func IsRetryable(err error) bool { return isRetryable(err) }
+
 // isRetryable classifies a Complete error. Transient transport failures and
 // 408/429/5xx are retryable; 4xx (bad request, auth, context-too-large),
 // caller cancellation, and malformed responses are not.
