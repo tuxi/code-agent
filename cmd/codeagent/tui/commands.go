@@ -36,6 +36,8 @@ var commandRegistry = []command{
 		run: func(m *model, args string) tea.Cmd { return m.openResume(args) }},
 	{name: "/use", desc: "switch to another configured model", ready: true,
 		run: func(m *model, args string) tea.Cmd { return m.openUse(args) }},
+	{name: "/auto", desc: "auto-approve in-workspace edits (commands still confirmed)", ready: true,
+		run: func(m *model, args string) tea.Cmd { return m.toggleAuto(args) }},
 	{name: "/exit", aliases: []string{"/quit"}, desc: "quit", ready: true,
 		run: func(m *model, _ string) tea.Cmd { return tea.Quit }},
 }
@@ -118,6 +120,7 @@ const helpText = `Commands
   /clear       clear the screen
   /resume      resume a saved session
   /use         switch to another configured model
+  /auto        on|off — auto-approve in-workspace edits (commands still confirmed)
   /exit /quit  leave the workspace
 
 Keys

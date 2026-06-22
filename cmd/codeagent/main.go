@@ -91,7 +91,7 @@ func run() error {
 	}
 
 	if len(args) == 0 {
-		return runTUI(ctx, cfg, mc, provider)
+		return runTUI(ctx, cfg, mc, provider, autoMode)
 	}
 
 	command := args[0]
@@ -103,7 +103,7 @@ func run() error {
 	case "run":
 		return runAgent(ctx, cfg, mc, provider, goal, autoMode)
 	case "tui":
-		return runTUI(ctx, cfg, mc, provider)
+		return runTUI(ctx, cfg, mc, provider, autoMode)
 	case "repl":
 		return repl(ctx, cfg, mc, provider, "", autoMode)
 	case "resume":
@@ -844,7 +844,7 @@ func runAgent(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider 
 // as `run`/`repl` (buildRunner) but with channel-backed Emitter/Approver, so the
 // loop runs on a background goroutine while the program owns the terminal. The
 // agent is unchanged; only the renderer differs.
-func runTUI(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider model.Provider) error {
+func runTUI(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider model.Provider, autoMode bool) error {
 	root := cfg.Workspace.Root
 
 	store, err := openStore(root)
@@ -879,8 +879,14 @@ func runTUI(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider mo
 	}
 	sess.Model = mc.Model
 
-	runner := buildRunner(cfg, mc, provider, registry, skillReg, backend.Approver, withEventStore(backend.Emitter, store, ctx))
+	// Wrap the card-backed approver with the AutoApprover so the TUI gets the same
+	// hands-off auto mode as repl/run: --auto seeds it on; /auto flips it per session.
+	approver := approve.NewAutoApprover(root, backend.Approver, autoMode)
+	runner := buildRunner(cfg, mc, provider, registry, skillReg, approver, withEventStore(backend.Emitter, store, ctx))
 	runner.Stream = true // 8.6: stream the model's text live (TUI only)
+	if autoMode {
+		fmt.Fprintln(os.Stderr, "auto mode: ON (in-workspace edits auto-approved; commands still confirmed) — /auto off to disable")
+	}
 	header := tui.HeaderInfo{
 		Model:            mc.Name,
 		Workspace:        filepath.Base(root),
@@ -921,7 +927,7 @@ func runTUI(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider mo
 			CompactThreshold: cfg.CompactThreshold(newMC),
 		}, nil
 	}
-	return tui.Run(ctx, backend, runner, sess, store, header, resume, modelSwap, cfg.ModelNames())
+	return tui.Run(ctx, backend, runner, sess, store, header, resume, modelSwap, cfg.ModelNames(), approver)
 }
 
 func printUsage() {

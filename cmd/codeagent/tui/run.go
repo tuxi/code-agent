@@ -27,6 +27,14 @@ type Store interface {
 // (provided by the cmd layer, which owns the config). Used by /resume.
 type ResumeFunc func(id string) (*session.Session, error)
 
+// AutoMode is the cmd layer's auto-approval toggle, surfaced to the /auto command.
+// Satisfied by *approve.AutoApprover; kept as an interface so the tui package does
+// not import the approve package.
+type AutoMode interface {
+	Enabled() bool
+	SetEnabled(bool)
+}
+
 // ModelSwapFunc switches the runner to a new model by name, rebuilding the
 // provider/compactor and re-budgeting the session. Called inside the run-loop
 // goroutine between turns (the same select safety as /resume). Returns the
@@ -48,6 +56,8 @@ type sessionSource struct {
 	modelNames   []modelInfo          // for the /use picker
 	modelSwap    ModelSwapFunc        // switches the model between turns
 	modelSwapped chan modelSwappedMsg // the TUI awaits this after posting a model name
+
+	auto AutoMode // /auto toggle (nil if not wired)
 }
 
 // Run starts the workspace. The runner must already be wired to b.Emitter and
@@ -55,7 +65,7 @@ type sessionSource struct {
 // b.inputs, runs the turn, persists, and signals done — and handles
 // session/model swaps between turns. The BubbleTea program owns the terminal.
 // Run blocks until the user quits.
-func Run(ctx context.Context, b *Backend, runner *agent.Runner, sess *session.Session, store Store, header HeaderInfo, resume ResumeFunc, modelSwap ModelSwapFunc, modelNames []string) error {
+func Run(ctx context.Context, b *Backend, runner *agent.Runner, sess *session.Session, store Store, header HeaderInfo, resume ResumeFunc, modelSwap ModelSwapFunc, modelNames []string, auto AutoMode) error {
 	// Cancelling on quit stops an in-flight turn rather than orphaning it.
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -132,6 +142,7 @@ func Run(ctx context.Context, b *Backend, runner *agent.Runner, sess *session.Se
 		modelNames:   models,
 		modelSwap:    modelSwap,
 		modelSwapped: b.modelSwapResult,
+		auto:         auto,
 	}
 	// Inline mode (no alt-screen, no mouse capture): finalized output goes to the
 	// terminal's own scrollback, so native select/copy, scroll, and Ctrl+R search

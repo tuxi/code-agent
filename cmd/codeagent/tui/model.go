@@ -428,6 +428,36 @@ func (m model) sessions() string {
 	return formatSessionList(m.src.list())
 }
 
+// toggleAuto flips auto-approval (the shared AutoApprover). SetEnabled is an
+// atomic on shared state, so it is safe to call from the render goroutine without
+// going through the run loop.
+func (m model) toggleAuto(args string) tea.Cmd {
+	if m.src.auto == nil {
+		return tea.Println("auto mode is not available in this session")
+	}
+	switch strings.TrimSpace(args) {
+	case "on":
+		m.src.auto.SetEnabled(true)
+	case "off":
+		m.src.auto.SetEnabled(false)
+	case "":
+		return tea.Println("auto mode is " + onOff(m.src.auto.Enabled()) + " (usage: /auto on|off)")
+	default:
+		return tea.Println("usage: /auto [on|off]")
+	}
+	if m.src.auto.Enabled() {
+		return tea.Println("auto mode ON — in-workspace edits (edit_file/create_file) auto-approved; commands, patches, and commits still confirmed.")
+	}
+	return tea.Println("auto mode OFF — every side-effecting tool is confirmed again.")
+}
+
+func onOff(b bool) string {
+	if b {
+		return "ON"
+	}
+	return "OFF"
+}
+
 // --- /resume picker -----------------------------------------------------
 
 // openResume opens the session picker (no arg) or resumes a session directly
