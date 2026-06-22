@@ -29,7 +29,7 @@ import (
 // it never prompts and runs hands-off. Ctrl-C pauses at the turn boundary.
 //
 // The goal package is auto-mode-agnostic: the worker simply inherits runner.Approver.
-func handleGoal(ctx context.Context, line string, cfg app.Config, mc app.ModelConfig, runner *agent.Runner, sess *session.Session, store session.Store) error {
+func handleGoal(ctx context.Context, line string, cfg app.Config, mc app.ModelConfig, runner *agent.Runner, sess *session.Session, store session.Store, ask lineReader) error {
 	arg := strings.TrimSpace(strings.TrimPrefix(line, "/goal"))
 	switch arg {
 	case "":
@@ -42,27 +42,34 @@ func handleGoal(ctx context.Context, line string, cfg app.Config, mc app.ModelCo
 		fmt.Println("goal cleared.")
 		return nil
 	case "resume":
-		return goalResume(ctx, cfg, mc, runner, sess, store)
+		return goalResume(ctx, cfg, mc, runner, sess, store, ask)
 	default:
-		return goalStart(ctx, cfg, mc, runner, sess, store, arg)
+		return goalStart(ctx, cfg, mc, runner, sess, store, ask, arg)
 	}
 }
 
-func goalStart(ctx context.Context, cfg app.Config, mc app.ModelConfig, runner *agent.Runner, sess *session.Session, store session.Store, objective string) error {
+func goalStart(ctx context.Context, cfg app.Config, mc app.ModelConfig, runner *agent.Runner, sess *session.Session, store session.Store, ask lineReader, objective string) error {
 	if existing, _ := goal.FromSession(sess); existing != nil &&
 		(existing.Status == goal.StatusActive || existing.Status == goal.StatusPaused) {
 		return fmt.Errorf("a goal is already in progress (%s); /goal resume to continue or /goal clear to drop it", existing.Status)
+	}
+	// Admission (§4.7): reject goals with no verifiable endpoint / high-risk actions
+	// before spending anything. Resume skips this — the goal was already admitted.
+	if err := admitGoal(ctx, cfg, mc, runner, objective); err != nil {
+		return err
 	}
 	engine, err := buildGoalEngine(cfg, mc, runner, sess, store)
 	if err != nil {
 		return err
 	}
+	restore := offerAuto(runner, ask) // prompts + enables now; restores on return
+	defer restore()
 	g := &goal.Goal{SessionID: sess.ID, Objective: objective, CreatedAt: time.Now()}
 	fmt.Printf("goal set — pursuing (auto mode %s). Ctrl-C to pause.\n", autoState(runner))
 	return pursue(ctx, engine, g)
 }
 
-func goalResume(ctx context.Context, cfg app.Config, mc app.ModelConfig, runner *agent.Runner, sess *session.Session, store session.Store) error {
+func goalResume(ctx context.Context, cfg app.Config, mc app.ModelConfig, runner *agent.Runner, sess *session.Session, store session.Store, ask lineReader) error {
 	g, err := goal.FromSession(sess)
 	if err != nil {
 		return err
@@ -77,8 +84,30 @@ func goalResume(ctx context.Context, cfg app.Config, mc app.ModelConfig, runner 
 	if err != nil {
 		return err
 	}
-	fmt.Printf("resuming goal (turns so far: %d). Ctrl-C to pause.\n", g.Spent.Turns)
+	restore := offerAuto(runner, ask)
+	defer restore()
+	fmt.Printf("resuming goal (turns so far: %d, auto mode %s). Ctrl-C to pause.\n", g.Spent.Turns, autoState(runner))
 	return pursue(ctx, engine, g)
+}
+
+// admitGoal runs the §4.7 set-time gate on the cheap independent model. A rejected
+// goal returns an error (the REPL prints it). It FAILS OPEN: if the admitter itself
+// errors, it warns and proceeds — admission is advisory UX, not the safety boundary
+// (the approver guards high-risk actions regardless).
+func admitGoal(ctx context.Context, cfg app.Config, mc app.ModelConfig, runner *agent.Runner, objective string) error {
+	provider, amc := resolveSubAgentModel(cfg, mc, runner.Model)
+	res, err := (&goal.LLMAdmitter{Provider: provider, Model: amc.Model}).Admit(ctx, objective)
+	if err != nil {
+		fmt.Printf("note: 准入判定不可用(%v),继续。\n", err)
+		return nil
+	}
+	if !res.OK {
+		return fmt.Errorf("这个目标不适合 /goal:%s", res.Reason)
+	}
+	if res.Fuzzy {
+		fmt.Printf("注意:该目标没有干净的 verify 命令,裁判依据证据判定,可靠性低于命令式终点 — %s\n", res.Reason)
+	}
+	return nil
 }
 
 // buildGoalEngine wires the engine. The checker runs on an INDEPENDENT cheap model
@@ -148,6 +177,31 @@ func reportGoal(g *goal.Goal, err error) {
 	if g.CheckerNote != "" {
 		fmt.Println("  judge:", g.CheckerNote)
 	}
+}
+
+// offerAuto enables auto mode for the duration of one pursuit, with a single
+// explicit consent, when it is currently off — so /goal is hands-off without a
+// separate /auto on, but never silently. It returns a restore func (the caller
+// defers it) that puts auto mode back as it was. Already-on (or no AutoApprover)
+// → no prompt, no-op: a user who wants auto to persist across goals just runs
+// /auto on once and is never asked again.
+func offerAuto(runner *agent.Runner, ask lineReader) func() {
+	a, ok := runner.Approver.(*approve.AutoApprover)
+	if !ok || a.Enabled() {
+		return func() {}
+	}
+	line, err := ask("auto mode is OFF — enable it for this pursuit? in-workspace edits auto-approved, commands still confirmed [y/N]: ")
+	if err != nil || !isYes(line) {
+		fmt.Println("keeping auto OFF — the worker will stop at y/N for each side-effecting tool (/auto on to keep it on across goals).")
+		return func() {}
+	}
+	a.SetEnabled(true)
+	return func() { a.SetEnabled(false) } // restore: this consent was for one pursuit only
+}
+
+func isYes(s string) bool {
+	s = strings.ToLower(strings.TrimSpace(s))
+	return s == "y" || s == "yes"
 }
 
 // autoState describes the worker's approval posture for the pursuit banner.

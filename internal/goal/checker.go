@@ -54,18 +54,24 @@ func (c *LLMChecker) Check(ctx context.Context, g *Goal, t Transcript) (CheckRes
 // "not met" rather than erroring: an unparseable judge must never be read as
 // "achieved". Failing safe means continuing the loop, never a false success.
 func parseCheckJSON(raw string) CheckResult {
-	s := strings.TrimSpace(raw)
-	// Carve out the outermost {...} so fences/preamble don't break json.Unmarshal.
-	if i := strings.Index(s, "{"); i >= 0 {
-		if j := strings.LastIndex(s, "}"); j >= i {
-			s = s[i : j+1]
-		}
-	}
 	var r CheckResult
-	if err := json.Unmarshal([]byte(s), &r); err != nil {
+	if err := json.Unmarshal([]byte(carveJSON(raw)), &r); err != nil {
 		return CheckResult{Met: false, Reason: "checker output unparseable: " + truncate(raw, 200)}
 	}
 	return r
+}
+
+// carveJSON pulls the outermost {...} out of a model reply, tolerating ```json
+// fences and surrounding prose. It returns the trimmed input unchanged when no
+// brace pair is found, so the caller's Unmarshal fails and it can degrade.
+func carveJSON(raw string) string {
+	s := strings.TrimSpace(raw)
+	if i := strings.Index(s, "{"); i >= 0 {
+		if j := strings.LastIndex(s, "}"); j >= i {
+			return s[i : j+1]
+		}
+	}
+	return s
 }
 
 func truncate(s string, n int) string {

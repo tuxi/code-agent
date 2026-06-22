@@ -147,7 +147,7 @@ func repl(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider mode
 			// /goal runs turns and needs ctx (for its Ctrl-C signal context), which
 			// handleCommand does not carry, so it is dispatched here in the loop.
 			if strings.Fields(line)[0] == "/goal" {
-				if gerr := handleGoal(ctx, line, cfg, mc, runner, sess, store); gerr != nil {
+				if gerr := handleGoal(ctx, line, cfg, mc, runner, sess, store, ask); gerr != nil {
 					fmt.Println("error:", gerr)
 				}
 				continue
