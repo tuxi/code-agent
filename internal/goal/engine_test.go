@@ -202,6 +202,20 @@ func TestStallBlocksOnConstantEvidence(t *testing.T) {
 	}
 }
 
+// The engine captures the workspace diff onto the goal before judging, so the
+// checker can see every change (anti-gaming, §9.3).
+func TestDiffFuncCapturedBeforeJudge(t *testing.T) {
+	achieve := &fakeChecker{fn: func(int) (CheckResult, error) { return CheckResult{Met: true, Reason: "ok"}, nil }}
+	e, g := newTestEngine(t, &fakeWorker{}, achieve, fakeTrans{})
+	e.DiffFunc = func(context.Context) string { return "CAPTURED-DIFF" }
+	if err := e.Pursue(context.Background(), g); err != nil {
+		t.Fatal(err)
+	}
+	if g.diff != "CAPTURED-DIFF" {
+		t.Errorf("DiffFunc result not captured onto the goal; got %q", g.diff)
+	}
+}
+
 // Snapshot is safe to call concurrently with a running Pursue (run with -race).
 func TestSnapshotConcurrentNoRace(t *testing.T) {
 	neverMet := &fakeChecker{fn: func(int) (CheckResult, error) { return CheckResult{}, nil }}

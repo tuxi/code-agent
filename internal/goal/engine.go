@@ -48,6 +48,13 @@ type Engine struct {
 	StallLimit int
 	MaxErrors  int
 
+	// DiffFunc, when set, returns the current workspace git diff. The engine calls
+	// it each turn before the judge so the checker sees every file change (not just
+	// what the worker surfaced) — the anti-gaming signal (§9.3). Injected by the cmd
+	// layer (which owns the workspace root + the read-only git_diff tool); nil = no
+	// forced diff (judge sees surfaced evidence only).
+	DiffFunc func(ctx context.Context) string
+
 	pause atomic.Bool
 
 	// mu guards snap: Pursue runs in its own goroutine and mutates the live Goal,
@@ -175,6 +182,12 @@ func (e *Engine) Pursue(ctx context.Context, g *Goal) error {
 			continue
 		}
 		g.Spent.Turns++
+
+		// Capture the full workspace diff before judging so the checker sees every
+		// change, not only what the worker surfaced (anti-gaming, §9.3).
+		if e.DiffFunc != nil {
+			g.diff = e.DiffFunc(ctx)
+		}
 
 		chk, cerr := e.check(ctx, g) // retries the cheap judge in place; worker not re-run
 		if cerr != nil {

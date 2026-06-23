@@ -33,15 +33,24 @@ type LLMChecker struct {
 }
 
 const checkerSystem = `你是目标达成评判者。只依据提供的证据判断条件是否满足,证据不足时判未满足。` +
-	`不要臆测、不要替工作模型辩护。只输出严格 JSON:{"met":bool,"blocked":bool,"reason":string},不要任何额外文字。`
+	`不要臆测、不要替工作模型辩护。` +
+	`若目标含约束(如「不得修改测试文件」「不得 hardcode 预期输出」),依据 git diff 核对是否被违反;` +
+	`违反约束即判未满足,并在 reason 指出。` +
+	`只输出严格 JSON:{"met":bool,"blocked":bool,"reason":string},不要任何额外文字。`
 
 func (c *LLMChecker) Check(ctx context.Context, g *Goal, t Transcript) (CheckResult, error) {
+	user := "目标条件:\n" + g.Objective + "\n\n已观察证据(仅以下内容为准):\n" + t.Evidence()
+	if g.diff != "" {
+		// The full diff is ground truth even when the worker did not surface it,
+		// so the judge can catch test-file edits / hardcoded expectations.
+		user += "\n\n本轮工作区实际改动(git diff —— 完整事实,worker 未必主动展示):\n" + g.diff
+	}
 	resp, err := c.Provider.Complete(ctx, model.Request{
 		Model:       c.Model,
 		Temperature: 0,
 		Messages: []model.Message{
 			{Role: model.RoleSystem, Content: checkerSystem},
-			{Role: model.RoleUser, Content: "目标条件:\n" + g.Objective + "\n\n已观察证据(仅以下内容为准):\n" + t.Evidence()},
+			{Role: model.RoleUser, Content: user},
 		},
 	})
 	if err != nil {

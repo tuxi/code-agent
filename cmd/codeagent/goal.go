@@ -7,6 +7,7 @@ import (
 	"code-agent/internal/approve"
 	"code-agent/internal/goal"
 	"code-agent/internal/session"
+	"code-agent/internal/tools/git"
 	"context"
 	"fmt"
 	"os"
@@ -120,7 +121,24 @@ func newGoalEngine(cfg app.Config, mc app.ModelConfig, runner *agent.Runner, ses
 	checkerProvider, checkerMC := resolveSubAgentModel(cfg, mc, runner.Model)
 	checker := &goal.LLMChecker{Provider: checkerProvider, Model: checkerMC.Model}
 	engine, err = goal.NewEngine(sess, store, runner, checker)
+	if engine != nil {
+		engine.DiffFunc = makeDiffFunc(cfg.Workspace.Root) // anti-gaming: judge sees every change
+	}
 	return engine, checkerMC.Model == mc.Model, err
+}
+
+// makeDiffFunc returns the engine's per-turn diff capturer, backed by the same
+// read-only, workspace-rooted, size-capped git_diff tool the worker uses. A git
+// error (e.g. not a repo) degrades to "" — no diff evidence, no crash.
+func makeDiffFunc(root string) func(context.Context) string {
+	tool := git.NewDiffTool(root)
+	return func(ctx context.Context) string {
+		res, err := tool.Execute(ctx, nil)
+		if err != nil {
+			return ""
+		}
+		return strings.TrimSpace(res.Content)
+	}
 }
 
 // admitGoal is the REPL wrapper around admitObjective: it prints the caveat and

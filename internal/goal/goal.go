@@ -71,6 +71,13 @@ type Goal struct {
 	stallSig   string
 	stallCount int
 
+	// diff is this turn's full workspace git diff, captured by the engine before
+	// the judge runs and fed to the LLM checker. It is the anti-gaming signal:
+	// the judge sees ALL file changes, not just what the worker chose to surface,
+	// so objective constraints ("don't modify the tests") are checkable. Unexported
+	// → recomputed each turn, never persisted.
+	diff string
+
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
