@@ -27,6 +27,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -38,6 +39,16 @@ import (
 
 func main() {
 	if err := run(); err != nil {
+		// An ExitCoder (headless `goal`) carries a specific exit code so CI can tell
+		// achieved from blocked/errored/budget. Its message may be empty when the
+		// outcome was already printed; only print a non-empty one.
+		var coder interface{ ExitCode() int }
+		if errors.As(err, &coder) {
+			if msg := err.Error(); msg != "" {
+				_, _ = fmt.Fprintln(os.Stderr, msg)
+			}
+			os.Exit(coder.ExitCode())
+		}
 		_, _ = fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
@@ -102,6 +113,8 @@ func run() error {
 		return runAsk(ctx, mc, provider, goal)
 	case "run":
 		return runAgent(ctx, cfg, mc, provider, goal, autoMode)
+	case "goal":
+		return runGoal(ctx, cfg, mc, provider, goal, autoMode)
 	case "tui":
 		return runTUI(ctx, cfg, mc, provider, autoMode)
 	case "repl":
@@ -840,6 +853,52 @@ func runAgent(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider 
 	return nil
 }
 
+// runGoal is the non-interactive /goal driver (`codeagent [--auto] goal "<obj>"`):
+// it pursues to a terminal state, prints progress + a one-line outcome, and exits
+// with a code reflecting the result (achieved=0; blocked/errored/budget/paused
+// distinct) so CI can branch on it. Same setup as runAgent; the pursuit and the
+// exit-code mapping live in pursueHeadless.
+func runGoal(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider model.Provider, objective string, autoMode bool) error {
+	if strings.TrimSpace(objective) == "" {
+		return fmt.Errorf(`usage: codeagent [--auto] goal "<objective>"`)
+	}
+	root := cfg.Workspace.Root
+
+	store, err := openStore(root)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+	attachObserver(provider, store, ctx)
+
+	registry, skillReg, mcpMgr, err := buildRegistry(ctx, cfg, mc, provider, store, subagentProgress())
+	if err != nil {
+		return err
+	}
+	defer mcpMgr.Close()
+	if s := mcpMgr.Summary(); s != "" {
+		fmt.Fprintln(os.Stderr, s)
+	}
+	if !autoMode {
+		fmt.Fprintln(os.Stderr, "note: auto mode OFF — non-interactive, so confirm-tier tools (mutating commands, edits) will be denied; pass --auto for hands-off.")
+	}
+
+	approver := approve.NewAutoApprover(root, ui.ConfirmApprover{}, autoMode)
+	runner := buildRunner(cfg, mc, provider, registry, skillReg, approver, withEventStore(buildEmitter(), store, ctx))
+
+	sess, err := session.NewBuilder(root).
+		WithBudget(mc.ContextWindow, cfg.CompactThreshold(mc)).
+		WithSkillsIndex(skillReg.PromptIndex()).
+		Build()
+	if err != nil {
+		return err
+	}
+	sess.Model = mc.Model
+	fmt.Fprintf(os.Stderr, "Model: %s (%s)\nSession: %s\n", mc.Name, mc.Model, sess.ID)
+
+	return pursueHeadless(ctx, cfg, mc, runner, store, sess, objective)
+}
+
 // runTUI launches the Phase 7 BubbleTea workspace (M1). It builds the same runner
 // as `run`/`repl` (buildRunner) but with channel-backed Emitter/Approver, so the
 // loop runs on a background goroutine while the program owns the terminal. The
@@ -936,6 +995,7 @@ func printUsage() {
   codeagent [--model NAME]                 start the TUI workspace (new session)
   codeagent [--model NAME] repl            start the interactive REPL (new session)
   codeagent [--model NAME] run "..."       run a single task
+  codeagent [--model NAME] [--auto] goal "..."  pursue a goal to a verifiable end (exit code = outcome)
   codeagent [--model NAME] ask "..."       one-off question (no tools)
   codeagent sessions                       list saved sessions
   codeagent stats                          aggregate compaction + provider telemetry

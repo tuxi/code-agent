@@ -250,6 +250,58 @@ func goalStatusText(g *goal.Goal) string {
 	return s
 }
 
+// pursueHeadless runs a /goal pursuit non-interactively (the `goal` subcommand):
+// it reuses goalOps, prints the one-line outcome, and returns an exit-coded error
+// so the process exits with a status CI can branch on. SIGINT cancels the pursuit
+// (engine settles paused → exit code for paused).
+func pursueHeadless(ctx context.Context, cfg app.Config, mc app.ModelConfig, runner *agent.Runner, store session.Store, sess *session.Session, objective string) error {
+	gctx, stop := signal.NotifyContext(ctx, os.Interrupt)
+	defer stop()
+
+	summary, err := buildGoalOps(cfg, mc, runner, store).Pursue(gctx, sess, objective)
+	if summary != "" {
+		fmt.Println(summary)
+	}
+	if err != nil {
+		return err // admission rejection / internal error → exit 1 (regular error path)
+	}
+	g, _ := goal.FromSession(sess)
+	return goalExitError(g)
+}
+
+// exitError carries a process exit code (honored by main). An empty message means
+// the outcome was already printed (the summary line), so main exits silently.
+type exitError struct {
+	code int
+	msg  string
+}
+
+func (e exitError) Error() string { return e.msg }
+func (e exitError) ExitCode() int { return e.code }
+
+// goalExitError maps a terminal goal status to an exit code: achieved=0 (nil),
+// budget=2, blocked=3, errored=4, paused=5. The summary line already explains why,
+// so these carry no message.
+func goalExitError(g *goal.Goal) error {
+	if g == nil {
+		return exitError{code: 1, msg: "goal: no terminal state recorded"}
+	}
+	switch g.Status {
+	case goal.StatusAchieved:
+		return nil
+	case goal.StatusBudgetLimited:
+		return exitError{code: 2}
+	case goal.StatusBlocked:
+		return exitError{code: 3}
+	case goal.StatusErrored:
+		return exitError{code: 4}
+	case goal.StatusPaused:
+		return exitError{code: 5}
+	default:
+		return exitError{code: 1, msg: "goal: unexpected terminal status " + string(g.Status)}
+	}
+}
+
 func appendCaveat(a, b string) string {
 	if a == "" {
 		return b
