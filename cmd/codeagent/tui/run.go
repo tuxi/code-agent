@@ -50,6 +50,9 @@ type GoalOps interface {
 	Status(sess *session.Session) string
 	// Clear drops the session's goal and persists.
 	Clear(ctx context.Context, sess *session.Session) error
+	// Finalize applies the end-of-pursuit policy (achieved → archive + auto-clear).
+	// Called after a pursuit returns; a no-op for resumable terminals.
+	Finalize(ctx context.Context, sess *session.Session)
 }
 
 // ModelSwapFunc switches the runner to a new model by name, rebuilding the
@@ -145,6 +148,9 @@ func Run(ctx context.Context, b *Backend, runner *agent.Runner, sess *session.Se
 					b.mu.Lock()
 					b.turnCancel = nil
 					b.mu.Unlock()
+					if err == nil {
+						goalOps.Finalize(ctx, sess) // achieved → archive + auto-clear
+					}
 				}
 				b.goalDone <- goalDoneMsg{summary: summary, err: err}
 			case req := <-b.goalCtl:

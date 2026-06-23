@@ -85,6 +85,35 @@ func TestClearRemovesGoal(t *testing.T) {
 	}
 }
 
+// TestArchiveMovesActiveToLast: Archive clears the active slot and stores the goal
+// as the single-slot history (the achieved auto-clear, §4.2/§11.2).
+func TestArchiveMovesActiveToLast(t *testing.T) {
+	sess := &session.Session{ID: "s", Metadata: map[string]any{}}
+	(&Goal{SessionID: "s", Objective: "x", Status: StatusAchieved}).IntoSession(sess)
+
+	Archive(sess)
+
+	if g, _ := FromSession(sess); g != nil {
+		t.Errorf("active goal should be cleared after Archive, got %+v", g)
+	}
+	last, err := Last(sess)
+	if err != nil || last == nil {
+		t.Fatalf("Last after Archive: want a goal, got (%v, %v)", last, err)
+	}
+	if last.Status != StatusAchieved || last.Objective != "x" {
+		t.Errorf("archived goal wrong: %+v", last)
+	}
+}
+
+// Archive with no active goal must not fabricate a Last entry.
+func TestArchiveNoActiveIsNoop(t *testing.T) {
+	sess := &session.Session{ID: "s", Metadata: map[string]any{}}
+	Archive(sess)
+	if last, _ := Last(sess); last != nil {
+		t.Errorf("Archive with no active goal should leave Last empty, got %+v", last)
+	}
+}
+
 // TestParseCheckJSON: the judge's output is robust to fences/prose, and anything
 // unparseable degrades to "not met" — never a false "achieved".
 func TestParseCheckJSON(t *testing.T) {

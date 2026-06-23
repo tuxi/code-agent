@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"testing"
+	"time"
 
 	"code-agent/internal/goal"
 )
@@ -40,5 +41,31 @@ func TestGoalExitError(t *testing.T) {
 	// A missing terminal state is a non-zero failure, not a silent success.
 	if err := goalExitError(nil); err == nil {
 		t.Error("nil goal: want a non-nil exit error")
+	}
+}
+
+// TestParseObjective pins the budget-flag grammar: leading --turns/--tokens/--wall
+// are stripped into the budget; the first non-flag (or a bad value) ends parsing.
+func TestParseObjective(t *testing.T) {
+	cases := []struct {
+		in         string
+		wantObj    string
+		wantTurns  int
+		wantTokens int
+		wantWall   time.Duration
+	}{
+		{"make tests pass", "make tests pass", 0, 0, 0},
+		{"--turns 20 make tests pass", "make tests pass", 20, 0, 0},
+		{"--turns 5 --tokens 1000 fix the bug", "fix the bug", 5, 1000, 0},
+		{"--wall 30m clean up", "clean up", 0, 0, 30 * time.Minute},
+		{"--turns nope do x", "--turns nope do x", 0, 0, 0}, // bad value → not consumed
+		{"--turns 5", "", 5, 0, 0},                          // only flags → empty objective
+	}
+	for _, c := range cases {
+		obj, b := parseObjective(c.in)
+		if obj != c.wantObj || b.MaxTurns != c.wantTurns || b.MaxTokens != c.wantTokens || b.MaxWall != c.wantWall {
+			t.Errorf("parseObjective(%q) = (%q, %+v); want obj=%q turns=%d tokens=%d wall=%s",
+				c.in, obj, b, c.wantObj, c.wantTurns, c.wantTokens, c.wantWall)
+		}
 	}
 }

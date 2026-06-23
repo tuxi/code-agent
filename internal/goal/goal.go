@@ -41,8 +41,12 @@ const (
 	StatusCleared Status = "cleared"
 )
 
-// metadataKey is the session.Metadata key under which the current goal lives.
-const metadataKey = "goal"
+// metadataKey is the session.Metadata key under which the current (active) goal
+// lives; archiveKey holds the most recently completed goal (single slot).
+const (
+	metadataKey = "goal"
+	archiveKey  = "goal_last"
+)
 
 // Goal is the persistent thread-state. It is JSON-encoded into
 // session.Metadata[metadataKey] and saved on the same store.Save the REPL
@@ -119,11 +123,23 @@ func (g *Goal) IntoSession(sess *session.Session) {
 	sess.Metadata[metadataKey] = g
 }
 
-// FromSession decodes the session's current goal, or (nil, nil) if there is
-// none. After a store Load the value is a map[string]any (JSON round-trip), so
-// we re-marshal it back through the typed struct.
+// FromSession decodes the session's current (active) goal, or (nil, nil) if none.
 func FromSession(sess *session.Session) (*Goal, error) {
-	raw, ok := sess.Metadata[metadataKey]
+	return decodeGoalAt(sess, metadataKey, true)
+}
+
+// Last decodes the most recently archived goal, or (nil, nil) if none. It is the
+// single-slot history written by Archive on achieved/clear.
+func Last(sess *session.Session) (*Goal, error) {
+	return decodeGoalAt(sess, archiveKey, false)
+}
+
+// decodeGoalAt re-marshals the metadata value at key back through the typed struct
+// (after a store Load it is a map[string]any from the JSON round-trip). When
+// checkSession is set it verifies the goal belongs to the session it rode in on
+// (guards a blob copied across sessions).
+func decodeGoalAt(sess *session.Session, key string, checkSession bool) (*Goal, error) {
+	raw, ok := sess.Metadata[key]
 	if !ok || raw == nil {
 		return nil, nil
 	}
@@ -133,19 +149,28 @@ func FromSession(sess *session.Session) (*Goal, error) {
 	}
 	var g Goal
 	if err := json.Unmarshal(b, &g); err != nil {
-		return nil, fmt.Errorf("decode goal from session metadata: %w", err)
+		return nil, fmt.Errorf("decode goal from session metadata[%q]: %w", key, err)
 	}
-	// Guard against a goal blob copied into the wrong session (e.g. metadata
-	// duplicated across sessions): the goal must belong to the session it rode in on.
-	if g.SessionID != "" && sess.ID != "" && g.SessionID != sess.ID {
+	if checkSession && g.SessionID != "" && sess.ID != "" && g.SessionID != sess.ID {
 		return nil, fmt.Errorf("goal session mismatch: goal=%q session=%q", g.SessionID, sess.ID)
 	}
 	return &g, nil
 }
 
 // Clear removes the active goal from the session — the command-layer `/goal clear`.
-// The caller persists the session afterwards. (Phase 1 drops the active pointer;
-// achieved-goal archiving per §11.2 is a later addition.)
+// The caller persists afterwards.
 func Clear(sess *session.Session) {
+	delete(sess.Metadata, metadataKey)
+}
+
+// Archive moves the active goal into the single-slot history (goal_last) and clears
+// the active slot — the §4.2 auto-clear + §11.2 archive applied on achieved. No-op
+// when there is no active goal. The caller persists afterwards.
+func Archive(sess *session.Session) {
+	g, err := FromSession(sess)
+	if err != nil || g == nil {
+		return
+	}
+	sess.Metadata[archiveKey] = g
 	delete(sess.Metadata, metadataKey)
 }

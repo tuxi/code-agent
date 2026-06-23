@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -51,6 +52,10 @@ func handleGoal(ctx context.Context, line string, cfg app.Config, mc app.ModelCo
 }
 
 func goalStart(ctx context.Context, cfg app.Config, mc app.ModelConfig, runner *agent.Runner, sess *session.Session, store session.Store, ask lineReader, objective string) error {
+	objective, budget := parseObjective(objective)
+	if objective == "" {
+		return fmt.Errorf("usage: /goal [--turns N] [--tokens N] [--wall DUR] <objective>")
+	}
 	if existing, _ := goal.FromSession(sess); existing != nil &&
 		(existing.Status == goal.StatusActive || existing.Status == goal.StatusPaused) {
 		return fmt.Errorf("a goal is already in progress (%s); /goal resume to continue or /goal clear to drop it", existing.Status)
@@ -66,9 +71,11 @@ func goalStart(ctx context.Context, cfg app.Config, mc app.ModelConfig, runner *
 	}
 	restore := offerAuto(runner, ask) // prompts + enables now; restores on return
 	defer restore()
-	g := &goal.Goal{SessionID: sess.ID, Objective: objective, CreatedAt: time.Now()}
-	fmt.Printf("goal set — pursuing (auto mode %s). Ctrl-C to pause.\n", autoState(runner))
-	return pursue(ctx, engine, g)
+	g := &goal.Goal{SessionID: sess.ID, Objective: objective, Budget: budget, CreatedAt: time.Now()}
+	fmt.Printf("goal set — pursuing (auto mode %s%s). Ctrl-C to pause.\n", autoState(runner), budgetNote(budget))
+	pursue(ctx, engine, g)
+	finalizeGoal(ctx, store, sess) // achieved → archive + auto-clear
+	return nil
 }
 
 func goalResume(ctx context.Context, cfg app.Config, mc app.ModelConfig, runner *agent.Runner, sess *session.Session, store session.Store, ask lineReader) error {
@@ -89,7 +96,9 @@ func goalResume(ctx context.Context, cfg app.Config, mc app.ModelConfig, runner 
 	restore := offerAuto(runner, ask)
 	defer restore()
 	fmt.Printf("resuming goal (turns so far: %d, auto mode %s). Ctrl-C to pause.\n", g.Spent.Turns, autoState(runner))
-	return pursue(ctx, engine, g)
+	pursue(ctx, engine, g)
+	finalizeGoal(ctx, store, sess) // achieved → archive + auto-clear
+	return nil
 }
 
 // admitObjective runs the §4.7 set-time gate on the cheap independent model. It
@@ -198,16 +207,20 @@ func (o goalOps) Pursue(pctx context.Context, sess *session.Session, objective s
 		}
 		g = ex
 	} else {
+		obj, budget := parseObjective(objective)
+		if obj == "" {
+			return "", fmt.Errorf("empty objective (after stripping budget flags)")
+		}
 		if ex, _ := goal.FromSession(sess); ex != nil &&
 			(ex.Status == goal.StatusActive || ex.Status == goal.StatusPaused) {
 			return "", fmt.Errorf("a goal is already in progress (%s); /goal resume or /goal clear", ex.Status)
 		}
-		c, err := admitObjective(pctx, o.cfg, o.mc, o.runner, objective)
+		c, err := admitObjective(pctx, o.cfg, o.mc, o.runner, obj)
 		if err != nil {
 			return "", err // rejected — the TUI prints it
 		}
 		caveat = c
-		g = &goal.Goal{SessionID: sess.ID, Objective: objective, CreatedAt: time.Now()}
+		g = &goal.Goal{SessionID: sess.ID, Objective: obj, Budget: budget, CreatedAt: time.Now()}
 	}
 	engine, degraded, err := newGoalEngine(o.cfg, o.mc, o.runner, sess, o.store)
 	if err != nil {
@@ -220,14 +233,15 @@ func (o goalOps) Pursue(pctx context.Context, sess *session.Session, objective s
 	return goalSummaryLine(g, caveat), perr
 }
 
-// Status formats the session's current goal for /goal (no args).
+// Status formats the session's current goal for /goal (no args); when none is
+// active it falls back to the last archived goal.
 func (o goalOps) Status(sess *session.Session) string {
 	g, err := goal.FromSession(sess)
 	if err != nil {
 		return "goal: " + err.Error()
 	}
 	if g == nil {
-		return "no active goal. /goal <objective> to start one."
+		return noActiveGoal(sess)
 	}
 	return goalStatusText(g)
 }
@@ -236,6 +250,31 @@ func (o goalOps) Status(sess *session.Session) string {
 func (o goalOps) Clear(ctx context.Context, sess *session.Session) error {
 	goal.Clear(sess)
 	return o.store.Save(ctx, sess)
+}
+
+// Finalize applies the end-of-pursuit policy (achieved → archive + auto-clear).
+func (o goalOps) Finalize(ctx context.Context, sess *session.Session) {
+	finalizeGoal(ctx, o.store, sess)
+}
+
+// finalizeGoal archives the goal and clears the active slot when achieved (§4.2
+// auto-clear / §11.2 archive). Resumable terminals (paused/blocked/budget/errored)
+// stay active so /goal resume works. Best-effort.
+func finalizeGoal(ctx context.Context, store session.Store, sess *session.Session) {
+	if g, _ := goal.FromSession(sess); g == nil || g.Status != goal.StatusAchieved {
+		return
+	}
+	goal.Archive(sess)
+	_ = store.Save(ctx, sess)
+}
+
+// noActiveGoal is the "/goal" status line when nothing is active — showing the last
+// archived goal if there is one.
+func noActiveGoal(sess *session.Session) string {
+	if last, _ := goal.Last(sess); last != nil {
+		return fmt.Sprintf("no active goal. last: %s — %s", last.Status, truncateLine(last.Objective, 80))
+	}
+	return "no active goal. /goal <objective> to start one."
 }
 
 // goalSummaryLine is the one-line outcome printed when a pursuit ends.
@@ -276,7 +315,8 @@ func pursueHeadless(ctx context.Context, cfg app.Config, mc app.ModelConfig, run
 	gctx, stop := signal.NotifyContext(ctx, os.Interrupt)
 	defer stop()
 
-	summary, err := buildGoalOps(cfg, mc, runner, store).Pursue(gctx, sess, objective)
+	ops := buildGoalOps(cfg, mc, runner, store)
+	summary, err := ops.Pursue(gctx, sess, objective)
 	if summary != "" {
 		fmt.Println(summary)
 	}
@@ -284,7 +324,68 @@ func pursueHeadless(ctx context.Context, cfg app.Config, mc app.ModelConfig, run
 		return err // admission rejection / internal error → exit 1 (regular error path)
 	}
 	g, _ := goal.FromSession(sess)
-	return goalExitError(g)
+	exitErr := goalExitError(g) // map the terminal status BEFORE archiving clears it
+	ops.Finalize(ctx, sess)     // achieved → archive + auto-clear
+	return exitErr
+}
+
+// parseObjective strips leading budget flags (--turns N, --tokens N, --wall DUR)
+// off the objective, returning the cleaned objective + the budget (zero fields →
+// the engine's defaultMaxTurns floor applies). Whitespace inside the objective is
+// normalized (it is rejoined from fields).
+func parseObjective(s string) (string, goal.Budget) {
+	fields := strings.Fields(s)
+	var b goal.Budget
+	i := 0
+	for i+1 < len(fields) {
+		flag, val := fields[i], fields[i+1]
+		consumed := true
+		switch flag {
+		case "--turns":
+			if n, err := strconv.Atoi(val); err == nil {
+				b.MaxTurns = n
+			} else {
+				consumed = false
+			}
+		case "--tokens":
+			if n, err := strconv.Atoi(val); err == nil {
+				b.MaxTokens = n
+			} else {
+				consumed = false
+			}
+		case "--wall":
+			if d, err := time.ParseDuration(val); err == nil {
+				b.MaxWall = d
+			} else {
+				consumed = false
+			}
+		default:
+			consumed = false
+		}
+		if !consumed {
+			break
+		}
+		i += 2
+	}
+	return strings.Join(fields[i:], " "), b
+}
+
+// budgetNote renders a budget for the pursuit banner, or "" when none is set.
+func budgetNote(b goal.Budget) string {
+	var parts []string
+	if b.MaxTurns > 0 {
+		parts = append(parts, fmt.Sprintf("%d turns", b.MaxTurns))
+	}
+	if b.MaxTokens > 0 {
+		parts = append(parts, fmt.Sprintf("%d tokens", b.MaxTokens))
+	}
+	if b.MaxWall > 0 {
+		parts = append(parts, b.MaxWall.String())
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return ", budget " + strings.Join(parts, "/")
 }
 
 // exitError carries a process exit code (honored by main). An empty message means
@@ -345,7 +446,7 @@ func goalStatus(sess *session.Session) error {
 		return err
 	}
 	if g == nil {
-		fmt.Println("no active goal. /goal <objective> to start one.")
+		fmt.Println(noActiveGoal(sess))
 		return nil
 	}
 	fmt.Println(goalStatusText(g))
