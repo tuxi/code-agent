@@ -146,35 +146,81 @@ func buildGoalEngine(cfg app.Config, mc app.ModelConfig, runner *agent.Runner, s
 	return engine, err
 }
 
-// buildPursueFunc returns the tui.PursueFunc the TUI run loop calls for /goal: it
-// admits, builds the engine, runs Pursue on the active session, and returns a
-// one-line outcome (no printing — the TUI renders it). The TUI has no interactive
-// consent prompt; hands-off relies on /auto (now available in the TUI).
-func buildPursueFunc(cfg app.Config, mc app.ModelConfig, runner *agent.Runner, store session.Store) tui.PursueFunc {
-	return func(pctx context.Context, sess *session.Session, objective string) (string, error) {
-		// The TUI can't resume/clear a goal yet, so refuse to overwrite a live one.
-		if existing, _ := goal.FromSession(sess); existing != nil &&
-			(existing.Status == goal.StatusActive || existing.Status == goal.StatusPaused) {
-			return "", fmt.Errorf("a goal is already in progress (%s); resume/clear it from the REPL for now", existing.Status)
-		}
-		caveat, err := admitObjective(pctx, cfg, mc, runner, objective)
-		if err != nil {
-			return "", err // rejected — the TUI prints it
-		}
-		engine, degraded, err := newGoalEngine(cfg, mc, runner, sess, store)
+// goalOps implements tui.GoalOps — the cmd-layer's goal capability injected into
+// the TUI run loop (it owns admission + engine/checker construction). None of its
+// methods print; the TUI renders the returned strings (a stdout write would
+// corrupt the BubbleTea screen).
+type goalOps struct {
+	cfg    app.Config
+	mc     app.ModelConfig
+	runner *agent.Runner
+	store  session.Store
+}
+
+func buildGoalOps(cfg app.Config, mc app.ModelConfig, runner *agent.Runner, store session.Store) tui.GoalOps {
+	return goalOps{cfg: cfg, mc: mc, runner: runner, store: store}
+}
+
+// Pursue starts a new goal (objective != "") or resumes the session's existing
+// goal (objective == ""), runs it to a terminal state, and returns a one-line
+// outcome. The engine is the sole writer, so it persists itself.
+func (o goalOps) Pursue(pctx context.Context, sess *session.Session, objective string) (string, error) {
+	var g *goal.Goal
+	var caveat string
+	if objective == "" {
+		ex, err := goal.FromSession(sess)
 		if err != nil {
 			return "", err
 		}
-		if degraded {
-			caveat = appendCaveat(caveat, "未配置独立裁判模型(agent.subagent_model),裁判与 worker 同模型,独立性降低。")
+		if ex == nil {
+			return "", fmt.Errorf("no goal to resume; /goal <objective> to start one")
 		}
-		g := &goal.Goal{SessionID: sess.ID, Objective: objective, CreatedAt: time.Now()}
-		perr := engine.Pursue(pctx, g)
-		return goalSummaryLine(g, caveat), perr
+		if ex.Status == goal.StatusAchieved || ex.Status == goal.StatusCleared {
+			return "", fmt.Errorf("goal already %s; nothing to resume", ex.Status)
+		}
+		g = ex
+	} else {
+		if ex, _ := goal.FromSession(sess); ex != nil &&
+			(ex.Status == goal.StatusActive || ex.Status == goal.StatusPaused) {
+			return "", fmt.Errorf("a goal is already in progress (%s); /goal resume or /goal clear", ex.Status)
+		}
+		c, err := admitObjective(pctx, o.cfg, o.mc, o.runner, objective)
+		if err != nil {
+			return "", err // rejected — the TUI prints it
+		}
+		caveat = c
+		g = &goal.Goal{SessionID: sess.ID, Objective: objective, CreatedAt: time.Now()}
 	}
+	engine, degraded, err := newGoalEngine(o.cfg, o.mc, o.runner, sess, o.store)
+	if err != nil {
+		return "", err
+	}
+	if degraded {
+		caveat = appendCaveat(caveat, "未配置独立裁判模型(agent.subagent_model),裁判与 worker 同模型,独立性降低。")
+	}
+	perr := engine.Pursue(pctx, g)
+	return goalSummaryLine(g, caveat), perr
 }
 
-// goalSummaryLine is the one-line outcome the TUI prints when a pursuit ends.
+// Status formats the session's current goal for /goal (no args).
+func (o goalOps) Status(sess *session.Session) string {
+	g, err := goal.FromSession(sess)
+	if err != nil {
+		return "goal: " + err.Error()
+	}
+	if g == nil {
+		return "no active goal. /goal <objective> to start one."
+	}
+	return goalStatusText(g)
+}
+
+// Clear drops the session's goal and persists.
+func (o goalOps) Clear(ctx context.Context, sess *session.Session) error {
+	goal.Clear(sess)
+	return o.store.Save(ctx, sess)
+}
+
+// goalSummaryLine is the one-line outcome printed when a pursuit ends.
 func goalSummaryLine(g *goal.Goal, caveat string) string {
 	line := fmt.Sprintf("◎ /goal %s — turns %d, tokens %d, wall %s",
 		g.Status, g.Spent.Turns, g.Spent.Tokens, g.Spent.Wall.Round(time.Second))
@@ -188,6 +234,20 @@ func goalSummaryLine(g *goal.Goal, caveat string) string {
 		line = caveat + "\n" + line
 	}
 	return line
+}
+
+// goalStatusText is the multi-line status panel for an existing goal, shared by
+// the REPL (prints it) and the TUI (renders it).
+func goalStatusText(g *goal.Goal) string {
+	s := fmt.Sprintf("◎ /goal %s\n  objective: %s\n  turns: %d, tokens: %d, wall: %s",
+		g.Status, truncateLine(g.Objective, 100), g.Spent.Turns, g.Spent.Tokens, g.Spent.Wall.Round(time.Second))
+	if g.StatusNote != "" {
+		s += "\n  note: " + g.StatusNote
+	}
+	if g.CheckerNote != "" {
+		s += "\n  judge: " + g.CheckerNote
+	}
+	return s
 }
 
 func appendCaveat(a, b string) string {
@@ -218,14 +278,7 @@ func goalStatus(sess *session.Session) error {
 		fmt.Println("no active goal. /goal <objective> to start one.")
 		return nil
 	}
-	fmt.Printf("◎ /goal %s\n  objective: %s\n  turns: %d, tokens: %d, wall: %s\n",
-		g.Status, truncateLine(g.Objective, 100), g.Spent.Turns, g.Spent.Tokens, g.Spent.Wall.Round(time.Second))
-	if g.StatusNote != "" {
-		fmt.Println("  note:", g.StatusNote)
-	}
-	if g.CheckerNote != "" {
-		fmt.Println("  judge:", g.CheckerNote)
-	}
+	fmt.Println(goalStatusText(g))
 	return nil
 }
 

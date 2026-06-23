@@ -927,8 +927,8 @@ func runTUI(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider mo
 			CompactThreshold: cfg.CompactThreshold(newMC),
 		}, nil
 	}
-	pursue := buildPursueFunc(cfg, mc, runner, store)
-	return tui.Run(ctx, backend, runner, sess, store, header, resume, modelSwap, cfg.ModelNames(), approver, pursue)
+	goalOps := buildGoalOps(cfg, mc, runner, store)
+	return tui.Run(ctx, backend, runner, sess, store, header, resume, modelSwap, cfg.ModelNames(), approver, goalOps)
 }
 
 func printUsage() {

@@ -235,6 +235,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, tea.Batch(cmds...)
 
+	case goalCtlResultMsg:
+		return m, tea.Println(string(msg))
+
 	case goalDoneMsg:
 		m.busy = false
 		m.thinking = false
@@ -478,25 +481,45 @@ func onOff(b bool) string {
 	return "OFF"
 }
 
-// startGoal kicks off a /goal pursuit on the run-loop goroutine and locks the
-// composer until it finishes (goalDoneMsg). The pursuit's turns render live
-// through the normal event stream; ctrl+c pauses it (CancelTurn).
-func (m *model) startGoal(args string) tea.Cmd {
+// goalDispatch routes a /goal command: no-arg/status → status, clear → clear,
+// resume → resume the existing goal, anything else → start a pursuit with that
+// objective. All forms refuse while busy (Ctrl-C pauses a running pursuit first).
+func (m *model) goalDispatch(args string) tea.Cmd {
 	if m.busy {
-		return tea.Println("finish the current turn before starting a goal")
+		return tea.Println("a pursuit is running — Ctrl-C to pause it first")
 	}
-	obj := strings.TrimSpace(args)
-	if obj == "" {
-		return tea.Println("usage: /goal <objective>   e.g. /goal make go test ./... pass   (/auto on for hands-off)")
+	switch a := strings.TrimSpace(args); a {
+	case "", "status":
+		return m.goalCtl(ctlStatus)
+	case "clear":
+		return m.goalCtl(ctlClear)
+	case "resume":
+		return m.startPursuit("") // "" resumes the session's existing goal
+	default:
+		return m.startPursuit(a)
 	}
-	// resume/clear/status aren't wired in the TUI yet; don't pursue them as objectives.
-	if obj == "clear" || obj == "resume" || obj == "status" {
-		return tea.Println("/goal " + obj + " isn't available in the TUI yet — use the REPL (codeagent repl). The TUI currently supports starting a pursuit.")
-	}
+}
+
+// startPursuit kicks off a pursuit (or resume, when obj == "") on the run-loop
+// goroutine and locks the composer until it finishes (goalDoneMsg). The pursuit's
+// turns render live through the event stream; ctrl+c pauses it (CancelTurn).
+func (m *model) startPursuit(obj string) tea.Cmd {
 	m.busy = true
 	m.lastErr = nil
 	b := m.b
 	return func() tea.Msg { b.goalStart <- obj; return nil }
+}
+
+// goalCtl runs a quick status/clear op on the run loop and prints the reply. The
+// blocking receive is fine: it runs in a tea.Cmd goroutine, and these are only
+// issued when idle (the run loop's select handles them at once).
+func (m model) goalCtl(kind int) tea.Cmd {
+	b := m.b
+	return func() tea.Msg {
+		reply := make(chan string, 1)
+		b.goalCtl <- goalCtlReq{kind: kind, reply: reply}
+		return goalCtlResultMsg(<-reply)
+	}
 }
 
 // --- /resume picker -----------------------------------------------------

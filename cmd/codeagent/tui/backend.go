@@ -29,8 +29,9 @@ type Backend struct {
 	modelSwap       chan string           // /use: TUI → run loop (model name to switch to)
 	modelSwapResult chan modelSwappedMsg  // /use: run loop → TUI (result)
 	planToggle      chan bool             // plan key: TUI → run loop (desired plan mode)
-	goalStart       chan string           // /goal: TUI → run loop (objective to pursue)
+	goalStart       chan string           // /goal: TUI → run loop (objective to pursue; "" resumes)
 	goalDone        chan goalDoneMsg      // /goal: run loop → TUI (outcome summary)
+	goalCtl         chan goalCtlReq       // /goal status|clear: TUI → run loop (quick, reply-back)
 
 	mu         sync.Mutex
 	turnCancel context.CancelFunc // set by the run loop before RunTurn; nil when idle
@@ -62,6 +63,7 @@ func NewBackend() *Backend {
 	planToggle := make(chan bool, 1)
 	goalStart := make(chan string, 1)
 	goalDone := make(chan goalDoneMsg, 1)
+	goalCtl := make(chan goalCtlReq)
 	return &Backend{
 		Emitter:         tuiEmitter{ch: events},
 		Approver:        tuiApprover{ch: approvals},
@@ -75,6 +77,7 @@ func NewBackend() *Backend {
 		planToggle:      planToggle,
 		goalStart:       goalStart,
 		goalDone:        goalDone,
+		goalCtl:         goalCtl,
 	}
 }
 
@@ -89,6 +92,21 @@ type goalDoneMsg struct {
 func waitForGoalDone(ch chan goalDoneMsg) tea.Cmd {
 	return func() tea.Msg { return <-ch }
 }
+
+// goal control ops are quick, between-turns requests (status/clear) that reply on
+// a per-request channel — distinct from goalStart/goalDone, which run a long pursuit.
+const (
+	ctlStatus = iota
+	ctlClear
+)
+
+type goalCtlReq struct {
+	kind  int
+	reply chan string
+}
+
+// goalCtlResultMsg carries a status/clear reply back into the model for printing.
+type goalCtlResultMsg string
 
 // modelSwappedMsg carries the result of a /use model switch so the TUI can update
 // its header and gauge. nil header means the switch failed (err is set).

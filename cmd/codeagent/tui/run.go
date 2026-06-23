@@ -36,12 +36,21 @@ type AutoMode interface {
 	SetEnabled(bool)
 }
 
-// PursueFunc runs a /goal pursuit on the active session to a terminal state and
-// returns a one-line outcome summary. It is injected by the cmd layer, which owns
-// admission and engine/checker construction; the run loop calls it like a long
-// turn (events and approval cards flow through the existing channels). A nil
-// PursueFunc disables /goal in the TUI.
-type PursueFunc func(ctx context.Context, sess *session.Session, objective string) (summary string, err error)
+// GoalOps is the cmd layer's /goal capability injected into the run loop (it owns
+// admission and engine/checker construction, so the tui package stays decoupled).
+// None of its methods print — the model renders the returned strings. A nil GoalOps
+// disables /goal in the TUI.
+type GoalOps interface {
+	// Pursue starts a new goal (objective != "") or resumes the session's existing
+	// goal (objective == ""), runs it to a terminal state, and returns a one-line
+	// outcome. It runs like a long turn — events and approval cards flow through the
+	// existing channels.
+	Pursue(ctx context.Context, sess *session.Session, objective string) (summary string, err error)
+	// Status formats the session's current goal (for /goal with no args).
+	Status(sess *session.Session) string
+	// Clear drops the session's goal and persists.
+	Clear(ctx context.Context, sess *session.Session) error
+}
 
 // ModelSwapFunc switches the runner to a new model by name, rebuilding the
 // provider/compactor and re-budgeting the session. Called inside the run-loop
@@ -73,7 +82,7 @@ type sessionSource struct {
 // b.inputs, runs the turn, persists, and signals done — and handles
 // session/model swaps between turns. The BubbleTea program owns the terminal.
 // Run blocks until the user quits.
-func Run(ctx context.Context, b *Backend, runner *agent.Runner, sess *session.Session, store Store, header HeaderInfo, resume ResumeFunc, modelSwap ModelSwapFunc, modelNames []string, auto AutoMode, pursue PursueFunc) error {
+func Run(ctx context.Context, b *Backend, runner *agent.Runner, sess *session.Session, store Store, header HeaderInfo, resume ResumeFunc, modelSwap ModelSwapFunc, modelNames []string, auto AutoMode, goalOps GoalOps) error {
 	// Cancelling on quit stops an in-flight turn rather than orphaning it.
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -121,23 +130,38 @@ func Run(ctx context.Context, b *Backend, runner *agent.Runner, sess *session.Se
 				// repeatedly via the injected engine, so events and approval cards flow
 				// through the same channels. turnCancel cancels the whole pursuit, so
 				// ctrl+c pauses it (the engine settles to paused). The engine is the sole
-				// session writer, so no Save here.
+				// session writer, so no Save here. obj == "" resumes the existing goal.
 				var summary string
 				var err error
-				if pursue == nil {
+				if goalOps == nil {
 					err = errors.New("/goal is not available in this session")
 				} else {
 					turnCtx, cancel := context.WithCancel(ctx)
 					b.mu.Lock()
 					b.turnCancel = cancel
 					b.mu.Unlock()
-					summary, err = pursue(turnCtx, sess, obj)
+					summary, err = goalOps.Pursue(turnCtx, sess, obj)
 					cancel()
 					b.mu.Lock()
 					b.turnCancel = nil
 					b.mu.Unlock()
 				}
 				b.goalDone <- goalDoneMsg{summary: summary, err: err}
+			case req := <-b.goalCtl:
+				// Quick, between-turns goal ops (status/clear). The model only sends
+				// these when idle, so the select handles them immediately.
+				switch {
+				case goalOps == nil:
+					req.reply <- "/goal is not available in this session"
+				case req.kind == ctlStatus:
+					req.reply <- goalOps.Status(sess)
+				case req.kind == ctlClear:
+					if err := goalOps.Clear(ctx, sess); err != nil {
+						req.reply <- "clear failed: " + err.Error()
+					} else {
+						req.reply <- "goal cleared."
+					}
+				}
 			}
 		}
 	}()
