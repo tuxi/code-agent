@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 )
 
 type OpenAICompatibleProvider struct {
@@ -21,12 +22,12 @@ func NewOpenAICompatibleProvider(baseURL, apiKey string) *OpenAICompatibleProvid
 	return &OpenAICompatibleProvider{
 		BaseURL: strings.TrimRight(baseURL, "/"),
 		APIKey:  apiKey,
-		// No client-level timeout: timeout policy lives in one place, the
-		// ResilientProvider, which sets a per-attempt deadline via context. The
-		// request already threads ctx (NewRequestWithContext), so cancellation
-		// and deadlines are honored. Callers that use this provider unwrapped
-		// must pass a context with a deadline.
-		HTTPClient: &http.Client{},
+		HTTPClient: &http.Client{
+			// 30 s ceiling for the entire request (connect + TLS + headers +
+			// body). ResilientProvider tightens this via context deadlines,
+			// but bare callers that aren't wrapped still need a safety net.
+			Timeout: 30 * time.Second,
+		},
 	}
 }
 
