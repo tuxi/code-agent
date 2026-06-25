@@ -1,0 +1,9 @@
+{
+  "event_id": "evt_fixed",
+  "kind": "model_finished",
+  "at": "2026-06-24T10:00:00.123Z",
+  "session_id": "sess_root",
+  "turn_id": "turn_7",
+  "prompt_tokens": 4096,
+  "elapsed_ms": 731
+}

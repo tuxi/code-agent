@@ -1,0 +1,18 @@
+{
+  "event_id": "evt_fixed",
+  "kind": "todo_updated",
+  "at": "2026-06-24T10:00:00.123Z",
+  "session_id": "sess_root",
+  "turn_id": "turn_7",
+  "todos": [
+    {
+      "content": "write wire.go",
+      "active_form": "writing wire.go",
+      "status": "in_progress"
+    },
+    {
+      "content": "add golden tests",
+      "status": "pending"
+    }
+  ]
+}

@@ -124,6 +124,12 @@ func run() error {
 			return fmt.Errorf("usage: codeagent resume <session-id>  (see 'codeagent sessions')")
 		}
 		return repl(ctx, cfg, mc, provider, args[1], autoMode)
+	case "serve":
+		addr := "127.0.0.1:8787"
+		if len(args) >= 2 {
+			addr = args[1]
+		}
+		return runServe(ctx, cfg, mc, provider, addr)
 	default:
 		printUsage()
 		return fmt.Errorf("unknown command: %s", command)
@@ -1001,6 +1007,7 @@ func printUsage() {
   codeagent stats                          aggregate compaction + provider telemetry
   codeagent trace [N]                      show the last N requests, per attempt
   codeagent [--model NAME] resume <id>     resume a saved session
+  codeagent [--model NAME] serve [addr]    run the runtime server (HTTP + agent-wire WebSocket; default 127.0.0.1:8787)
 
 Sessions are stored per-project in .codeagent/sessions.db and persist across
 runs, so a long conversation (and its summary) survives exit.

@@ -1,0 +1,11 @@
+{
+  "type": "approval_request",
+  "id": "appr_1",
+  "session_id": "sess_root",
+  "turn_id": "turn_7",
+  "tool_name": "run_command",
+  "tool_args": {
+    "command": "git push"
+  },
+  "deadline_ms": 120000
+}

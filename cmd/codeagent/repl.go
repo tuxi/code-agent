@@ -4,6 +4,7 @@ import (
 	"code-agent/internal/agent"
 	"code-agent/internal/app"
 	"code-agent/internal/approve"
+	"code-agent/internal/conversation"
 	"code-agent/internal/model"
 	"code-agent/internal/session"
 	"code-agent/internal/ui"
@@ -114,6 +115,15 @@ func repl(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider mode
 		fmt.Printf("New session %s\n", sess.ID)
 	}
 
+	// The conversation is the runtime handle to this thread: it drives each turn,
+	// owns per-turn cancellation, fans events out, and autosaves. The REPL keeps
+	// `sess` as a convenience handle for command/budget reads and pushes any
+	// /resume swap into the conversation via SetSession.
+	conv := conversation.New(runner, sess, store)
+	conv.OnSaveError = func(err error) {
+		fmt.Println("warning: failed to save session:", err)
+	}
+
 	fmt.Printf("CodeAgent — model: %s (%s)\n", mc.Name, mc.Model)
 	fmt.Println("Type a request, or /help for commands. /exit to quit.")
 
@@ -159,20 +169,20 @@ func repl(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider mode
 			if quit {
 				return nil
 			}
-			sess = newSess // /resume may have switched the active session
+			if newSess != sess { // /resume switched the active session
+				sess = newSess
+				conv.SetSession(sess)
+			}
 			continue
 		}
 
 		// Each turn gets its own signal context: Ctrl-C during a long model call
-		// cancels this turn (not the process), and the REPL stays alive.
+		// cancels this turn (not the process), and the REPL stays alive. The
+		// conversation drives RunTurn and autosaves afterwards — even on interrupt
+		// (WithoutCancel), reporting any save failure via OnSaveError above.
 		turnCtx, turnCancel := signal.NotifyContext(ctx, os.Interrupt)
-		res, err := runner.RunTurn(turnCtx, sess, line)
+		res, err := conv.SendMessage(turnCtx, line)
 		turnCancel()
-		// Persist after every turn, even on error: the partial history is
-		// consistent (no orphaned tool_calls) and therefore resumable.
-		if serr := store.Save(ctx, sess); serr != nil {
-			fmt.Println("warning: failed to save session:", serr)
-		}
 		if errors.Is(err, context.Canceled) {
 			fmt.Println("\nTurn interrupted")
 			continue

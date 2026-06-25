@@ -1,0 +1,12 @@
+{
+  "event_id": "evt_fixed",
+  "kind": "tool_started",
+  "at": "2026-06-24T10:00:00.123Z",
+  "session_id": "sess_root",
+  "turn_id": "turn_7",
+  "step": 3,
+  "tool_name": "run_command",
+  "tool_args": {
+    "command": "go test ./..."
+  }
+}
