@@ -26,6 +26,7 @@ type wireEvent struct {
 	TurnID          string `json:"turn_id,omitempty"`
 
 	// Tool / skill events.
+	CallID       string          `json:"call_id,omitempty"`
 	Step         int             `json:"step,omitempty"`
 	ToolName     string          `json:"tool_name,omitempty"`
 	ToolArgs     json.RawMessage `json:"tool_args,omitempty"`
@@ -64,6 +65,7 @@ func toWire(e agent.Event) wireEvent {
 		At:           e.At.UTC().Format(rfc3339Millis),
 		SessionID:    e.SessionID,
 		TurnID:       e.TurnID,
+		CallID:       e.CallID,
 		Step:         e.Step,
 		ToolName:     e.ToolName,
 		ToolArgs:     toWireArgs(e.ToolArgs),

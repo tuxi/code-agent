@@ -73,9 +73,9 @@ agent-core (Layer 1)          agent-server (Layer 2)         frontends (Layer 3)
 | `model_finished` | `prompt_tokens` `elapsed_ms` `err` | 模型返回 |
 | `token_delta` | `text` | 流式文本增量（高频、**不持久化**） |
 | `thinking` | `text` | 推理文本 |
-| `tool_started` | `step` `tool_name` `tool_args` | 工具开始 |
-| `tool_finished` | `step` `tool_name` `observation` `err` | 工具结束 |
-| `observed` | `step` `tool_name` `observation` `failure` | 结果被分类（`failure` = FailureType，如 `compile`） |
+| `tool_started` | `call_id` `step` `tool_name` `tool_args` | 工具开始 |
+| `tool_finished` | `call_id` `step` `tool_name` `observation` `err` | 工具结束 |
+| `observed` | `call_id` `step` `tool_name` `observation` `failure` | 结果被分类（`failure` = FailureType，如 `compile`） |
 | `auto_approved` | `tool_name` `tool_args` `text` | auto 模式自动放行（`text` = 原因，审计用） |
 | `reflected` | `text` | finalize 自检触发 |
 | `skill_loaded` | `tool_name` `skill_version` | 载入 skill（名在 `tool_name`） |
@@ -86,6 +86,8 @@ agent-core (Layer 1)          agent-server (Layer 2)         frontends (Layer 3)
 | `task_finished` | `session_id`(子) `parent_session_id` `text` | subagent 结束（`text` = 结论） |
 
 零值字段一律 `omitempty` 省略。
+
+**聚合身份（reducer key）**：一次工具调用的 `tool_started` / `observed` / `tool_finished` **共享同一个 `call_id`**（模型的 tool_call id，服务端保证非空、跨 live/历史/replay 稳定）。UI 以 `call_id` 定位**同一张工具卡**就地更新（running → completed），而不是每事件新增一张。`turn_id` 是 turn 级聚合 key（恒在）。**不要用 `event_id` 当聚合 key**——它是每次发送的传输层去重 token，历史事件不带。
 
 ---
 

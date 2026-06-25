@@ -30,7 +30,7 @@ func cases() map[string]wireCase {
 	return map[string]wireCase{
 		"tool_started": {ev: agent.Event{
 			Kind: agent.EventToolStarted, At: fixedAt,
-			SessionID: "sess_root", TurnID: "turn_7", Step: 3,
+			SessionID: "sess_root", TurnID: "turn_7", CallID: "call_abc", Step: 3,
 			ToolName: "run_command", ToolArgs: `{"command":"go test ./..."}`,
 		}},
 		"model_finished": {ev: agent.Event{

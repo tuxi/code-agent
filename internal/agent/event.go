@@ -54,6 +54,14 @@ type Event struct {
 
 	// Tool events (ToolStarted / ToolFinished / Observed). For EventObserved,
 	// Observation carries the one-line summary and Failure the FailureType.
+	//
+	// CallID is the model's tool_call id (the loop fills a fallback when the
+	// provider omits one, so it is always set). It is the STABLE identity of a
+	// single tool call — the same across this call's ToolStarted, Observed, and
+	// ToolFinished — so a UI keys one tool card on it and updates in place
+	// (running → completed) instead of appending a new card per event. Unlike
+	// event_id (a per-send transport token) it is durable and replay-stable.
+	CallID      string
 	Step        int
 	ToolName    string
 	ToolArgs    string

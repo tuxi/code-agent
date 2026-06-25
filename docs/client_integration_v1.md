@@ -158,9 +158,9 @@ v1 只含 user/assistant；工具/系统消息的全量保真属于 P1-B。
 | `model_finished` | `prompt_tokens` `elapsed_ms` `err` | 模型返回（`elapsed_ms` 是毫秒） |
 | `token_delta` | `text` | **流式文本增量**，高频、不持久化；累加成助手回复 |
 | `thinking` | `text` | 推理文本 |
-| `tool_started` | `step` `tool_name` `tool_args` | 工具开始（`tool_args` 是**结构化 JSON 对象**） |
-| `tool_finished` | `step` `tool_name` `observation` `err` | 工具结束 |
-| `observed` | `step` `tool_name` `observation` `failure` | 结果被分类（`failure` 如 `compile`） |
+| `tool_started` | `call_id` `step` `tool_name` `tool_args` | 工具开始（`tool_args` 是**结构化 JSON 对象**） |
+| `tool_finished` | `call_id` `step` `tool_name` `observation` `err` | 工具结束 |
+| `observed` | `call_id` `step` `tool_name` `observation` `failure` | 结果被分类（`failure` 如 `compile`） |
 | `auto_approved` | `tool_name` `tool_args` `text` | auto 模式自动放行（`text`=原因，审计） |
 | `reflected` | `text` | 收尾自检 |
 | `skill_loaded` | `tool_name` `skill_version` | 载入 skill（名在 `tool_name`） |
@@ -171,6 +171,22 @@ v1 只含 user/assistant；工具/系统消息的全量保真属于 P1-B。
 | `task_finished` | `session_id`(子) `parent_session_id` `text` | subagent 结束（`text`=结论） |
 
 > 渲染建议：按 `turn_id` 把一轮的事件聚成一个气泡；`token_delta` 实时拼接成助手文本；subagent 事件按 `parent_session_id` 折叠成子流。
+
+#### 聚合身份（reducer 必读）
+
+UI 的 reducer **不要用 `UUID()` 或 `event_id` 当 key**，否则 replay / 重连 / 重进会话时同一逻辑事件拿到不同 id，导致工具卡重复、`tool_finished` 找不到对应 `tool_started`。用这两个**稳定** key：
+
+- **`turn_id`** —— turn 级聚合。`turns[turnID]`，不要 `turns.last`。每个事件都带，live/历史一致。
+- **`call_id`** —— 工具调用级聚合。一次调用的 `tool_started` / `observed` / `tool_finished` **共享同一个 `call_id`**（模型的 tool_call id，服务端保证非空、跨 live/历史/replay 稳定）。工具卡是一个**状态机**：`tool_started` 建卡（running），`tool_finished` **更新同一张卡**（completed），不是 append 两张。
+
+```swift
+// 工具卡按 call_id 就地更新，而非每事件新增
+struct ToolCall { let callID: String; let tool: String; var status: ToolStatus; var args: JSONValue?; var result: String? }
+reducer: tool_started(call_id) -> toolCalls[call_id] = .init(running)
+         tool_finished(call_id) -> toolCalls[call_id]?.status = .completed; .result = observation
+```
+
+`event_id` 只用于传输层去重/日志，**不参与聚合**（历史事件不带它）。
 
 ### 3.4 控制：审批请求（server → client）
 

@@ -329,6 +329,7 @@ func (r *Runner) RunTurn(ctx context.Context, sess *session.Session, userInput s
 			}
 			r.emit(Event{
 				Kind:     EventToolStarted,
+				CallID:   call.ID,
 				Step:     step.Index,
 				ToolName: call.Function.Name,
 				ToolArgs: call.Function.Arguments,
@@ -406,6 +407,7 @@ func (r *Runner) RunTurn(ctx context.Context, sess *session.Session, userInput s
 				observation = obs.Render(TruncateObservation(observation, 9800))
 				r.emit(Event{
 					Kind:        EventObserved,
+					CallID:      call.ID,
 					Step:        step.Index,
 					ToolName:    call.Function.Name,
 					Observation: obs.Summary,
@@ -421,6 +423,7 @@ func (r *Runner) RunTurn(ctx context.Context, sess *session.Session, userInput s
 
 			r.emit(Event{
 				Kind:        EventToolFinished,
+				CallID:      call.ID,
 				Step:        step.Index,
 				ToolName:    call.Function.Name,
 				Observation: observation,
