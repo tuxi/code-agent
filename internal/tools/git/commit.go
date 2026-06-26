@@ -17,14 +17,12 @@ import (
 // the quoting and escaping problems that arise when embedding a multi-line
 // message with special characters into a shell command string.
 type GitCommitTool struct {
-	WorkspaceRoot string
-	Timeout       time.Duration
+	Timeout time.Duration
 }
 
-func NewGitCommitTool(workspaceRoot string) *GitCommitTool {
+func NewGitCommitTool() *GitCommitTool {
 	return &GitCommitTool{
-		WorkspaceRoot: workspaceRoot,
-		Timeout:       30 * time.Second,
+		Timeout: 30 * time.Second,
 	}
 }
 
@@ -66,7 +64,7 @@ func (t *GitCommitTool) InputSchema() json.RawMessage {
 // behind user confirmation before it runs.
 func (t *GitCommitTool) SideEffects() bool { return true }
 
-func (t *GitCommitTool) Execute(ctx context.Context, input json.RawMessage) (tools.ToolResult, error) {
+func (t *GitCommitTool) Execute(ctx context.Context, ec tools.ExecutionContext, input json.RawMessage) (tools.ToolResult, error) {
 	var in gitCommitInput
 	if len(input) > 0 {
 		if err := json.Unmarshal(input, &in); err != nil {
@@ -83,7 +81,7 @@ func (t *GitCommitTool) Execute(ctx context.Context, input json.RawMessage) (too
 		msg += "\n"
 	}
 
-	rootAbs, err := filepath.Abs(t.WorkspaceRoot)
+	rootAbs, err := filepath.Abs(ec.WorkspaceRoot)
 	if err != nil {
 		return tools.ToolResult{}, err
 	}

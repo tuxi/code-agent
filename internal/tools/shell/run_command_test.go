@@ -1,6 +1,7 @@
 package shell
 
 import (
+	"code-agent/internal/tools"
 	"context"
 	"encoding/json"
 	"os"
@@ -20,8 +21,8 @@ func decodeResult(t *testing.T, content string) commandResult {
 }
 
 func TestRunCommandAllowedReadOnly(t *testing.T) {
-	tool := NewRunCommandTool(".")
-	res, err := tool.Execute(context.Background(), json.RawMessage(`{"command":"echo hello"}`))
+	tool := NewRunCommandTool()
+	res, err := tool.Execute(context.Background(), tools.ExecutionContext{WorkspaceRoot: "."}, json.RawMessage(`{"command":"echo hello"}`))
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -41,8 +42,8 @@ func TestRunCommandAllowedReadOnly(t *testing.T) {
 }
 
 func TestRunCommandBlockedDoesNotExecute(t *testing.T) {
-	tool := NewRunCommandTool(".")
-	res, err := tool.Execute(context.Background(), json.RawMessage(`{"command":"rm -rf /"}`))
+	tool := NewRunCommandTool()
+	res, err := tool.Execute(context.Background(), tools.ExecutionContext{WorkspaceRoot: "."}, json.RawMessage(`{"command":"rm -rf /"}`))
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -59,8 +60,8 @@ func TestRunCommandBlockedDoesNotExecute(t *testing.T) {
 }
 
 func TestRunCommandShellOperatorsRejected(t *testing.T) {
-	tool := NewRunCommandTool(".")
-	res, err := tool.Execute(context.Background(), json.RawMessage(`{"command":"echo hi | grep h"}`))
+	tool := NewRunCommandTool()
+	res, err := tool.Execute(context.Background(), tools.ExecutionContext{WorkspaceRoot: "."}, json.RawMessage(`{"command":"echo hi | grep h"}`))
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -92,7 +93,7 @@ func TestRunCommandHintIsTailored(t *testing.T) {
 }
 
 func TestRunCommandSideEffectsFor(t *testing.T) {
-	tool := NewRunCommandTool(".")
+	tool := NewRunCommandTool()
 	cases := []struct {
 		cmd  string
 		want bool
@@ -119,9 +120,9 @@ func TestRunCommandRefusesReadPathOutsideWorkspace(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	tool := NewRunCommandTool(root)
+	tool := NewRunCommandTool()
 	in := json.RawMessage(`{"command":` + strconv.Quote("cat "+outside) + `}`)
-	res, err := tool.Execute(context.Background(), in)
+	res, err := tool.Execute(context.Background(), tools.ExecutionContext{WorkspaceRoot: root}, in)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -143,8 +144,8 @@ func TestRunCommandAllowsReadPathInsideWorkspace(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	tool := NewRunCommandTool(root)
-	res, err := tool.Execute(context.Background(), json.RawMessage(`{"command":"cat ok.txt"}`))
+	tool := NewRunCommandTool()
+	res, err := tool.Execute(context.Background(), tools.ExecutionContext{WorkspaceRoot: root}, json.RawMessage(`{"command":"cat ok.txt"}`))
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}

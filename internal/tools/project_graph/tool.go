@@ -18,17 +18,15 @@ import (
 // It is read-only: it observes the codebase and never mutates it, so the runtime
 // runs it without a confirmation prompt.
 type ProjectGraphTool struct {
-	WorkspaceRoot string
-	Adapters      []LanguageAdapter
-	Timeout       time.Duration
+	Adapters []LanguageAdapter
+	Timeout  time.Duration
 }
 
 // NewProjectGraphTool wires the MVP language set: Go (gopls, implemented) plus
 // Swift, Rust, and Python (stubs that detect their toolchain). Adapters whose
 // toolchain is not installed are simply skipped at query time.
-func NewProjectGraphTool(root string) *ProjectGraphTool {
+func NewProjectGraphTool() *ProjectGraphTool {
 	return &ProjectGraphTool{
-		WorkspaceRoot: root,
 		Adapters: []LanguageAdapter{
 			NewGoAdapter(),
 			NewSwiftAdapter(),
@@ -74,7 +72,7 @@ func (t *ProjectGraphTool) InputSchema() json.RawMessage {
 	}, "action").JSON()
 }
 
-func (t *ProjectGraphTool) Execute(ctx context.Context, input json.RawMessage) (tools.ToolResult, error) {
+func (t *ProjectGraphTool) Execute(ctx context.Context, ec tools.ExecutionContext, input json.RawMessage) (tools.ToolResult, error) {
 	var in projectGraphInput
 	if len(input) > 0 {
 		if err := json.Unmarshal(input, &in); err != nil {
@@ -82,7 +80,7 @@ func (t *ProjectGraphTool) Execute(ctx context.Context, input json.RawMessage) (
 		}
 	}
 
-	rootAbs, err := filepath.Abs(t.WorkspaceRoot)
+	rootAbs, err := filepath.Abs(ec.WorkspaceRoot)
 	if err != nil {
 		return tools.ToolResult{}, err
 	}

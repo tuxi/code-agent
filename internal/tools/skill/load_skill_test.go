@@ -2,6 +2,7 @@ package skill
 
 import (
 	"code-agent/internal/skills"
+	"code-agent/internal/tools"
 	"context"
 	"encoding/json"
 	"os"
@@ -30,7 +31,7 @@ func loadReg(t *testing.T) *skills.Registry {
 
 func TestLoadSkillExecute(t *testing.T) {
 	tool := NewLoadSkillTool(loadReg(t))
-	res, err := tool.Execute(context.Background(), json.RawMessage(`{"name":"verify-change"}`))
+	res, err := tool.Execute(context.Background(), tools.ExecutionContext{}, json.RawMessage(`{"name":"verify-change"}`))
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -44,7 +45,7 @@ func TestLoadSkillExecute(t *testing.T) {
 
 func TestLoadSkillUnknown(t *testing.T) {
 	tool := NewLoadSkillTool(loadReg(t))
-	_, err := tool.Execute(context.Background(), json.RawMessage(`{"name":"nope"}`))
+	_, err := tool.Execute(context.Background(), tools.ExecutionContext{}, json.RawMessage(`{"name":"nope"}`))
 	if err == nil {
 		t.Error("expected an error for an unknown skill")
 	} else if !strings.Contains(err.Error(), "verify-change") {

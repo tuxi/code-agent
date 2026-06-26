@@ -17,10 +17,10 @@ import (
 // This test is offline — it never calls the model.
 func TestToolDefinitions(t *testing.T) {
 	reg := tools.NewRegistry()
-	if err := reg.Register(filesystem.NewListFilesTool(".")); err != nil {
+	if err := reg.Register(filesystem.NewListFilesTool()); err != nil {
 		t.Fatalf("register list_files: %v", err)
 	}
-	if err := reg.RegisterInternal(git.NewApplyPatchTool(".")); err != nil {
+	if err := reg.RegisterInternal(git.NewApplyPatchTool()); err != nil {
 		t.Fatalf("register apply_patch: %v", err)
 	}
 

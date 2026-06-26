@@ -7,6 +7,7 @@ import (
 	"code-agent/internal/approve"
 	"code-agent/internal/goal"
 	"code-agent/internal/session"
+	"code-agent/internal/tools"
 	"code-agent/internal/tools/git"
 	"context"
 	"fmt"
@@ -140,9 +141,10 @@ func newGoalEngine(cfg app.Config, mc app.ModelConfig, runner *agent.Runner, ses
 // read-only, workspace-rooted, size-capped git_diff tool the worker uses. A git
 // error (e.g. not a repo) degrades to "" — no diff evidence, no crash.
 func makeDiffFunc(root string) func(context.Context) string {
-	tool := git.NewDiffTool(root)
+	tool := git.NewDiffTool()
+	ec := tools.ExecutionContext{WorkspaceRoot: root}
 	return func(ctx context.Context) string {
-		res, err := tool.Execute(ctx, nil)
+		res, err := tool.Execute(ctx, ec, nil)
 		if err != nil {
 			return ""
 		}

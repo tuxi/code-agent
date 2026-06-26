@@ -21,10 +21,10 @@ import (
 // This test is offline; it never calls the model.
 func TestToolSchemasAreWellFormed(t *testing.T) {
 	reg := tools.NewRegistry()
-	mustRegister(t, reg, filesystem.NewListFilesTool("."))
-	mustRegister(t, reg, filesystem.NewReadFileTool("."))
-	mustRegister(t, reg, search.NewGrepTool("."))
-	mustRegister(t, reg, git.NewDiffTool("."))
+	mustRegister(t, reg, filesystem.NewListFilesTool())
+	mustRegister(t, reg, filesystem.NewReadFileTool())
+	mustRegister(t, reg, search.NewGrepTool())
+	mustRegister(t, reg, git.NewDiffTool())
 
 	for _, d := range toolDefinitions(reg) {
 		var schema struct {

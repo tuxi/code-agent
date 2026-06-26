@@ -16,7 +16,7 @@ type fakeTodoTool struct{}
 func (fakeTodoTool) Name() string                 { return "todo_write" }
 func (fakeTodoTool) Description() string          { return "todos" }
 func (fakeTodoTool) InputSchema() json.RawMessage { return tools.Object(nil).JSON() }
-func (fakeTodoTool) Execute(context.Context, json.RawMessage) (tools.ToolResult, error) {
+func (fakeTodoTool) Execute(_ context.Context, _ tools.ExecutionContext, _ json.RawMessage) (tools.ToolResult, error) {
 	return tools.ToolResult{Content: "ok"}, nil
 }
 func (fakeTodoTool) AnnounceTodos(json.RawMessage) ([]tools.Todo, bool) {

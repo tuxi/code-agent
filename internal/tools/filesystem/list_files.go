@@ -13,18 +13,16 @@ import (
 )
 
 type ListFilesTool struct {
-	WorkspaceRoot string
-	MaxDepth      int
+	MaxDepth int
 }
 
 type listFilesInput struct {
 	Path string `json:"path"`
 }
 
-func NewListFilesTool(workspaceRoot string) *ListFilesTool {
+func NewListFilesTool() *ListFilesTool {
 	return &ListFilesTool{
-		WorkspaceRoot: workspaceRoot,
-		MaxDepth:      3,
+		MaxDepth: 3,
 	}
 }
 
@@ -45,7 +43,7 @@ func (l *ListFilesTool) InputSchema() json.RawMessage {
 	}).JSON()
 }
 
-func (l *ListFilesTool) Execute(ctx context.Context, input json.RawMessage) (tools.ToolResult, error) {
+func (l *ListFilesTool) Execute(ctx context.Context, ec tools.ExecutionContext, input json.RawMessage) (tools.ToolResult, error) {
 
 	var in listFilesInput
 	if len(input) > 0 {
@@ -56,7 +54,7 @@ func (l *ListFilesTool) Execute(ctx context.Context, input json.RawMessage) (too
 	if in.Path == "" {
 		in.Path = "."
 	}
-	rootAbs, err := filepath.Abs(l.WorkspaceRoot)
+	rootAbs, err := filepath.Abs(ec.WorkspaceRoot)
 	if err != nil {
 		return tools.ToolResult{}, err
 	}

@@ -10,7 +10,7 @@ import (
 )
 
 func TestExecuteSummarizesList(t *testing.T) {
-	res, err := NewTool().Execute(context.Background(),
+	res, err := NewTool().Execute(context.Background(), tools.ExecutionContext{},
 		json.RawMessage(`{"todos":[{"content":"a","status":"pending"},{"content":"b","status":"in_progress","activeForm":"doing b"}]}`))
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -29,7 +29,7 @@ func TestAnnounceTodosParsesList(t *testing.T) {
 
 func TestRejectsInvalidStatus(t *testing.T) {
 	bad := json.RawMessage(`{"todos":[{"content":"a","status":"doing"}]}`)
-	if _, err := NewTool().Execute(context.Background(), bad); err == nil {
+	if _, err := NewTool().Execute(context.Background(), tools.ExecutionContext{}, bad); err == nil {
 		t.Fatal("Execute should reject an unknown status")
 	}
 	if _, ok := NewTool().AnnounceTodos(bad); ok {
@@ -38,7 +38,7 @@ func TestRejectsInvalidStatus(t *testing.T) {
 }
 
 func TestRejectsEmptyContent(t *testing.T) {
-	if _, err := NewTool().Execute(context.Background(),
+	if _, err := NewTool().Execute(context.Background(), tools.ExecutionContext{},
 		json.RawMessage(`{"todos":[{"content":"   ","status":"pending"}]}`)); err == nil {
 		t.Fatal("Execute should reject empty content")
 	}

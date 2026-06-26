@@ -1,6 +1,7 @@
 package projectgraph
 
 import (
+	"code-agent/internal/tools"
 	"context"
 	"encoding/json"
 	"strings"
@@ -35,12 +36,12 @@ func (f fakeAdapter) FindReferences(_ context.Context, _, symbol string) ([]Refe
 }
 
 func toolWith(a LanguageAdapter) *ProjectGraphTool {
-	return &ProjectGraphTool{WorkspaceRoot: ".", Adapters: []LanguageAdapter{a}, Timeout: time.Second}
+	return &ProjectGraphTool{Adapters: []LanguageAdapter{a}, Timeout: time.Second}
 }
 
 func run(t *testing.T, tool *ProjectGraphTool, input string) string {
 	t.Helper()
-	res, err := tool.Execute(context.Background(), json.RawMessage(input))
+	res, err := tool.Execute(context.Background(), tools.ExecutionContext{WorkspaceRoot: "."}, json.RawMessage(input))
 	if err != nil {
 		t.Fatalf("Execute(%s): %v", input, err)
 	}
@@ -171,7 +172,7 @@ func TestUnsupportedLanguage(t *testing.T) {
 
 func TestUnknownAction(t *testing.T) {
 	tool := toolWith(fakeAdapter{lang: "go", avail: true})
-	_, err := tool.Execute(context.Background(), json.RawMessage(`{"action":"frobnicate"}`))
+	_, err := tool.Execute(context.Background(), tools.ExecutionContext{WorkspaceRoot: "."}, json.RawMessage(`{"action":"frobnicate"}`))
 	if err == nil {
 		t.Error("expected an error for an unknown action")
 	}

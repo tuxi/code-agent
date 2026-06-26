@@ -1,6 +1,7 @@
 package filesystem
 
 import (
+	"code-agent/internal/tools"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -23,7 +24,7 @@ func tempWith(t *testing.T, content string) string {
 
 func read(t *testing.T, root, raw string) (string, error) {
 	t.Helper()
-	res, err := NewReadFileTool(root).Execute(context.Background(), json.RawMessage(raw))
+	res, err := NewReadFileTool().Execute(context.Background(), tools.ExecutionContext{WorkspaceRoot: root}, json.RawMessage(raw))
 	return res.Content, err
 }
 
@@ -131,11 +132,11 @@ func TestReadLargeFileFullErrorsWindowWorks(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "big.txt"), []byte(sb.String()), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	tool := NewReadFileTool(dir)
+	tool := NewReadFileTool()
 	tool.MaxBytes = 10_000 // force the file to count as "too large to read whole"
 
 	// Full read is rejected, with a hint to window.
-	_, err := tool.Execute(context.Background(), json.RawMessage(`{"path":"big.txt"}`))
+	_, err := tool.Execute(context.Background(), tools.ExecutionContext{WorkspaceRoot: dir}, json.RawMessage(`{"path":"big.txt"}`))
 	if err == nil {
 		t.Fatal("full read of an over-budget file should error")
 	}
@@ -144,7 +145,7 @@ func TestReadLargeFileFullErrorsWindowWorks(t *testing.T) {
 	}
 
 	// A windowed read of the same large file works.
-	res, err := tool.Execute(context.Background(), json.RawMessage(`{"path":"big.txt","offset":100,"limit":3}`))
+	res, err := tool.Execute(context.Background(), tools.ExecutionContext{WorkspaceRoot: dir}, json.RawMessage(`{"path":"big.txt","offset":100,"limit":3}`))
 	if err != nil {
 		t.Fatalf("windowed read of a large file should work: %v", err)
 	}
@@ -157,7 +158,8 @@ func TestReadLargeFileFullErrorsWindowWorks(t *testing.T) {
 }
 
 func TestReadNilContextTolerated(t *testing.T) {
-	if _, err := NewReadFileTool(tempWith(t, sample)).Execute(nil, json.RawMessage(`{"path":"f.txt"}`)); err != nil {
+	root := tempWith(t, sample)
+	if _, err := NewReadFileTool().Execute(nil, tools.ExecutionContext{WorkspaceRoot: root}, json.RawMessage(`{"path":"f.txt"}`)); err != nil {
 		t.Errorf("a nil context should be tolerated, got %v", err)
 	}
 }

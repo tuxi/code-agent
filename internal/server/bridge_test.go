@@ -9,8 +9,6 @@ import (
 	"time"
 
 	"code-agent/internal/agent"
-	"code-agent/internal/conversation"
-	"code-agent/internal/session"
 )
 
 // chanSubscriber is a fake Subscriber the test drives directly.
@@ -148,22 +146,22 @@ func TestBridgeStopsOnContextCancel(t *testing.T) {
 // (whose hub conversation.New installed as the Runner's Emitter) -> Subscribe ->
 // Bridge -> Encode -> a JSON frame on the wire, with the v1 contract intact
 // (structured tool_args, stamped event_id).
-func TestBridgeEndToEndFromRealConversation(t *testing.T) {
-	runner := &agent.Runner{}
-	conv := conversation.New(runner, &session.Session{ID: "sess_root"}, nil)
+func TestBridgeEndToEndFromHub(t *testing.T) {
+	hub := newTestHub()
+	sess := &testSession{hub: hub}
 
 	sink := &syncSink{}
 	b := NewBridge(sink)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan error, 1)
-	go func() { done <- b.Run(ctx, conv, "codeagent/test") }()
+	go func() { done <- b.Run(ctx, sess, "codeagent/test") }()
 
 	waitForCount(t, sink, 1) // hello sent => the bridge has subscribed
 
-	// Emit a core event exactly as the agent loop would: through runner.Emitter,
-	// which New replaced with the fan-out hub.
-	runner.Emitter.Emit(agent.Event{
+	// Emit a core event through the hub — as the agent loop would
+	// through SessionEventBus.
+	hub.Emit(agent.Event{
 		Kind: agent.EventToolStarted, SessionID: "sess_root", TurnID: "turn_1",
 		Step: 1, ToolName: "run_command", ToolArgs: `{"command":"go test ./..."}`,
 	})

@@ -10,21 +10,62 @@ import (
 	"time"
 
 	"code-agent/internal/agent"
-	"code-agent/internal/conversation"
-	"code-agent/internal/session"
 
 	"github.com/coder/websocket"
 )
+
+// testSession is a minimal server.Session used by WS tests. It wraps a simple
+// in-process subscription hub — no conversation package dependency.
+type testSession struct {
+	hub *testHub
+}
+
+func (s *testSession) Subscribe() (<-chan agent.Event, func()) {
+	return s.hub.subscribe()
+}
+func (s *testSession) SendMessage(context.Context, string) (agent.TurnResult, error) {
+	return agent.TurnResult{}, nil
+}
+func (s *testSession) Cancel()                              {}
+func (s *testSession) SetApprover(agent.Approver)           {}
+
+// testHub is the same shape as the old hub: Emit fans to subscribers.
+type testHub struct {
+	subs map[int]chan agent.Event
+	next int
+}
+
+func newTestHub() *testHub { return &testHub{subs: make(map[int]chan agent.Event)} }
+
+func (h *testHub) Emit(e agent.Event) {
+	for _, ch := range h.subs {
+		select {
+		case ch <- e:
+		default:
+		}
+	}
+}
+
+func (h *testHub) subscribe() (<-chan agent.Event, func()) {
+	ch := make(chan agent.Event, 256)
+	id := h.next
+	h.next++
+	h.subs[id] = ch
+	return ch, func() {
+		delete(h.subs, id)
+		close(ch)
+	}
+}
 
 // TestWSHandlerStreamsOverRealSocket dials a real WebSocket against the handler
 // and asserts the full path: hello handshake, then a core event emitted
 // server-side arrives at the client as a v1 JSON frame.
 func TestWSHandlerStreamsOverRealSocket(t *testing.T) {
-	runner := &agent.Runner{}
-	conv := conversation.New(runner, &session.Session{ID: "sess_root"}, nil)
+	hub := newTestHub()
+	sess := &testSession{hub: hub}
 
 	h := &WSHandler{
-		Resolve:    func(*http.Request) (Session, error) { return conv, nil },
+		Resolve:    func(*http.Request) (Session, error) { return sess, nil },
 		ServerName: "codeagent/test",
 		Accept:     &websocket.AcceptOptions{InsecureSkipVerify: true},
 	}
@@ -41,8 +82,7 @@ func TestWSHandlerStreamsOverRealSocket(t *testing.T) {
 	}
 	defer c.CloseNow()
 
-	// 1) hello — sent after the bridge subscribed, so a later emit is guaranteed
-	// to reach this client.
+	// 1) hello — sent after the bridge subscribed.
 	_, data, err := c.Read(ctx)
 	if err != nil {
 		t.Fatalf("read hello: %v", err)
@@ -55,9 +95,8 @@ func TestWSHandlerStreamsOverRealSocket(t *testing.T) {
 		t.Fatalf("first message is not the hello handshake: %s", data)
 	}
 
-	// 2) emit a core event the way the agent loop would; the client must receive
-	// its encoded frame.
-	runner.Emitter.Emit(agent.Event{
+	// 2) emit a core event; the client must receive its encoded frame.
+	hub.Emit(agent.Event{
 		Kind: agent.EventTurnFinished, SessionID: "sess_root", TurnID: "turn_1",
 		Text: "done",
 	})

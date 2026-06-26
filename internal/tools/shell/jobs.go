@@ -56,7 +56,7 @@ func (t *JobStatusTool) InputSchema() json.RawMessage {
 		"job_id": {Type: "string", Description: "The job to report on. Omit to list all jobs."},
 	}).JSON()
 }
-func (t *JobStatusTool) Execute(_ context.Context, input json.RawMessage) (tools.ToolResult, error) {
+func (t *JobStatusTool) Execute(_ context.Context, _ tools.ExecutionContext, input json.RawMessage) (tools.ToolResult, error) {
 	id, err := parseJobID(input)
 	if err != nil {
 		return tools.ToolResult{}, err
@@ -81,7 +81,7 @@ func (t *JobLogsTool) Description() string {
 func (t *JobLogsTool) InputSchema() json.RawMessage {
 	return jobIDInputSchema("The job whose logs to fetch.")
 }
-func (t *JobLogsTool) Execute(_ context.Context, input json.RawMessage) (tools.ToolResult, error) {
+func (t *JobLogsTool) Execute(_ context.Context, _ tools.ExecutionContext, input json.RawMessage) (tools.ToolResult, error) {
 	id, err := parseJobID(input)
 	if err != nil {
 		return tools.ToolResult{}, err
@@ -111,7 +111,7 @@ func (t *JobCancelTool) Description() string {
 func (t *JobCancelTool) InputSchema() json.RawMessage {
 	return jobIDInputSchema("The job to stop.")
 }
-func (t *JobCancelTool) Execute(_ context.Context, input json.RawMessage) (tools.ToolResult, error) {
+func (t *JobCancelTool) Execute(_ context.Context, _ tools.ExecutionContext, input json.RawMessage) (tools.ToolResult, error) {
 	id, err := parseJobID(input)
 	if err != nil {
 		return tools.ToolResult{}, err

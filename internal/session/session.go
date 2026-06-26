@@ -17,6 +17,11 @@ type Session struct {
 	// ID is the durable identity assigned at creation. It is the key under which
 	// the session is persisted and the handle used to resume it.
 	ID string
+	// WorkspacePath is the absolute project root directory this session runs in.
+	// It is conversation identity metadata, not an event — set at creation time
+	// and never derived from the event stream. An empty path means the server
+	// default workspace was used.
+	WorkspacePath string
 	// Model is the wire model string this session last ran with — stored so a
 	// listing can show it and a resume can report it.
 	Model string

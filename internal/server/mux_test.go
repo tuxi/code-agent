@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -15,40 +16,91 @@ import (
 	"code-agent/internal/session"
 )
 
-// emptyEvents is an EventSource with no recorded events.
-type emptyEvents struct{}
+// ---- test adapters for ConversationRepository ----
 
-func (emptyEvents) SessionEvents(context.Context, string) ([]session.EventRecord, error) {
-	return nil, nil
+// fakeConversationRepo is an in-memory ConversationRepository for mux tests.
+type fakeConversationRepo struct {
+	mu       sync.Mutex
+	sessions map[string]*session.Session
 }
 
-// mapEvents serves canned recorded events keyed by session id. The payloads are
-// raw agent.Event JSON, exactly what the store persists.
-type mapEvents map[string][]session.EventRecord
+func newFakeConversationRepo() *fakeConversationRepo {
+	return &fakeConversationRepo{sessions: make(map[string]*session.Session)}
+}
 
-func (m mapEvents) SessionEvents(_ context.Context, id string) ([]session.EventRecord, error) {
-	return m[id], nil
+func (r *fakeConversationRepo) Create(ctx context.Context, workspacePath string) (*session.Session, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	s := &session.Session{ID: fmt.Sprintf("sess_%d", len(r.sessions)+1), WorkspacePath: workspacePath}
+	r.sessions[s.ID] = s
+	return s, nil
+}
+
+func (r *fakeConversationRepo) Load(ctx context.Context, id string) (*session.Session, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	s, ok := r.sessions[id]
+	if !ok {
+		return nil, fmt.Errorf("session %q not found", id)
+	}
+	return s, nil
+}
+
+func (r *fakeConversationRepo) Save(ctx context.Context, s *session.Session) error { return nil }
+func (r *fakeConversationRepo) List(ctx context.Context) ([]session.Meta, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var out []session.Meta
+	for _, s := range r.sessions {
+		out = append(out, session.Meta{ID: s.ID, WorkspacePath: s.WorkspacePath})
+	}
+	return out, nil
+}
+func (r *fakeConversationRepo) Delete(ctx context.Context, id string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.sessions, id)
+	return nil
+}
+func (r *fakeConversationRepo) Close() error { return nil }
+
+// ---- test adapters for ConversationEventStore ----
+
+// fakeEventStore implements ConversationEventStore with canned data.
+type fakeEventStore struct {
+	mu   sync.Mutex
+	recs map[string][]session.EventRecord
+}
+
+func (s *fakeEventStore) Append(ctx context.Context, e session.EventRecord) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.recs == nil {
+		s.recs = make(map[string][]session.EventRecord)
+	}
+	s.recs[e.SessionID] = append(s.recs[e.SessionID], e)
+	return nil
+}
+
+func (s *fakeEventStore) Replay(ctx context.Context, sessionID string) ([]session.EventRecord, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.recs[sessionID], nil
 }
 
 func storedEvent(ev agent.Event) session.EventRecord {
-	p, _ := json.Marshal(ev) // raw agent.Event, as eventStoreEmitter persists it
+	p, _ := json.Marshal(ev)
 	return session.EventRecord{SessionID: ev.SessionID, TurnID: ev.TurnID, Kind: string(ev.Kind), At: ev.At, Payload: p}
 }
 
-// muxFactory builds throwaway conversations with deterministic ids.
-type muxFactory struct{ n int }
-
-func (f *muxFactory) Create(context.Context) (*conversation.Conversation, error) {
-	f.n++
-	return conversation.New(&agent.Runner{}, &session.Session{ID: fmt.Sprintf("sess_%d", f.n)}, nil), nil
-}
-
-func (f *muxFactory) Resume(context.Context, string) (*conversation.Conversation, error) {
-	return nil, fmt.Errorf("resume unsupported")
+// newTestMux returns an mux wired with test fakes. executor is nil → WS endpoint
+// is skipped.
+func newTestMux(repo conversation.ConversationRepository, events conversation.ConversationEventStore) http.Handler {
+	return NewMux(repo, events, nil, MuxOptions{})
 }
 
 func TestMuxHealthz(t *testing.T) {
-	srv := httptest.NewServer(NewMux(conversation.NewManager(&muxFactory{}), emptyEvents{}, MuxOptions{}))
+	srv := httptest.NewServer(newTestMux(newFakeConversationRepo(), &fakeEventStore{}))
 	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + "/healthz")
@@ -62,10 +114,10 @@ func TestMuxHealthz(t *testing.T) {
 }
 
 func TestMuxCreateThenList(t *testing.T) {
-	srv := httptest.NewServer(NewMux(conversation.NewManager(&muxFactory{}), emptyEvents{}, MuxOptions{}))
+	repo := newFakeConversationRepo()
+	srv := httptest.NewServer(newTestMux(repo, &fakeEventStore{}))
 	defer srv.Close()
 
-	// Create with the frozen request shape (workspace_path present but ignored).
 	resp, err := http.Post(srv.URL+"/v1/conversations", "application/json",
 		strings.NewReader(`{"workspace_path":"/Users/x/proj"}`))
 	if err != nil {
@@ -82,8 +134,11 @@ func TestMuxCreateThenList(t *testing.T) {
 	if ref.ID == "" {
 		t.Fatal("create did not return an id")
 	}
+	if ref.WorkspacePath != "/Users/x/proj" {
+		t.Errorf("WorkspacePath = %q", ref.WorkspacePath)
+	}
 
-	// The created conversation must now appear in the list.
+	// List should include the created conversation.
 	resp2, err := http.Get(srv.URL + "/v1/conversations")
 	if err != nil {
 		t.Fatal(err)
@@ -105,7 +160,8 @@ func TestMuxCreateThenList(t *testing.T) {
 }
 
 func TestMuxCreateAcceptsEmptyBody(t *testing.T) {
-	srv := httptest.NewServer(NewMux(conversation.NewManager(&muxFactory{}), emptyEvents{}, MuxOptions{}))
+	repo := newFakeConversationRepo()
+	srv := httptest.NewServer(newTestMux(repo, &fakeEventStore{}))
 	defer srv.Close()
 
 	resp, err := http.Post(srv.URL+"/v1/conversations", "application/json", nil)
@@ -118,7 +174,38 @@ func TestMuxCreateAcceptsEmptyBody(t *testing.T) {
 	}
 }
 
-// --- conversation read API (P1-A.5) ---
+func TestMuxDelete(t *testing.T) {
+	repo := newFakeConversationRepo()
+	srv := httptest.NewServer(newTestMux(repo, &fakeEventStore{}))
+	defer srv.Close()
+
+	// Create then delete.
+	resp, _ := http.Post(srv.URL+"/v1/conversations", "application/json", nil)
+	var ref ConversationRef
+	json.NewDecoder(resp.Body).Decode(&ref)
+	resp.Body.Close()
+
+	req, _ := http.NewRequest("DELETE", srv.URL+"/v1/conversations/"+ref.ID, nil)
+	resp2, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp2.StatusCode != http.StatusNoContent {
+		t.Errorf("delete status = %d, want 204", resp2.StatusCode)
+	}
+	resp2.Body.Close()
+
+	// List should be empty.
+	resp3, _ := http.Get(srv.URL + "/v1/conversations")
+	var refs []ConversationRef
+	json.NewDecoder(resp3.Body).Decode(&refs)
+	resp3.Body.Close()
+	if len(refs) != 0 {
+		t.Errorf("list after delete = %d, want 0", len(refs))
+	}
+}
+
+// ---- conversation read API (P1-A.5) ----
 
 func readMuxWithHistory() (http.Handler, string) {
 	at := time.Date(2026, 6, 24, 10, 0, 0, 0, time.UTC)
@@ -129,7 +216,13 @@ func readMuxWithHistory() (http.Handler, string) {
 		storedEvent(agent.Event{Kind: agent.EventModelFinished, SessionID: id, TurnID: "t1", At: at.Add(2 * time.Second), PromptTokens: 100, Elapsed: 731 * time.Millisecond}),
 		storedEvent(agent.Event{Kind: agent.EventTurnFinished, SessionID: id, TurnID: "t1", At: at.Add(3 * time.Second), Text: "项目结构如下"}),
 	}
-	mux := NewMux(conversation.NewManager(&muxFactory{}), mapEvents{id: recs}, MuxOptions{})
+	events := &fakeEventStore{recs: map[string][]session.EventRecord{id: recs}}
+
+	repo := newFakeConversationRepo()
+	// Pre-populate the session so Load succeeds.
+	repo.sessions[id] = &session.Session{ID: id, WorkspacePath: "/tmp/test"}
+
+	mux := newTestMux(repo, events)
 	return mux, id
 }
 
@@ -150,7 +243,6 @@ func TestMuxGetEventsReEncodesToWire(t *testing.T) {
 	if len(frames) != 4 {
 		t.Fatalf("want 4 event frames, got %d", len(frames))
 	}
-	// tool_started must come back in WIRE shape: structured tool_args.
 	tool := frames[1]
 	if tool["kind"] != "tool_started" {
 		t.Fatalf("frame[1] kind = %v", tool["kind"])
@@ -158,7 +250,6 @@ func TestMuxGetEventsReEncodesToWire(t *testing.T) {
 	if args, _ := tool["tool_args"].(map[string]any); args["q"] != "x" {
 		t.Errorf("tool_args not structured JSON in history: %v", tool["tool_args"])
 	}
-	// model_finished must expose elapsed_ms (ms, not the stored ns).
 	if frames[2]["elapsed_ms"].(float64) != 731 {
 		t.Errorf("elapsed_ms = %v, want 731", frames[2]["elapsed_ms"])
 	}
@@ -212,7 +303,7 @@ func TestMuxGetDetail(t *testing.T) {
 }
 
 func TestMuxReadUnknownConversation404(t *testing.T) {
-	srv := httptest.NewServer(NewMux(conversation.NewManager(&muxFactory{}), emptyEvents{}, MuxOptions{}))
+	srv := httptest.NewServer(newTestMux(newFakeConversationRepo(), &fakeEventStore{}))
 	defer srv.Close()
 
 	for _, path := range []string{"/v1/conversations/nope", "/v1/conversations/nope/messages", "/v1/conversations/nope/events"} {

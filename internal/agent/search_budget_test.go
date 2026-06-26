@@ -16,7 +16,7 @@ type countingSearchTool struct{ ran int }
 func (t *countingSearchTool) Name() string                 { return "web_search" }
 func (t *countingSearchTool) Description() string          { return "search the web" }
 func (t *countingSearchTool) InputSchema() json.RawMessage { return tools.Object(nil).JSON() }
-func (t *countingSearchTool) Execute(_ context.Context, _ json.RawMessage) (tools.ToolResult, error) {
+func (t *countingSearchTool) Execute(_ context.Context, _ tools.ExecutionContext, _ json.RawMessage) (tools.ToolResult, error) {
 	t.ran++
 	return tools.ToolResult{Content: "results"}, nil
 }

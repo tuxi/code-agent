@@ -7,6 +7,8 @@ import (
 	"code-agent/internal/conversation"
 	"code-agent/internal/model"
 	"code-agent/internal/session"
+	"code-agent/internal/skills"
+	"code-agent/internal/tools"
 	"code-agent/internal/ui"
 	"context"
 	"errors"
@@ -20,6 +22,25 @@ import (
 
 	"github.com/chzyer/readline"
 )
+
+// replRunBuilder is the conversation.RunBuilder for the REPL. It wraps buildRunner
+// but uses the REPL's pre-built emitter (console + event store persistence) rather
+// than the per-turn composite emitter from TurnExecutor. The approver is also
+// statically configured (AutoApprover), not set per-connection.
+type replRunBuilder struct {
+	cfg      app.Config
+	mc       app.ModelConfig
+	provider model.Provider
+	registry *tools.Registry
+	skillReg *skills.Registry
+	approver agent.Approver
+	emitter  agent.Emitter
+}
+
+func (b *replRunBuilder) Build(ctx conversation.RuntimeContext) conversation.TurnRunner {
+	runner := buildRunner(b.cfg, b.mc, b.provider, b.registry, b.skillReg, b.approver, b.emitter)
+	return runner
+}
 
 // lineReader reads one line for the given prompt. In the REPL it is backed by the
 // readline instance, so the input loop and every sub-prompt (tool approval,
@@ -115,12 +136,20 @@ func repl(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider mode
 		fmt.Printf("New session %s\n", sess.ID)
 	}
 
-	// The conversation is the runtime handle to this thread: it drives each turn,
-	// owns per-turn cancellation, fans events out, and autosaves. The REPL keeps
-	// `sess` as a convenience handle for command/budget reads and pushes any
-	// /resume swap into the conversation via SetSession.
-	conv := conversation.New(runner, sess, store)
-	conv.OnSaveError = func(err error) {
+	// Build the TurnExecutor — the single execution entry point. The REPL holds
+	// `sess` across turns and drives each turn through ExecuteWithSession.
+	repo := conversation.NewSQLiteRepository(store, mc.ContextWindow, cfg.CompactThreshold(mc), mc.Model, func(string) string { return skillReg.PromptIndex() })
+	eventStore := &conversation.StoreEventAdapter{Store: store}
+	active := conversation.NewActiveTurnRegistry()
+	subs := conversation.NewSubscriptionManager()
+	rb := &replRunBuilder{
+		cfg: cfg, mc: mc, provider: provider,
+		registry: registry, skillReg: skillReg,
+		approver: approver,
+		emitter:  withEventStore(buildEmitter(), store, ctx),
+	}
+	executor := conversation.NewTurnExecutor(repo, eventStore, active, subs, rb)
+	executor.OnSaveError = func(err error) {
 		fmt.Println("warning: failed to save session:", err)
 	}
 
@@ -171,17 +200,16 @@ func repl(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider mode
 			}
 			if newSess != sess { // /resume switched the active session
 				sess = newSess
-				conv.SetSession(sess)
 			}
 			continue
 		}
 
 		// Each turn gets its own signal context: Ctrl-C during a long model call
 		// cancels this turn (not the process), and the REPL stays alive. The
-		// conversation drives RunTurn and autosaves afterwards — even on interrupt
+		// executor drives RunTurn and autosaves afterwards — even on interrupt
 		// (WithoutCancel), reporting any save failure via OnSaveError above.
 		turnCtx, turnCancel := signal.NotifyContext(ctx, os.Interrupt)
-		res, err := conv.SendMessage(turnCtx, line)
+		res, err := executor.ExecuteWithSession(turnCtx, sess, line)
 		turnCancel()
 		if errors.Is(err, context.Canceled) {
 			fmt.Println("\nTurn interrupted")

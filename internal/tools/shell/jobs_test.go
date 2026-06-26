@@ -1,6 +1,7 @@
 package shell
 
 import (
+	"code-agent/internal/tools"
 	"context"
 	"encoding/json"
 	"strings"
@@ -8,8 +9,8 @@ import (
 )
 
 func TestRunCommandBackground(t *testing.T) {
-	tool := NewRunCommandTool(".")
-	res, err := tool.Execute(context.Background(), json.RawMessage(`{"command":"echo hi","background":true}`))
+	tool := NewRunCommandTool()
+	res, err := tool.Execute(context.Background(), tools.ExecutionContext{WorkspaceRoot: "."}, json.RawMessage(`{"command":"echo hi","background":true}`))
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -33,7 +34,7 @@ func TestRunCommandBackground(t *testing.T) {
 
 	// job_status reports completion.
 	status := &JobStatusTool{Jobs: tool.Jobs}
-	sres, err := status.Execute(context.Background(), json.RawMessage(`{"job_id":"`+br.JobID+`"}`))
+	sres, err := status.Execute(context.Background(), tools.ExecutionContext{WorkspaceRoot: "."}, json.RawMessage(`{"job_id":"`+br.JobID+`"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,7 +44,7 @@ func TestRunCommandBackground(t *testing.T) {
 
 	// job_logs returns the output.
 	logs := &JobLogsTool{Jobs: tool.Jobs}
-	lres, err := logs.Execute(context.Background(), json.RawMessage(`{"job_id":"`+br.JobID+`"}`))
+	lres, err := logs.Execute(context.Background(), tools.ExecutionContext{WorkspaceRoot: "."}, json.RawMessage(`{"job_id":"`+br.JobID+`"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,8 +54,8 @@ func TestRunCommandBackground(t *testing.T) {
 }
 
 func TestBackgroundStillPolicyGated(t *testing.T) {
-	tool := NewRunCommandTool(".")
-	res, err := tool.Execute(context.Background(), json.RawMessage(`{"command":"rm -rf /","background":true}`))
+	tool := NewRunCommandTool()
+	res, err := tool.Execute(context.Background(), tools.ExecutionContext{WorkspaceRoot: "."}, json.RawMessage(`{"command":"rm -rf /","background":true}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,8 +68,8 @@ func TestBackgroundStillPolicyGated(t *testing.T) {
 }
 
 func TestJobCancelTool(t *testing.T) {
-	tool := NewRunCommandTool(".")
-	res, err := tool.Execute(context.Background(), json.RawMessage(`{"command":"sleep 30","background":true}`))
+	tool := NewRunCommandTool()
+	res, err := tool.Execute(context.Background(), tools.ExecutionContext{WorkspaceRoot: "."}, json.RawMessage(`{"command":"sleep 30","background":true}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,7 +79,7 @@ func TestJobCancelTool(t *testing.T) {
 	}
 
 	cancel := &JobCancelTool{Jobs: tool.Jobs}
-	cres, err := cancel.Execute(context.Background(), json.RawMessage(`{"job_id":"`+br.JobID+`"}`))
+	cres, err := cancel.Execute(context.Background(), tools.ExecutionContext{WorkspaceRoot: "."}, json.RawMessage(`{"job_id":"`+br.JobID+`"}`))
 	if err != nil {
 		t.Fatalf("cancel: %v", err)
 	}
@@ -88,9 +89,9 @@ func TestJobCancelTool(t *testing.T) {
 }
 
 func TestJobToolsUnknownID(t *testing.T) {
-	tool := NewRunCommandTool(".")
+	tool := NewRunCommandTool()
 	status := &JobStatusTool{Jobs: tool.Jobs}
-	if _, err := status.Execute(context.Background(), json.RawMessage(`{"job_id":"job_nope"}`)); err == nil {
+	if _, err := status.Execute(context.Background(), tools.ExecutionContext{WorkspaceRoot: "."}, json.RawMessage(`{"job_id":"job_nope"}`)); err == nil {
 		t.Error("job_status on an unknown id should error")
 	}
 }

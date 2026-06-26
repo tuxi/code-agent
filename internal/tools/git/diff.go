@@ -14,9 +14,8 @@ import (
 )
 
 type DiffTool struct {
-	WorkspaceRoot string
-	MaxBytes      int
-	Timeout       time.Duration
+	MaxBytes int
+	Timeout  time.Duration
 }
 
 type diffInput struct {
@@ -25,11 +24,10 @@ type diffInput struct {
 	Stat   bool   `json:"stat"`
 }
 
-func NewDiffTool(workspaceRoot string) *DiffTool {
+func NewDiffTool() *DiffTool {
 	return &DiffTool{
-		WorkspaceRoot: workspaceRoot,
-		MaxBytes:      80_000,
-		Timeout:       time.Second * 20,
+		MaxBytes: 80_000,
+		Timeout:  time.Second * 20,
 	}
 }
 
@@ -58,7 +56,7 @@ func (t *DiffTool) InputSchema() json.RawMessage {
 	}).JSON()
 }
 
-func (t *DiffTool) Execute(ctx context.Context, input json.RawMessage) (tools.ToolResult, error) {
+func (t *DiffTool) Execute(ctx context.Context, ec tools.ExecutionContext, input json.RawMessage) (tools.ToolResult, error) {
 	var in diffInput
 	if len(input) > 0 {
 		if err := json.Unmarshal(input, &in); err != nil {
@@ -66,7 +64,7 @@ func (t *DiffTool) Execute(ctx context.Context, input json.RawMessage) (tools.To
 		}
 	}
 
-	rootAbs, err := filepath.Abs(t.WorkspaceRoot)
+	rootAbs, err := filepath.Abs(ec.WorkspaceRoot)
 	if err != nil {
 		return tools.ToolResult{}, err
 	}

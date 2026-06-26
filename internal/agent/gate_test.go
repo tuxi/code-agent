@@ -35,7 +35,7 @@ func (t *recordingTool) Name() string                 { return "danger" }
 func (t *recordingTool) Description() string          { return "a side-effecting tool" }
 func (t *recordingTool) InputSchema() json.RawMessage { return tools.Object(nil).JSON() }
 func (t *recordingTool) SideEffects() bool            { return true }
-func (t *recordingTool) Execute(_ context.Context, _ json.RawMessage) (tools.ToolResult, error) {
+func (t *recordingTool) Execute(_ context.Context, _ tools.ExecutionContext, _ json.RawMessage) (tools.ToolResult, error) {
 	t.ran = true
 	return tools.ToolResult{Content: "did it"}, nil
 }

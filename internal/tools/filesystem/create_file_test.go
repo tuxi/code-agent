@@ -1,6 +1,7 @@
 package filesystem
 
 import (
+	"code-agent/internal/tools"
 	"context"
 	"encoding/json"
 	"os"
@@ -12,7 +13,7 @@ import (
 func runCreate(t *testing.T, root string, in map[string]any) (string, error) {
 	t.Helper()
 	raw, _ := json.Marshal(in)
-	res, err := NewCreateFileTool(root).Execute(context.Background(), raw)
+	res, err := NewCreateFileTool().Execute(context.Background(), tools.ExecutionContext{WorkspaceRoot: root}, raw)
 	return res.Content, err
 }
 

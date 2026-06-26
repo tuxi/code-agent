@@ -82,7 +82,7 @@ func (t *Tool) InputSchema() json.RawMessage {
 	}, "query").JSON()
 }
 
-func (t *Tool) Execute(ctx context.Context, input json.RawMessage) (tools.ToolResult, error) {
+func (t *Tool) Execute(ctx context.Context, _ tools.ExecutionContext, input json.RawMessage) (tools.ToolResult, error) {
 	var in searchInput
 	if len(input) > 0 {
 		if err := json.Unmarshal(input, &in); err != nil {

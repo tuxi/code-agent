@@ -1,6 +1,7 @@
 package filesystem
 
 import (
+	"code-agent/internal/tools"
 	"context"
 	"encoding/json"
 	"os"
@@ -21,7 +22,7 @@ func writeTemp(t *testing.T, name, content string) (root, rel string) {
 func runEdit(t *testing.T, root string, in map[string]any) (string, error) {
 	t.Helper()
 	raw, _ := json.Marshal(in)
-	res, err := NewEditFileTool(root).Execute(context.Background(), raw)
+	res, err := NewEditFileTool().Execute(context.Background(), tools.ExecutionContext{WorkspaceRoot: root}, raw)
 	return res.Content, err
 }
 

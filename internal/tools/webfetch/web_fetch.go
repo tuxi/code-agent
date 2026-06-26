@@ -152,7 +152,7 @@ type fetchOutput struct {
 	Links      []string    `json:"links"`
 }
 
-func (t *Tool) Execute(ctx context.Context, input json.RawMessage) (tools.ToolResult, error) {
+func (t *Tool) Execute(ctx context.Context, _ tools.ExecutionContext, input json.RawMessage) (tools.ToolResult, error) {
 	var in struct {
 		URL string `json:"url"`
 	}

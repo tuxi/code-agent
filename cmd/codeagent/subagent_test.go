@@ -50,7 +50,7 @@ type namedTool struct{ name string }
 func (n namedTool) Name() string                 { return n.name }
 func (n namedTool) Description() string          { return "" }
 func (n namedTool) InputSchema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
-func (n namedTool) Execute(context.Context, json.RawMessage) (tools.ToolResult, error) {
+func (n namedTool) Execute(context.Context, tools.ExecutionContext, json.RawMessage) (tools.ToolResult, error) {
 	return tools.ToolResult{}, nil
 }
 
@@ -66,7 +66,7 @@ func testSubAgent(provider model.Provider, root string) *subAgent {
 
 func TestSubAgentRunReturnsConclusion(t *testing.T) {
 	sa := testSubAgent(answerProvider{content: "root cause: nil deref at loop.go:42"}, t.TempDir())
-	out, err := sa.Run(context.Background(), "why does X fail?")
+	out, err := sa.Run(context.Background(), "", "why does X fail?")
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -86,7 +86,7 @@ func TestSubAgentPersistsTranscript(t *testing.T) {
 		store:    store,
 	}
 	ctx := context.Background()
-	if _, err := sa.Run(ctx, "investigate the step limit"); err != nil {
+	if _, err := sa.Run(ctx, sa.root, "investigate the step limit"); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 
@@ -121,14 +121,14 @@ func TestSubAgentPersistsTranscript(t *testing.T) {
 func TestSubAgentNilStoreStaysQuiet(t *testing.T) {
 	// No store wired (e.g. a bare construction) must not panic and must emit nothing.
 	sa := testSubAgent(answerProvider{content: "x"}, t.TempDir())
-	if _, err := sa.Run(context.Background(), "go"); err != nil {
+	if _, err := sa.Run(context.Background(), "", "go"); err != nil {
 		t.Fatalf("Run with nil store: %v", err)
 	}
 }
 
 func TestSubAgentRunFlagsNonConvergence(t *testing.T) {
 	sa := testSubAgent(loopingProvider{}, t.TempDir())
-	out, err := sa.Run(context.Background(), "dig forever")
+	out, err := sa.Run(context.Background(), "", "dig forever")
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -146,7 +146,7 @@ func TestSubAgentNonConvergenceNeverLeaksGarbage(t *testing.T) {
 	_ = reg.Register(namedTool{"nope"})
 	sa := testSubAgent(leakyProvider{}, t.TempDir())
 	sa.readOnly = reg
-	out, err := sa.Run(context.Background(), "a task too broad to finish")
+	out, err := sa.Run(context.Background(), "", "a task too broad to finish")
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}

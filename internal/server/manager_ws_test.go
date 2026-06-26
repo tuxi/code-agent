@@ -6,49 +6,24 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 	"time"
 
 	"code-agent/internal/agent"
-	"code-agent/internal/conversation"
-	"code-agent/internal/session"
 
 	"github.com/coder/websocket"
 )
 
-// oneRunnerFactory resumes a conversation around a single fixed runner, so the
-// test can emit through that runner and watch frames arrive at the client.
-type oneRunnerFactory struct{ runner *agent.Runner }
-
-func (f oneRunnerFactory) Create(context.Context) (*conversation.Conversation, error) {
-	return conversation.New(f.runner, &session.Session{ID: "new"}, nil), nil
-}
-
-func (f oneRunnerFactory) Resume(_ context.Context, id string) (*conversation.Conversation, error) {
-	return conversation.New(f.runner, &session.Session{ID: id}, nil), nil
-}
-
-// TestWSHandlerResolvesViaManager proves the Manager fills the Resolve seam:
-// a connection to /v1/conversations/{id} is routed to that conversation, and a
-// server-side emit on its runner reaches the client as a frame.
-func TestWSHandlerResolvesViaManager(t *testing.T) {
-	runner := &agent.Runner{}
-	mgr := conversation.NewManager(oneRunnerFactory{runner: runner})
-	if _, err := mgr.Resume(context.Background(), "sess_root"); err != nil {
-		t.Fatal(err)
-	}
-	defer mgr.Shutdown()
+// TestWSHandlerResolvesViaTransportSession proves the TurnExecutor/TransportSession
+// fills the Resolve seam: a connection to /v1/conversations/{id}/stream is
+// routed to a TransportSession sharing a test hub, and a hub-emitted event
+// reaches the client as a frame.
+func TestWSHandlerResolvesViaTransportSession(t *testing.T) {
+	hub := newTestHub()
+	sess := &testSession{hub: hub}
 
 	h := &WSHandler{
-		Resolve: func(r *http.Request) (Session, error) {
-			id := strings.TrimPrefix(r.URL.Path, "/v1/conversations/")
-			c, ok := mgr.Get(id)
-			if !ok {
-				return nil, fmt.Errorf("no such conversation %q", id)
-			}
-			return c, nil
-		},
+		Resolve:    func(*http.Request) (Session, error) { return sess, nil },
 		ServerName: "codeagent/test",
 		Accept:     &websocket.AcceptOptions{InsecureSkipVerify: true},
 	}
@@ -58,14 +33,14 @@ func TestWSHandlerResolvesViaManager(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	url := "ws" + strings.TrimPrefix(srv.URL, "http") + "/v1/conversations/sess_root"
+	url := httptestServerToWS(srv.URL)
 	c, _, err := websocket.Dial(ctx, url, nil)
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
 	defer c.CloseNow()
 
-	if _, data, err := c.Read(ctx); err != nil { // hello => subscribed
+	if _, data, err := c.Read(ctx); err != nil { // hello
 		t.Fatalf("read hello: %v", err)
 	} else {
 		var hello map[string]any
@@ -75,7 +50,7 @@ func TestWSHandlerResolvesViaManager(t *testing.T) {
 		}
 	}
 
-	runner.Emitter.Emit(agent.Event{Kind: agent.EventThinking, SessionID: "sess_root", Text: "routed"})
+	hub.Emit(agent.Event{Kind: agent.EventThinking, SessionID: "sess_root", Text: "routed"})
 
 	_, data, err := c.Read(ctx)
 	if err != nil {
@@ -86,23 +61,17 @@ func TestWSHandlerResolvesViaManager(t *testing.T) {
 		t.Fatal(err)
 	}
 	if ev["kind"] != "thinking" || ev["text"] != "routed" {
-		t.Errorf("event not routed through the resolved conversation: %s", data)
+		t.Errorf("event not routed through TransportSession: %s", data)
 	}
 
 	c.Close(websocket.StatusNormalClosure, "")
 }
 
-// TestWSHandlerUnknownConversation returns 404 when the manager has no such id.
+// TestWSHandlerUnknownConversation returns 404 when the resolve func errors.
 func TestWSHandlerUnknownConversation(t *testing.T) {
-	mgr := conversation.NewManager(oneRunnerFactory{runner: &agent.Runner{}})
 	h := &WSHandler{
 		Resolve: func(r *http.Request) (Session, error) {
-			id := strings.TrimPrefix(r.URL.Path, "/v1/conversations/")
-			c, ok := mgr.Get(id)
-			if !ok {
-				return nil, fmt.Errorf("no such conversation %q", id)
-			}
-			return c, nil
+			return nil, fmt.Errorf("no such conversation %q", "missing")
 		},
 	}
 	srv := httptest.NewServer(h)
@@ -116,4 +85,8 @@ func TestWSHandlerUnknownConversation(t *testing.T) {
 	if resp.StatusCode != http.StatusNotFound {
 		t.Errorf("status = %d, want 404", resp.StatusCode)
 	}
+}
+
+func httptestServerToWS(httpURL string) string {
+	return "ws" + httpURL[4:]
 }

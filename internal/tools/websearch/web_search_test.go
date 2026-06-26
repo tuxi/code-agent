@@ -1,6 +1,7 @@
 package websearch
 
 import (
+	"code-agent/internal/tools"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -118,7 +119,7 @@ func TestToolExecute(t *testing.T) {
 	}
 
 	input := json.RawMessage(`{"query": "test query"}`)
-	result, err := tool.Execute(context.Background(), input)
+	result, err := tool.Execute(context.Background(), tools.ExecutionContext{}, input)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -142,7 +143,7 @@ func TestToolExecuteMissingQuery(t *testing.T) {
 		Primary: NewSearXNG([]string{"https://searx.be"}, 10),
 		TopK:    5,
 	}
-	_, err := tool.Execute(context.Background(), json.RawMessage(`{}`))
+	_, err := tool.Execute(context.Background(), tools.ExecutionContext{}, json.RawMessage(`{}`))
 	if err == nil || !strings.Contains(err.Error(), "query") {
 		t.Errorf("expected query error, got: %v", err)
 	}
@@ -150,7 +151,7 @@ func TestToolExecuteMissingQuery(t *testing.T) {
 
 func TestToolExecuteNoProvider(t *testing.T) {
 	tool := &Tool{TopK: 5}
-	_, err := tool.Execute(context.Background(), json.RawMessage(`{"query": "test"}`))
+	_, err := tool.Execute(context.Background(), tools.ExecutionContext{}, json.RawMessage(`{"query": "test"}`))
 	if err == nil {
 		t.Fatal("expected error when no provider configured")
 	}
@@ -177,7 +178,7 @@ func TestToolTopKCap(t *testing.T) {
 		TopK:    2,
 	}
 
-	result, err := tool.Execute(context.Background(), json.RawMessage(`{"query": "test"}`))
+	result, err := tool.Execute(context.Background(), tools.ExecutionContext{}, json.RawMessage(`{"query": "test"}`))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

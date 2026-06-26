@@ -1,6 +1,7 @@
 package git
 
 import (
+	"code-agent/internal/tools"
 	"context"
 	"encoding/json"
 	"os"
@@ -42,7 +43,7 @@ func initTestRepo(t *testing.T) string {
 
 func TestGitCommitBasic(t *testing.T) {
 	dir := initTestRepo(t)
-	tool := NewGitCommitTool(dir)
+	tool := NewGitCommitTool()
 
 	// Make a change.
 	if err := os.WriteFile(filepath.Join(dir, "hello.txt"), []byte("world\n"), 0o644); err != nil {
@@ -56,7 +57,7 @@ func TestGitCommitBasic(t *testing.T) {
 	}
 
 	input, _ := json.Marshal(gitCommitInput{Message: "add hello.txt"})
-	res, err := tool.Execute(context.Background(), input)
+	res, err := tool.Execute(context.Background(), tools.ExecutionContext{WorkspaceRoot: dir}, input)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -82,7 +83,7 @@ func TestGitCommitBasic(t *testing.T) {
 
 func TestGitCommitMultiLineMessage(t *testing.T) {
 	dir := initTestRepo(t)
-	tool := NewGitCommitTool(dir)
+	tool := NewGitCommitTool()
 
 	if err := os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("new\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -96,7 +97,7 @@ func TestGitCommitMultiLineMessage(t *testing.T) {
 	// Multi-line message with special characters that would break shell quoting.
 	msg := "feat: add \"cool\" feature\n\nThis commit's message has:\n- double quotes \"like this\"\n- single quotes 'like this'\n- backticks `like this`\n- a pipe | and ampersand &\n"
 	input, _ := json.Marshal(gitCommitInput{Message: msg})
-	res, err := tool.Execute(context.Background(), input)
+	res, err := tool.Execute(context.Background(), tools.ExecutionContext{WorkspaceRoot: dir}, input)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -128,8 +129,9 @@ func TestGitCommitMultiLineMessage(t *testing.T) {
 }
 
 func TestGitCommitEmptyMessage(t *testing.T) {
-	tool := NewGitCommitTool(t.TempDir())
-	_, err := tool.Execute(context.Background(), json.RawMessage(`{"message":""}`))
+	dir := t.TempDir()
+	tool := NewGitCommitTool()
+	_, err := tool.Execute(context.Background(), tools.ExecutionContext{WorkspaceRoot: dir}, json.RawMessage(`{"message":""}`))
 	if err == nil {
 		t.Error("expected error for empty message")
 	}
@@ -137,10 +139,10 @@ func TestGitCommitEmptyMessage(t *testing.T) {
 
 func TestGitCommitNothingToCommit(t *testing.T) {
 	dir := initTestRepo(t)
-	tool := NewGitCommitTool(dir)
+	tool := NewGitCommitTool()
 
 	input, _ := json.Marshal(gitCommitInput{Message: "should fail"})
-	res, err := tool.Execute(context.Background(), input)
+	res, err := tool.Execute(context.Background(), tools.ExecutionContext{WorkspaceRoot: dir}, input)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}

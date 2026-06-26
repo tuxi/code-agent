@@ -13,8 +13,7 @@ import (
 )
 
 type EditFileTool struct {
-	WorkspaceRoot string
-	MaxBytes      int64
+	MaxBytes int64
 }
 
 type editFileInput struct {
@@ -23,10 +22,9 @@ type editFileInput struct {
 	New  string `json:"new"`
 }
 
-func NewEditFileTool(workspace string) *EditFileTool {
+func NewEditFileTool() *EditFileTool {
 	return &EditFileTool{
-		WorkspaceRoot: workspace,
-		MaxBytes:      200_000,
+		MaxBytes: 200_000,
 	}
 }
 
@@ -55,7 +53,7 @@ func (t *EditFileTool) InputSchema() json.RawMessage {
 	}, "path", "old").JSON()
 }
 
-func (t *EditFileTool) Execute(ctx context.Context, input json.RawMessage) (tools.ToolResult, error) {
+func (t *EditFileTool) Execute(ctx context.Context, ec tools.ExecutionContext, input json.RawMessage) (tools.ToolResult, error) {
 	var in editFileInput
 	if len(input) > 0 {
 		if err := json.Unmarshal(input, &in); err != nil {
@@ -81,7 +79,7 @@ func (t *EditFileTool) Execute(ctx context.Context, input json.RawMessage) (tool
 		return tools.ToolResult{Content: "The 'old' and 'new' text are identical; nothing to change."}, nil
 	}
 
-	rootAbs, err := filepath.Abs(t.WorkspaceRoot)
+	rootAbs, err := filepath.Abs(ec.WorkspaceRoot)
 	if err != nil {
 		return tools.ToolResult{}, err
 	}

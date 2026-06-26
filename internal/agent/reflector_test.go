@@ -22,7 +22,7 @@ type sequencedTool struct {
 func (s *sequencedTool) Name() string                 { return s.name }
 func (s *sequencedTool) Description() string          { return "sequenced fake tool" }
 func (s *sequencedTool) InputSchema() json.RawMessage { return tools.Object(nil).JSON() }
-func (s *sequencedTool) Execute(context.Context, json.RawMessage) (tools.ToolResult, error) {
+func (s *sequencedTool) Execute(_ context.Context, _ tools.ExecutionContext, _ json.RawMessage) (tools.ToolResult, error) {
 	out := s.outs[len(s.outs)-1]
 	if s.i < len(s.outs) {
 		out = s.outs[s.i]

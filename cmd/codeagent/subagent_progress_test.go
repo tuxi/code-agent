@@ -63,7 +63,7 @@ func TestSubAgentRunDrivesProgress(t *testing.T) {
 	rec := &recordingEmitter{}
 	sa := testSubAgent(answerProvider{content: "done"}, t.TempDir())
 	sa.progress = rec
-	if _, err := sa.Run(context.Background(), "go"); err != nil {
+	if _, err := sa.Run(context.Background(), "", "go"); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	// The progress sink must see the bookends even with no store wired.

@@ -72,7 +72,7 @@ func parse(raw json.RawMessage) ([]tools.Todo, error) {
 	return in.Todos, nil
 }
 
-func (t *Tool) Execute(_ context.Context, raw json.RawMessage) (tools.ToolResult, error) {
+func (t *Tool) Execute(_ context.Context, _ tools.ExecutionContext, raw json.RawMessage) (tools.ToolResult, error) {
 	todos, err := parse(raw)
 	if err != nil {
 		return tools.ToolResult{}, err

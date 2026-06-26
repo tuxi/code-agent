@@ -16,7 +16,7 @@ type readTool struct{ name string }
 func (t readTool) Name() string                 { return t.name }
 func (t readTool) Description() string          { return "" }
 func (t readTool) InputSchema() json.RawMessage { return tools.Object(nil).JSON() }
-func (t readTool) Execute(context.Context, json.RawMessage) (tools.ToolResult, error) {
+func (t readTool) Execute(_ context.Context, _ tools.ExecutionContext, _ json.RawMessage) (tools.ToolResult, error) {
 	return tools.ToolResult{}, nil
 }
 

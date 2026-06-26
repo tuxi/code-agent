@@ -26,9 +26,9 @@ func TestRunnerNativeLoop(t *testing.T) {
 	modelName := getenvOr("CODEAGENT_TEST_MODEL", "deepseek-v4-flash")
 
 	reg := tools.NewRegistry()
-	mustRegister(t, reg, filesystem.NewListFilesTool("."))
-	mustRegister(t, reg, filesystem.NewReadFileTool("."))
-	mustRegister(t, reg, search.NewGrepTool("."))
+	mustRegister(t, reg, filesystem.NewListFilesTool())
+	mustRegister(t, reg, filesystem.NewReadFileTool())
+	mustRegister(t, reg, search.NewGrepTool())
 
 	runner := &Runner{
 		Model:     model.NewOpenAICompatibleProvider(baseURL, apiKey),

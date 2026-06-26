@@ -126,6 +126,8 @@ type Meta struct {
 	PromptTokens int
 	UpdatedAt    time.Time
 
+	WorkspacePath string // absolute project root directory
+
 	Compactions   int       // number of finalized compactions
 	TotalSaved    int       // total tokens reclaimed across them
 	LastCompacted time.Time // zero if never compacted

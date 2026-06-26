@@ -82,8 +82,8 @@ func newSubAgent(cfg app.Config, mc app.ModelConfig, parent model.Provider, root
 // sub-runner has NO Emitter (default quiet): the subagent's own tool events enter
 // no timeline — the parent already shows the `task` call via its own tool events,
 // and keeping the noise out is the whole point of delegation.
-func (s *subAgent) Run(ctx context.Context, taskPrompt string) (string, error) {
-	sess, err := session.NewBuilder(s.root).
+func (s *subAgent) Run(ctx context.Context, workspaceRoot string, taskPrompt string) (string, error) {
+	sess, err := session.NewBuilder(workspaceRoot).
 		WithBudget(s.mc.ContextWindow, s.cfg.CompactThreshold(s.mc)).
 		WithSystemPrompt(prompt.SubAgentSystemPrompt).
 		WithSkillsIndex(s.skillsIndex).
@@ -115,16 +115,17 @@ func (s *subAgent) Run(ctx context.Context, taskPrompt string) (string, error) {
 	}
 
 	sub := &agent.Runner{
-		Model:       s.provider,
-		ModelName:   s.mc.Model,
-		Temperature: s.mc.Temperature,
-		Tools:       s.readOnly,
-		MaxSteps:    subAgentMaxSteps,
-		Approver:    denyAll{}, // fail-closed; should be unreachable (read-only set)
-		Observer:    observation.DefaultObserver{},
-		Reflector:   agent.DefaultReflector{},
-		Compactor:   buildCompactor(s.mc, s.provider),
-		Emitter:     emitter, // store-only (or nil) — never the parent's live renderer
+		Model:         s.provider,
+		ModelName:     s.mc.Model,
+		Temperature:   s.mc.Temperature,
+		Tools:         s.readOnly,
+		MaxSteps:      subAgentMaxSteps,
+		Approver:      denyAll{}, // fail-closed; should be unreachable (read-only set)
+		Observer:      observation.DefaultObserver{},
+		Reflector:     agent.DefaultReflector{},
+		Compactor:     buildCompactor(s.mc, s.provider),
+		Emitter:       emitter, // store-only (or nil) — never the parent's live renderer
+		WorkspaceRoot: workspaceRoot,
 	}
 
 	res, err := sub.RunTurn(ctx, sess, taskPrompt)

@@ -67,6 +67,12 @@ type Runner struct {
 	// itself, so the UI is fully decoupled from the runtime.
 	Emitter Emitter
 
+	// WorkspaceRoot is the absolute project root directory for this runner.
+	// It is set at construction and used to build ExecutionContext for each
+	// tool call. For the serve path, this comes from the WorkspaceInstance;
+	// for REPL/TUI, from cfg.Workspace.Root.
+	WorkspaceRoot string
+
 	// Correlation IDs stamped onto every emitted event. Set per RunTurn (which is
 	// sequential on a Runner), so an event always carries which session and turn
 	// produced it.
@@ -368,7 +374,7 @@ func (r *Runner) RunTurn(ctx context.Context, sess *session.Session, userInput s
 			case tools.HasSideEffectsFor(tool, input) && !r.approve(call.Function.Name, input):
 				observation = "The user declined to run this tool. No changes were made."
 			default:
-				observation, execErr = r.executeTool(ctx, tool, input)
+				observation, execErr = r.executeTool(ctx, tool, call.ID, input)
 				if execErr == nil {
 					// Post-tool hook (8.5): react to the change (format/lint). It runs
 					// the configured command but does not alter the result in v1.
@@ -595,8 +601,14 @@ func (r *Runner) complete(ctx context.Context, req model.Request) (model.Respons
 	return r.Model.Complete(ctx, req)
 }
 
-func (r *Runner) executeTool(ctx context.Context, tool tools.Tool, input json.RawMessage) (string, error) {
-	result, err := tool.Execute(ctx, input)
+func (r *Runner) executeTool(ctx context.Context, tool tools.Tool, callID string, input json.RawMessage) (string, error) {
+	ec := tools.ExecutionContext{
+		WorkspaceRoot: r.WorkspaceRoot,
+		SessionID:     r.emitSessionID,
+		TurnID:        r.emitTurnID,
+		CallID:        callID,
+	}
+	result, err := tool.Execute(ctx, ec, input)
 	if err != nil {
 		return "", err
 	}

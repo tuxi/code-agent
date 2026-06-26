@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"code-agent/internal/tools"
 	"context"
 	"encoding/json"
 	"errors"
@@ -44,7 +45,7 @@ func textResult(text string, isErr bool) *mcpsdk.CallToolResult {
 
 func TestExecuteSuccess(t *testing.T) {
 	c := &fakeCaller{res: textResult("hello world", false)}
-	got, err := newTestTool(c).Execute(context.Background(), json.RawMessage(`{"path":"a.txt"}`))
+	got, err := newTestTool(c).Execute(context.Background(), tools.ExecutionContext{}, json.RawMessage(`{"path":"a.txt"}`))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -66,7 +67,7 @@ func TestExecuteSuccess(t *testing.T) {
 
 func TestExecuteEmptyInputSendsNoArguments(t *testing.T) {
 	c := &fakeCaller{res: textResult("ok", false)}
-	if _, err := newTestTool(c).Execute(context.Background(), nil); err != nil {
+	if _, err := newTestTool(c).Execute(context.Background(), tools.ExecutionContext{}, nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if c.gotParams.Arguments != nil {
@@ -76,7 +77,7 @@ func TestExecuteEmptyInputSendsNoArguments(t *testing.T) {
 
 func TestExecuteInvalidArguments(t *testing.T) {
 	c := &fakeCaller{res: textResult("unused", false)}
-	_, err := newTestTool(c).Execute(context.Background(), json.RawMessage(`{not json`))
+	_, err := newTestTool(c).Execute(context.Background(), tools.ExecutionContext{}, json.RawMessage(`{not json`))
 	if err == nil || !strings.HasPrefix(err.Error(), "mcp: invalid arguments:") {
 		t.Fatalf("err = %v, want a 'mcp: invalid arguments' error", err)
 	}
@@ -87,7 +88,7 @@ func TestExecuteInvalidArguments(t *testing.T) {
 
 func TestExecuteProtocolError(t *testing.T) {
 	c := &fakeCaller{err: errors.New("connection reset")}
-	_, err := newTestTool(c).Execute(context.Background(), json.RawMessage(`{}`))
+	_, err := newTestTool(c).Execute(context.Background(), tools.ExecutionContext{}, json.RawMessage(`{}`))
 	if err == nil || !strings.HasPrefix(err.Error(), "mcp: protocol error:") {
 		t.Fatalf("err = %v, want a 'mcp: protocol error'", err)
 	}
@@ -98,7 +99,7 @@ func TestExecuteProtocolError(t *testing.T) {
 
 func TestExecuteToolError(t *testing.T) {
 	c := &fakeCaller{res: textResult("file not found", true)}
-	_, err := newTestTool(c).Execute(context.Background(), json.RawMessage(`{}`))
+	_, err := newTestTool(c).Execute(context.Background(), tools.ExecutionContext{}, json.RawMessage(`{}`))
 	if err == nil || !strings.HasPrefix(err.Error(), "mcp: tool error:") {
 		t.Fatalf("err = %v, want a 'mcp: tool error'", err)
 	}

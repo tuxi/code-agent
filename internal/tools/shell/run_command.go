@@ -24,7 +24,6 @@ import (
 // outright. The result is structured (stdout, stderr, exit code, duration) so
 // the model can act on it.
 type RunCommandTool struct {
-	WorkspaceRoot  string
 	Policy         sandbox.CommandPolicy
 	Timeout        time.Duration
 	MaxOutputBytes int
@@ -35,9 +34,8 @@ type RunCommandTool struct {
 	Jobs *jobs.Registry
 }
 
-func NewRunCommandTool(workspaceRoot string) *RunCommandTool {
+func NewRunCommandTool() *RunCommandTool {
 	return &RunCommandTool{
-		WorkspaceRoot:  workspaceRoot,
 		Policy:         sandbox.DefaultPolicy(),
 		Timeout:        120 * time.Second,
 		MaxOutputBytes: 80_000,
@@ -123,7 +121,7 @@ func shellOperatorHint(command string) string {
 	}
 }
 
-func (t *RunCommandTool) Execute(ctx context.Context, input json.RawMessage) (tools.ToolResult, error) {
+func (t *RunCommandTool) Execute(ctx context.Context, ec tools.ExecutionContext, input json.RawMessage) (tools.ToolResult, error) {
 	var in runCommandInput
 	if len(input) > 0 {
 		if err := json.Unmarshal(input, &in); err != nil {
@@ -169,7 +167,7 @@ func (t *RunCommandTool) Execute(ctx context.Context, input json.RawMessage) (to
 		return tools.ToolResult{}, fmt.Errorf("empty command")
 	}
 
-	rootAbs, err := filepath.Abs(t.WorkspaceRoot)
+	rootAbs, err := filepath.Abs(ec.WorkspaceRoot)
 	if err != nil {
 		return tools.ToolResult{}, err
 	}

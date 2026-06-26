@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS sessions (
 	prompt_tokens     INTEGER,
 	context_window    INTEGER,
 	compact_threshold INTEGER,
+	workspace_path    TEXT,
 	created_at        TEXT,
 	updated_at        TEXT,
 	metadata          TEXT
@@ -113,6 +114,9 @@ func (s *SQLiteStore) open() error {
 		// nothing persisted it). /goal is its first real consumer — it stores the
 		// goal thread-state here. Additive + idempotent like the rest.
 		`ALTER TABLE sessions ADD COLUMN metadata TEXT`,
+		// sessions.workspace_path: persisted workspace root for each session so
+		// the HTTP API can return it without a live conversation in memory.
+		`ALTER TABLE sessions ADD COLUMN workspace_path TEXT`,
 	} {
 		if _, err := db.Exec(stmt); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			db.Close()
@@ -177,14 +181,14 @@ func (s *SQLiteStore) save(ctx context.Context, sess *Session) error {
 		metaJSON = string(b)
 	}
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO sessions (id, model, summary, prompt_tokens, context_window, compact_threshold, created_at, updated_at, metadata)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO sessions (id, model, summary, prompt_tokens, context_window, compact_threshold, workspace_path, created_at, updated_at, metadata)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			model=excluded.model, summary=excluded.summary, prompt_tokens=excluded.prompt_tokens,
 			context_window=excluded.context_window, compact_threshold=excluded.compact_threshold,
-			updated_at=excluded.updated_at, metadata=excluded.metadata`,
+			workspace_path=excluded.workspace_path, updated_at=excluded.updated_at, metadata=excluded.metadata`,
 		sess.ID, sess.Model, sess.Summary, sess.PromptTokens, sess.ContextWindow, sess.CompactThreshold,
-		formatTime(sess.CreatedAt), formatTime(sess.UpdatedAt), metaJSON); err != nil {
+		sess.WorkspacePath, formatTime(sess.CreatedAt), formatTime(sess.UpdatedAt), metaJSON); err != nil {
 		return fmt.Errorf("save session row: %w", err)
 	}
 
@@ -228,10 +232,10 @@ func (s *SQLiteStore) Load(ctx context.Context, id string) (*Session, error) {
 	var sess Session
 	var createdAt, updatedAt, metaJSON string
 	err := s.db.QueryRowContext(ctx, `
-		SELECT id, model, summary, prompt_tokens, context_window, compact_threshold, created_at, updated_at, COALESCE(metadata, '')
+		SELECT id, model, summary, prompt_tokens, context_window, compact_threshold, COALESCE(workspace_path, ''), created_at, updated_at, COALESCE(metadata, '')
 		FROM sessions WHERE id=?`, id).
 		Scan(&sess.ID, &sess.Model, &sess.Summary, &sess.PromptTokens, &sess.ContextWindow,
-			&sess.CompactThreshold, &createdAt, &updatedAt, &metaJSON)
+			&sess.CompactThreshold, &sess.WorkspacePath, &createdAt, &updatedAt, &metaJSON)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf("session %q not found", id)
 	}
@@ -300,7 +304,7 @@ func (s *SQLiteStore) List(ctx context.Context) ([]Meta, error) {
 	// already lives there and Save rewrites it wholesale, so there is nothing to
 	// keep in sync.
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT s.id, s.model, s.prompt_tokens, s.updated_at,
+		SELECT s.id, s.model, s.prompt_tokens, s.updated_at, COALESCE(s.workspace_path, ''),
 		       (SELECT COUNT(*) FROM messages m WHERE m.session_id = s.id),
 		       (SELECT COALESCE((SELECT content FROM messages m WHERE m.session_id = s.id AND m.role = 'user' ORDER BY m.seq LIMIT 1), '')),
 		       (SELECT COUNT(*) FROM compactions c WHERE c.session_id = s.id AND c.after_tokens >= 0),
@@ -316,7 +320,7 @@ func (s *SQLiteStore) List(ctx context.Context) ([]Meta, error) {
 	for rows.Next() {
 		var m Meta
 		var updatedAt, lastCompacted string
-		if err := rows.Scan(&m.ID, &m.Model, &m.PromptTokens, &updatedAt,
+		if err := rows.Scan(&m.ID, &m.Model, &m.PromptTokens, &updatedAt, &m.WorkspacePath,
 			&m.MessageCount, &m.Title, &m.Compactions, &m.TotalSaved, &lastCompacted); err != nil {
 			return nil, err
 		}

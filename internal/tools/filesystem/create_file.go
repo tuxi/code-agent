@@ -12,8 +12,7 @@ import (
 )
 
 type CreateFileTool struct {
-	WorkspaceRoot string
-	MaxBytes      int64
+	MaxBytes int64
 }
 
 type createFileInput struct {
@@ -21,10 +20,9 @@ type createFileInput struct {
 	Content string `json:"content"`
 }
 
-func NewCreateFileTool(workspace string) *CreateFileTool {
+func NewCreateFileTool() *CreateFileTool {
 	return &CreateFileTool{
-		WorkspaceRoot: workspace,
-		MaxBytes:      200_000,
+		MaxBytes: 200_000,
 	}
 }
 
@@ -49,7 +47,7 @@ func (t *CreateFileTool) InputSchema() json.RawMessage {
 	}, "path", "content").JSON()
 }
 
-func (t *CreateFileTool) Execute(ctx context.Context, input json.RawMessage) (tools.ToolResult, error) {
+func (t *CreateFileTool) Execute(ctx context.Context, ec tools.ExecutionContext, input json.RawMessage) (tools.ToolResult, error) {
 	var in createFileInput
 	if len(input) > 0 {
 		if err := json.Unmarshal(input, &in); err != nil {
@@ -66,7 +64,7 @@ func (t *CreateFileTool) Execute(ctx context.Context, input json.RawMessage) (to
 	default:
 	}
 
-	rootAbs, err := filepath.Abs(t.WorkspaceRoot)
+	rootAbs, err := filepath.Abs(ec.WorkspaceRoot)
 	if err != nil {
 		return tools.ToolResult{}, err
 	}

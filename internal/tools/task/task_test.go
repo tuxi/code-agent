@@ -1,6 +1,7 @@
 package task
 
 import (
+	"code-agent/internal/tools"
 	"context"
 	"encoding/json"
 	"errors"
@@ -15,7 +16,7 @@ type fakeAgent struct {
 	called    bool
 }
 
-func (f *fakeAgent) Run(_ context.Context, prompt string) (string, error) {
+func (f *fakeAgent) Run(_ context.Context, _ string, prompt string) (string, error) {
 	f.called = true
 	f.gotPrompt = prompt
 	return f.result, f.err
@@ -23,7 +24,7 @@ func (f *fakeAgent) Run(_ context.Context, prompt string) (string, error) {
 
 func TestExecuteForwardsPromptAndReturnsConclusion(t *testing.T) {
 	fa := &fakeAgent{result: "the bug is a nil deref at loop.go:42"}
-	res, err := NewTool(fa).Execute(context.Background(), json.RawMessage(`{"prompt":"why does X fail?"}`))
+	res, err := NewTool(fa).Execute(context.Background(), tools.ExecutionContext{}, json.RawMessage(`{"prompt":"why does X fail?"}`))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -37,7 +38,7 @@ func TestExecuteForwardsPromptAndReturnsConclusion(t *testing.T) {
 
 func TestExecuteSurfacesRunError(t *testing.T) {
 	fa := &fakeAgent{err: errors.New("subagent boom")}
-	_, err := NewTool(fa).Execute(context.Background(), json.RawMessage(`{"prompt":"go"}`))
+	_, err := NewTool(fa).Execute(context.Background(), tools.ExecutionContext{}, json.RawMessage(`{"prompt":"go"}`))
 	if err == nil || !strings.Contains(err.Error(), "subagent boom") {
 		t.Fatalf("err = %v, want the subagent error", err)
 	}
@@ -45,7 +46,7 @@ func TestExecuteSurfacesRunError(t *testing.T) {
 
 func TestExecuteRejectsEmptyPrompt(t *testing.T) {
 	fa := &fakeAgent{}
-	_, err := NewTool(fa).Execute(context.Background(), json.RawMessage(`{"prompt":"   "}`))
+	_, err := NewTool(fa).Execute(context.Background(), tools.ExecutionContext{}, json.RawMessage(`{"prompt":"   "}`))
 	if err == nil {
 		t.Fatal("expected an error for an empty prompt")
 	}
@@ -56,7 +57,7 @@ func TestExecuteRejectsEmptyPrompt(t *testing.T) {
 
 func TestExecuteRejectsInvalidJSON(t *testing.T) {
 	fa := &fakeAgent{}
-	_, err := NewTool(fa).Execute(context.Background(), json.RawMessage(`{not json`))
+	_, err := NewTool(fa).Execute(context.Background(), tools.ExecutionContext{}, json.RawMessage(`{not json`))
 	if err == nil {
 		t.Fatal("expected an error for invalid input")
 	}

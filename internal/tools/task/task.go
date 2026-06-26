@@ -22,7 +22,7 @@ import (
 // final conclusion. The prompt is the ONLY channel into the subagent — it sees
 // nothing of the parent conversation.
 type SubAgent interface {
-	Run(ctx context.Context, prompt string) (string, error)
+	Run(ctx context.Context, workspaceRoot string, prompt string) (string, error)
 }
 
 // Tool is the model-facing `task` tool. It is read-only (it does not implement a
@@ -66,7 +66,7 @@ type input struct {
 	Prompt string `json:"prompt"`
 }
 
-func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (tools.ToolResult, error) {
+func (t *Tool) Execute(ctx context.Context, ec tools.ExecutionContext, raw json.RawMessage) (tools.ToolResult, error) {
 	var in input
 	if err := json.Unmarshal(raw, &in); err != nil {
 		return tools.ToolResult{}, fmt.Errorf("invalid task input: %w", err)
@@ -75,7 +75,7 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (tools.ToolResu
 		return tools.ToolResult{}, fmt.Errorf("task requires a non-empty prompt")
 	}
 
-	conclusion, err := t.agent.Run(ctx, in.Prompt)
+	conclusion, err := t.agent.Run(ctx, ec.WorkspaceRoot, in.Prompt)
 	if err != nil {
 		return tools.ToolResult{}, err
 	}

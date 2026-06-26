@@ -39,7 +39,7 @@ func (t *LoadSkillTool) InputSchema() json.RawMessage {
 	}, "name").JSON()
 }
 
-func (t *LoadSkillTool) Execute(_ context.Context, input json.RawMessage) (tools.ToolResult, error) {
+func (t *LoadSkillTool) Execute(_ context.Context, _ tools.ExecutionContext, input json.RawMessage) (tools.ToolResult, error) {
 	name := parseName(input)
 	if name == "" {
 		return tools.ToolResult{}, fmt.Errorf("name is required")

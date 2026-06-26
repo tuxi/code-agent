@@ -21,7 +21,7 @@ type jsonResultTool struct {
 func (t *jsonResultTool) Name() string                 { return t.name }
 func (t *jsonResultTool) Description() string          { return "returns a fixed result" }
 func (t *jsonResultTool) InputSchema() json.RawMessage { return tools.Object(nil).JSON() }
-func (t *jsonResultTool) Execute(context.Context, json.RawMessage) (tools.ToolResult, error) {
+func (t *jsonResultTool) Execute(_ context.Context, _ tools.ExecutionContext, _ json.RawMessage) (tools.ToolResult, error) {
 	return tools.ToolResult{Content: t.out}, nil
 }
 

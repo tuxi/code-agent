@@ -13,20 +13,18 @@ import (
 )
 
 type ApplyPatchTool struct {
-	WorkspaceRoot string
-	MaxBytes      int
-	Timeout       time.Duration
+	MaxBytes int
+	Timeout  time.Duration
 }
 
 type applyPatchInput struct {
 	Patch string `json:"patch"`
 }
 
-func NewApplyPatchTool(workspaceRoot string) *ApplyPatchTool {
+func NewApplyPatchTool() *ApplyPatchTool {
 	return &ApplyPatchTool{
-		WorkspaceRoot: workspaceRoot,
-		MaxBytes:      200_000,
-		Timeout:       30 * time.Second,
+		MaxBytes: 200_000,
+		Timeout:  30 * time.Second,
 	}
 }
 
@@ -49,7 +47,7 @@ func (t *ApplyPatchTool) InputSchema() json.RawMessage {
 // behind user confirmation before it runs.
 func (t *ApplyPatchTool) SideEffects() bool { return true }
 
-func (t *ApplyPatchTool) Execute(ctx context.Context, input json.RawMessage) (tools.ToolResult, error) {
+func (t *ApplyPatchTool) Execute(ctx context.Context, ec tools.ExecutionContext, input json.RawMessage) (tools.ToolResult, error) {
 	var in applyPatchInput
 	if len(input) > 0 {
 		if err := json.Unmarshal(input, &in); err != nil {
@@ -68,7 +66,7 @@ func (t *ApplyPatchTool) Execute(ctx context.Context, input json.RawMessage) (to
 		return tools.ToolResult{}, fmt.Errorf("patch too large: size=%d max=%d", len(patch), t.MaxBytes)
 	}
 
-	rootAbs, err := filepath.Abs(t.WorkspaceRoot)
+	rootAbs, err := filepath.Abs(ec.WorkspaceRoot)
 	if err != nil {
 		return tools.ToolResult{}, err
 	}

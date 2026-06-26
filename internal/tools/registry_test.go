@@ -14,7 +14,7 @@ type fakeTool struct {
 func (f fakeTool) Name() string                 { return f.name }
 func (f fakeTool) Description() string          { return "" }
 func (f fakeTool) InputSchema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
-func (f fakeTool) Execute(context.Context, json.RawMessage) (ToolResult, error) {
+func (f fakeTool) Execute(context.Context, ExecutionContext, json.RawMessage) (ToolResult, error) {
 	return ToolResult{}, nil
 }
 func (f fakeTool) SideEffects() bool { return f.se }

@@ -10,75 +10,88 @@ import (
 	"code-agent/internal/conversation"
 	"code-agent/internal/model"
 	"code-agent/internal/server"
-	"code-agent/internal/session"
 	"code-agent/internal/skills"
 	"code-agent/internal/tools"
 )
 
-// serveFactory builds conversations for the runtime server. Tools and skills are
-// built once and shared across conversations (one workspace for now — per-
-// conversation workspace is P1-B). Each conversation gets its own runner and a
-// fresh session. The runner starts with a nil approver (the loop denies every
-// side-effecting tool until a WebSocket connection attaches its RemoteApprover)
-// and a nil emitter (conversation.New installs the fan-out hub). No conversation
-// persistence yet — the store is nil, so Resume is unsupported.
-type serveFactory struct {
+// serveRunBuilder is the conversation.RunBuilder for the server. It wraps
+// buildRunner and uses the per-turn publisher from TurnExecutor (which fans
+// out to event store + WS subscribers).
+type serveRunBuilder struct {
 	cfg      app.Config
 	mc       app.ModelConfig
 	provider model.Provider
-	registry *tools.Registry
-	skillReg *skills.Registry
-	store    session.Store
-	root     string
-	srvCtx   context.Context // long-lived server context for the event recorder
+	toolReg  *tools.Registry
+	wsReg    *WorkspaceRegistry
 }
 
-func (f *serveFactory) Create(context.Context) (*conversation.Conversation, error) {
-	// Record every event to the store (the same EventStore the REPL/TUI use) so
-	// GET /v1/conversations/{id}/events can replay history. The recorder uses the
-	// long-lived server context, not the per-create request context (which is
-	// canceled the moment POST /v1/conversations returns). No console downstream.
-	emitter := withEventStore(nil, f.store, f.srvCtx)
-	runner := buildRunner(f.cfg, f.mc, f.provider, f.registry, f.skillReg, nil, emitter)
-	sess, err := session.NewBuilder(f.root).
-		WithBudget(f.mc.ContextWindow, f.cfg.CompactThreshold(f.mc)).
-		WithSkillsIndex(f.skillReg.PromptIndex()).
-		Build()
-	if err != nil {
-		return nil, err
+func (b *serveRunBuilder) Build(ctx conversation.RuntimeContext) conversation.TurnRunner {
+	// Resolve skills for the session's workspace.
+	workspacePath := ctx.Session.WorkspacePath
+	var skillReg *skills.Registry
+	if inst, err := b.wsReg.Get(workspacePath); err == nil {
+		skillReg = inst.SkillReg
 	}
-	sess.Model = f.mc.Model
-	return conversation.New(runner, sess, nil), nil
+
+	runner := buildRunner(b.cfg, b.mc, b.provider, b.toolReg, skillReg, ctx.Approver, ctx.Publisher)
+	if workspacePath != "" {
+		runner.WorkspaceRoot = workspacePath
+	}
+	return runner
 }
 
-func (f *serveFactory) Resume(context.Context, string) (*conversation.Conversation, error) {
-	return nil, fmt.Errorf("resume is not supported until session persistence lands (P1-B)")
-}
-
-// runServe starts the runtime server: an HTTP surface (healthz, create/list
-// conversations, and the agent-wire WebSocket stream) over a conversation
-// Manager. P1-A skeleton — no persistence, resume, or per-conversation workspace.
+// runServe starts the runtime server. One global tool registry is built at startup
+// (tools are stateless — workspace comes from ExecutionContext at call time, not
+// from struct fields). The WorkspaceRegistry caches per-workspace stores and skills.
 func runServe(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider model.Provider, addr string) error {
 	root := cfg.Workspace.Root
 
-	store, err := openStore(root)
+	// Open the default workspace's store for global telemetry (API request recording).
+	telemetryStore, err := openStore(root)
 	if err != nil {
 		return err
 	}
-	defer store.Close()
-	attachObserver(provider, store, ctx)
+	defer telemetryStore.Close()
+	attachObserver(provider, telemetryStore, ctx)
 
-	registry, skillReg, mcpMgr, err := buildRegistry(ctx, cfg, mc, provider, store, nil)
+	// Build the global tool registry once. Tools are stateless — each Execute call
+	// receives its workspace via ExecutionContext, so the same tool instances serve
+	// every conversation regardless of workspace.
+	toolReg, _, mcpMgr, err := buildRegistry(ctx, cfg, mc, provider, telemetryStore, nil)
 	if err != nil {
 		return err
 	}
 	defer mcpMgr.Close()
 
-	factory := &serveFactory{cfg: cfg, mc: mc, provider: provider, registry: registry, skillReg: skillReg, store: store, root: root, srvCtx: ctx}
-	mgr := conversation.NewManager(factory)
-	defer mgr.Shutdown()
+	wsReg := NewWorkspaceRegistry(root)
+	defer wsReg.Close()
 
-	handler := server.NewMux(mgr, store, server.MuxOptions{ServerName: "codeagent/" + mc.Model})
+	// ---- Execution Model components ----
+
+	// ConversationRepository: backed by default workspace's SQLite store.
+	repo := conversation.NewSQLiteRepository(
+		telemetryStore,
+		mc.ContextWindow,
+		cfg.CompactThreshold(mc),
+		mc.Model,
+		func(workspacePath string) string {
+			inst, err := wsReg.Get(workspacePath)
+			if err != nil {
+				return ""
+			}
+			return inst.SkillReg.PromptIndex()
+		},
+	)
+
+	// ConversationEventStore: backed by default workspace's store.
+	eventStore := &conversation.StoreEventAdapter{Store: telemetryStore}
+
+	active := conversation.NewActiveTurnRegistry()
+	subs := conversation.NewSubscriptionManager()
+	rb := &serveRunBuilder{cfg: cfg, mc: mc, provider: provider, toolReg: toolReg, wsReg: wsReg}
+	executor := conversation.NewTurnExecutor(repo, eventStore, active, subs, rb)
+
+	handler := server.NewMux(repo, eventStore, executor, server.MuxOptions{ServerName: "codeagent/" + mc.Model})
 
 	srv := &http.Server{Addr: addr, Handler: handler}
 	go func() {
@@ -86,11 +99,15 @@ func runServe(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider 
 		_ = srv.Close()
 	}()
 
-	fmt.Printf("codeagent serve — http://%s  (workspace: %s, model: %s)\n", addr, root, mc.Model)
+	fmt.Printf("codeagent serve — http://%s  (default workspace: %s, model: %s)\n", addr, root, mc.Model)
 	fmt.Println("  GET  /healthz")
 	fmt.Println("  GET  /v1/conversations")
 	fmt.Println("  POST /v1/conversations            {\"workspace_path\":\"...\"}  -> {\"id\":\"...\"}")
-	fmt.Println("  GET  /v1/conversations/{id}/stream   (WebSocket, agent-wire v1)")
+	fmt.Println("  DELETE /v1/conversations/{id}")
+	fmt.Println("  GET  /v1/conversations/{id}/stream   (WebSocket)")
+	fmt.Println("  GET  /v1/conversations/{id}/messages")
+	fmt.Println("  GET  /v1/conversations/{id}/events")
+	fmt.Println("  GET  /v2/conversations/{id}/stream   (WebSocket, same as v1)")
 
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		return err

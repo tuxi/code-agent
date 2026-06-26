@@ -640,19 +640,20 @@ func buildRunner(cfg app.Config, mc app.ModelConfig, provider model.Provider, re
 		hook = hr
 	}
 	return &agent.Runner{
-		Model:        provider,
-		ModelName:    mc.Model,
-		Temperature:  mc.Temperature,
-		Tools:        registry,
-		MaxSteps:     cfg.Agent.MaxSteps,
-		Approver:     approver,
-		Observer:     observation.DefaultObserver{},
-		Reflector:    agent.DefaultReflector{},
-		RemindSkills: skillReg.Len() > 0,
-		PlanTools:    tools.Subset(registry, planModeToolNames...),
-		Hook:         hook,
-		Compactor:    buildCompactor(mc, provider),
-		Emitter:      emitter,
+		Model:         provider,
+		ModelName:     mc.Model,
+		Temperature:   mc.Temperature,
+		Tools:         registry,
+		MaxSteps:      cfg.Agent.MaxSteps,
+		Approver:      approver,
+		Observer:      observation.DefaultObserver{},
+		Reflector:     agent.DefaultReflector{},
+		RemindSkills:  skillReg.Len() > 0,
+		PlanTools:     tools.Subset(registry, planModeToolNames...),
+		Hook:          hook,
+		Compactor:     buildCompactor(mc, provider),
+		Emitter:       emitter,
+		WorkspaceRoot: cfg.Workspace.Root,
 	}
 }
 
@@ -678,30 +679,26 @@ func buildCompactor(mc app.ModelConfig, provider model.Provider) session.Compact
 // threaded so the read-only subagent (8.3) can be wired here too — it needs the
 // model provider and the read-only tool subset, both of which are most naturally
 // assembled alongside the registry.
-func buildRegistry(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider model.Provider, store session.Store, progress agent.Emitter) (*tools.Registry, *skills.Registry, *mcp.Manager, error) {
-	root := cfg.Workspace.Root
-	registry := tools.NewRegistry()
-
-	skillReg, err := skills.Load(filepath.Join(root, "skills"))
-	if err != nil {
-		return nil, nil, nil, err
-	}
-
+// registerBuiltinTools registers all built-in and config-driven tools (filesystem,
+// git, shell, search, project_graph, skill loader, web search/fetch, todo) into
+// the registry. It does NOT register task or MCP tools — those are registered
+// after the subagent's read-only toolset is frozen.
+func registerBuiltinTools(registry *tools.Registry, cfg app.Config, skillReg *skills.Registry) error {
 	// run_command and the job_* tools share one job registry, so a job_id
 	// returned by a background run_command is resolvable by job_status/logs/cancel.
-	runCmd := shell.NewRunCommandTool(root)
+	runCmd := shell.NewRunCommandTool()
 	jobReg := runCmd.Jobs
 
 	for _, tool := range []tools.Tool{
-		filesystem.NewListFilesTool(root),
-		filesystem.NewReadFileTool(root),
-		filesystem.NewCreateFileTool(root),
-		filesystem.NewEditFileTool(root),
-		search.NewGrepTool(root),
-		projectgraph.NewProjectGraphTool(root),
-		git.NewDiffTool(root),
-		git.NewApplyPatchTool(root),
-		git.NewGitCommitTool(root),
+		filesystem.NewListFilesTool(),
+		filesystem.NewReadFileTool(),
+		filesystem.NewCreateFileTool(),
+		filesystem.NewEditFileTool(),
+		search.NewGrepTool(),
+		projectgraph.NewProjectGraphTool(),
+		git.NewDiffTool(),
+		git.NewApplyPatchTool(),
+		git.NewGitCommitTool(),
 		runCmd,
 		&shell.JobStatusTool{Jobs: jobReg},
 		&shell.JobLogsTool{Jobs: jobReg},
@@ -712,8 +709,23 @@ func buildRegistry(ctx context.Context, cfg app.Config, mc app.ModelConfig, prov
 		todo.NewTool(),
 	} {
 		if err := registry.Register(tool); err != nil {
-			return nil, nil, nil, err
+			return err
 		}
+	}
+	return nil
+}
+
+func buildRegistry(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider model.Provider, store session.Store, progress agent.Emitter) (*tools.Registry, *skills.Registry, *mcp.Manager, error) {
+	root := cfg.Workspace.Root
+	registry := tools.NewRegistry()
+
+	skillReg, err := skills.Load(filepath.Join(root, "skills"))
+	if err != nil {
+		return nil, nil, nil, err
+	}
+
+	if err := registerBuiltinTools(registry, cfg, skillReg); err != nil {
+		return nil, nil, nil, err
 	}
 
 	// Subagent (8.3): freeze the read-only subset from the built-ins ONLY — before

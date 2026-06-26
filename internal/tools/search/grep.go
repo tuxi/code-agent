@@ -15,9 +15,8 @@ import (
 )
 
 type GrepTool struct {
-	WorkspaceRoot string
-	MaxMatches    int
-	MaxFileBytes  int64
+	MaxMatches   int
+	MaxFileBytes int64
 }
 
 type grepInput struct {
@@ -25,11 +24,10 @@ type grepInput struct {
 	Path  string `json:"path"`
 }
 
-func NewGrepTool(workspaceRoot string) *GrepTool {
+func NewGrepTool() *GrepTool {
 	return &GrepTool{
-		WorkspaceRoot: workspaceRoot,
-		MaxMatches:    50,
-		MaxFileBytes:  200_000,
+		MaxMatches:   50,
+		MaxFileBytes: 200_000,
 	}
 }
 
@@ -48,7 +46,7 @@ func (g *GrepTool) InputSchema() json.RawMessage {
 	}, "query").JSON()
 }
 
-func (g *GrepTool) Execute(ctx context.Context, input json.RawMessage) (tools.ToolResult, error) {
+func (g *GrepTool) Execute(ctx context.Context, ec tools.ExecutionContext, input json.RawMessage) (tools.ToolResult, error) {
 	var in grepInput
 	if len(input) > 0 {
 		if err := json.Unmarshal(input, &in); err != nil {
@@ -65,7 +63,7 @@ func (g *GrepTool) Execute(ctx context.Context, input json.RawMessage) (tools.To
 		in.Path = "."
 	}
 
-	rootAbs, err := filepath.Abs(g.WorkspaceRoot)
+	rootAbs, err := filepath.Abs(ec.WorkspaceRoot)
 	if err != nil {
 		return tools.ToolResult{}, err
 	}

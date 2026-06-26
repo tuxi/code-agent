@@ -15,8 +15,7 @@ import (
 )
 
 type ReadFileTool struct {
-	WorkspaceRoot string
-	MaxBytes      int64
+	MaxBytes int64
 }
 
 // lineNumber accepts both a JSON number (42) and a JSON string containing a
@@ -48,10 +47,9 @@ type readFileInput struct {
 	Limit  lineNumber `json:"limit,omitempty"`
 }
 
-func NewReadFileTool(workspaceRoot string) *ReadFileTool {
+func NewReadFileTool() *ReadFileTool {
 	return &ReadFileTool{
-		WorkspaceRoot: workspaceRoot,
-		MaxBytes:      200_000,
+		MaxBytes: 200_000,
 	}
 }
 
@@ -83,7 +81,7 @@ func (r *ReadFileTool) InputSchema() json.RawMessage {
 	}, "path").JSON()
 }
 
-func (r *ReadFileTool) Execute(ctx context.Context, input json.RawMessage) (tools.ToolResult, error) {
+func (r *ReadFileTool) Execute(ctx context.Context, ec tools.ExecutionContext, input json.RawMessage) (tools.ToolResult, error) {
 	var in readFileInput
 	if len(input) > 0 {
 		if err := json.Unmarshal(input, &in); err != nil {
@@ -101,7 +99,7 @@ func (r *ReadFileTool) Execute(ctx context.Context, input json.RawMessage) (tool
 		}
 	}
 
-	rootAbs, err := filepath.Abs(r.WorkspaceRoot)
+	rootAbs, err := filepath.Abs(ec.WorkspaceRoot)
 	if err != nil {
 		return tools.ToolResult{}, err
 	}
