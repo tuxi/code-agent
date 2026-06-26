@@ -67,7 +67,7 @@ func repl(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider mode
 	defer store.Close()
 	attachObserver(provider, store, ctx)
 
-	registry, skillReg, mcpMgr, err := buildRegistry(ctx, cfg, mc, provider, store, subagentProgress())
+	registry, skillReg, mcpMgr, planRef, err := buildRegistry(ctx, cfg, mc, provider, store, subagentProgress())
 	if err != nil {
 		return err
 	}
@@ -113,6 +113,8 @@ func repl(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider mode
 	// loop (correlated EventAutoApproved), so the approver takes no emitter.
 	approver := approve.NewAutoApprover(root, ui.ConfirmApprover{Prompt: ask}, auto)
 	runner := buildRunner(cfg, mc, provider, registry, skillReg, approver, withEventStore(buildEmitter(), store, ctx))
+	planRef.R = runner // wire plan tools to the runner (late binding)
+	runner.PlanApprover = &replPlanApprover{ask: ask}
 	if auto {
 		fmt.Println("auto mode: ON (in-workspace edits auto-approved; commands still confirmed) — /auto off to disable")
 	}
@@ -158,7 +160,7 @@ func repl(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider mode
 
 	for {
 		// The prompt reflects plan mode, so it is always clear which mode you're in.
-		if runner.PlanMode {
+		if runner.PlanState == agent.PlanStatusPlanning {
 			rl.SetPrompt("plan> ")
 		} else {
 			rl.SetPrompt("> ")
@@ -298,8 +300,12 @@ func handleCommand(line string, cfg app.Config, mc *app.ModelConfig, runner *age
 		return sess, false, nil
 
 	case "/plan":
-		runner.PlanMode = !runner.PlanMode
-		if runner.PlanMode {
+		if runner.PlanState == agent.PlanStatusPlanning {
+				runner.PlanState = agent.PlanStatusNone
+			} else {
+				runner.PlanState = agent.PlanStatusPlanning
+			}
+		if runner.PlanState == agent.PlanStatusPlanning {
 			fmt.Println("Plan mode ON — read-only: I'll research and produce a plan, no edits. /plan again to exit.")
 		} else {
 			fmt.Println("Plan mode OFF — edits allowed again.")
@@ -449,4 +455,49 @@ func loadAndRebudget(ctx context.Context, cfg app.Config, mc app.ModelConfig, st
 	sess.ContextWindow = mc.ContextWindow
 	sess.CompactThreshold = cfg.CompactThreshold(mc)
 	return sess, nil
+}
+
+// replPlanApprover implements agent.PlanApprover for the REPL. It shows a plan
+// summary and asks the user to approve or reject.
+type replPlanApprover struct {
+	ask func(prompt string) (string, error)
+}
+
+func (a *replPlanApprover) ApprovePlan(plan agent.Plan) agent.PlanDecision {
+	// Show a compact summary — the user can read the full plan in .codeagent/plans/.
+	fmt.Println()
+	fmt.Printf("Plan: %s (%s)\n", plan.Title, plan.ID)
+	fmt.Printf("Saved to: %s\n", plan.FilePath)
+	fmt.Println(strings.Repeat("─", 60))
+
+	// Print first 25 lines of the plan content for a quick review.
+	lines := strings.Split(plan.Content, "\n")
+	preview := lines
+	if len(lines) > 25 {
+		preview = lines[:25]
+	}
+	for _, ln := range preview {
+		fmt.Println(ln)
+	}
+	if len(lines) > 25 {
+		fmt.Printf("… (%d more lines — read full plan at %s)\n", len(lines)-25, plan.FilePath)
+	}
+	fmt.Println(strings.Repeat("─", 60))
+
+	for {
+		line, err := a.ask("Approve this plan? [a]pprove / [r]eject: ")
+		if err != nil {
+			return agent.PlanRejected
+		}
+		switch strings.TrimSpace(strings.ToLower(line)) {
+		case "a", "approve", "y", "yes":
+			fmt.Println("Plan approved. Implementing…")
+			return agent.PlanApproved
+		case "r", "reject", "n", "no":
+			fmt.Println("Plan rejected. Revise and re-propose.")
+			return agent.PlanRejected
+		default:
+			fmt.Println("  type 'a' to approve or 'r' to reject")
+		}
+	}
 }

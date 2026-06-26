@@ -90,9 +90,11 @@ func (h *WSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// later turn without a client cannot auto-proceed.
 	approver := NewRemoteApprover(sink, h.approvalTimeout())
 	sess.SetApprover(approver)
+	sess.SetPlanApprover(approver)
 	defer func() {
 		approver.Close()
 		sess.SetApprover(denyApprover{})
+		sess.SetPlanApprover(nil)
 	}()
 
 	// Inbound command/control routing is transport-agnostic (see Router); this read

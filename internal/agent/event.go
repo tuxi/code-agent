@@ -39,6 +39,13 @@ const (
 	// conclusion (Finished).
 	EventTaskStarted  EventKind = "task_started"
 	EventTaskFinished EventKind = "task_finished"
+
+	// Plan mode (10.1). PlanProposed fires when the model calls propose_plan.
+	// Text carries the full plan content. PlanApproved/PlanRejected fire after the
+	// user's verdict; Text carries the plan ID.
+	EventPlanProposed EventKind = "plan_proposed"
+	EventPlanApproved EventKind = "plan_approved"
+	EventPlanRejected EventKind = "plan_rejected"
 )
 
 // Event is a single point in a turn — a discriminated union where Kind selects

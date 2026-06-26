@@ -96,6 +96,62 @@ func (a *RemoteApprover) Resolve(id string, approved bool) {
 	}
 }
 
+// ApprovePlan implements agent.PlanApprover by sending a plan_approval_request
+// and blocking until the client responds. Same fail-safe as Approve: any path
+// other than an explicit approval is a denial.
+func (a *RemoteApprover) ApprovePlan(plan agent.Plan) agent.PlanDecision {
+	id := newApprovalID()
+	ch := make(chan bool, 1)
+
+	a.mu.Lock()
+	if a.closed {
+		a.mu.Unlock()
+		return agent.PlanRejected
+	}
+	a.pending[id] = ch
+	a.mu.Unlock()
+
+	defer func() {
+		a.mu.Lock()
+		delete(a.pending, id)
+		a.mu.Unlock()
+	}()
+
+	req := PlanApprovalRequest{
+		Type:       "plan_approval_request",
+		ID:         id,
+		PlanID:     plan.ID,
+		Title:      plan.Title,
+		Content:    plan.Content,
+		DeadlineMS: a.timeout.Milliseconds(),
+	}
+	frame, err := json.Marshal(req)
+	if err != nil {
+		return agent.PlanRejected
+	}
+	if err := a.sink.Send(frame); err != nil {
+		return agent.PlanRejected
+	}
+
+	var deadline <-chan time.Time
+	if a.timeout > 0 {
+		t := time.NewTimer(a.timeout)
+		defer t.Stop()
+		deadline = t.C
+	}
+	select {
+	case approved := <-ch:
+		if approved {
+			return agent.PlanApproved
+		}
+		return agent.PlanRejected
+	case <-deadline:
+		return agent.PlanRejected
+	}
+}
+
+var _ agent.PlanApprover = (*RemoteApprover)(nil)
+
 // Close denies every pending approval and rejects future ones, so a turn waiting
 // on a vanished client stops immediately instead of hanging to its deadline.
 func (a *RemoteApprover) Close() {

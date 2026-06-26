@@ -67,9 +67,10 @@ func (e *TurnExecutor) ExecuteWithSession(parentCtx context.Context, sess *sessi
 
 	// 3. Build a fresh turnRunner for this turn.
 	rctx := RuntimeContext{
-		Session:   sess,
-		Publisher: pub,
-		Approver:  e.active.Approver(sess.ID),
+		Session:      sess,
+		Publisher:    pub,
+		Approver:     e.active.Approver(sess.ID),
+		PlanApprover: e.active.PlanApprover(sess.ID),
 	}
 	runner := e.rb.Build(rctx)
 
@@ -97,6 +98,11 @@ func (e *TurnExecutor) Cancel(sessionID string) {
 // SetApprover associates an approver with a session.
 func (e *TurnExecutor) SetApprover(sessionID string, a agent.Approver) {
 	e.active.SetApprover(sessionID, a)
+}
+
+// SetPlanApprover associates a plan approver with a session.
+func (e *TurnExecutor) SetPlanApprover(sessionID string, pa agent.PlanApprover) {
+	e.active.SetPlanApprover(sessionID, pa)
 }
 
 // Shutdown cancels all active turns and closes event buses.

@@ -77,6 +77,15 @@ func (t *CreateFileTool) Execute(ctx context.Context, ec tools.ExecutionContext,
 		return tools.ToolResult{}, fmt.Errorf("path escapes workspace: %s", in.Path)
 	}
 
+	// In plan mode, only allow writes to the .codeagent/plans/ directory.
+	if ec.PlanMode {
+		plansDir := filepath.Join(rootAbs, ".codeagent", "plans")
+		if !workspace.IsSubPath(plansDir, targetAbs) {
+			return tools.ToolResult{}, fmt.Errorf(
+				"plan mode: can only write to .codeagent/plans/. Use edit_file after plan approval for project files.")
+		}
+	}
+
 	// File must not already exist — use edit_file for modifications.
 	if info, err := os.Stat(targetAbs); err == nil {
 		if info.IsDir() {

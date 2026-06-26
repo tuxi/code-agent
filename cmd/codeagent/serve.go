@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 
+	"code-agent/internal/agent"
 	"code-agent/internal/app"
 	"code-agent/internal/conversation"
 	"code-agent/internal/model"
@@ -23,6 +24,7 @@ type serveRunBuilder struct {
 	provider model.Provider
 	toolReg  *tools.Registry
 	wsReg    *WorkspaceRegistry
+	planRef  *agent.RunnerRef // late-bound per-turn in Build()
 }
 
 func (b *serveRunBuilder) Build(ctx conversation.RuntimeContext) conversation.TurnRunner {
@@ -37,6 +39,9 @@ func (b *serveRunBuilder) Build(ctx conversation.RuntimeContext) conversation.Tu
 	if workspacePath != "" {
 		runner.WorkspaceRoot = workspacePath
 	}
+	// Wire the plan tools and plan approver to this per-turn runner.
+	b.planRef.R = runner
+	runner.PlanApprover = ctx.PlanApprover
 	return runner
 }
 
@@ -57,7 +62,7 @@ func runServe(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider 
 	// Build the global tool registry once. Tools are stateless — each Execute call
 	// receives its workspace via ExecutionContext, so the same tool instances serve
 	// every conversation regardless of workspace.
-	toolReg, _, mcpMgr, err := buildRegistry(ctx, cfg, mc, provider, telemetryStore, nil)
+	toolReg, _, mcpMgr, planRef, err := buildRegistry(ctx, cfg, mc, provider, telemetryStore, nil)
 	if err != nil {
 		return err
 	}
@@ -88,7 +93,7 @@ func runServe(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider 
 
 	active := conversation.NewActiveTurnRegistry()
 	subs := conversation.NewSubscriptionManager()
-	rb := &serveRunBuilder{cfg: cfg, mc: mc, provider: provider, toolReg: toolReg, wsReg: wsReg}
+	rb := &serveRunBuilder{cfg: cfg, mc: mc, provider: provider, toolReg: toolReg, wsReg: wsReg, planRef: planRef}
 	executor := conversation.NewTurnExecutor(repo, eventStore, active, subs, rb)
 
 	handler := server.NewMux(repo, eventStore, executor, server.MuxOptions{ServerName: "codeagent/" + mc.Model})

@@ -127,7 +127,11 @@ func Run(ctx context.Context, b *Backend, runner *agent.Runner, sess *session.Se
 			case on := <-b.planToggle:
 				// Applied at a turn boundary (the select can't fire mid-RunTurn), so
 				// the next turn runs in the chosen mode — no hot-swap of a live turn.
-				runner.PlanMode = on
+				if on {
+					runner.PlanState = agent.PlanStatusPlanning
+				} else {
+					runner.PlanState = agent.PlanStatusNone
+				}
 			case obj := <-b.goalStart:
 				// A /goal pursuit is a long, multi-turn turn: it drives runner.RunTurn
 				// repeatedly via the injected engine, so events and approval cards flow

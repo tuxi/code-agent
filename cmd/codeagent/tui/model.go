@@ -49,7 +49,7 @@ type model struct {
 	tr transcript
 
 	showThinking bool      // ctrl+o toggle: show current step's thinking in the live region (on by default)
-	planMode     bool      // ctrl+p toggle: read-only research/planning (applied by the run loop next turn)
+	planState    agent.PlanStatus // current plan state (synced from events + ctrl+p toggle)
 	lastEsc      time.Time // double-Esc clears the composer (like Claude Code)
 
 	cmdIdx    int            // selected slash-command in the palette
@@ -57,9 +57,10 @@ type model struct {
 	picker    *sessionPicker // /resume overlay; nil when closed
 	modelPick *modelPicker   // /use overlay; nil when closed
 
-	pending     *approvalReq // set while a side-effecting tool awaits y/n
-	approveIdx  int          // 0 = approve (y), 1 = deny (n) — ↑/↓ switches
-	showPreview bool         // 'v' toggles the diff preview below the approval card
+	pending     *approvalReq      // set while a side-effecting tool awaits y/n
+	planPending *planApprovalReq  // set while a plan awaits approval (a/r)
+	approveIdx  int               // 0 = approve (y), 1 = deny (n) — ↑/↓ switches
+	showPreview bool              // 'v' toggles the diff preview below the approval card
 	busy        bool         // a turn is running; submit is locked
 	thinking    bool         // a model call is in flight; show the spinner
 	lastErr     error
@@ -128,6 +129,7 @@ func (m model) Init() tea.Cmd {
 		m.spinner.Tick,
 		waitForEvent(m.b.events),
 		waitForApproval(m.b.approvals),
+		waitForPlanApproval(m.b.planApprovals),
 		waitForDone(m.b.done),
 		waitForGoalDone(m.b.goalDone),
 	}
@@ -145,9 +147,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
-		if m.pending != nil {
-			return m.handleApprovalKey(msg)
-		}
+		if m.planPending != nil {
+				return m.handlePlanApprovalKey(msg)
+			}
+			if m.pending != nil {
+				return m.handleApprovalKey(msg)
+			}
 		switch msg.String() {
 		case "ctrl+c":
 			if m.busy {
@@ -162,8 +167,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "ctrl+p":
 			// Toggle read-only plan mode. The run loop applies it at the next turn
 			// boundary; the send is async so it never blocks the UI.
-			m.planMode = !m.planMode
-			desired := m.planMode
+			if m.planState == agent.PlanStatusPlanning || m.planState == agent.PlanStatusProposing {
+				m.planState = agent.PlanStatusNone
+			} else {
+				m.planState = agent.PlanStatusPlanning
+			}
+			desired := m.planState != agent.PlanStatusNone
 			return m, func() tea.Msg { m.b.planToggle <- desired; return nil }
 		}
 		if m.picker != nil {
@@ -203,8 +212,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		return m, cmd
 
-	case eventMsg:
-		return m.handleEvent(agent.Event(msg))
+	case planApprovalMsg:
+			req := planApprovalReq(msg)
+			m.planPending = &req
+			return m, waitForPlanApproval(m.b.planApprovals)
+
+		case eventMsg:
+			return m.handleEvent(agent.Event(msg))
 
 	case approvalMsg:
 		req := approvalReq(msg)
@@ -362,6 +376,21 @@ func (m model) submit() (tea.Model, tea.Cmd) {
 	m.lastEsc = time.Time{}
 	b := m.b
 	return m, func() tea.Msg { b.inputs <- input; return nil }
+}
+
+// handlePlanApprovalKey drives the plan approval card: a approves, r rejects.
+func (m model) handlePlanApprovalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "a", "A", "enter":
+		m.planPending.reply <- agent.PlanApproved
+		m.planPending = nil
+		return m, nil
+	case "r", "R", "esc", "ctrl+c":
+		m.planPending.reply <- agent.PlanRejected
+		m.planPending = nil
+		return m, nil
+	}
+	return m, nil
 }
 
 // handleApprovalKey drives the approval card: ↑/↓ switches between approve and
@@ -758,8 +787,10 @@ func (m model) View() string {
 	lines = append(lines, m.todoPanel()...)
 	lines = append(lines, m.statusLine())
 	switch {
-	case m.pending != nil:
-		lines = append(lines, renderApprovalCard(*m.pending, m.approveIdx, m.width)...)
+	case m.planPending != nil:
+			lines = append(lines, renderPlanApprovalCard(m.planPending.plan, m.width)...)
+		case m.pending != nil:
+			lines = append(lines, renderApprovalCard(*m.pending, m.approveIdx, m.width)...)
 		if m.showPreview {
 			lines = append(lines, renderApprovalPreview(*m.pending, m.width)...)
 		}
@@ -828,7 +859,7 @@ func (m model) statusLine() string {
 	default:
 		left = styleMeta.Render("ready")
 	}
-	if m.planMode {
+	if m.planState != agent.PlanStatusNone {
 		left = styleSkill.Render("⏸ PLAN") + "  " + left
 	}
 	var right []string

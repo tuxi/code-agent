@@ -39,3 +39,8 @@ func (s *TransportSession) Cancel() {
 func (s *TransportSession) SetApprover(a agent.Approver) {
 	s.ex.SetApprover(s.id, a)
 }
+
+// SetPlanApprover wires the WS connection's remote plan approver. Satisfies server.Session.
+func (s *TransportSession) SetPlanApprover(pa agent.PlanApprover) {
+	s.ex.SetPlanApprover(s.id, pa)
+}

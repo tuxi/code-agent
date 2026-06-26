@@ -626,6 +626,16 @@ func buildProvider(mc app.ModelConfig, pc app.ProviderConfig) (model.Provider, e
 	}, nil
 }
 
+// wirePlanTools creates the plan-mode tools (enter_plan_mode, propose_plan) and
+// registers them into the given registry. It returns a RunnerRef whose R field
+// must be set after buildRunner returns.
+func wirePlanTools(registry *tools.Registry, plansDir string) *agent.RunnerRef {
+	ref := &agent.RunnerRef{}
+	registry.Register(agent.NewEnterPlanModeTool(ref))
+	registry.Register(agent.NewProposePlanTool(ref, plansDir))
+	return ref
+}
+
 // buildRunner assembles the agent.Runner shared by `run`, `repl`, and `tui`. The
 // only things that differ between entry points are the Approver (how the user
 // confirms a side-effecting tool) and the Emitter (how the event stream is
@@ -715,17 +725,17 @@ func registerBuiltinTools(registry *tools.Registry, cfg app.Config, skillReg *sk
 	return nil
 }
 
-func buildRegistry(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider model.Provider, store session.Store, progress agent.Emitter) (*tools.Registry, *skills.Registry, *mcp.Manager, error) {
+func buildRegistry(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider model.Provider, store session.Store, progress agent.Emitter) (*tools.Registry, *skills.Registry, *mcp.Manager, *agent.RunnerRef, error) {
 	root := cfg.Workspace.Root
 	registry := tools.NewRegistry()
 
 	skillReg, err := skills.Load(filepath.Join(root, "skills"))
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 
 	if err := registerBuiltinTools(registry, cfg, skillReg); err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 
 	// Subagent (8.3): freeze the read-only subset from the built-ins ONLY — before
@@ -735,7 +745,7 @@ func buildRegistry(ctx context.Context, cfg app.Config, mc app.ModelConfig, prov
 	// construction (see tools.Subset / newSubAgent).
 	sub := newSubAgent(cfg, mc, provider, root, registry, skillReg.PromptIndex(), store, progress)
 	if err := registry.Register(task.NewTool(sub)); err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 
 	// MCP tools are registered AFTER the built-ins, so they appear after them in
@@ -748,15 +758,21 @@ func buildRegistry(ctx context.Context, cfg app.Config, mc app.ModelConfig, prov
 	}
 	if err := mgr.Connect(ctx, cfg.MCP.Servers); err != nil {
 		mgr.Close()
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 	for _, tool := range mgr.Tools() {
 		if err := registry.Register(tool); err != nil {
 			mgr.Close()
-			return nil, nil, nil, fmt.Errorf("register mcp tool: %w", err)
+			return nil, nil, nil, nil, fmt.Errorf("register mcp tool: %w", err)
 		}
 	}
-	return registry, skillReg, mgr, nil
+
+	// Plan mode tools: enter_plan_mode and propose_plan. They use a RunnerRef for
+	// late binding — the Runner is constructed after the registry. The returned ref
+	// must be wired via planRef.R = runner after buildRunner.
+	planRef := wirePlanTools(registry, filepath.Join(root, ".codeagent", "plans"))
+
+	return registry, skillReg, mgr, planRef, nil
 }
 
 // mcpTraceWriter is where the MCP adapter writes its per-call raw I/O trace.
@@ -829,7 +845,7 @@ func runAgent(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider 
 	defer store.Close()
 	attachObserver(provider, store, ctx)
 
-	registry, skillReg, mcpMgr, err := buildRegistry(ctx, cfg, mc, provider, store, subagentProgress())
+	registry, skillReg, mcpMgr, planRef, err := buildRegistry(ctx, cfg, mc, provider, store, subagentProgress())
 	if err != nil {
 		return err
 	}
@@ -843,6 +859,7 @@ func runAgent(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider 
 	// the loop (correlated EventAutoApproved), so the approver itself takes no emitter.
 	approver := approve.NewAutoApprover(root, ui.ConfirmApprover{}, autoMode)
 	runner := buildRunner(cfg, mc, provider, registry, skillReg, approver, withEventStore(buildEmitter(), store, ctx))
+	planRef.R = runner
 
 	sess, err := session.NewBuilder(root).
 		WithBudget(mc.ContextWindow, cfg.CompactThreshold(mc)).
@@ -889,7 +906,7 @@ func runGoal(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider m
 	defer store.Close()
 	attachObserver(provider, store, ctx)
 
-	registry, skillReg, mcpMgr, err := buildRegistry(ctx, cfg, mc, provider, store, subagentProgress())
+	registry, skillReg, mcpMgr, planRef, err := buildRegistry(ctx, cfg, mc, provider, store, subagentProgress())
 	if err != nil {
 		return err
 	}
@@ -903,6 +920,7 @@ func runGoal(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider m
 
 	approver := approve.NewAutoApprover(root, ui.ConfirmApprover{}, autoMode)
 	runner := buildRunner(cfg, mc, provider, registry, skillReg, approver, withEventStore(buildEmitter(), store, ctx))
+	planRef.R = runner
 
 	sess, err := session.NewBuilder(root).
 		WithBudget(mc.ContextWindow, cfg.CompactThreshold(mc)).
@@ -936,7 +954,7 @@ func runTUI(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider mo
 	// renders them as a status line, never the transcript.
 	backend := tui.NewBackend()
 
-	registry, skillReg, mcpMgr, err := buildRegistry(ctx, cfg, mc, provider, store, backend.Emitter)
+	registry, skillReg, mcpMgr, planRef, err := buildRegistry(ctx, cfg, mc, provider, store, backend.Emitter)
 	if err != nil {
 		return err
 	}
@@ -960,7 +978,9 @@ func runTUI(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider mo
 	// hands-off auto mode as repl/run: --auto seeds it on; /auto flips it per session.
 	approver := approve.NewAutoApprover(root, backend.Approver, autoMode)
 	runner := buildRunner(cfg, mc, provider, registry, skillReg, approver, withEventStore(backend.Emitter, store, ctx))
+	planRef.R = runner
 	runner.Stream = true // 8.6: stream the model's text live (TUI only)
+	runner.PlanApprover = backend.PlanApprover
 	if autoMode {
 		fmt.Fprintln(os.Stderr, "auto mode: ON (in-workspace edits auto-approved; commands still confirmed) — /auto off to disable")
 	}

@@ -34,6 +34,8 @@ func (s *approvalSession) SetApprover(a agent.Approver) {
 	s.mu.Unlock()
 }
 
+func (s *approvalSession) SetPlanApprover(agent.PlanApprover) {}
+
 func (s *approvalSession) SendMessage(context.Context, string) (agent.TurnResult, error) {
 	s.mu.Lock()
 	a := s.appr

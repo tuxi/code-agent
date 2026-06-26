@@ -22,6 +22,11 @@ type ExecutionContext struct {
 	// CallID is the per-tool-call identifier (e.g. "call_3").
 	CallID string
 
+	// PlanMode is true when the runner is in a planning/proposing state.
+	// Tools that need different behavior during plan mode (e.g. write_file
+	// restricting writes to .codeagent/plans/) check this field.
+	PlanMode bool
+
 	// OnStdout, if set, receives stdout chunks as the command produces them.
 	// Tools that support streaming call this during execution; nil-safe.
 	OnStdout func(chunk string)

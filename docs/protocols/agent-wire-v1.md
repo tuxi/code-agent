@@ -84,6 +84,9 @@ agent-core (Layer 1)          agent-server (Layer 2)         frontends (Layer 3)
 | `turn_finished` | `text` | 最终答复 |
 | `task_started` | `session_id`(子) `parent_session_id` `text` | subagent 委派开始（`text` = 委派 prompt） |
 | `task_finished` | `session_id`(子) `parent_session_id` `text` | subagent 结束（`text` = 结论） |
+| `plan_proposed` | `text` | 模型产出计划，等待用户审批（`text` = plan 内容） |
+| `plan_approved` | `text` | 用户批准计划（`text` = plan_id） |
+| `plan_rejected` | `text` | 用户拒绝计划（`text` = plan_id） |
 
 零值字段一律 `omitempty` 省略。
 
@@ -110,6 +113,22 @@ agent-core (Layer 1)          agent-server (Layer 2)         frontends (Layer 3)
 - **客户端断线或超 `deadline_ms` → 默认拒绝**，对齐 core 里"nil Approver 一律拒"的 fail-safe 规则。
 - auto 模式**不发** `approval_request`，改为发 `auto_approved` 事件（纯观测）。
 
+#### 计划审批（v1.1）
+
+与工具审批相同的阻塞往返模式，但 payload 是完整计划：
+
+```json
+// server → client（plan 等待审批）
+{ "type": "plan_approval_request", "id": "plan_appr_1",
+  "session_id": "sess_root", "turn_id": "turn_42",
+  "plan_id": "plan_abc", "title": "Add Auth",
+  "content": "# Plan\n1. Step one\n2. Step two",
+  "deadline_ms": 120000 }
+
+// client → server
+{ "type": "plan_approval_response", "id": "plan_appr_1", "approved": true }
+```
+
 ### 4.2 入站消息（client → server，已实现）
 
 同一条 WS 上，客户端可发以下消息驱动会话：
@@ -117,6 +136,7 @@ agent-core (Layer 1)          agent-server (Layer 2)         frontends (Layer 3)
 ```json
 { "type": "send_message", "text": "把这个模块迁到新 API" }   // 驱动一个 turn
 { "type": "approval_response", "id": "appr_7", "approved": true }  // 见 §4.1
+{ "type": "plan_approval_response", "id": "plan_appr_1", "approved": true }  // 计划审批响应
 { "type": "cancel_turn" }                                    // 取消在飞的 turn
 ```
 

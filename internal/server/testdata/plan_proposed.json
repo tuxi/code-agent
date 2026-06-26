@@ -1,0 +1,8 @@
+{
+  "event_id": "evt_fixed",
+  "kind": "plan_proposed",
+  "at": "2026-06-24T10:00:00.123Z",
+  "session_id": "sess_root",
+  "turn_id": "turn_7",
+  "text": "# Implementation Plan\n\n1. Add login\n2. Add middleware"
+}

@@ -18,8 +18,9 @@ import (
 //
 // Construct it, hand Emitter/Approver to buildRunner, then pass it to Run.
 type Backend struct {
-	Emitter  agent.Emitter
-	Approver agent.Approver
+	Emitter       agent.Emitter
+	Approver      agent.Approver
+	PlanApprover  agent.PlanApprover
 
 	events          chan agent.Event
 	approvals       chan approvalReq
@@ -29,6 +30,7 @@ type Backend struct {
 	modelSwap       chan string           // /use: TUI → run loop (model name to switch to)
 	modelSwapResult chan modelSwappedMsg  // /use: run loop → TUI (result)
 	planToggle      chan bool             // plan key: TUI → run loop (desired plan mode)
+	planApprovals   chan planApprovalReq  // plan approval: run loop → TUI (blocking, like approvals)
 	goalStart       chan string           // /goal: TUI → run loop (objective to pursue; "" resumes)
 	goalDone        chan goalDoneMsg      // /goal: run loop → TUI (outcome summary)
 	goalCtl         chan goalCtlReq       // /goal status|clear: TUI → run loop (quick, reply-back)
@@ -61,12 +63,14 @@ func NewBackend() *Backend {
 	mSwap := make(chan string, 1)
 	mSwapResult := make(chan modelSwappedMsg, 1)
 	planToggle := make(chan bool, 1)
+	planApprovals := make(chan planApprovalReq)
 	goalStart := make(chan string, 1)
 	goalDone := make(chan goalDoneMsg, 1)
 	goalCtl := make(chan goalCtlReq)
 	return &Backend{
 		Emitter:         tuiEmitter{ch: events},
 		Approver:        tuiApprover{ch: approvals},
+		PlanApprover:    &tuiPlanApprover{ch: planApprovals},
 		events:          events,
 		approvals:       approvals,
 		inputs:          inputs,
@@ -75,6 +79,7 @@ func NewBackend() *Backend {
 		modelSwap:       mSwap,
 		modelSwapResult: mSwapResult,
 		planToggle:      planToggle,
+		planApprovals:   planApprovals,
 		goalStart:       goalStart,
 		goalDone:        goalDone,
 		goalCtl:         goalCtl,
@@ -188,5 +193,36 @@ func waitForApproval(ch chan approvalReq) tea.Cmd {
 			return nil
 		}
 		return approvalMsg(req)
+	}
+}
+
+// --- Plan Approver -------------------------------------------------------
+
+// planApprovalReq carries a proposed plan to the TUI for a human decision.
+// The runner goroutine blocks on reply until the UI answers.
+type planApprovalReq struct {
+	plan  agent.Plan
+	reply chan agent.PlanDecision
+}
+
+type planApprovalMsg planApprovalReq
+
+// tuiPlanApprover implements agent.PlanApprover for the TUI. ApprovePlan runs
+// on the runner goroutine, posts the plan, and blocks until the UI answers.
+type tuiPlanApprover struct{ ch chan planApprovalReq }
+
+func (a *tuiPlanApprover) ApprovePlan(plan agent.Plan) agent.PlanDecision {
+	reply := make(chan agent.PlanDecision, 1)
+	a.ch <- planApprovalReq{plan: plan, reply: reply}
+	return <-reply
+}
+
+func waitForPlanApproval(ch chan planApprovalReq) tea.Cmd {
+	return func() tea.Msg {
+		req, ok := <-ch
+		if !ok {
+			return nil
+		}
+		return planApprovalMsg(req)
 	}
 }

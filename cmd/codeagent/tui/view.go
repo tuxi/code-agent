@@ -6,6 +6,8 @@ import (
 	"strings"
 	"time"
 
+	"code-agent/internal/agent"
+
 	"github.com/charmbracelet/lipgloss"
 	"github.com/mattn/go-runewidth"
 )
@@ -465,4 +467,35 @@ func approvalSelector(idx int) string {
 		y, n = styleApproveDim.Render("  [y]"), styleApproveHl.Render("▶ [n]")
 	}
 	return fmt.Sprintf("%s approve  %s deny  %s  %s", y, n, styleMeta.Render("[v]"), styleMeta.Render("preview  (↑/↓ select · enter confirm · esc cancel)"))
+}
+
+// renderPlanApprovalCard renders a plan for user approval in the live region.
+func renderPlanApprovalCard(plan agent.Plan, width int) []string {
+	innerW := width - 4
+	if innerW < 20 {
+		innerW = 20
+	}
+
+	var lines []string
+	lines = append(lines, styleSkill.Render("▸ Plan: "+plan.Title))
+	lines = append(lines, styleMeta.Render(fmt.Sprintf("  ID: %s  |  Saved: %s", plan.ID, plan.FilePath)))
+	lines = append(lines, "")
+
+	// Preview first ~15 lines of the plan content.
+	contentLines := strings.Split(plan.Content, "\n")
+	maxLines := 15
+	if len(contentLines) < maxLines {
+		maxLines = len(contentLines)
+	}
+	for i := 0; i < maxLines; i++ {
+		ln := runewidth.Truncate(contentLines[i], innerW-2, "…")
+		lines = append(lines, styleBody.Render("  "+ln))
+	}
+	if len(contentLines) > maxLines {
+		lines = append(lines, styleMeta.Render(fmt.Sprintf("  … %d more lines", len(contentLines)-maxLines)))
+	}
+	lines = append(lines, "")
+	lines = append(lines, styleMeta.Render("  [a] approve  [r] reject  (esc/r to reject)"))
+
+	return strings.Split(styleApproveBox.Width(innerW).Render(strings.Join(lines, "\n")), "\n")
 }

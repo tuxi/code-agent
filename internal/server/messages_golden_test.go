@@ -20,6 +20,17 @@ func TestMessageContractGolden(t *testing.T) {
 		// command plane
 		"send_message": SendMessage{Type: MsgTypeSendMessage, Text: "迁移到新 API"},
 		"cancel_turn":  CancelTurn{Type: MsgTypeCancelTurn},
+		// plan approval
+		"plan_approval_request": PlanApprovalRequest{
+			Type: "plan_approval_request", ID: "plan_appr_1",
+			SessionID: "sess_root", TurnID: "turn_7",
+			PlanID: "plan_abc", Title: "Add Auth",
+			Content: "# Plan\n1. Step one\n2. Step two",
+			DeadlineMS: 120000,
+		},
+		"plan_approval_response": PlanApprovalResponse{
+			Type: MsgTypePlanApprovalResponse, ID: "plan_appr_1", Approved: true,
+		},
 	}
 
 	for name, msg := range cases {

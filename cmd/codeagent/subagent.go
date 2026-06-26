@@ -30,11 +30,13 @@ var readOnlyToolNames = []string{
 	"read_file", "list_files", "grep", "project_graph", "git_diff", "load_skill",
 }
 
-// planModeToolNames is the toolset a plan-mode (read-only) turn advertises: the
-// read-only set plus todo_write, so the model can sketch the plan's steps as a
-// checklist while it researches. Like readOnlyToolNames it is an allow-list, so a
-// write tool can never leak into a planning turn.
-var planModeToolNames = append([]string{"todo_write"}, readOnlyToolNames...)
+// planModeToolNames is the toolset a plan-mode turn advertises: the read-only set
+// plus todo_write, create_file (restricted to .codeagent/plans/), and propose_plan.
+// Like readOnlyToolNames it is an allow-list, so a write tool can never leak into a
+// planning turn. enter_plan_mode is also callable during plan mode (no-op).
+var planModeToolNames = append([]string{
+	"todo_write", "create_file", "propose_plan", "enter_plan_mode",
+}, readOnlyToolNames...)
 
 // denyAll is a fail-closed Approver: it refuses every side-effecting call. The
 // subagent's toolset is already read-only, so this should be unreachable — it is

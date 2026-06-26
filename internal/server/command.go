@@ -6,8 +6,9 @@ package server
 
 // Message type discriminators for the command plane.
 const (
-	MsgTypeSendMessage = "send_message"
-	MsgTypeCancelTurn  = "cancel_turn"
+	MsgTypeSendMessage           = "send_message"
+	MsgTypeCancelTurn            = "cancel_turn"
+	MsgTypePlanApprovalResponse  = "plan_approval_response"
 )
 
 // SendMessage drives one turn. Text is the user input.

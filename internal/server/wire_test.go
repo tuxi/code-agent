@@ -73,6 +73,21 @@ func cases() map[string]wireCase {
 			SessionID: "sess_child", TurnID: "turn_7",
 			Text: "investigate the auth module",
 		}, parent: "sess_root"},
+		"plan_proposed": {ev: agent.Event{
+			Kind: agent.EventPlanProposed, At: fixedAt,
+			SessionID: "sess_root", TurnID: "turn_7",
+			Text: "# Implementation Plan\n\n1. Add login\n2. Add middleware",
+		}},
+		"plan_approved": {ev: agent.Event{
+			Kind: agent.EventPlanApproved, At: fixedAt,
+			SessionID: "sess_root", TurnID: "turn_7",
+			Text: "plan_abc123",
+		}},
+		"plan_rejected": {ev: agent.Event{
+			Kind: agent.EventPlanRejected, At: fixedAt,
+			SessionID: "sess_root", TurnID: "turn_7",
+			Text: "plan_abc123",
+		}},
 	}
 }
 

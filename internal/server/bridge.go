@@ -24,6 +24,7 @@ type Session interface {
 	Subscriber
 	CommandTarget
 	SetApprover(agent.Approver)
+	SetPlanApprover(agent.PlanApprover)
 }
 
 // Bridge streams one conversation's events to one client as encoded agent-wire

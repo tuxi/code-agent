@@ -52,13 +52,29 @@ type Runner struct {
 	// on a model's agency. Set by the CLI when the project has skills.
 	RemindSkills bool
 
-	// PlanMode runs the turn read-only: the model sees only PlanTools (the
-	// read-only subset) and gets a one-shot reminder to research and produce an
-	// implementation plan instead of editing. It is enforced, not advisory — a
-	// hallucinated edit_file call is rejected because the tool is not in PlanTools.
-	// Toggled between turns by the REPL's /plan and the TUI's plan key.
-	PlanMode  bool
+	// PlanApprover handles plan-level approval (plan → approve → execute).
+	// When nil, propose_plan auto-approves (test/headless path). Set by the
+	// REPL, TUI, or server to gate plan execution behind a human decision.
+	PlanApprover PlanApprover
+
+	// PlanState tracks the planning workflow phase. Exported so the TUI and REPL
+	// can toggle plan mode manually (Ctrl+P, /plan).
+	PlanState PlanStatus
+
+	// activePlan is the current plan, populated when propose_plan is called.
+	activePlan *Plan
+
+	// planTitle is set by enter_plan_mode's input or /plan command.
+	planTitle string
+
+	// PlanTools is the restricted toolset used during Planning/Proposing states.
+	// Built from planModeToolNames at construction time. Exported so the cmd
+	// layer can wire it from planModeToolNames after runner construction.
 	PlanTools *tools.Registry
+
+	// lastThinking stores the model's most recent thinking text (resp.Content)
+	// so propose_plan can extract the plan body without duplicating it in args.
+	lastThinking string
 
 	Compactor session.Compactor
 
@@ -158,24 +174,6 @@ func (r *Runner) RunTurn(ctx context.Context, sess *session.Session, userInput s
 		r.MaxSteps = defaultMaxSteps
 	}
 
-	// In plan mode the model is restricted to the read-only PlanTools, so it can
-	// research but cannot edit — the enforcement behind plan mode. The same
-	// registry is used for both advertising AND execution below, so a hallucinated
-	// write call is simply unknown.
-	activeTools := r.Tools
-	if r.PlanMode && r.PlanTools != nil {
-		activeTools = r.PlanTools
-	}
-
-	toolDefs := toolDefinitions(activeTools)
-
-	// Tools the model may actually call. Internal tools (registered but not
-	// advertised) must not be reachable through a model call.
-	advertised := make(map[string]bool, len(toolDefs))
-	for _, d := range toolDefs {
-		advertised[d.Function.Name] = true
-	}
-
 	r.emitSessionID = sess.ID
 	r.emitTurnID = newTurnID()
 
@@ -211,6 +209,19 @@ func (r *Runner) RunTurn(ctx context.Context, sess *session.Session, userInput s
 			return turn, err
 		}
 
+		// Recompute the toolset each iteration: plan mode can be entered or
+		// exited mid-turn by enter_plan_mode / propose_plan, so the tool list
+		// must reflect the current planState.
+		activeTools := r.Tools
+		if (r.PlanState == PlanStatusPlanning || r.PlanState == PlanStatusProposing) && r.PlanTools != nil {
+			activeTools = r.PlanTools
+		}
+		toolDefs := toolDefinitions(activeTools)
+		advertised := make(map[string]bool, len(toolDefs))
+		for _, d := range toolDefs {
+			advertised[d.Function.Name] = true
+		}
+
 		// Convergence nudge: once a turn has made many tool calls, steer a model
 		// that lacks agentic restraint toward answering. The nudge is ephemeral —
 		// appended only to this request, never persisted — so it keeps applying
@@ -235,8 +246,10 @@ func (r *Runner) RunTurn(ctx context.Context, sess *session.Session, userInput s
 		}
 		// Plan mode (read-only): steer the model to produce a plan, not changes. The
 		// read-only toolset already prevents edits; this shapes the output.
-		if i == 0 && r.PlanMode {
-			msgs = appendEphemeralUser(msgs, planModeReminder)
+		// Plan mode: when in Planning state, inject the planning guidance prompt.
+		// The restricted toolset already prevents edits; this shapes the output.
+		if r.PlanState == PlanStatusPlanning {
+			msgs = appendEphemeralUser(msgs, planningPrompt)
 		}
 
 		r.emit(Event{Kind: EventModelStarted})
@@ -262,6 +275,12 @@ func (r *Runner) RunTurn(ctx context.Context, sess *session.Session, userInput s
 		turn.PromptTokens = resp.Usage.PromptTokens
 		turn.TokensUsed += resp.Usage.PromptTokens + resp.Usage.CompletionTokens
 		sess.PromptTokens = resp.Usage.PromptTokens
+
+		// Capture the model's latest text so propose_plan can extract the plan
+		// body. Set BEFORE HasToolCalls so it is fresh in both paths.
+		if resp.Content != "" {
+			r.lastThinking = resp.Content
+		}
 		// This call's prompt size is the true post-compaction size if a compaction
 		// just ran, so finalize its observability stat here.
 		if stat := sess.FinalizeCompaction(resp.Usage.PromptTokens); stat != nil {
@@ -316,6 +335,7 @@ func (r *Runner) RunTurn(ctx context.Context, sess *session.Session, userInput s
 		sess.UpdatedAt = time.Now()
 
 		if resp.Content != "" {
+			r.lastThinking = resp.Content
 			r.emit(Event{Kind: EventThinking, Text: resp.Content})
 		}
 
@@ -484,13 +504,21 @@ const skillsReminder = "[reminder] Before you act: check the Skills list in the 
 	"If this task matches a skill you have not already loaded, call load_skill(name) and follow " +
 	"it first — that is reading project guidance, not extra investigation."
 
-// planModeReminder steers a read-only planning turn. The toolset already blocks
-// edits; this tells the model what to produce instead.
-const planModeReminder = "[plan mode] You are in PLAN MODE: read-only. You can read, search, and " +
-	"inspect, but you CANNOT edit files or run commands — those tools are unavailable this turn. " +
-	"Research the task, then present a concrete implementation plan: the files to change, the " +
-	"approach, and the steps in order. Do NOT make any changes. End with the plan as your answer; " +
-	"you may track the plan's steps with todo_write."
+// planningPrompt is injected as an ephemeral user message when the model enters the
+// Planning state (via enter_plan_mode or /plan). The restricted toolset already
+// blocks project edits; this tells the model what to produce instead.
+const planningPrompt = "[plan mode] You are in PLAN MODE. You can read, search, and write plan " +
+	"files to .codeagent/plans/, but you CANNOT edit project files or run commands. " +
+	"Research the task thoroughly, then produce a concrete implementation plan. " +
+	"Your plan should include:\n" +
+	"1. Problem summary — what needs to be done\n" +
+	"2. Files to change — list each file and what changes\n" +
+	"3. Approach — the implementation strategy and key design decisions\n" +
+	"4. Step-by-step order — the sequence of changes\n" +
+	"5. Risks and edge cases — what could go wrong and how to handle it\n" +
+	"When your plan is complete, write it to .codeagent/plans/ and call propose_plan " +
+	"to submit it for user approval. Do NOT make any project changes. " +
+	"You may track your plan's steps with todo_write."
 
 // withConvergenceNudge returns a copy of msgs with a transient reminder appended,
 // steering the model to answer now instead of over-investigating.
@@ -609,6 +637,7 @@ func (r *Runner) executeTool(ctx context.Context, tool tools.Tool, callID string
 		SessionID:     r.emitSessionID,
 		TurnID:        r.emitTurnID,
 		CallID:        callID,
+		PlanMode:      r.PlanState == PlanStatusPlanning || r.PlanState == PlanStatusProposing,
 		OnStdout: func(chunk string) {
 			r.emit(Event{Kind: EventToolStdout, CallID: callID, Chunk: chunk})
 		},
