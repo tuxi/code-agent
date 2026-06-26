@@ -21,6 +21,13 @@ type ExecutionContext struct {
 
 	// CallID is the per-tool-call identifier (e.g. "call_3").
 	CallID string
+
+	// OnStdout, if set, receives stdout chunks as the command produces them.
+	// Tools that support streaming call this during execution; nil-safe.
+	OnStdout func(chunk string)
+	// OnStderr, if set, receives stderr chunks as the command produces them.
+	// Tools that support streaming call this during execution; nil-safe.
+	OnStderr func(chunk string)
 }
 
 type ToolResult struct {

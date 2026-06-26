@@ -26,8 +26,8 @@ func (s *testSession) Subscribe() (<-chan agent.Event, func()) {
 func (s *testSession) SendMessage(context.Context, string) (agent.TurnResult, error) {
 	return agent.TurnResult{}, nil
 }
-func (s *testSession) Cancel()                              {}
-func (s *testSession) SetApprover(agent.Approver)           {}
+func (s *testSession) Cancel()                    {}
+func (s *testSession) SetApprover(agent.Approver) {}
 
 // testHub is the same shape as the old hub: Emit fans to subscribers.
 type testHub struct {

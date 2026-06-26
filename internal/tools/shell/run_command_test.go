@@ -138,6 +138,46 @@ func TestRunCommandRefusesReadPathOutsideWorkspace(t *testing.T) {
 	}
 }
 
+func TestRunCommandStreamCallbacks(t *testing.T) {
+	tool := NewRunCommandTool()
+
+	var stdoutChunks, stderrChunks []string
+	ec := tools.ExecutionContext{
+		WorkspaceRoot: ".",
+		OnStdout:      func(chunk string) { stdoutChunks = append(stdoutChunks, chunk) },
+		OnStderr:      func(chunk string) { stderrChunks = append(stderrChunks, chunk) },
+	}
+
+	// echo writes to stdout and produces no stderr; each write triggers a callback.
+	res, err := tool.Execute(context.Background(), ec, json.RawMessage(`{"command":"echo hello"}`))
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	r := decodeResult(t, res.Content)
+	if r.ExitCode != 0 {
+		t.Fatalf("exit_code = %d, want 0", r.ExitCode)
+	}
+
+	// Verify stream callbacks were invoked.
+	if len(stdoutChunks) == 0 {
+		t.Error("OnStdout was never called; streaming callbacks broken")
+	}
+	joined := strings.Join(stdoutChunks, "")
+	if !strings.Contains(joined, "hello") {
+		t.Errorf("streamed stdout = %q, want it to contain hello", joined)
+	}
+
+	// Verify the final result still has the full output (buffer capture still works).
+	if !strings.Contains(r.Stdout, "hello") {
+		t.Errorf("result stdout = %q, want it to contain hello", r.Stdout)
+	}
+
+	// stderr should have no chunks (echo writes nothing to stderr).
+	if len(stderrChunks) != 0 {
+		t.Errorf("unexpected stderr chunks: %q", stderrChunks)
+	}
+}
+
 func TestRunCommandAllowsReadPathInsideWorkspace(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "ok.txt"), []byte("yes"), 0o644); err != nil {

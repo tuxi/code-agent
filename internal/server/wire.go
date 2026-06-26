@@ -31,6 +31,7 @@ type wireEvent struct {
 	ToolName     string          `json:"tool_name,omitempty"`
 	ToolArgs     json.RawMessage `json:"tool_args,omitempty"`
 	Observation  string          `json:"observation,omitempty"`
+	Chunk       string          `json:"chunk,omitempty"`
 	Failure      string          `json:"failure,omitempty"`
 	SkillVersion string          `json:"skill_version,omitempty"`
 
@@ -70,6 +71,7 @@ func toWire(e agent.Event) wireEvent {
 		ToolName:     e.ToolName,
 		ToolArgs:     toWireArgs(e.ToolArgs),
 		Observation:  e.Observation,
+		Chunk:       e.Chunk,
 		Failure:      e.Failure,
 		SkillVersion: e.Version,
 		Todos:        e.Todos,

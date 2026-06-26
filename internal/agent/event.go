@@ -20,6 +20,8 @@ const (
 	EventTokenDelta    EventKind = "token_delta"    // a streamed text delta (8.6); ephemeral, not persisted
 	EventThinking      EventKind = "thinking"       // model produced reasoning text
 	EventToolStarted   EventKind = "tool_started"
+	EventToolStdout    EventKind = "tool_stdout"    // a stdout chunk during tool execution
+	EventToolStderr    EventKind = "tool_stderr"    // a stderr chunk during tool execution
 	EventToolFinished  EventKind = "tool_finished"
 	EventObserved      EventKind = "observed"      // a tool result was classified (P4.1)
 	EventAutoApproved  EventKind = "auto_approved" // auto mode granted a side-effecting call without a human prompt (audit; p9.1 §12.3)
@@ -66,6 +68,7 @@ type Event struct {
 	ToolName    string
 	ToolArgs    string
 	Observation string
+	Chunk       string // stdout/stderr chunk (ToolStdout / ToolStderr)
 	Failure     string // EventObserved: the classified FailureType (e.g. "compile")
 	Version     string // EventSkillLoaded: the loaded skill's version (name is in ToolName)
 

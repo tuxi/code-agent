@@ -360,6 +360,7 @@ func (r *Runner) RunTurn(ctx context.Context, sess *session.Session, userInput s
 
 			var observation string
 			var execErr error
+			toolStart := time.Now()
 			switch {
 			case !valid:
 				execErr = fmt.Errorf("unknown tool: %s", call.Function.Name)
@@ -433,6 +434,7 @@ func (r *Runner) RunTurn(ctx context.Context, sess *session.Session, userInput s
 				Step:        step.Index,
 				ToolName:    call.Function.Name,
 				Observation: observation,
+				Elapsed:     time.Since(toolStart),
 				Err:         step.Error,
 			})
 
@@ -607,6 +609,12 @@ func (r *Runner) executeTool(ctx context.Context, tool tools.Tool, callID string
 		SessionID:     r.emitSessionID,
 		TurnID:        r.emitTurnID,
 		CallID:        callID,
+		OnStdout: func(chunk string) {
+			r.emit(Event{Kind: EventToolStdout, CallID: callID, Chunk: chunk})
+		},
+		OnStderr: func(chunk string) {
+			r.emit(Event{Kind: EventToolStderr, CallID: callID, Chunk: chunk})
+		},
 	}
 	result, err := tool.Execute(ctx, ec, input)
 	if err != nil {

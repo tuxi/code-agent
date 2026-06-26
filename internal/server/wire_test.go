@@ -33,6 +33,22 @@ func cases() map[string]wireCase {
 			SessionID: "sess_root", TurnID: "turn_7", CallID: "call_abc", Step: 3,
 			ToolName: "run_command", ToolArgs: `{"command":"go test ./..."}`,
 		}},
+		"tool_finished": {ev: agent.Event{
+			Kind: agent.EventToolFinished, At: fixedAt,
+			SessionID: "sess_root", TurnID: "turn_7", CallID: "call_abc", Step: 3,
+			ToolName: "run_command", Observation: `{"command":"go test ./...","stdout":"ok  ./internal/agent","exit_code":0,"duration_ms":234}`,
+			Elapsed: 1200 * time.Millisecond,
+		}},
+		"tool_stdout": {ev: agent.Event{
+			Kind: agent.EventToolStdout, At: fixedAt,
+			SessionID: "sess_root", TurnID: "turn_7", CallID: "call_abc",
+			Chunk: "Downloading packages...\n",
+		}},
+		"tool_stderr": {ev: agent.Event{
+			Kind: agent.EventToolStderr, At: fixedAt,
+			SessionID: "sess_root", TurnID: "turn_7", CallID: "call_abc",
+			Chunk: "Warning: deprecated package\n",
+		}},
 		"model_finished": {ev: agent.Event{
 			Kind: agent.EventModelFinished, At: fixedAt,
 			SessionID: "sess_root", TurnID: "turn_7",

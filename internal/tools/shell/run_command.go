@@ -205,8 +205,10 @@ func (t *RunCommandTool) Execute(ctx context.Context, ec tools.ExecutionContext,
 	cmd.Dir = rootAbs
 
 	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	swOut := streamWriter{buf: &stdout, stream: ec.OnStdout}
+	swErr := streamWriter{buf: &stderr, stream: ec.OnStderr}
+	cmd.Stdout = &swOut
+	cmd.Stderr = &swErr
 
 	start := time.Now()
 	runErr := cmd.Run()
@@ -284,6 +286,23 @@ func truncate(s string, max int) string {
 		return s
 	}
 	return s[:max] + "\n...<truncated>"
+}
+
+// streamWriter writes to both an internal buffer (for the final result) and an
+// optional streaming callback (for real-time event emission). It implements
+// io.Writer so it can be assigned to cmd.Stdout / cmd.Stderr directly.
+type streamWriter struct {
+	buf    *bytes.Buffer
+	stream func(string)
+}
+
+func (w *streamWriter) Write(p []byte) (int, error) {
+	s := string(p)
+	w.buf.WriteString(s)
+	if w.stream != nil {
+		w.stream(s)
+	}
+	return len(p), nil
 }
 
 func outsideWorkspaceRead(args []string, rootAbs string) string {

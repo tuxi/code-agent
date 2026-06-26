@@ -1,0 +1,9 @@
+{
+  "event_id": "evt_fixed",
+  "kind": "tool_stderr",
+  "at": "2026-06-24T10:00:00.123Z",
+  "session_id": "sess_root",
+  "turn_id": "turn_7",
+  "call_id": "call_abc",
+  "chunk": "Warning: deprecated package\n"
+}
