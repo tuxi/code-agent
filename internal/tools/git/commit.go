@@ -28,7 +28,7 @@ func NewGitCommitTool() *GitCommitTool {
 
 type gitCommitInput struct {
 	Message string `json:"message"`
-	All     bool   `json:"all"` // stage all tracked changes before committing (git commit -a)
+	All     bool   `json:"all"` // stage all changes (including untracked files) before committing (git add -A)
 }
 
 type gitCommitResult struct {
@@ -36,6 +36,7 @@ type gitCommitResult struct {
 	ShortHash string `json:"short_hash,omitempty"`
 	Subject   string `json:"subject,omitempty"`
 	Stderr    string `json:"stderr,omitempty"`
+	Staged    string `json:"staged,omitempty"` // files added to staging area (git status --short) when all=true
 	ExitCode  int    `json:"exit_code"`
 }
 
@@ -44,7 +45,9 @@ func (t *GitCommitTool) Name() string { return "git_commit" }
 func (t *GitCommitTool) Description() string {
 	return "Create a git commit. The commit message is passed via stdin (not a shell argument), " +
 		"so multi-line messages and special characters (quotes, backticks, etc.) are handled " +
-		"correctly without escaping issues. Requires user confirmation before executing."
+		"correctly without escaping issues. When all=true, stages all changes (including new " +
+		"untracked files) before committing and reports what was staged. Requires user " +
+		"confirmation before executing."
 }
 
 func (t *GitCommitTool) InputSchema() json.RawMessage {
@@ -55,7 +58,7 @@ func (t *GitCommitTool) InputSchema() json.RawMessage {
 		},
 		"all": {
 			Type:        "boolean",
-			Description: `If true, stage all tracked changes before committing (equivalent to git commit -a). Default false; use git add separately for finer control.`,
+			Description: `If true, stage all changes (including new untracked files) via git add -A before committing, and report what was staged. Respects .gitignore. Equivalent to git add -A followed by git commit. Default false; use git add separately for finer control.`,
 		},
 	}, "message").JSON()
 }
@@ -86,22 +89,40 @@ func (t *GitCommitTool) Execute(ctx context.Context, ec tools.ExecutionContext, 
 		return tools.ToolResult{}, err
 	}
 
-	// Build args: git -C <root> commit -F - [--] (optionally -a)
-	args := []string{"-C", rootAbs, "commit", "-F", "-"}
-	if in.All {
-		args = append(args, "-a")
-	}
-
 	cmdCtx, cancel := context.WithTimeout(ctx, t.Timeout)
 	defer cancel()
+
+	res := gitCommitResult{}
+
+	// When all=true, stage everything first (git add -A), then capture what was
+	// staged so the model can inspect it. git add -A respects .gitignore natively,
+	// so we don't need to parse it ourselves.
+	if in.All {
+		addCmd := exec.CommandContext(cmdCtx, "git", "-C", rootAbs, "add", "-A")
+		addOut, addErr := addCmd.CombinedOutput()
+		if errors.Is(cmdCtx.Err(), context.DeadlineExceeded) {
+			res.ExitCode = -1
+			return t.result(res, "git add -A timed out")
+		}
+		if addErr != nil {
+			res.ExitCode = -1
+			res.Stderr = strings.TrimSpace(string(addOut))
+			return t.result(res, "git add -A failed: "+addErr.Error())
+		}
+
+		statusCmd := exec.CommandContext(cmdCtx, "git", "-C", rootAbs, "status", "--short")
+		statusOut, _ := statusCmd.CombinedOutput()
+		res.Staged = strings.TrimSpace(string(statusOut))
+	}
+
+	// Build args: git -C <root> commit -F -
+	args := []string{"-C", rootAbs, "commit", "-F", "-"}
 
 	cmd := exec.CommandContext(cmdCtx, "git", args...)
 	cmd.Dir = rootAbs
 	cmd.Stdin = strings.NewReader(msg)
 
 	output, err := cmd.CombinedOutput()
-
-	res := gitCommitResult{}
 
 	if errors.Is(cmdCtx.Err(), context.DeadlineExceeded) {
 		res.ExitCode = -1

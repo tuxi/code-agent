@@ -156,3 +156,136 @@ func TestGitCommitNothingToCommit(t *testing.T) {
 		t.Error("expected non-zero exit code when nothing to commit")
 	}
 }
+
+func TestGitCommitAllUntrackedFile(t *testing.T) {
+	dir := initTestRepo(t)
+	tool := NewGitCommitTool()
+
+	// Create a new file WITHOUT staging it — this is the whole point.
+	if err := os.WriteFile(filepath.Join(dir, "new_file.txt"), []byte("untracked content\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	input, _ := json.Marshal(gitCommitInput{Message: "commit untracked", All: true})
+	res, err := tool.Execute(context.Background(), tools.ExecutionContext{WorkspaceRoot: dir}, input)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	var result gitCommitResult
+	if err := json.Unmarshal([]byte(res.Content), &result); err != nil {
+		t.Fatalf("parse result: %v\n%s", err, res.Content)
+	}
+
+	if result.ExitCode != 0 {
+		t.Errorf("exit_code = %d, want 0 (stderr=%q)", result.ExitCode, result.Stderr)
+	}
+	if result.Hash == "" {
+		t.Error("hash is empty, expected a commit SHA")
+	}
+
+	// Verify new_file.txt IS in the commit.
+	cmd := exec.Command("git", "show", "--name-only", "--format=", result.Hash)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git show: %v\n%s", err, out)
+	}
+	files := strings.Split(strings.TrimSpace(string(out)), "\n")
+	found := false
+	for _, f := range files {
+		if f == "new_file.txt" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("new_file.txt not found in commit; committed files: %v", files)
+	}
+}
+
+func TestGitCommitAllStagedFilesInResult(t *testing.T) {
+	dir := initTestRepo(t)
+	tool := NewGitCommitTool()
+
+	if err := os.WriteFile(filepath.Join(dir, "staged_test.txt"), []byte("hi\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	input, _ := json.Marshal(gitCommitInput{Message: "with staged", All: true})
+	res, err := tool.Execute(context.Background(), tools.ExecutionContext{WorkspaceRoot: dir}, input)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	var result gitCommitResult
+	if err := json.Unmarshal([]byte(res.Content), &result); err != nil {
+		t.Fatalf("parse result: %v\n%s", err, res.Content)
+	}
+
+	if result.Staged == "" {
+		t.Error("staged is empty; expected git status --short output")
+	}
+	if !strings.Contains(result.Staged, "staged_test.txt") {
+		t.Errorf("staged should mention staged_test.txt, got: %q", result.Staged)
+	}
+}
+
+func TestGitCommitAllRespectsGitignore(t *testing.T) {
+	dir := initTestRepo(t)
+	tool := NewGitCommitTool()
+
+	// Create .gitignore and a file it should exclude.
+	if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte("*.log\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "debug.log"), []byte("secret\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	input, _ := json.Marshal(gitCommitInput{Message: "respects gitignore", All: true})
+	res, err := tool.Execute(context.Background(), tools.ExecutionContext{WorkspaceRoot: dir}, input)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	var result gitCommitResult
+	if err := json.Unmarshal([]byte(res.Content), &result); err != nil {
+		t.Fatalf("parse result: %v\n%s", err, res.Content)
+	}
+
+	if result.ExitCode != 0 {
+		// .gitignore itself is a new untracked file that IS staged, so the commit
+		// should succeed.
+		t.Errorf("exit_code = %d, want 0 (stderr=%q, staged=%q)", result.ExitCode, result.Stderr, result.Staged)
+	}
+	if result.Hash == "" {
+		t.Fatal("hash is empty, expected a commit SHA")
+	}
+
+	// Verify debug.log is NOT in the commit.
+	cmd := exec.Command("git", "show", "--name-only", "--format=", result.Hash)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git show: %v\n%s", err, out)
+	}
+	files := strings.Split(strings.TrimSpace(string(out)), "\n")
+	for _, f := range files {
+		if f == "debug.log" {
+			t.Errorf("debug.log should NOT be committed (it matches .gitignore)")
+		}
+	}
+
+	// Verify .gitignore IS in the commit.
+	found := false
+	for _, f := range files {
+		if f == ".gitignore" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf(".gitignore should be committed (it's not ignored)")
+	}
+}
