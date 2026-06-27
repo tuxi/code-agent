@@ -9,6 +9,7 @@ import (
 
 	"code-agent/internal/hooks"
 	"code-agent/internal/mcp"
+	"code-agent/internal/session"
 
 	"gopkg.in/yaml.v3"
 )
@@ -51,6 +52,13 @@ type Config struct {
 
 	// Hooks are user-configured pre/post-tool shell commands (8.5). Empty disables.
 	Hooks []hooks.Hook `yaml:"hooks"`
+
+	// StoreFactory, if set, creates the session store for a workspace root.
+	// When nil (default), the built-in SQLite store is used (backward compatible).
+	// External consumers that want their own storage backend (e.g. PostgreSQL)
+	// set this to their own factory. The returned Store owns its lifecycle;
+	// callers must Close it. This field is code-level only (yaml:"-").
+	StoreFactory session.StoreFactory `yaml:"-"`
 }
 
 // ProviderConfig tunes the transport resilience layer (ResilientProvider):

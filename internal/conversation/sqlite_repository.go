@@ -6,12 +6,12 @@ import (
 	"code-agent/internal/session"
 )
 
-// sqliteRepository is the concrete ConversationRepository backed by session.Store
-// (SQLite). It wraps the existing SQLiteStore and adds a Create method that bakes
+// sqliteRepository is the concrete ConversationRepository backed by
+// session.SessionStore. It wraps a store and adds a Create method that bakes
 // in session.Builder configuration (context window, compaction threshold, model
 // name, per-workspace skills index).
 type sqliteRepository struct {
-	store            session.Store
+	store            session.SessionStore
 	contextWindow    int
 	compactThreshold int
 	modelName        string
@@ -22,9 +22,9 @@ type sqliteRepository struct {
 }
 
 // NewSQLiteRepository creates a ConversationRepository backed by the given
-// session.Store. getSkillsIndex resolves the per-workspace skills prompt index
+// SessionStore. getSkillsIndex resolves the per-workspace skills prompt index
 // (typically via WorkspaceRegistry); it may be nil if no skills are loaded.
-func NewSQLiteRepository(store session.Store, contextWindow, compactThreshold int, modelName string, getSkillsIndex func(string) string) ConversationRepository {
+func NewSQLiteRepository(store session.SessionStore, contextWindow, compactThreshold int, modelName string, getSkillsIndex func(string) string) ConversationRepository {
 	return &sqliteRepository{
 		store:            store,
 		contextWindow:    contextWindow,
@@ -77,12 +77,12 @@ func (r *sqliteRepository) Close() error {
 // Compile-time check: sqliteRepository satisfies ConversationRepository.
 var _ ConversationRepository = (*sqliteRepository)(nil)
 
-// StoreEventAdapter wraps a session.Store as a ConversationEventStore by
+// StoreEventAdapter wraps a session.EventStore as a ConversationEventStore by
 // delegating Append → RecordEvent and Replay → SessionEvents. This is the
-// SQLite-backed implementation used at startup; later PRs can swap it for
+// adapter used at startup; later PRs can swap the backing store for
 // Redis/Kafka without changing any consumer.
 type StoreEventAdapter struct {
-	Store session.Store
+	Store session.EventStore
 }
 
 func (a *StoreEventAdapter) Append(ctx context.Context, e session.EventRecord) error {

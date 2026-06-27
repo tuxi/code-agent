@@ -9,11 +9,12 @@ import (
 	"code-agent/internal/app"
 	"code-agent/internal/model"
 	"code-agent/internal/session"
+	"code-agent/internal/session/sqlite"
 )
 
 func testStore(t *testing.T) session.Store {
 	t.Helper()
-	store, err := session.NewSQLiteStore(filepath.Join(t.TempDir(), "s.db"))
+	store, err := sqlite.New(filepath.Join(t.TempDir(), "s.db"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}

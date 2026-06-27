@@ -10,6 +10,7 @@ import (
 	"code-agent/internal/model"
 	"code-agent/internal/observation"
 	"code-agent/internal/session"
+	"code-agent/internal/session/sqlite"
 	"code-agent/internal/skills"
 	"code-agent/internal/tools"
 	"code-agent/internal/tools/filesystem"
@@ -62,6 +63,12 @@ func run() error {
 	cfg, err := app.LoadConfig("config.yaml")
 	if err != nil {
 		return err
+	}
+	// Wire the config-level factory (set by external consumers like DreamAI) into
+	// the package-level injection point so all entry points and internal helpers
+	// (WorkspaceRegistry, etc.) use it.
+	if cfg.StoreFactory != nil {
+		StoreFactory = cfg.StoreFactory
 	}
 
 	ctx := context.Background()
@@ -136,13 +143,34 @@ func run() error {
 	}
 }
 
-// openStore opens (creating if needed) the per-project session database. The DB
-// lives under the user's home (see storePath), NOT inside the project directory:
-// a project under a synced folder (iCloud Drive, Dropbox, …) would otherwise have
-// its SQLite file replaced underneath the open connection, which SQLite rejects
-// as SQLITE_READONLY_DBMOVED and which can corrupt the file. Sessions stay
-// project-scoped: you resume the conversation for the repo you are in.
+// StoreFactory is the injection point for storage backends. External consumers
+// (like Flux/DreamAI) set this before calling entry-point functions (runAgent,
+// repl, runTUI, runGoal, runServe) to swap in their own storage implementation.
+// The default is the SQLite-based factory that stores per-project databases
+// under ~/.codeagent.
+//
+// This variable mirrors app.Config.StoreFactory but lives at the package level
+// so WorkspaceRegistry and other internal callers can access it without plumbing
+// a Config through every constructor.
+var StoreFactory session.StoreFactory
+
+// openStore returns a Store for the given workspace root. If StoreFactory is set
+// (by an external consumer), it delegates to it. Otherwise it falls back to the
+// built-in SQLite store — the default for CLI/AgentKit users.
 func openStore(root string) (session.Store, error) {
+	if StoreFactory != nil {
+		return StoreFactory(root)
+	}
+	return openSQLiteStore(root)
+}
+
+// openSQLiteStore opens (creating if needed) the per-project session database.
+// The DB lives under the user's home (see storePath), NOT inside the project
+// directory: a project under a synced folder (iCloud Drive, Dropbox, …) would
+// otherwise have its SQLite file replaced underneath the open connection, which
+// SQLite rejects as SQLITE_READONLY_DBMOVED and which can corrupt the file.
+// Sessions stay project-scoped: you resume the conversation for the repo you are in.
+func openSQLiteStore(root string) (session.Store, error) {
 	path, err := storePath(root)
 	if err != nil {
 		return nil, err
@@ -162,7 +190,7 @@ func openStore(root string) (session.Store, error) {
 		}
 	}
 
-	store, err := session.NewSQLiteStore(path)
+	store, err := sqlite.New(path)
 	if err != nil {
 		// The DB won't open — it may be a corrupt copy migrated from a synced
 		// folder that was being clobbered. Quarantine it (non-destructively, kept
@@ -170,7 +198,7 @@ func openStore(root string) (session.Store, error) {
 		quarantine := path + ".corrupt-" + time.Now().Format("20060102-150405")
 		if os.Rename(path, quarantine) == nil {
 			fmt.Fprintf(os.Stderr, "warning: session DB unreadable (%v); moved aside to %s, starting fresh\n", err, quarantine)
-			return session.NewSQLiteStore(path)
+			return sqlite.New(path)
 		}
 		return nil, err
 	}
@@ -214,11 +242,11 @@ func copyFile(src, dst string) error {
 	return out.Close()
 }
 
-// requestObserver records each model request to the store for transport
-// telemetry. Best-effort: a telemetry write never fails the run.
+// requestObserver records each model request to the telemetry store for
+// transport telemetry. Best-effort: a telemetry write never fails the run.
 type requestObserver struct {
 	ctx   context.Context
-	store session.Store
+	store session.TelemetryStore
 }
 
 func (o requestObserver) Observe(s model.RequestStat) {
@@ -248,20 +276,22 @@ func (o requestObserver) Observe(s model.RequestStat) {
 
 // attachObserver wires request telemetry into a provider once the store is open
 // (buildProvider always returns a *ResilientProvider, so the assertion holds).
-func attachObserver(provider model.Provider, store session.Store, ctx context.Context) {
+// The store parameter is accepted as TelemetryStore — the only method called is
+// RecordRequest.
+func attachObserver(provider model.Provider, store session.TelemetryStore, ctx context.Context) {
 	if rp, ok := provider.(*model.ResilientProvider); ok {
 		rp.Observer = requestObserver{ctx: ctx, store: store}
 	}
 }
 
-// eventStoreEmitter persists each agent event to the session store (the P7
+// eventStoreEmitter persists each agent event to the event store (the P7
 // EventStore — the raw, replayable runtime stream) and forwards it to the next
 // renderer unchanged. A pure decorator, the same shape as liveProgress: it adds
 // persistence with zero changes to the loop or the renderer it wraps. Best-effort
 // like requestObserver — a telemetry write never fails a run.
 type eventStoreEmitter struct {
 	ctx   context.Context
-	store session.Store
+	store session.EventStore
 	next  agent.Emitter
 }
 
@@ -287,7 +317,7 @@ func (e eventStoreEmitter) Emit(ev agent.Event) {
 
 // withEventStore wraps a renderer so every event is persisted before it renders.
 // Shared by run/repl/tui so all three log the event stream identically.
-func withEventStore(next agent.Emitter, store session.Store, ctx context.Context) agent.Emitter {
+func withEventStore(next agent.Emitter, store session.EventStore, ctx context.Context) agent.Emitter {
 	return eventStoreEmitter{ctx: ctx, store: store, next: next}
 }
 

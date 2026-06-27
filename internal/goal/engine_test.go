@@ -9,6 +9,7 @@ import (
 	"code-agent/internal/agent"
 	"code-agent/internal/model"
 	"code-agent/internal/session"
+	"code-agent/internal/session/sqlite"
 )
 
 // ── test doubles ───────────────────────────────────────────────────────────
@@ -48,7 +49,7 @@ func (t fakeTrans) Evidence() string { return t.ev }
 // how tests bypass NewEngine's real worker/transcript.
 func newTestEngine(t *testing.T, w Worker, c Checker, tr Transcript) (*Engine, *Goal) {
 	t.Helper()
-	store, err := session.NewSQLiteStore(filepath.Join(t.TempDir(), "s.db"))
+	store, err := sqlite.New(filepath.Join(t.TempDir(), "s.db"))
 	if err != nil {
 		t.Fatalf("store: %v", err)
 	}

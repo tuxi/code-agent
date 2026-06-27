@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"code-agent/internal/session"
+	"code-agent/internal/session/sqlite"
 )
 
 // newTestRepo creates an in-memory SQLite-backed ConversationRepository for
@@ -14,7 +14,7 @@ import (
 func newTestRepo(t *testing.T) ConversationRepository {
 	t.Helper()
 	dir := t.TempDir()
-	store, err := session.NewSQLiteStore(filepath.Join(dir, "test.db"))
+	store, err := sqlite.New(filepath.Join(dir, "test.db"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -29,7 +29,7 @@ func newTestRepo(t *testing.T) ConversationRepository {
 func newTestRepoWithSkills(t *testing.T, index string) ConversationRepository {
 	t.Helper()
 	dir := t.TempDir()
-	store, err := session.NewSQLiteStore(filepath.Join(dir, "test.db"))
+	store, err := sqlite.New(filepath.Join(dir, "test.db"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}

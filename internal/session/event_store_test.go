@@ -8,7 +8,8 @@ import (
 )
 
 func TestEventStoreRoundTrip(t *testing.T) {
-	store := newStore(t)
+	store := NewMemoryStore()
+	t.Cleanup(func() { store.Close() })
 	ctx := context.Background()
 	now := time.Now().Truncate(time.Millisecond)
 
@@ -31,7 +32,7 @@ func TestEventStoreRoundTrip(t *testing.T) {
 	if len(got) != 3 {
 		t.Fatalf("want 3 events for s1 (s2's event must not leak), got %d", len(got))
 	}
-	// Emission order is preserved (ORDER BY id).
+	// Emission order is preserved.
 	if got[0].Kind != "turn_started" || got[1].Kind != "tool_started" || got[2].Kind != "tool_finished" {
 		t.Fatalf("events out of order: %v %v %v", got[0].Kind, got[1].Kind, got[2].Kind)
 	}
@@ -44,7 +45,8 @@ func TestEventStoreRoundTrip(t *testing.T) {
 }
 
 func TestDeleteRemovesEvents(t *testing.T) {
-	store := newStore(t)
+	store := NewMemoryStore()
+	t.Cleanup(func() { store.Close() })
 	ctx := context.Background()
 	if err := store.RecordEvent(ctx, EventRecord{SessionID: "doomed", Kind: "thinking", At: time.Now()}); err != nil {
 		t.Fatalf("RecordEvent: %v", err)

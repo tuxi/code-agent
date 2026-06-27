@@ -9,13 +9,14 @@ import (
 
 	"code-agent/internal/model"
 	"code-agent/internal/session"
+	"code-agent/internal/session/sqlite"
 )
 
 // TestGoalRoundTripsThroughSessionStore is the §8.6 acceptance check: a goal
 // stored in session.Metadata must survive a real Save → Load (the metadata
 // column), so an interrupted session can be resumed with its goal intact.
 func TestGoalRoundTripsThroughSessionStore(t *testing.T) {
-	store, err := session.NewSQLiteStore(filepath.Join(t.TempDir(), "s.db"))
+	store, err := sqlite.New(filepath.Join(t.TempDir(), "s.db"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}

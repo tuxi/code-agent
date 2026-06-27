@@ -6,28 +6,28 @@ import (
 	"time"
 )
 
-// Store persists sessions so a conversation survives process exit: resume loads
-// the full history — including the expensive LLM summary and the compaction
-// trace — instead of starting over.
-//
-// Persistence is an application-layer concern: the agent loop never touches a
-// Store. Callers save at turn boundaries, where the message sequence is always
-// consistent (a tool-result is never orphaned from its assistant tool_calls),
-// so a resumed session is always valid to send to the model.
-type Store interface {
+// SessionStore is the core persistence port for conversation CRUD. It is the
+// ONLY interface the Agent Runtime requires — consumers who swap the storage
+// backend must implement at least this. The agent loop never touches a Store
+// directly; callers save at turn boundaries, where the message sequence is
+// always consistent (a tool-result is never orphaned from its assistant
+// tool_calls), so a resumed session is always valid to send to the model.
+type SessionStore interface {
 	Save(ctx context.Context, s *Session) error
 	Load(ctx context.Context, id string) (*Session, error)
 	List(ctx context.Context) ([]Meta, error)
-	Stats(ctx context.Context) (Stats, error)
-	RecordRequest(ctx context.Context, r RequestRecord) error
-	ProviderStats(ctx context.Context) (ProviderStats, error)
-	RecentRequests(ctx context.Context, limit int) ([]RequestRecord, error)
-	TokenUsageByModel(ctx context.Context) ([]ModelUsage, error)
+	Delete(ctx context.Context, id string) error
+	Close() error
+}
 
-	// RecordEvent appends one agent event to the per-session event log (the P7
-	// EventStore). SessionEvents reads them back in order — the foundation for
-	// timeline replay/search/analytics. Best-effort by convention, like
-	// RecordRequest: a telemetry write never fails a run.
+// EventStore is the optional event-log persistence port. It records and replays
+// agent events (the P7 EventStore — the raw, replayable runtime stream).
+// Consumers that don't need timeline replay or event search can provide a no-op
+// implementation. Best-effort by convention: a write failure must not fail a run.
+type EventStore interface {
+	// RecordEvent appends one agent event to the per-session event log.
+	// SessionEvents reads them back in emission order — the foundation for
+	// timeline replay/search/analytics.
 	RecordEvent(ctx context.Context, e EventRecord) error
 	SessionEvents(ctx context.Context, sessionID string) ([]EventRecord, error)
 
@@ -36,10 +36,39 @@ type Store interface {
 	// session — e.g. each subagent delegation writes a task_started event, so this
 	// lists recent delegations (and their sub-session ids) for `codeagent tasks`.
 	RecentEventsByKind(ctx context.Context, kind string, limit int) ([]EventRecord, error)
-
-	Delete(ctx context.Context, id string) error
-	Close() error
 }
+
+// TelemetryStore is the optional observability persistence port. The
+// stats/trace/cost CLI commands depend on it; consumers that don't need
+// transport telemetry can provide a no-op implementation.
+type TelemetryStore interface {
+	Stats(ctx context.Context) (Stats, error)
+	RecordRequest(ctx context.Context, r RequestRecord) error
+	ProviderStats(ctx context.Context) (ProviderStats, error)
+	RecentRequests(ctx context.Context, limit int) ([]RequestRecord, error)
+	TokenUsageByModel(ctx context.Context) ([]ModelUsage, error)
+}
+
+// Store is the combined persistence interface — backward compatible with all
+// existing code. It composes SessionStore, EventStore, and TelemetryStore.
+// New consumers should depend on only the interface they need (e.g. a
+// conversation repository depends on SessionStore, an event emitter on
+// EventStore, a stats reporter on TelemetryStore).
+type Store interface {
+	SessionStore
+	EventStore
+	TelemetryStore
+}
+
+// StoreFactory creates a Store for a given workspace root. It is the injection
+// seam that lets external consumers (Flux, DreamAI) swap the storage backend
+// without forking code-agent.
+//
+// The root parameter is the absolute workspace directory. The factory decides
+// how to map this to a concrete store: the default SQLite factory derives a
+// per-project path under ~/.codeagent; a Postgres factory might use root only
+// for namespace derivation; an in-memory factory ignores it entirely.
+type StoreFactory func(root string) (Store, error)
 
 // EventRecord is one persisted agent event — the raw, *unfolded* runtime stream.
 // Where messages capture the model's view of a conversation, events capture the
