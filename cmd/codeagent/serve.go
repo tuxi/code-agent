@@ -123,9 +123,9 @@ func runServe(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider 
 	executor := conversation.NewTurnExecutor(repo, eventStore, active, subs, rb)
 
 	handler := server.NewMux(repo, eventStore, executor, server.MuxOptions{
-			ServerName:   "codeagent/" + mc.Model,
-			Capabilities: defaultCapabilities,
-		})
+		ServerName:   "codeagent/" + mc.Model,
+		Capabilities: defaultCapabilities,
+	})
 
 	srv := &http.Server{Addr: addr, Handler: handler}
 	go func() {

@@ -54,8 +54,8 @@ func NewClientProxyTool(name, description string, inputSchema json.RawMessage) *
 	return &ClientProxyTool{name: name, description: description, inputSchema: inputSchema}
 }
 
-func (t *ClientProxyTool) Name() string           { return t.name }
-func (t *ClientProxyTool) Description() string    { return t.description }
+func (t *ClientProxyTool) Name() string                 { return t.name }
+func (t *ClientProxyTool) Description() string          { return t.description }
 func (t *ClientProxyTool) InputSchema() json.RawMessage { return t.inputSchema }
 func (t *ClientProxyTool) ExecutionMode() ExecutionMode { return ExecStrictClient }
 

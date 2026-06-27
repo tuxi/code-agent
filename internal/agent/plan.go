@@ -27,7 +27,7 @@ const (
 type Plan struct {
 	ID        string     `json:"id"`
 	Title     string     `json:"title"`
-	Content   string     `json:"content"`   // markdown body
+	Content   string     `json:"content"` // markdown body
 	Steps     []PlanStep `json:"steps,omitempty"`
 	Status    PlanStatus `json:"status"`
 	FilePath  string     `json:"file_path,omitempty"` // absolute path on disk

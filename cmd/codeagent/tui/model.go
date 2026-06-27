@@ -48,21 +48,21 @@ type model struct {
 	// /resume history replay (transcript.go).
 	tr transcript
 
-	showThinking bool      // ctrl+o toggle: show current step's thinking in the live region (on by default)
+	showThinking bool             // ctrl+o toggle: show current step's thinking in the live region (on by default)
 	planState    agent.PlanStatus // current plan state (synced from events + ctrl+p toggle)
-	lastEsc      time.Time // double-Esc clears the composer (like Claude Code)
+	lastEsc      time.Time        // double-Esc clears the composer (like Claude Code)
 
 	cmdIdx    int            // selected slash-command in the palette
 	src       sessionSource  // saved-session / model access for slash commands
 	picker    *sessionPicker // /resume overlay; nil when closed
 	modelPick *modelPicker   // /use overlay; nil when closed
 
-	pending     *approvalReq      // set while a side-effecting tool awaits y/n
-	planPending *planApprovalReq  // set while a plan awaits approval (a/r)
-	approveIdx  int               // 0 = approve (y), 1 = deny (n) — ↑/↓ switches
-	showPreview bool              // 'v' toggles the diff preview below the approval card
-	busy        bool         // a turn is running; submit is locked
-	thinking    bool         // a model call is in flight; show the spinner
+	pending     *approvalReq     // set while a side-effecting tool awaits y/n
+	planPending *planApprovalReq // set while a plan awaits approval (a/r)
+	approveIdx  int              // 0 = approve (y), 1 = deny (n) — ↑/↓ switches
+	showPreview bool             // 'v' toggles the diff preview below the approval card
+	busy        bool             // a turn is running; submit is locked
+	thinking    bool             // a model call is in flight; show the spinner
 	lastErr     error
 
 	promptTokens int             // latest prompt size (from EventModelFinished) for the gauge
@@ -148,11 +148,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyMsg:
 		if m.planPending != nil {
-				return m.handlePlanApprovalKey(msg)
-			}
-			if m.pending != nil {
-				return m.handleApprovalKey(msg)
-			}
+			return m.handlePlanApprovalKey(msg)
+		}
+		if m.pending != nil {
+			return m.handleApprovalKey(msg)
+		}
 		switch msg.String() {
 		case "ctrl+c":
 			if m.busy {
@@ -213,12 +213,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 
 	case planApprovalMsg:
-			req := planApprovalReq(msg)
-			m.planPending = &req
-			return m, waitForPlanApproval(m.b.planApprovals)
+		req := planApprovalReq(msg)
+		m.planPending = &req
+		return m, waitForPlanApproval(m.b.planApprovals)
 
-		case eventMsg:
-			return m.handleEvent(agent.Event(msg))
+	case eventMsg:
+		return m.handleEvent(agent.Event(msg))
 
 	case approvalMsg:
 		req := approvalReq(msg)
@@ -788,9 +788,9 @@ func (m model) View() string {
 	lines = append(lines, m.statusLine())
 	switch {
 	case m.planPending != nil:
-			lines = append(lines, renderPlanApprovalCard(m.planPending.plan, m.width)...)
-		case m.pending != nil:
-			lines = append(lines, renderApprovalCard(*m.pending, m.approveIdx, m.width)...)
+		lines = append(lines, renderPlanApprovalCard(m.planPending.plan, m.width)...)
+	case m.pending != nil:
+		lines = append(lines, renderApprovalCard(*m.pending, m.approveIdx, m.width)...)
 		if m.showPreview {
 			lines = append(lines, renderApprovalPreview(*m.pending, m.width)...)
 		}

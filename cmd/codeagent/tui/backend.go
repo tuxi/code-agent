@@ -18,9 +18,9 @@ import (
 //
 // Construct it, hand Emitter/Approver to buildRunner, then pass it to Run.
 type Backend struct {
-	Emitter       agent.Emitter
-	Approver      agent.Approver
-	PlanApprover  agent.PlanApprover
+	Emitter      agent.Emitter
+	Approver     agent.Approver
+	PlanApprover agent.PlanApprover
 
 	events          chan agent.Event
 	approvals       chan approvalReq

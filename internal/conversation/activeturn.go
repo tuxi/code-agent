@@ -23,11 +23,11 @@ type ActiveTurnRegistry struct {
 }
 
 type activeTurn struct {
-	cancel        context.CancelFunc      // non-nil while a turn is in flight
-	approver      agent.Approver          // set by WS handler; nil = deny-all
-	planApprover  agent.PlanApprover      // set by WS handler; nil = auto-approve
-	clientWaiter  agent.ClientToolWaiter  // set by WS handler; nil = no client executor
-	clientTools   []agent.ClientToolDef   // set by register_tools message; nil until registered
+	cancel       context.CancelFunc     // non-nil while a turn is in flight
+	approver     agent.Approver         // set by WS handler; nil = deny-all
+	planApprover agent.PlanApprover     // set by WS handler; nil = auto-approve
+	clientWaiter agent.ClientToolWaiter // set by WS handler; nil = no client executor
+	clientTools  []agent.ClientToolDef  // set by register_tools message; nil until registered
 }
 
 // ClientTools returns the client-registered tools for a session (nil if none).

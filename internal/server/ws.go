@@ -106,8 +106,8 @@ func (h *WSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	sess.SetClientToolWaiter(waiter)
 
 	defer func() {
-		waiter.CancelAll()               // wake all pending Wait calls on disconnect
-		sess.SetClientToolWaiter(nil)    // restore nil (no client to execute tools)
+		waiter.CancelAll()            // wake all pending Wait calls on disconnect
+		sess.SetClientToolWaiter(nil) // restore nil (no client to execute tools)
 		approver.Close()
 		sess.SetApprover(denyApprover{})
 		sess.SetPlanApprover(nil)

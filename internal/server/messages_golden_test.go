@@ -27,7 +27,7 @@ func TestMessageContractGolden(t *testing.T) {
 			Type: "plan_approval_request", ID: "plan_appr_1",
 			SessionID: "sess_root", TurnID: "turn_7",
 			PlanID: "plan_abc", Title: "Add Auth",
-			Content: "# Plan\n1. Step one\n2. Step two",
+			Content:    "# Plan\n1. Step one\n2. Step two",
 			DeadlineMS: 120000,
 		},
 		"plan_approval_response": PlanApprovalResponse{

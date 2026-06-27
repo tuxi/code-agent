@@ -34,9 +34,9 @@ func (s *approvalSession) SetApprover(a agent.Approver) {
 	s.mu.Unlock()
 }
 
-func (s *approvalSession) SetPlanApprover(agent.PlanApprover)   {}
+func (s *approvalSession) SetPlanApprover(agent.PlanApprover)         {}
 func (s *approvalSession) SetClientToolWaiter(agent.ClientToolWaiter) {}
-func (s *approvalSession) RegisterTools([]agent.ClientToolDef)    {}
+func (s *approvalSession) RegisterTools([]agent.ClientToolDef)        {}
 
 func (s *approvalSession) SendMessage(context.Context, string) (agent.TurnResult, error) {
 	s.mu.Lock()
@@ -141,8 +141,8 @@ type clientToolSession struct {
 func (s *clientToolSession) Subscribe() (<-chan agent.Event, func()) { return s.events, func() {} }
 func (s *clientToolSession) Cancel()                                 {}
 
-func (s *clientToolSession) SetApprover(agent.Approver)              {}
-func (s *clientToolSession) SetPlanApprover(agent.PlanApprover)      {}
+func (s *clientToolSession) SetApprover(agent.Approver)         {}
+func (s *clientToolSession) SetPlanApprover(agent.PlanApprover) {}
 func (s *clientToolSession) SetClientToolWaiter(w agent.ClientToolWaiter) {
 	s.mu.Lock()
 	s.w = w
@@ -172,14 +172,14 @@ func (s *clientToolSession) SendMessage(ctx context.Context, _ string) (agent.Tu
 				Kind: agent.EventToolFinished, SessionID: "sess_root", TurnID: "turn_1",
 				CallID: "call_99", Step: 1, ToolName: "trim_video",
 				Observation: "Tool error: " + waitErr.Error(),
-				Err:        waitErr.Error(),
+				Err:         waitErr.Error(),
 			}
 		} else if result.IsError {
 			s.events <- agent.Event{
 				Kind: agent.EventToolFinished, SessionID: "sess_root", TurnID: "turn_1",
 				CallID: "call_99", Step: 1, ToolName: "trim_video",
 				Observation: "Tool error: " + result.Content,
-				Err:        result.Content,
+				Err:         result.Content,
 			}
 		} else {
 			s.events <- agent.Event{
@@ -194,7 +194,7 @@ func (s *clientToolSession) SendMessage(ctx context.Context, _ string) (agent.Tu
 			Kind: agent.EventToolFinished, SessionID: "sess_root", TurnID: "turn_1",
 			CallID: "call_99", Step: 1, ToolName: "trim_video",
 			Observation: "Tool error: no client connected",
-			Err:        "no client connected",
+			Err:         "no client connected",
 		}
 	}
 

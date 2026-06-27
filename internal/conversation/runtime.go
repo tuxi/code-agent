@@ -18,11 +18,11 @@ type TurnRunner interface {
 // approvers — so the factory signature stays stable as more fields are added.
 type RuntimeContext struct {
 	Session      *session.Session
-	Publisher    agent.Emitter          // TurnExecutor assembles the composite emitter
+	Publisher    agent.Emitter // TurnExecutor assembles the composite emitter
 	Approver     agent.Approver
-	PlanApprover agent.PlanApprover      // nil = auto-approve plans (test/headless path)
-	ClientWaiter agent.ClientToolWaiter  // nil = no client tool executor
-	ClientTools  []agent.ClientToolDef   // client-registered tools (nil if none)
+	PlanApprover agent.PlanApprover     // nil = auto-approve plans (test/headless path)
+	ClientWaiter agent.ClientToolWaiter // nil = no client tool executor
+	ClientTools  []agent.ClientToolDef  // client-registered tools (nil if none)
 }
 
 // RunBuilder is the seam the transport layer (cmd/codeagent) fills. It assembles

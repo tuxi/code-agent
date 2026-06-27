@@ -22,7 +22,7 @@ func (f *fakeCommands) SendMessage(_ context.Context, text string) (agent.TurnRe
 	return agent.TurnResult{}, nil
 }
 
-func (f *fakeCommands) Cancel() { f.canceled <- struct{}{} }
+func (f *fakeCommands) Cancel()                             { f.canceled <- struct{}{} }
 func (f *fakeCommands) RegisterTools([]agent.ClientToolDef) {}
 
 type fakeResolver struct {
@@ -77,9 +77,9 @@ func TestRouterApprovalResponse(t *testing.T) {
 }
 
 type fakeToolResults struct {
-	callID  string
-	result  agent.ToolCallResult
-	called  chan struct{}
+	callID string
+	result agent.ToolCallResult
+	called chan struct{}
 }
 
 func (f *fakeToolResults) Deliver(callID string, result agent.ToolCallResult) {

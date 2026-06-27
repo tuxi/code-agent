@@ -8,11 +8,11 @@ import "code-agent/internal/agent"
 
 // Message type discriminators for the command plane.
 const (
-	MsgTypeSendMessage           = "send_message"
-	MsgTypeCancelTurn            = "cancel_turn"
-	MsgTypePlanApprovalResponse  = "plan_approval_response"
-	MsgTypeAgentInput            = "agent_input"     // v1.1 unified inbound envelope
-	MsgTypeRegisterTools         = "register_tools"  // v1.1 client tool registration
+	MsgTypeSendMessage          = "send_message"
+	MsgTypeCancelTurn           = "cancel_turn"
+	MsgTypePlanApprovalResponse = "plan_approval_response"
+	MsgTypeAgentInput           = "agent_input"    // v1.1 unified inbound envelope
+	MsgTypeRegisterTools        = "register_tools" // v1.1 client tool registration
 )
 
 // SendMessage drives one turn. Text is the user input.
@@ -54,7 +54,7 @@ type AgentInput struct {
 // identified by tool_use_id. See §3 of the v1.1 spec.
 type ToolResult struct {
 	ToolUseID string `json:"tool_use_id"`
-	Subtype   string `json:"subtype"`            // "result" (v1.1); "progress"|"error"|"cancel" (v1.2+)
+	Subtype   string `json:"subtype"` // "result" (v1.1); "progress"|"error"|"cancel" (v1.2+)
 	Content   string `json:"content,omitempty"`
 	IsError   bool   `json:"is_error,omitempty"`
 }
