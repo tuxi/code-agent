@@ -2,6 +2,7 @@ package main
 
 import (
 	"code-agent/internal/agent"
+	"code-agent/internal/runtime"
 	"fmt"
 	"io"
 	"os"
@@ -31,7 +32,7 @@ func (p *taskProgress) Emit(e agent.Event) {
 		p.step, p.tool = 0, ""
 		p.show("⟳ subagent starting…")
 	case agent.EventModelStarted:
-		// One model call == one loop iteration; this is the unit subAgentMaxSteps
+		// One model call == one loop iteration; this is the unit runtime.SubAgentMaxSteps
 		// bounds. Counting it (not EventToolStarted.Step, which is the cumulative
 		// tool-call ordinal and batches many-per-iteration) keeps the heartbeat's
 		// "step N/M" honest against the budget.
@@ -46,7 +47,7 @@ func (p *taskProgress) Emit(e agent.Event) {
 }
 
 func (p *taskProgress) render() {
-	s := fmt.Sprintf("⟳ subagent · step %d/%d", p.step, subAgentMaxSteps)
+	s := fmt.Sprintf("⟳ subagent · step %d/%d", p.step, runtime.SubAgentMaxSteps)
 	if p.tool != "" {
 		s += " · " + p.tool
 	}
@@ -77,15 +78,3 @@ func subagentProgress() agent.Emitter {
 	return nil
 }
 
-// multiEmitter fans one event out to several emitters — e.g. persist the
-// subagent's transcript AND show a live heartbeat from the same stream. Nil
-// entries are skipped, so callers need not special-case an absent sink.
-type multiEmitter []agent.Emitter
-
-func (m multiEmitter) Emit(e agent.Event) {
-	for _, em := range m {
-		if em != nil {
-			em.Emit(e)
-		}
-	}
-}

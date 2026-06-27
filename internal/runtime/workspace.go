@@ -1,4 +1,4 @@
-package main
+package runtime
 
 import (
 	"context"
@@ -114,7 +114,7 @@ func (wr *WorkspaceRegistry) Close() error {
 // buildInstance assembles a WorkspaceInstance for a single root. It must be called
 // with wr.mu held.
 func (wr *WorkspaceRegistry) buildInstance(root string) (*WorkspaceInstance, error) {
-	store, err := openStore(root)
+	store, err := OpenStore(root)
 	if err != nil {
 		return nil, fmt.Errorf("workspace_registry: open store for %s: %w", root, err)
 	}

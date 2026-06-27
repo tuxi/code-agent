@@ -5,37 +5,18 @@ import (
 	"code-agent/internal/agent"
 	"code-agent/internal/app"
 	"code-agent/internal/approve"
-	"code-agent/internal/hooks"
-	"code-agent/internal/mcp"
 	"code-agent/internal/model"
-	"code-agent/internal/observation"
+	"code-agent/internal/runtime"
 	"code-agent/internal/session"
-	"code-agent/internal/session/sqlite"
-	"code-agent/internal/skills"
-	"code-agent/internal/tools"
-	"code-agent/internal/tools/filesystem"
-	"code-agent/internal/tools/git"
-	projectgraph "code-agent/internal/tools/project_graph"
-	"code-agent/internal/tools/search"
-	"code-agent/internal/tools/shell"
-	"code-agent/internal/tools/skill"
-	"code-agent/internal/tools/task"
-	"code-agent/internal/tools/todo"
-	"code-agent/internal/tools/webfetch"
-	"code-agent/internal/tools/websearch"
 	"code-agent/internal/ui"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
-	"time"
 )
 
 func main() {
@@ -57,8 +38,8 @@ func main() {
 
 func run() error {
 	args := os.Args[1:]
-	modelName, args := extractModelFlag(args)
-	autoMode, args := extractAutoFlag(args)
+	modelName, args := runtime.ExtractModelFlag(args)
+	autoMode, args := runtime.ExtractAutoFlag(args)
 
 	cfg, err := app.LoadConfig("config.yaml")
 	if err != nil {
@@ -68,7 +49,7 @@ func run() error {
 	// the package-level injection point so all entry points and internal helpers
 	// (WorkspaceRegistry, etc.) use it.
 	if cfg.StoreFactory != nil {
-		StoreFactory = cfg.StoreFactory
+		runtime.StoreFactory = cfg.StoreFactory
 	}
 
 	ctx := context.Background()
@@ -103,7 +84,7 @@ func run() error {
 		return err
 	}
 
-	provider, err := buildProvider(mc, cfg.Provider)
+	provider, err := runtime.BuildProvider(mc, cfg.Provider)
 	if err != nil {
 		return err
 	}
@@ -143,187 +124,9 @@ func run() error {
 	}
 }
 
-// StoreFactory is the injection point for storage backends. External consumers
-// (like Flux/DreamAI) set this before calling entry-point functions (runAgent,
-// repl, runTUI, runGoal, runServe) to swap in their own storage implementation.
-// The default is the SQLite-based factory that stores per-project databases
-// under ~/.codeagent.
-//
-// This variable mirrors app.Config.StoreFactory but lives at the package level
-// so WorkspaceRegistry and other internal callers can access it without plumbing
-// a Config through every constructor.
-var StoreFactory session.StoreFactory
-
-// openStore returns a Store for the given workspace root. If StoreFactory is set
-// (by an external consumer), it delegates to it. Otherwise it falls back to the
-// built-in SQLite store — the default for CLI/AgentKit users.
-func openStore(root string) (session.Store, error) {
-	if StoreFactory != nil {
-		return StoreFactory(root)
-	}
-	return openSQLiteStore(root)
-}
-
-// openSQLiteStore opens (creating if needed) the per-project session database.
-// The DB lives under the user's home (see storePath), NOT inside the project
-// directory: a project under a synced folder (iCloud Drive, Dropbox, …) would
-// otherwise have its SQLite file replaced underneath the open connection, which
-// SQLite rejects as SQLITE_READONLY_DBMOVED and which can corrupt the file.
-// Sessions stay project-scoped: you resume the conversation for the repo you are in.
-func openSQLiteStore(root string) (session.Store, error) {
-	path, err := storePath(root)
-	if err != nil {
-		return nil, err
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return nil, fmt.Errorf("create session store dir: %w", err)
-	}
-	// One-time migration: if there is no DB at the new (non-synced) location but an
-	// old in-project .codeagent/sessions.db exists, copy it over so existing
-	// sessions are not orphaned by the move. Best-effort — a failed copy just
-	// starts the new store empty.
-	if _, err := os.Stat(path); os.IsNotExist(err) {
-		if old := filepath.Join(root, ".codeagent", "sessions.db"); old != path {
-			if _, err := os.Stat(old); err == nil {
-				_ = copyFile(old, path)
-			}
-		}
-	}
-
-	store, err := sqlite.New(path)
-	if err != nil {
-		// The DB won't open — it may be a corrupt copy migrated from a synced
-		// folder that was being clobbered. Quarantine it (non-destructively, kept
-		// for manual recovery) and start fresh rather than block startup forever.
-		quarantine := path + ".corrupt-" + time.Now().Format("20060102-150405")
-		if os.Rename(path, quarantine) == nil {
-			fmt.Fprintf(os.Stderr, "warning: session DB unreadable (%v); moved aside to %s, starting fresh\n", err, quarantine)
-			return sqlite.New(path)
-		}
-		return nil, err
-	}
-	return store, nil
-}
-
-// storePath returns the session DB path for a workspace root, under the user's
-// home rather than the project dir (so it is never in a cloud-synced folder).
-// Sessions remain project-scoped via a per-project key: the basename plus a short
-// hash of the absolute path, so two projects sharing a basename do not collide.
-func storePath(root string) (string, error) {
-	abs, err := filepath.Abs(root)
-	if err != nil {
-		return "", err
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	sum := sha256.Sum256([]byte(abs))
-	key := filepath.Base(abs) + "-" + hex.EncodeToString(sum[:])[:12]
-	return filepath.Join(home, ".codeagent", "projects", key, "sessions.db"), nil
-}
-
-// copyFile copies src to dst — a best-effort one-time migration of an existing
-// session DB snapshot to the new location.
-func copyFile(src, dst string) error {
-	in, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer in.Close()
-	out, err := os.Create(dst)
-	if err != nil {
-		return err
-	}
-	defer out.Close()
-	if _, err := io.Copy(out, in); err != nil {
-		return err
-	}
-	return out.Close()
-}
-
-// requestObserver records each model request to the telemetry store for
-// transport telemetry. Best-effort: a telemetry write never fails the run.
-type requestObserver struct {
-	ctx   context.Context
-	store session.TelemetryStore
-}
-
-func (o requestObserver) Observe(s model.RequestStat) {
-	trace := make([]session.AttemptRecord, len(s.Trace))
-	for i, a := range s.Trace {
-		result := a.ErrorClass
-		if result == "" {
-			result = "success"
-		}
-		trace[i] = session.AttemptRecord{LatencyMs: a.Latency.Milliseconds(), Result: result}
-	}
-	_ = o.store.RecordRequest(o.ctx, session.RequestRecord{
-		At:                 s.At,
-		Model:              s.Model,
-		PromptTokens:       s.PromptTokens,
-		CachedPromptTokens: s.CachedPromptTokens,
-		CompletionTokens:   s.CompletionTokens,
-		Attempts:           s.Attempts,
-		Retries:            s.Retries,
-		TimedOut:           s.TimedOut,
-		Success:            s.Success,
-		ErrorClass:         s.ErrorClass,
-		LatencyMs:          s.Latency.Milliseconds(),
-		Trace:              trace,
-	})
-}
-
-// attachObserver wires request telemetry into a provider once the store is open
-// (buildProvider always returns a *ResilientProvider, so the assertion holds).
-// The store parameter is accepted as TelemetryStore — the only method called is
-// RecordRequest.
-func attachObserver(provider model.Provider, store session.TelemetryStore, ctx context.Context) {
-	if rp, ok := provider.(*model.ResilientProvider); ok {
-		rp.Observer = requestObserver{ctx: ctx, store: store}
-	}
-}
-
-// eventStoreEmitter persists each agent event to the event store (the P7
-// EventStore — the raw, replayable runtime stream) and forwards it to the next
-// renderer unchanged. A pure decorator, the same shape as liveProgress: it adds
-// persistence with zero changes to the loop or the renderer it wraps. Best-effort
-// like requestObserver — a telemetry write never fails a run.
-type eventStoreEmitter struct {
-	ctx   context.Context
-	store session.EventStore
-	next  agent.Emitter
-}
-
-func (e eventStoreEmitter) Emit(ev agent.Event) {
-	// Token deltas (8.6) are an ephemeral live preview, not part of the durable
-	// stream — the finalized answer is captured by EventTurnFinished. Persisting
-	// every delta would bloat the event log (hundreds per answer), so skip them.
-	if ev.Kind != agent.EventTokenDelta {
-		if payload, err := json.Marshal(ev); err == nil {
-			_ = e.store.RecordEvent(e.ctx, session.EventRecord{
-				SessionID: ev.SessionID,
-				TurnID:    ev.TurnID,
-				Kind:      string(ev.Kind),
-				At:        ev.At,
-				Payload:   payload,
-			})
-		}
-	}
-	if e.next != nil {
-		e.next.Emit(ev)
-	}
-}
-
-// withEventStore wraps a renderer so every event is persisted before it renders.
-// Shared by run/repl/tui so all three log the event stream identically.
-func withEventStore(next agent.Emitter, store session.EventStore, ctx context.Context) agent.Emitter {
-	return eventStoreEmitter{ctx: ctx, store: store, next: next}
-}
-
 // listSessions prints saved sessions, most recently updated first.
 func listSessions(ctx context.Context, cfg app.Config) error {
-	store, err := openStore(cfg.Workspace.Root)
+	store, err := runtime.OpenStore(cfg.Workspace.Root)
 	if err != nil {
 		return err
 	}
@@ -356,7 +159,7 @@ func printSessionMetas(metas []session.Meta) {
 
 // runStats prints aggregate telemetry across all saved sessions.
 func runStats(ctx context.Context, cfg app.Config) error {
-	store, err := openStore(cfg.Workspace.Root)
+	store, err := runtime.OpenStore(cfg.Workspace.Root)
 	if err != nil {
 		return err
 	}
@@ -519,7 +322,7 @@ func printLatencyHistogram(buckets []session.LatencyBucket) {
 
 // runTrace prints the most recent requests with their per-attempt breakdown.
 func runTrace(ctx context.Context, cfg app.Config, limit int) error {
-	store, err := openStore(cfg.Workspace.Root)
+	store, err := runtime.OpenStore(cfg.Workspace.Root)
 	if err != nil {
 		return err
 	}
@@ -560,7 +363,7 @@ func printTrace(recs []session.RequestRecord) {
 // full (otherwise invisible) investigation. Inspect one with `codeagent
 // task-trace <id>`.
 func runTasks(ctx context.Context, cfg app.Config) error {
-	store, err := openStore(cfg.Workspace.Root)
+	store, err := runtime.OpenStore(cfg.Workspace.Root)
 	if err != nil {
 		return err
 	}
@@ -588,7 +391,7 @@ func runTasks(ctx context.Context, cfg app.Config) error {
 // did (its reads, searches, observations), which is invisible by design while it
 // runs (default-quiet).
 func runTaskTrace(ctx context.Context, cfg app.Config, sessionID string) error {
-	store, err := openStore(cfg.Workspace.Root)
+	store, err := runtime.OpenStore(cfg.Workspace.Root)
 	if err != nil {
 		return err
 	}
@@ -632,223 +435,6 @@ func truncateOneLine(s string, max int) string {
 	return s
 }
 
-// buildProvider constructs a model.Provider from a resolved model config. Only
-// OpenAI-compatible endpoints are wired today; this is the extension point for
-// Anthropic, Gemini, Ollama, etc.
-//
-// Every provider is wrapped in a ResilientProvider so a transient API error
-// (timeout, 429, 5xx) does not kill the run: timeout and retry policy live in
-// this one transport layer, not in each provider.
-func buildProvider(mc app.ModelConfig, pc app.ProviderConfig) (model.Provider, error) {
-	var inner model.Provider
-	switch mc.Provider {
-	case "openai", "":
-		inner = model.NewOpenAICompatibleProvider(mc.BaseURL, mc.APIKey)
-	default:
-		return nil, fmt.Errorf("unsupported provider %q (only \"openai\"-compatible is wired so far)", mc.Provider)
-	}
-	return &model.ResilientProvider{
-		Inner:      inner,
-		MaxRetries: pc.MaxRetries,
-		Timeout:    time.Duration(pc.RequestTimeoutSeconds) * time.Second,
-		Backoff:    time.Duration(pc.BackoffMillis) * time.Millisecond,
-		MaxBackoff: time.Duration(pc.MaxBackoffSeconds) * time.Second,
-	}, nil
-}
-
-// wirePlanTools creates the plan-mode tools (enter_plan_mode, propose_plan) and
-// registers them into the given registry. It returns a RunnerRef whose R field
-// must be set after buildRunner returns.
-func wirePlanTools(registry *tools.Registry, plansDir string) *agent.RunnerRef {
-	ref := &agent.RunnerRef{}
-	registry.Register(agent.NewEnterPlanModeTool(ref))
-	registry.Register(agent.NewProposePlanTool(ref, plansDir))
-	return ref
-}
-
-// buildRunner assembles the agent.Runner shared by `run`, `repl`, and `tui`. The
-// only things that differ between entry points are the Approver (how the user
-// confirms a side-effecting tool) and the Emitter (how the event stream is
-// rendered) — everything else (tools, observation, reflection, the skills nudge,
-// compaction, the step cap) is identical, so it lives here and the three callers
-// cannot drift apart.
-func buildRunner(cfg app.Config, mc app.ModelConfig, provider model.Provider, registry *tools.Registry, skillReg *skills.Registry, approver agent.Approver, emitter agent.Emitter) *agent.Runner {
-	// Assign the hook runner only when non-nil, so an absent config stays a nil
-	// interface (not a typed-nil that would defeat the loop's nil-safe check).
-	var hook agent.ToolHook
-	if hr := hooks.New(cfg.Hooks, cfg.Workspace.Root); hr != nil {
-		hook = hr
-	}
-	return &agent.Runner{
-		Model:         provider,
-		ModelName:     mc.Model,
-		Temperature:   mc.Temperature,
-		Tools:         registry,
-		MaxSteps:      cfg.Agent.MaxSteps,
-		Approver:      approver,
-		Observer:      observation.DefaultObserver{},
-		Reflector:     agent.DefaultReflector{},
-		RemindSkills:  skillReg.Len() > 0,
-		PlanTools:     tools.Subset(registry, planModeToolNames...),
-		Hook:          hook,
-		Compactor:     buildCompactor(mc, provider),
-		Emitter:       emitter,
-		WorkspaceRoot: cfg.Workspace.Root,
-	}
-}
-
-// buildCompactor builds the summary compactor used to keep long sessions inside
-// the context window. It summarizes with the same provider/model the agent is
-// running, so switching models (`/use`) must rebuild it. Shared by run and repl.
-func buildCompactor(mc app.ModelConfig, provider model.Provider) session.Compactor {
-	return &session.LLMCompactor{
-		Provider:           provider,
-		ModelName:          mc.Model,
-		Temperature:        mc.Temperature,
-		KeepRecentMessages: 50,
-	}
-}
-
-// buildRegistry registers the model-facing tool set, loads the skills registry,
-// and connects any configured MCP servers — registering their tools into the
-// SAME registry, so remote tools are gated and observed exactly like built-ins.
-// Shared by run, repl, and tui. The returned skills registry feeds both the
-// load_skill tool (here) and the system-prompt index (the session builder), so
-// the index the model sees and the bodies it can load stay in sync. The returned
-// Manager owns the MCP subprocesses; the caller must Close it. cfg/mc/provider are
-// threaded so the read-only subagent (8.3) can be wired here too — it needs the
-// model provider and the read-only tool subset, both of which are most naturally
-// assembled alongside the registry.
-// registerBuiltinTools registers all built-in and config-driven tools (filesystem,
-// git, shell, search, project_graph, skill loader, web search/fetch, todo) into
-// the registry. It does NOT register task or MCP tools — those are registered
-// after the subagent's read-only toolset is frozen.
-func registerBuiltinTools(registry *tools.Registry, cfg app.Config, skillReg *skills.Registry) error {
-	// run_command and the job_* tools share one job registry, so a job_id
-	// returned by a background run_command is resolvable by job_status/logs/cancel.
-	runCmd := shell.NewRunCommandTool()
-	jobReg := runCmd.Jobs
-
-	for _, tool := range []tools.Tool{
-		filesystem.NewListFilesTool(),
-		filesystem.NewReadFileTool(),
-		filesystem.NewCreateFileTool(),
-		filesystem.NewEditFileTool(),
-		search.NewGrepTool(),
-		projectgraph.NewProjectGraphTool(),
-		git.NewDiffTool(),
-		git.NewApplyPatchTool(),
-		git.NewGitCommitTool(),
-		runCmd,
-		&shell.JobStatusTool{Jobs: jobReg},
-		&shell.JobLogsTool{Jobs: jobReg},
-		&shell.JobCancelTool{Jobs: jobReg},
-		skill.NewLoadSkillTool(skillReg),
-		websearch.NewTool(cfg.Web),
-		webfetch.NewTool(cfg.Web),
-		todo.NewTool(),
-	} {
-		if err := registry.Register(tool); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func buildRegistry(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider model.Provider, store session.Store, progress agent.Emitter) (*tools.Registry, *skills.Registry, *mcp.Manager, *agent.RunnerRef, error) {
-	root := cfg.Workspace.Root
-	registry := tools.NewRegistry()
-
-	skillReg, err := skills.Load(filepath.Join(root, "skills"))
-	if err != nil {
-		return nil, nil, nil, nil, err
-	}
-
-	if err := registerBuiltinTools(registry, cfg, skillReg); err != nil {
-		return nil, nil, nil, nil, err
-	}
-
-	// Subagent (8.3): freeze the read-only subset from the built-ins ONLY — before
-	// `task` and the MCP tools are registered — then register the `task` tool into
-	// the PARENT. Because the subset is taken now, `task` can never be in it, so a
-	// subagent cannot spawn a subagent: recursion is capped at depth 1 by
-	// construction (see tools.Subset / newSubAgent).
-	sub := newSubAgent(cfg, mc, provider, root, registry, skillReg.PromptIndex(), store, progress)
-	if err := registry.Register(task.NewTool(sub)); err != nil {
-		return nil, nil, nil, nil, err
-	}
-
-	// MCP tools are registered AFTER the built-ins, so they appear after them in
-	// the advertised list (the Registry preserves registration order). A server
-	// that fails to start is skipped inside Connect; a name collision surfaces
-	// here as a registration error.
-	mgr := mcp.NewManager(mcpTraceWriter())
-	if n := len(cfg.MCP.Servers); n > 0 {
-		fmt.Fprintf(os.Stderr, "[mcp] connecting to %d server(s)…\n", n)
-	}
-	if err := mgr.Connect(ctx, cfg.MCP.Servers); err != nil {
-		mgr.Close()
-		return nil, nil, nil, nil, err
-	}
-	for _, tool := range mgr.Tools() {
-		if err := registry.Register(tool); err != nil {
-			mgr.Close()
-			return nil, nil, nil, nil, fmt.Errorf("register mcp tool: %w", err)
-		}
-	}
-
-	// Plan mode tools: enter_plan_mode and propose_plan. They use a RunnerRef for
-	// late binding — the Runner is constructed after the registry. The returned ref
-	// must be wired via planRef.R = runner after buildRunner.
-	planRef := wirePlanTools(registry, filepath.Join(root, ".codeagent", "plans"))
-
-	return registry, skillReg, mgr, planRef, nil
-}
-
-// mcpTraceWriter is where the MCP adapter writes its per-call raw I/O trace.
-// Off by default (it would spam normal runs); set CODEAGENT_MCP_DEBUG to enable.
-// The startup summary is separate from this and always shown.
-func mcpTraceWriter() io.Writer {
-	if os.Getenv("CODEAGENT_MCP_DEBUG") != "" {
-		return os.Stderr
-	}
-	return io.Discard
-}
-
-// extractModelFlag pulls a --model NAME (or --model=NAME) out of args from any
-// position, returning the chosen name and the remaining args.
-func extractModelFlag(args []string) (string, []string) {
-	for i := 0; i < len(args); i++ {
-		switch {
-		case args[i] == "--model" || args[i] == "-model":
-			if i+1 < len(args) {
-				rest := append(append([]string{}, args[:i]...), args[i+2:]...)
-				return args[i+1], rest
-			}
-		case strings.HasPrefix(args[i], "--model="):
-			name := strings.TrimPrefix(args[i], "--model=")
-			rest := append(append([]string{}, args[:i]...), args[i+1:]...)
-			return name, rest
-		}
-	}
-	return "", args
-}
-
-// extractAutoFlag pulls a boolean `--auto` (or `-auto`) out of args, returning
-// whether auto mode should start enabled and the remaining args. It is a CLI flag,
-// not a config value, on purpose: the enable switch must come from a trusted source
-// the agent cannot write, and config.yaml lives inside the writable workspace
-// (p9.1 §12.4). Default off — auto mode is always explicit opt-in.
-func extractAutoFlag(args []string) (bool, []string) {
-	for i := 0; i < len(args); i++ {
-		if args[i] == "--auto" || args[i] == "-auto" {
-			rest := append(append([]string{}, args[:i]...), args[i+1:]...)
-			return true, rest
-		}
-	}
-	return false, args
-}
-
 func runAsk(ctx context.Context, mc app.ModelConfig, provider model.Provider, question string) error {
 	resp, err := provider.Complete(ctx, model.Request{
 		Model:       mc.Model,
@@ -868,14 +454,14 @@ func runAsk(ctx context.Context, mc app.ModelConfig, provider model.Provider, qu
 func runAgent(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider model.Provider, goal string, autoMode bool) error {
 	root := cfg.Workspace.Root
 
-	store, err := openStore(root)
+	store, err := runtime.OpenStore(root)
 	if err != nil {
 		return err
 	}
 	defer store.Close()
-	attachObserver(provider, store, ctx)
+	runtime.AttachObserver(provider, store, ctx)
 
-	registry, skillReg, mcpMgr, planRef, err := buildRegistry(ctx, cfg, mc, provider, store, subagentProgress())
+	registry, skillReg, mcpMgr, planRef, err := runtime.BuildRegistry(ctx, cfg, mc, provider, store, subagentProgress())
 	if err != nil {
 		return err
 	}
@@ -888,7 +474,7 @@ func runAgent(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider 
 	// a transparent pass-through (identical to before). Auto-grants are audited by
 	// the loop (correlated EventAutoApproved), so the approver itself takes no emitter.
 	approver := approve.NewAutoApprover(root, ui.ConfirmApprover{}, autoMode)
-	runner := buildRunner(cfg, mc, provider, registry, skillReg, approver, withEventStore(buildEmitter(), store, ctx))
+	runner := runtime.BuildRunner(cfg, mc, provider, registry, skillReg, approver, runtime.WithEventStore(buildEmitter(), store, ctx))
 	planRef.R = runner
 
 	sess, err := session.NewBuilder(root).
@@ -929,14 +515,14 @@ func runGoal(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider m
 	}
 	root := cfg.Workspace.Root
 
-	store, err := openStore(root)
+	store, err := runtime.OpenStore(root)
 	if err != nil {
 		return err
 	}
 	defer store.Close()
-	attachObserver(provider, store, ctx)
+	runtime.AttachObserver(provider, store, ctx)
 
-	registry, skillReg, mcpMgr, planRef, err := buildRegistry(ctx, cfg, mc, provider, store, subagentProgress())
+	registry, skillReg, mcpMgr, planRef, err := runtime.BuildRegistry(ctx, cfg, mc, provider, store, subagentProgress())
 	if err != nil {
 		return err
 	}
@@ -949,7 +535,7 @@ func runGoal(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider m
 	}
 
 	approver := approve.NewAutoApprover(root, ui.ConfirmApprover{}, autoMode)
-	runner := buildRunner(cfg, mc, provider, registry, skillReg, approver, withEventStore(buildEmitter(), store, ctx))
+	runner := runtime.BuildRunner(cfg, mc, provider, registry, skillReg, approver, runtime.WithEventStore(buildEmitter(), store, ctx))
 	planRef.R = runner
 
 	sess, err := session.NewBuilder(root).
@@ -972,19 +558,19 @@ func runGoal(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider m
 func runTUI(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider model.Provider, autoMode bool) error {
 	root := cfg.Workspace.Root
 
-	store, err := openStore(root)
+	store, err := runtime.OpenStore(root)
 	if err != nil {
 		return err
 	}
 	defer store.Close()
-	attachObserver(provider, store, ctx)
+	runtime.AttachObserver(provider, store, ctx)
 
 	// Created up front so the subagent can route its condensed heartbeat through the
 	// TUI's emitter — the model distinguishes sub-session events by SessionID and
 	// renders them as a status line, never the transcript.
 	backend := tui.NewBackend()
 
-	registry, skillReg, mcpMgr, planRef, err := buildRegistry(ctx, cfg, mc, provider, store, backend.Emitter)
+	registry, skillReg, mcpMgr, planRef, err := runtime.BuildRegistry(ctx, cfg, mc, provider, store, backend.Emitter)
 	if err != nil {
 		return err
 	}
@@ -1007,7 +593,7 @@ func runTUI(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider mo
 	// Wrap the card-backed approver with the AutoApprover so the TUI gets the same
 	// hands-off auto mode as repl/run: --auto seeds it on; /auto flips it per session.
 	approver := approve.NewAutoApprover(root, backend.Approver, autoMode)
-	runner := buildRunner(cfg, mc, provider, registry, skillReg, approver, withEventStore(backend.Emitter, store, ctx))
+	runner := runtime.BuildRunner(cfg, mc, provider, registry, skillReg, approver, runtime.WithEventStore(backend.Emitter, store, ctx))
 	planRef.R = runner
 	runner.Stream = true // 8.6: stream the model's text live (TUI only)
 	runner.PlanApprover = backend.PlanApprover
@@ -1019,7 +605,7 @@ func runTUI(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider mo
 		Workspace:        filepath.Base(root),
 		Session:          sess.ID,
 		CompactThreshold: cfg.CompactThreshold(mc),
-		SubagentBudget:   subAgentMaxSteps,
+		SubagentBudget:   runtime.SubAgentMaxSteps,
 	}
 	// /resume loads a stored session and re-budgets it to the current model — the
 	// same helper the REPL's /resume uses.
@@ -1033,15 +619,15 @@ func runTUI(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider mo
 		if err != nil {
 			return tui.HeaderInfo{}, err
 		}
-		newProvider, err := buildProvider(newMC, cfg.Provider)
+		newProvider, err := runtime.BuildProvider(newMC, cfg.Provider)
 		if err != nil {
 			return tui.HeaderInfo{}, err
 		}
-		attachObserver(newProvider, store, ctx)
+		runtime.AttachObserver(newProvider, store, ctx)
 		runner.Model = newProvider
 		runner.ModelName = newMC.Model
 		runner.Temperature = newMC.Temperature
-		runner.Compactor = buildCompactor(newMC, newProvider)
+		runner.Compactor = runtime.BuildCompactor(newMC, newProvider)
 		// Re-budget the session to the new model's window — same semantics as /use
 		// in the REPL.
 		sess.ContextWindow = newMC.ContextWindow

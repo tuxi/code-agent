@@ -1,3 +1,10 @@
+// Command codeagentd is the daemon-mode entry point for the CodeAgent runtime
+// server. It starts an HTTP + WebSocket server with no terminal/TUI dependencies,
+// designed to be launched from an IDE (GoLand), systemd, launchd, or Docker.
+//
+// Usage:
+//
+//	codeagentd [--model NAME] [addr]   default addr: 127.0.0.1:8787
 package main
 
 import (
@@ -5,17 +12,16 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"os/signal"
 
 	"code-agent/internal/app"
 	"code-agent/internal/conversation"
-	"code-agent/internal/model"
 	"code-agent/internal/runtime"
 	"code-agent/internal/server"
 )
 
 // defaultCapabilities is the capability set advertised in the WebSocket hello
-// handshake. It is a static contract, not derived from runtime state — clients
-// use it to decide which protocol features to enable.
+// handshake. Keep in sync with cmd/codeagent/serve.go.
 var defaultCapabilities = []string{
 	"streaming",
 	"thinking",
@@ -26,13 +32,46 @@ var defaultCapabilities = []string{
 	"client_tool_execution",
 }
 
-// runServe starts the runtime server. One global tool registry is built at startup
-// (tools are stateless — workspace comes from ExecutionContext at call time, not
-// from struct fields). The WorkspaceRegistry caches per-workspace stores and skills.
-func runServe(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider model.Provider, addr string) error {
+func main() {
+	if err := run(); err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+}
+
+func run() error {
+	args := os.Args[1:]
+	modelName, args := runtime.ExtractModelFlag(args)
+
+	addr := "127.0.0.1:8787"
+	if len(args) > 0 {
+		addr = args[0]
+	}
+
+	cfg, err := app.LoadConfig("config.yaml")
+	if err != nil {
+		return err
+	}
+	if cfg.StoreFactory != nil {
+		runtime.StoreFactory = cfg.StoreFactory
+	}
+
+	mc, err := cfg.SelectModel(modelName)
+	if err != nil {
+		return err
+	}
+
+	provider, err := runtime.BuildProvider(mc, cfg.Provider)
+	if err != nil {
+		return err
+	}
+
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer cancel()
+
 	root := cfg.Workspace.Root
 
-	// Open the default workspace's store for global telemetry (API request recording).
+	// Open the default workspace's store for global telemetry.
 	telemetryStore, err := runtime.OpenStore(root)
 	if err != nil {
 		return err
@@ -40,9 +79,7 @@ func runServe(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider 
 	defer telemetryStore.Close()
 	runtime.AttachObserver(provider, telemetryStore, ctx)
 
-	// Build the global tool registry once. Tools are stateless — each Execute call
-	// receives its workspace via ExecutionContext, so the same tool instances serve
-	// every conversation regardless of workspace.
+	// Build the global tool registry once.
 	toolReg, _, mcpMgr, planRef, err := runtime.BuildRegistry(ctx, cfg, mc, provider, telemetryStore, nil)
 	if err != nil {
 		return err
@@ -52,9 +89,7 @@ func runServe(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider 
 	wsReg := runtime.NewWorkspaceRegistry(root)
 	defer wsReg.Close()
 
-	// ---- Execution Model components ----
-
-	// ConversationRepository: backed by default workspace's SQLite store.
+	// Execution Model components.
 	repo := conversation.NewSQLiteRepository(
 		telemetryStore,
 		mc.ContextWindow,
@@ -69,9 +104,7 @@ func runServe(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider 
 		},
 	)
 
-	// ConversationEventStore: backed by default workspace's store.
 	eventStore := &conversation.StoreEventAdapter{Store: telemetryStore}
-
 	active := conversation.NewActiveTurnRegistry()
 	subs := conversation.NewSubscriptionManager()
 	rb := &runtime.ServeRunBuilder{
@@ -81,7 +114,7 @@ func runServe(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider 
 	executor := conversation.NewTurnExecutor(repo, eventStore, active, subs, rb)
 
 	handler := server.NewMux(repo, eventStore, executor, server.MuxOptions{
-		ServerName:   "codeagent/" + mc.Model,
+		ServerName:   "codeagentd/" + mc.Model,
 		Capabilities: defaultCapabilities,
 	})
 
@@ -91,19 +124,15 @@ func runServe(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider 
 		_ = srv.Close()
 	}()
 
-	fmt.Printf("codeagent serve — http://%s  (default workspace: %s, model: %s)\n", addr, root, mc.Model)
+	fmt.Printf("codeagentd serve — http://%s  (default workspace: %s, model: %s)\n", addr, root, mc.Model)
 	fmt.Println("  GET  /healthz")
 	fmt.Println("  GET  /v1/conversations")
 	fmt.Println("  POST /v1/conversations            {\"workspace_path\":\"...\"}  -> {\"id\":\"...\"}")
-	fmt.Println("  DELETE /v1/conversations/{id}")
 	fmt.Println("  GET  /v1/conversations/{id}/stream   (WebSocket)")
-	fmt.Println("  GET  /v1/conversations/{id}/messages")
-	fmt.Println("  GET  /v1/conversations/{id}/events")
-	fmt.Println("  GET  /v2/conversations/{id}/stream   (WebSocket, same as v1)")
 
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		return err
 	}
-	_, _ = fmt.Fprintln(os.Stderr, "codeagent serve: stopped")
+	fmt.Fprintln(os.Stderr, "codeagentd: stopped")
 	return nil
 }

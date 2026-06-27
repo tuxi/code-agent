@@ -6,6 +6,7 @@ import (
 	"code-agent/internal/approve"
 	"code-agent/internal/conversation"
 	"code-agent/internal/model"
+	"code-agent/internal/runtime"
 	"code-agent/internal/session"
 	"code-agent/internal/skills"
 	"code-agent/internal/tools"
@@ -23,7 +24,7 @@ import (
 	"github.com/chzyer/readline"
 )
 
-// replRunBuilder is the conversation.RunBuilder for the REPL. It wraps buildRunner
+// replRunBuilder is the conversation.RunBuilder for the REPL. It wraps runtime.BuildRunner
 // but uses the REPL's pre-built emitter (console + event store persistence) rather
 // than the per-turn composite emitter from TurnExecutor. The approver is also
 // statically configured (AutoApprover), not set per-connection.
@@ -38,7 +39,7 @@ type replRunBuilder struct {
 }
 
 func (b *replRunBuilder) Build(ctx conversation.RuntimeContext) conversation.TurnRunner {
-	runner := buildRunner(b.cfg, b.mc, b.provider, b.registry, b.skillReg, b.approver, b.emitter)
+	runner := runtime.BuildRunner(b.cfg, b.mc, b.provider, b.registry, b.skillReg, b.approver, b.emitter)
 	runner.ClientWaiter = ctx.ClientWaiter
 	return runner
 }
@@ -61,14 +62,14 @@ type lineReader func(prompt string) (string, error)
 func repl(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider model.Provider, resumeID string, auto bool) error {
 	root := cfg.Workspace.Root
 
-	store, err := openStore(root)
+	store, err := runtime.OpenStore(root)
 	if err != nil {
 		return err
 	}
 	defer store.Close()
-	attachObserver(provider, store, ctx)
+	runtime.AttachObserver(provider, store, ctx)
 
-	registry, skillReg, mcpMgr, planRef, err := buildRegistry(ctx, cfg, mc, provider, store, subagentProgress())
+	registry, skillReg, mcpMgr, planRef, err := runtime.BuildRegistry(ctx, cfg, mc, provider, store, subagentProgress())
 	if err != nil {
 		return err
 	}
@@ -113,7 +114,7 @@ func repl(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider mode
 	// seeded it on; /auto on|off flips it per session. Auto-grants are audited by the
 	// loop (correlated EventAutoApproved), so the approver takes no emitter.
 	approver := approve.NewAutoApprover(root, ui.ConfirmApprover{Prompt: ask}, auto)
-	runner := buildRunner(cfg, mc, provider, registry, skillReg, approver, withEventStore(buildEmitter(), store, ctx))
+	runner := runtime.BuildRunner(cfg, mc, provider, registry, skillReg, approver, runtime.WithEventStore(buildEmitter(), store, ctx))
 	planRef.R = runner // wire plan tools to the runner (late binding)
 	runner.PlanApprover = &replPlanApprover{ask: ask}
 	if auto {
@@ -149,7 +150,7 @@ func repl(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider mode
 		cfg: cfg, mc: mc, provider: provider,
 		registry: registry, skillReg: skillReg,
 		approver: approver,
-		emitter:  withEventStore(buildEmitter(), store, ctx),
+		emitter:  runtime.WithEventStore(buildEmitter(), store, ctx),
 	}
 	executor := conversation.NewTurnExecutor(repo, eventStore, active, subs, rb)
 	executor.OnSaveError = func(err error) {
@@ -358,16 +359,16 @@ func handleCommand(line string, cfg app.Config, mc *app.ModelConfig, runner *age
 		if err != nil {
 			return sess, false, err
 		}
-		newProvider, err := buildProvider(newMC, cfg.Provider)
+		newProvider, err := runtime.BuildProvider(newMC, cfg.Provider)
 		if err != nil {
 			return sess, false, err
 		}
-		attachObserver(newProvider, store, context.Background())
+		runtime.AttachObserver(newProvider, store, context.Background())
 		*mc = newMC
 		runner.Model = newProvider
 		runner.ModelName = newMC.Model
 		runner.Temperature = newMC.Temperature
-		runner.Compactor = buildCompactor(newMC, newProvider)
+		runner.Compactor = runtime.BuildCompactor(newMC, newProvider)
 		// The budget belongs to the session, not the runner: switching to a model
 		// with a different window must change WHEN this conversation compacts.
 		sess.ContextWindow = newMC.ContextWindow

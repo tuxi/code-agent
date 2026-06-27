@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"code-agent/internal/agent"
+	"code-agent/internal/runtime"
 )
 
 func TestTaskProgressShowsStepsAndErases(t *testing.T) {
@@ -21,7 +22,7 @@ func TestTaskProgressShowsStepsAndErases(t *testing.T) {
 
 	out := buf.String()
 	// "step" tracks iterations vs the budget — NOT the tool-call ordinal (Step:3).
-	want := fmt.Sprintf("step 1/%d", subAgentMaxSteps)
+	want := fmt.Sprintf("step 1/%d", runtime.SubAgentMaxSteps)
 	if !strings.Contains(out, "subagent") || !strings.Contains(out, want) || !strings.Contains(out, "read_file") {
 		t.Fatalf("heartbeat should show %q and the current tool, got: %q", want, out)
 	}
@@ -52,7 +53,7 @@ func TestTaskProgressIgnoresUnrelatedEvents(t *testing.T) {
 
 func TestMultiEmitterFansOutAndSkipsNil(t *testing.T) {
 	a, b := &recordingEmitter{}, &recordingEmitter{}
-	m := multiEmitter{a, nil, b} // nil must be skipped, not panic
+	m := runtime.MultiEmitter{a, nil, b} // nil must be skipped, not panic
 	m.Emit(agent.Event{Kind: agent.EventToolStarted})
 	if len(a.got) != 1 || len(b.got) != 1 {
 		t.Fatalf("both real sinks should receive the event: a=%v b=%v", a.got, b.got)
@@ -62,7 +63,7 @@ func TestMultiEmitterFansOutAndSkipsNil(t *testing.T) {
 func TestSubAgentRunDrivesProgress(t *testing.T) {
 	rec := &recordingEmitter{}
 	sa := testSubAgent(answerProvider{content: "done"}, t.TempDir())
-	sa.progress = rec
+	sa.Progress = rec
 	if _, err := sa.Run(context.Background(), "", "go"); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
