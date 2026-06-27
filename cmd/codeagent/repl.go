@@ -39,6 +39,7 @@ type replRunBuilder struct {
 
 func (b *replRunBuilder) Build(ctx conversation.RuntimeContext) conversation.TurnRunner {
 	runner := buildRunner(b.cfg, b.mc, b.provider, b.registry, b.skillReg, b.approver, b.emitter)
+	runner.ClientWaiter = ctx.ClientWaiter
 	return runner
 }
 

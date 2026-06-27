@@ -71,6 +71,8 @@ func (e *TurnExecutor) ExecuteWithSession(parentCtx context.Context, sess *sessi
 		Publisher:    pub,
 		Approver:     e.active.Approver(sess.ID),
 		PlanApprover: e.active.PlanApprover(sess.ID),
+		ClientWaiter: e.active.ClientToolWaiter(sess.ID),
+		ClientTools:  e.active.ClientTools(sess.ID),
 	}
 	runner := e.rb.Build(rctx)
 
@@ -103,6 +105,16 @@ func (e *TurnExecutor) SetApprover(sessionID string, a agent.Approver) {
 // SetPlanApprover associates a plan approver with a session.
 func (e *TurnExecutor) SetPlanApprover(sessionID string, pa agent.PlanApprover) {
 	e.active.SetPlanApprover(sessionID, pa)
+}
+
+// SetClientToolWaiter associates a client tool waiter with a session.
+func (e *TurnExecutor) SetClientToolWaiter(sessionID string, w agent.ClientToolWaiter) {
+	e.active.SetClientToolWaiter(sessionID, w)
+}
+
+// RegisterTools stores client-side tool definitions for a session.
+func (e *TurnExecutor) RegisterTools(sessionID string, tools []agent.ClientToolDef) {
+	e.active.RegisterTools(sessionID, tools)
 }
 
 // Shutdown cancels all active turns and closes event buses.

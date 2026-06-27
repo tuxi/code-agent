@@ -28,7 +28,9 @@ func (s *testSession) SendMessage(context.Context, string) (agent.TurnResult, er
 }
 func (s *testSession) Cancel()                    {}
 func (s *testSession) SetApprover(agent.Approver)         {}
-func (s *testSession) SetPlanApprover(agent.PlanApprover) {}
+func (s *testSession) SetPlanApprover(agent.PlanApprover)         {}
+func (s *testSession) SetClientToolWaiter(agent.ClientToolWaiter) {}
+func (s *testSession) RegisterTools([]agent.ClientToolDef)         {}
 
 // testHub is the same shape as the old hub: Emit fans to subscribers.
 type testHub struct {

@@ -1,0 +1,9 @@
+{
+  "type": "agent_input",
+  "kind": "tool_result",
+  "tool_result": {
+    "tool_use_id": "call_abc123",
+    "subtype": "result",
+    "content": "修剪完成"
+  }
+}

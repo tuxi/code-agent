@@ -34,6 +34,7 @@ type wireEvent struct {
 	Chunk       string          `json:"chunk,omitempty"`
 	Failure      string          `json:"failure,omitempty"`
 	SkillVersion string          `json:"skill_version,omitempty"`
+	Executor     string          `json:"executor,omitempty"`
 
 	// Todo checklist.
 	Todos []tools.Todo `json:"todos,omitempty"`
@@ -74,6 +75,7 @@ func toWire(e agent.Event) wireEvent {
 		Chunk:       e.Chunk,
 		Failure:      e.Failure,
 		SkillVersion: e.Version,
+		Executor:     e.Executor,
 		Todos:        e.Todos,
 		Text:         e.Text,
 		PromptTokens: e.PromptTokens,

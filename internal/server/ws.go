@@ -48,12 +48,20 @@ type WSHandler struct {
 	// ServerName is reported in the hello handshake. Defaults to "codeagent".
 	ServerName string
 
+	// Capabilities is the server capability list declared in the hello handshake.
+	// Nil means "no capabilities advertised".
+	Capabilities []string
+
 	// WriteTimeout bounds a single frame write. Zero uses a 30s default.
 	WriteTimeout time.Duration
 
 	// ApprovalTimeout bounds how long a side-effecting tool waits for the client's
 	// verdict before denying. Zero uses a 2m default.
 	ApprovalTimeout time.Duration
+
+	// ClientToolTimeout bounds how long a client-executed tool waits for the
+	// tool_result before timing out. Zero uses a 2m default.
+	ClientToolTimeout time.Duration
 
 	// Accept carries origin policy / subprotocols. Nil = coder/websocket defaults
 	// (same-origin only).
@@ -91,7 +99,15 @@ func (h *WSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	approver := NewRemoteApprover(sink, h.approvalTimeout())
 	sess.SetApprover(approver)
 	sess.SetPlanApprover(approver)
+
+	// v1.1: wire a RemoteToolResultWaiter so client-executed tools can deliver
+	// results back into the blocked agent loop.
+	waiter := NewRemoteToolResultWaiter()
+	sess.SetClientToolWaiter(waiter)
+
 	defer func() {
+		waiter.CancelAll()               // wake all pending Wait calls on disconnect
+		sess.SetClientToolWaiter(nil)    // restore nil (no client to execute tools)
 		approver.Close()
 		sess.SetApprover(denyApprover{})
 		sess.SetPlanApprover(nil)
@@ -99,7 +115,7 @@ func (h *WSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Inbound command/control routing is transport-agnostic (see Router); this read
 	// loop owns only the WS read and disconnect detection.
-	router := Router{Commands: sess, Approvals: approver}
+	router := Router{Commands: sess, Approvals: approver, ToolResults: waiter}
 	go func() {
 		defer cancel()
 		for {
@@ -111,7 +127,8 @@ func (h *WSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	runErr := NewBridge(sink).Run(ctx, sess, h.serverName())
+	bridge := NewBridge(sink).WithCapabilities(h.Capabilities)
+	runErr := bridge.Run(ctx, sess, h.serverName())
 	if runErr == nil || ctx.Err() != nil {
 		conn.Close(websocket.StatusNormalClosure, "")
 		return

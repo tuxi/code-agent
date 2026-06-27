@@ -24,15 +24,21 @@ func Encode(e agent.Event, eventID, parentSessionID string) ([]byte, error) {
 }
 
 type helloFrame struct {
-	Type            string `json:"type"`
-	ProtocolVersion int    `json:"protocol_version"`
-	Server          string `json:"server,omitempty"`
+	Type            string   `json:"type"`
+	ProtocolVersion int      `json:"protocol_version"`
+	Server          string   `json:"server,omitempty"`
+	Capabilities    []string `json:"capabilities,omitempty"`
 }
 
 // Hello is the first frame on every connection: it pins the protocol version
 // once so events never need to carry it.
-func Hello(server string) ([]byte, error) {
-	return json.Marshal(helloFrame{Type: "hello", ProtocolVersion: protocolVersion, Server: server})
+func Hello(server string, capabilities []string) ([]byte, error) {
+	return json.Marshal(helloFrame{
+		Type:            "hello",
+		ProtocolVersion: protocolVersion,
+		Server:          server,
+		Capabilities:    capabilities,
+	})
 }
 
 // newEventID returns a unique, sortable-enough id for an event. Uniqueness (not

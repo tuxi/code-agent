@@ -1,0 +1,7 @@
+{
+  "type": "agent_input",
+  "kind": "system",
+  "command": "patch_context",
+  "command_key": "project_rules",
+  "command_value": "使用 Swift 6 规范"
+}

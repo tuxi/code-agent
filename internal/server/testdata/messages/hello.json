@@ -1,0 +1,14 @@
+{
+  "type": "hello",
+  "protocol_version": 1,
+  "server": "codeagent/deepseek-v4",
+  "capabilities": [
+    "streaming",
+    "thinking",
+    "tool_streaming",
+    "plan_mode",
+    "subagents",
+    "session_resume",
+    "client_tool_execution"
+  ]
+}

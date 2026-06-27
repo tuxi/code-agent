@@ -28,6 +28,15 @@ type Runner struct {
 	// denied (see approve()). Read-only tools never consult it.
 	Approver Approver
 
+	// ClientWaiter blocks the turn goroutine while a client-executed tool runs.
+	// When nil (no client connected, or headless mode), all tools run server-side.
+	// v1.1: see docs/protocols/agent-wire-v1.1-client-tool-execution.md §5.
+	ClientWaiter ClientToolWaiter
+
+	// ClientToolTimeout is the lease timeout for a single client tool call.
+	// Zero uses a 2-minute default.
+	ClientToolTimeout time.Duration
+
 	// Observer enriches each tool result into a structured Observation (P4.1).
 	// Nil-safe: when unset, raw tool results are appended unchanged.
 	Observer Observer
@@ -353,21 +362,22 @@ func (r *Runner) RunTurn(ctx context.Context, sess *session.Session, userInput s
 				ToolInput: input,
 				StartedAt: time.Now(),
 			}
+			tool, known := activeTools.Get(call.Function.Name)
+			valid := advertised[call.Function.Name] && known
+			executor := r.executorFor(tool, known)
 			r.emit(Event{
 				Kind:     EventToolStarted,
 				CallID:   call.ID,
 				Step:     step.Index,
 				ToolName: call.Function.Name,
 				ToolArgs: call.Function.Arguments,
+				Executor: executor,
 			})
-
-			tool, known := activeTools.Get(call.Function.Name)
-			valid := advertised[call.Function.Name] && known
 
 			// Pre-tool hook (8.5): a configured command may block the call. Only
 			// consulted for a real tool, so an unknown call still reports plainly.
 			var blockReason string
-			if valid {
+			if valid && executor != "client" {
 				blockReason = r.preHookBlock(ctx, call.Function.Name, input)
 			}
 
@@ -394,6 +404,15 @@ func (r *Runner) RunTurn(ctx context.Context, sess *session.Session, userInput s
 				observation = "The tool call was blocked by a configured hook. " + blockReason
 			case tools.HasSideEffectsFor(tool, input) && !r.approve(call.Function.Name, input):
 				observation = "The user declined to run this tool. No changes were made."
+			case executor == "client":
+				result, waitErr := r.ClientWaiter.Wait(ctx, call.ID, r.clientToolTimeout())
+				if waitErr != nil {
+					execErr = waitErr
+				} else if result.IsError {
+					execErr = fmt.Errorf("%s", result.Content)
+				} else {
+					observation = result.Content
+				}
 			default:
 				observation, execErr = r.executeTool(ctx, tool, call.ID, input)
 				if execErr == nil {
@@ -650,4 +669,29 @@ func (r *Runner) executeTool(ctx context.Context, tool tools.Tool, callID string
 		return "", err
 	}
 	return result.Content, nil
+}
+
+// executorFor determines which side executes a tool call. Empty string (or
+// "server") means server-side execution; "client" means the client must
+// execute it and deliver the result back.
+func (r *Runner) executorFor(tool tools.Tool, known bool) string {
+	if !known {
+		return ""
+	}
+	if ct, ok := tool.(tools.ClientTool); ok && ct.ExecutionMode() == tools.ExecStrictClient {
+		if r.ClientWaiter != nil {
+			return "client"
+		}
+		// No client connected — fall through to server-side error handling.
+	}
+	return ""
+}
+
+// clientToolTimeout returns the configured client tool lease timeout, or a
+// 2-minute default.
+func (r *Runner) clientToolTimeout() time.Duration {
+	if r.ClientToolTimeout > 0 {
+		return r.ClientToolTimeout
+	}
+	return 2 * time.Minute
 }

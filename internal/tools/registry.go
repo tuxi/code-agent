@@ -79,6 +79,17 @@ func (r *Registry) Names() []string {
 	return names
 }
 
+// Clone returns a shallow copy of r with the same tools registered in the same
+// order. Modifications to the clone (Register, RegisterInternal) do not affect
+// the original. The registered Tool values are shared (not deep-copied).
+func (r *Registry) Clone() *Registry {
+	c := NewRegistry()
+	for _, name := range r.order {
+		_ = c.register(r.tools[name], r.internal[name])
+	}
+	return c
+}
+
 // Subset returns a new Registry containing only the named tools from r, in the
 // order given. Names not present in r are skipped.
 //

@@ -52,6 +52,11 @@ type MessageView struct {
 type MuxOptions struct {
 	// ServerName is reported in the WebSocket hello handshake.
 	ServerName string
+	// Capabilities is the server capability list declared in the hello handshake.
+	// Nil means no capabilities advertised. The caller (cmd/codeagent) owns the
+	// list; the server layer is a dumb pipe — it never derives capabilities from
+	// runtime state.
+	Capabilities []string
 	// Accept carries WebSocket origin policy. Nil = same-origin only.
 	Accept *websocket.AcceptOptions
 }
@@ -201,9 +206,10 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 		return conversation.NewTransportSession(id, executor), nil
 	}
 	ws := &WSHandler{
-		Resolve:    wsResolve,
-		ServerName: opts.ServerName,
-		Accept:     opts.Accept,
+		Resolve:      wsResolve,
+		ServerName:   opts.ServerName,
+		Capabilities: opts.Capabilities,
+		Accept:       opts.Accept,
 	}
 	mux.Handle("GET /v1/conversations/{id}/stream", ws)
 	mux.Handle("GET /v2/conversations/{id}/stream", ws)

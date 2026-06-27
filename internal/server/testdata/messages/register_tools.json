@@ -1,0 +1,14 @@
+{
+  "type": "register_tools",
+  "tools": [
+    {
+      "name": "get_device_info",
+      "description": "获取当前设备的系统信息，包括系统版本、设备型号等",
+      "input_schema": {
+        "type": "object",
+        "properties": {},
+        "required": []
+      }
+    }
+  ]
+}

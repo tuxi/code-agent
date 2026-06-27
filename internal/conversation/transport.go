@@ -44,3 +44,13 @@ func (s *TransportSession) SetApprover(a agent.Approver) {
 func (s *TransportSession) SetPlanApprover(pa agent.PlanApprover) {
 	s.ex.SetPlanApprover(s.id, pa)
 }
+
+// SetClientToolWaiter wires the WS connection's remote tool-result waiter. Satisfies server.Session.
+func (s *TransportSession) SetClientToolWaiter(w agent.ClientToolWaiter) {
+	s.ex.SetClientToolWaiter(s.id, w)
+}
+
+// RegisterTools stores client-side tool definitions. Satisfies server.CommandTarget.
+func (s *TransportSession) RegisterTools(tools []agent.ClientToolDef) {
+	s.ex.RegisterTools(s.id, tools)
+}

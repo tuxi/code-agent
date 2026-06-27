@@ -79,6 +79,11 @@ type Event struct {
 	Failure     string // EventObserved: the classified FailureType (e.g. "compile")
 	Version     string // EventSkillLoaded: the loaded skill's version (name is in ToolName)
 
+	// Executor declares which side executes this tool call. Empty or "server"
+	// means the server executes it locally. "client" means the client must
+	// execute it and deliver the result back via a tool_result message.
+	Executor string
+
 	// Todos carries the model's current task checklist on EventTodoUpdated (8.4).
 	Todos []tools.Todo
 

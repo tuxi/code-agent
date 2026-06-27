@@ -33,6 +33,12 @@ func cases() map[string]wireCase {
 			SessionID: "sess_root", TurnID: "turn_7", CallID: "call_abc", Step: 3,
 			ToolName: "run_command", ToolArgs: `{"command":"go test ./..."}`,
 		}},
+		"tool_started_client": {ev: agent.Event{
+			Kind: agent.EventToolStarted, At: fixedAt,
+			SessionID: "sess_root", TurnID: "turn_7", CallID: "call_99", Step: 4,
+			ToolName: "trim_video", ToolArgs: `{"url":"file:///tmp/input.mp4","start":0,"duration":10}`,
+			Executor: "client",
+		}},
 		"tool_finished": {ev: agent.Event{
 			Kind: agent.EventToolFinished, At: fixedAt,
 			SessionID: "sess_root", TurnID: "turn_7", CallID: "call_abc", Step: 3,
@@ -217,7 +223,7 @@ func TestStreamEmitter(t *testing.T) {
 }
 
 func TestHelloPinsVersion(t *testing.T) {
-	frame, err := Hello("codeagent/test")
+	frame, err := Hello("codeagent/test", nil)
 	if err != nil {
 		t.Fatal(err)
 	}

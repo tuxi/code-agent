@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"code-agent/internal/agent"
 )
 
 // TestMessageContractGolden locks the inbound command/control message shapes —
@@ -30,6 +32,33 @@ func TestMessageContractGolden(t *testing.T) {
 		},
 		"plan_approval_response": PlanApprovalResponse{
 			Type: MsgTypePlanApprovalResponse, ID: "plan_appr_1", Approved: true,
+		},
+		// v1.1 agent_input unified envelope
+		"agent_input_text": AgentInput{
+			Type: "agent_input", Kind: "text", Text: "分析这个项目",
+		},
+		"agent_input_tool_result": AgentInput{
+			Type: "agent_input", Kind: "tool_result",
+			ToolResult: &ToolResult{ToolUseID: "call_abc123", Subtype: "result", Content: "修剪完成", IsError: false},
+		},
+		"agent_input_command": AgentInput{
+			Type: "agent_input", Kind: "command", Text: "cancel",
+		},
+		"agent_input_system": AgentInput{
+			Type: "agent_input", Kind: "system", Command: "patch_context",
+			CommandKey: "project_rules", CommandValue: "使用 Swift 6 规范",
+		},
+		// v1.1 client tool registration
+		"register_tools": RegisterTools{
+			Type: "register_tools",
+			Tools: []agent.ClientToolDef{
+				{Name: "get_device_info", Description: "获取当前设备的系统信息，包括系统版本、设备型号等", InputSchema: json.RawMessage(`{"type":"object","properties":{},"required":[]}`)},
+			},
+		},
+		// v1.1 hello with capabilities
+		"hello": helloFrame{
+			Type: "hello", ProtocolVersion: 1, Server: "codeagent/deepseek-v4",
+			Capabilities: []string{"streaming", "thinking", "tool_streaming", "plan_mode", "subagents", "session_resume", "client_tool_execution"},
 		},
 	}
 

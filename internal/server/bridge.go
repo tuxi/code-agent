@@ -25,6 +25,7 @@ type Session interface {
 	CommandTarget
 	SetApprover(agent.Approver)
 	SetPlanApprover(agent.PlanApprover)
+	SetClientToolWaiter(agent.ClientToolWaiter) // v1.1: client tool execution
 }
 
 // Bridge streams one conversation's events to one client as encoded agent-wire
@@ -38,6 +39,7 @@ type Session interface {
 type Bridge struct {
 	sink            FrameSink
 	parentSessionID string
+	capabilities    []string
 }
 
 // NewBridge wires a bridge to one client's frame sink.
@@ -46,6 +48,12 @@ func NewBridge(sink FrameSink) *Bridge { return &Bridge{sink: sink} }
 // WithParent stamps parent_session_id on every frame (a subagent sub-stream).
 func (b *Bridge) WithParent(parentSessionID string) *Bridge {
 	b.parentSessionID = parentSessionID
+	return b
+}
+
+// WithCapabilities sets the server capabilities declared in the hello handshake.
+func (b *Bridge) WithCapabilities(caps []string) *Bridge {
+	b.capabilities = caps
 	return b
 }
 
@@ -59,7 +67,7 @@ func (b *Bridge) Run(ctx context.Context, sub Subscriber, serverName string) err
 	events, unsub := sub.Subscribe()
 	defer unsub()
 
-	hello, err := Hello(serverName)
+	hello, err := Hello(serverName, b.capabilities)
 	if err != nil {
 		return err
 	}

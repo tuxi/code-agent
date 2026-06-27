@@ -15,6 +15,19 @@ import (
 	"code-agent/internal/tools"
 )
 
+// defaultCapabilities is the capability set advertised in the WebSocket hello
+// handshake. It is a static contract, not derived from runtime state — clients
+// use it to decide which protocol features to enable.
+var defaultCapabilities = []string{
+	"streaming",
+	"thinking",
+	"tool_streaming",
+	"plan_mode",
+	"subagents",
+	"session_resume",
+	"client_tool_execution",
+}
+
 // serveRunBuilder is the conversation.RunBuilder for the server. It wraps
 // buildRunner and uses the per-turn publisher from TurnExecutor (which fans
 // out to event store + WS subscribers).
@@ -39,9 +52,22 @@ func (b *serveRunBuilder) Build(ctx conversation.RuntimeContext) conversation.Tu
 	if workspacePath != "" {
 		runner.WorkspaceRoot = workspacePath
 	}
-	// Wire the plan tools and plan approver to this per-turn runner.
+	// Merge client-registered tools into a per-turn clone so the global registry stays unmodified.
+	if len(ctx.ClientTools) > 0 {
+		reg := b.toolReg.Clone()
+		for _, def := range ctx.ClientTools {
+			proxy := tools.NewClientProxyTool(def.Name, def.Description, def.InputSchema)
+			if err := reg.Register(proxy); err != nil {
+				continue // name collision with a server tool — skip
+			}
+		}
+		runner.Tools = reg
+	}
+	// Wire the plan tools, plan approver, and client tool waiter to this per-turn runner.
 	b.planRef.R = runner
 	runner.PlanApprover = ctx.PlanApprover
+	runner.ClientWaiter = ctx.ClientWaiter
+	runner.Stream = true // emit token_delta events for live "thinking" feel on the client
 	return runner
 }
 
@@ -96,7 +122,10 @@ func runServe(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider 
 	rb := &serveRunBuilder{cfg: cfg, mc: mc, provider: provider, toolReg: toolReg, wsReg: wsReg, planRef: planRef}
 	executor := conversation.NewTurnExecutor(repo, eventStore, active, subs, rb)
 
-	handler := server.NewMux(repo, eventStore, executor, server.MuxOptions{ServerName: "codeagent/" + mc.Model})
+	handler := server.NewMux(repo, eventStore, executor, server.MuxOptions{
+			ServerName:   "codeagent/" + mc.Model,
+			Capabilities: defaultCapabilities,
+		})
 
 	srv := &http.Server{Addr: addr, Handler: handler}
 	go func() {
