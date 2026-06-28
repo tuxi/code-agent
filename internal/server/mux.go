@@ -186,16 +186,8 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 		writeJSON(w, http.StatusOK, frames)
 	})
 
-	mux.HandleFunc("DELETE /v1/conversations/{id}", func(w http.ResponseWriter, r *http.Request) {
-		id := r.PathValue("id")
-		if err := repo.Delete(r.Context(), id); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		w.WriteHeader(http.StatusNoContent)
-	})
-
 	// ---- WebSocket: TransportSession backed by TurnExecutor ----
+	// Declared before the DELETE handler so it can call ws.RemoveApprover.
 
 	wsResolve := func(r *http.Request) (Session, error) {
 		id := r.PathValue("id")
@@ -213,6 +205,18 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 	}
 	mux.Handle("GET /v1/conversations/{id}/stream", ws)
 	mux.Handle("GET /v2/conversations/{id}/stream", ws)
+
+	mux.HandleFunc("DELETE /v1/conversations/{id}", func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+		// Close and remove the session-scoped approver so blocked turns wake
+		// and the approver is garbage-collected.
+		ws.RemoveApprover(id)
+		if err := repo.Delete(r.Context(), id); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
 
 	return mux
 }

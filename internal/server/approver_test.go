@@ -99,9 +99,89 @@ func TestRemoteApproverClosedRejectsImmediately(t *testing.T) {
 }
 
 func TestRemoteApproverDeniesOnSendError(t *testing.T) {
-	a := NewRemoteApprover(&errSink{failAt: 1}, time.Second)
+	// With a broken sink the request stays registered (send error is ignored).
+	// The timeout should eventually deny.
+	a := NewRemoteApprover(&errSink{failAt: 1}, 50*time.Millisecond)
+	start := time.Now()
 	if a.Approve("x", nil) {
-		t.Error("Approve must deny when the request frame cannot be sent")
+		t.Error("Approve must deny when no response arrives before the deadline")
+	}
+	if elapsed := time.Since(start); elapsed < 40*time.Millisecond {
+		t.Error("Approve must not deny immediately on send error — the request should wait for the timeout")
+	}
+}
+
+func TestRemoteApproverNilSinkDoesNotSend(t *testing.T) {
+	// A nil sink means no client is connected. Approve should register the
+	// request and block, not panic.
+	a := NewRemoteApprover(nil, 50*time.Millisecond)
+	if a.Approve("x", nil) {
+		t.Error("Approve must deny on timeout when no sink is available")
+	}
+}
+
+func TestRemoteApproverClearSinkDoesNotDeny(t *testing.T) {
+	// ClearSink must not resolve pending requests — they stay registered and
+	// can be re-sent when a new client connects.
+	sink := &syncSink{}
+	a := NewRemoteApprover(sink, 2*time.Second)
+
+	got := make(chan bool, 1)
+	go func() { got <- a.Approve("run_command", nil) }()
+	waitApprovalID(t, sink) // request sent to first sink
+
+	a.ClearSink()
+
+	// Pending request must still be alive.
+	select {
+	case <-got:
+		t.Error("ClearSink must not deny pending requests")
+	case <-time.After(100 * time.Millisecond):
+		// OK
+	}
+
+	// Reconnect with a new sink — the pending request must be re-sent.
+	newSink := &syncSink{}
+	a.UpdateSink(newSink)
+	id := waitApprovalID(t, newSink)
+	a.Resolve(id, true)
+
+	select {
+	case v := <-got:
+		if !v {
+			t.Error("Approve returned false after ClearSink + UpdateSink + Resolve")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Approve did not return")
+	}
+}
+
+func TestRemoteApproverUpdateSinkResends(t *testing.T) {
+	// After updating the sink, pending requests must be re-sent to the new sink.
+	a := NewRemoteApprover(nil, 2*time.Second) // no sink initially
+
+	got := make(chan bool, 1)
+	go func() { got <- a.Approve("run_command", json.RawMessage(`{"cmd":"ls"}`)) }()
+
+	// Give Approve time to register the pending request.
+	time.Sleep(20 * time.Millisecond)
+
+	// Now connect a new client.
+	newSink := &syncSink{}
+	a.UpdateSink(newSink)
+
+	// The pending request must have been re-sent.
+	id := waitApprovalID(t, newSink)
+
+	a.Resolve(id, true)
+
+	select {
+	case v := <-got:
+		if !v {
+			t.Error("Approve returned false after re-send + approval")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Approve did not return after re-send + Resolve")
 	}
 }
 

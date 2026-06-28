@@ -28,10 +28,10 @@ var (
 
 type MemoryStore struct {
 	mu       sync.Mutex
-	sessions map[string]*Session      // id → session (owned copy)
-	metas    []Meta                   // ordered by UpdatedAt desc
-	events   []EventRecord            // all events, insertion order
-	requests []RequestRecord          // all requests, insertion order
+	sessions map[string]*Session // id → session (owned copy)
+	metas    []Meta              // ordered by UpdatedAt desc
+	events   []EventRecord       // all events, insertion order
+	requests []RequestRecord     // all requests, insertion order
 	closed   bool
 }
 

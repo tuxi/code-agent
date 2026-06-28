@@ -105,10 +105,23 @@ type Runner struct {
 	emitTurnID    string
 }
 
-// turnSeq backs per-turn ids; process-global and monotonic.
-var turnSeq atomic.Uint64
-
-func newTurnID() string { return fmt.Sprintf("turn_%d", turnSeq.Add(1)) }
+// nextSessionTurnID returns a session-scoped, monotonic turn identifier. Unlike
+// a process-global counter (which resets on restart and can produce duplicates
+// within a resumed session), the counter lives in sess.Metadata — it is persisted
+// with the session and survives process restarts, so every turn_id is unique
+// within the conversation forever.
+func nextSessionTurnID(sess *session.Session) string {
+	n := 0
+	switch v := sess.Metadata["turn_seq"].(type) {
+	case float64:
+		n = int(v)
+	case int:
+		n = v
+	}
+	n++
+	sess.Metadata["turn_seq"] = float64(n) // float64 for JSON round-trip
+	return fmt.Sprintf("turn_%d", n)
+}
 
 // emit sends an event to the configured Emitter, if any. Nil-safe.
 func (r *Runner) emit(e Event) {
@@ -184,7 +197,7 @@ func (r *Runner) RunTurn(ctx context.Context, sess *session.Session, userInput s
 	}
 
 	r.emitSessionID = sess.ID
-	r.emitTurnID = newTurnID()
+	r.emitTurnID = nextSessionTurnID(sess)
 
 	// Append the user's turn to the persistent session history.
 	sess.Messages = append(sess.Messages, model.Message{
@@ -269,6 +282,17 @@ func (r *Runner) RunTurn(ctx context.Context, sess *session.Session, userInput s
 			Messages:    msgs,
 			Tools:       toolDefs,
 		})
+		// Capture the model's text for plan extraction and thinking events.
+		// Emit EventThinking BEFORE EventModelFinished so the logical event
+		// order is model_started → thinking → model_finished, and the at
+		// timestamp reflects when thinking was produced, not when the turn
+		// finished processing it.
+		if resp.Content != "" {
+			r.lastThinking = resp.Content
+		}
+		if resp.Content != "" && resp.HasToolCalls() {
+			r.emit(Event{Kind: EventThinking, Text: resp.Content})
+		}
 		// Always emit ModelFinished, even on error: it pairs with ModelStarted, so
 		// a live renderer's "Thinking…" ticker is always stopped (no leaked timer).
 		r.emit(Event{
@@ -284,12 +308,6 @@ func (r *Runner) RunTurn(ctx context.Context, sess *session.Session, userInput s
 		turn.PromptTokens = resp.Usage.PromptTokens
 		turn.TokensUsed += resp.Usage.PromptTokens + resp.Usage.CompletionTokens
 		sess.PromptTokens = resp.Usage.PromptTokens
-
-		// Capture the model's latest text so propose_plan can extract the plan
-		// body. Set BEFORE HasToolCalls so it is fresh in both paths.
-		if resp.Content != "" {
-			r.lastThinking = resp.Content
-		}
 		// This call's prompt size is the true post-compaction size if a compaction
 		// just ran, so finalize its observability stat here.
 		if stat := sess.FinalizeCompaction(resp.Usage.PromptTokens); stat != nil {
@@ -342,11 +360,6 @@ func (r *Runner) RunTurn(ctx context.Context, sess *session.Session, userInput s
 		// history (the API requires the tool_calls message before the answers).
 		sess.Messages = append(sess.Messages, resp.AssistantMessage())
 		sess.UpdatedAt = time.Now()
-
-		if resp.Content != "" {
-			r.lastThinking = resp.Content
-			r.emit(Event{Kind: EventThinking, Text: resp.Content})
-		}
 
 		// Execute EVERY requested tool call. Each one must get a tool result
 		// with a matching tool_call_id, or the next request will be rejected.

@@ -77,4 +77,3 @@ func subagentProgress() agent.Emitter {
 	}
 	return nil
 }
-

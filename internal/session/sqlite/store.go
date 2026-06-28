@@ -97,7 +97,7 @@ CREATE TABLE IF NOT EXISTS session_events (
 	at         TEXT,
 	payload    TEXT
 );
-CREATE INDEX IF NOT EXISTS idx_session_events_session ON session_events(session_id, id);`
+CREATE INDEX IF NOT EXISTS idx_session_events_session ON session_events(session_id, at);`
 
 // open (re)opens the database at s.path and applies the idempotent migrations.
 // Used at construction and to recover the connection after the file moved out
@@ -122,6 +122,10 @@ func (s *Store) open() error {
 		`ALTER TABLE requests ADD COLUMN cached_prompt_tokens INTEGER`,
 		`ALTER TABLE sessions ADD COLUMN metadata TEXT`,
 		`ALTER TABLE sessions ADD COLUMN workspace_path TEXT`,
+		// v2: re-index session_events by at for chronological ordering.
+		// The original index was on (session_id, id); rebuild on (session_id, at).
+		`DROP INDEX IF EXISTS idx_session_events_session`,
+		`CREATE INDEX idx_session_events_session ON session_events(session_id, at)`,
 	} {
 		if _, err := db.Exec(stmt); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			db.Close()
@@ -382,7 +386,7 @@ func (s *Store) RecordEvent(ctx context.Context, e session.EventRecord) error {
 func (s *Store) SessionEvents(ctx context.Context, sessionID string) ([]session.EventRecord, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT session_id, turn_id, kind, at, COALESCE(payload, '')
-		FROM session_events WHERE session_id=? ORDER BY id`, sessionID)
+		FROM session_events WHERE session_id=? ORDER BY at ASC, id ASC`, sessionID)
 	if err != nil {
 		return nil, err
 	}

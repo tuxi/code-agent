@@ -306,7 +306,7 @@ func TestMemoryStoreRecentEventsByKind(t *testing.T) {
 	// Record 3 events of "task_started" across different sessions.
 	for i, sid := range []string{"s1", "s2", "s3"} {
 		if err := store.RecordEvent(ctx, EventRecord{
-			SessionID: sid, Kind: "task_started", At: now.Add(time.Duration(i)*time.Second),
+			SessionID: sid, Kind: "task_started", At: now.Add(time.Duration(i) * time.Second),
 		}); err != nil {
 			t.Fatal(err)
 		}

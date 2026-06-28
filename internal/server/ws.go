@@ -40,6 +40,12 @@ func (s *wsSink) Send(frame []byte) error {
 // connection resolves to a session, streams its events out via a Bridge, and
 // reads the inbound control/message plane: send_message drives a turn,
 // approval_response answers the blocking remote approver, cancel_turn cancels.
+//
+// The RemoteApprover is session-scoped: it survives WebSocket disconnects so a
+// user switching between conversations does not lose pending approvals. On
+// connect the handler updates the session approver's sink; on disconnect it only
+// clears the sink — the approver stays registered on the session so a blocked
+// turn waits for the next connection instead of being immediately denied.
 type WSHandler struct {
 	// Resolve maps a request to the session to drive. This is the seam the
 	// Conversation Manager fills; a nil/error result is reported as 404.
@@ -66,6 +72,10 @@ type WSHandler struct {
 	// Accept carries origin policy / subprotocols. Nil = coder/websocket defaults
 	// (same-origin only).
 	Accept *websocket.AcceptOptions
+
+	// Session-scoped approvers that survive connection changes. Keyed by session ID.
+	mu        sync.Mutex
+	approvers map[string]*RemoteApprover
 }
 
 func (h *WSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -93,10 +103,14 @@ func (h *WSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	sink := &wsSink{conn: conn, ctx: ctx, writeTimeout: writeTimeout}
 
-	// This connection controls the session for its lifetime: its remote approver
-	// handles side-effect confirmations; on disconnect a deny-all is restored so a
-	// later turn without a client cannot auto-proceed.
-	approver := NewRemoteApprover(sink, h.approvalTimeout())
+	sessionID := r.PathValue("id")
+
+	// Get or create the session-scoped RemoteApprover. On a first connection
+	// this creates a new one; on a reconnect after a page switch this returns the
+	// existing approver (still holding pending requests, if any) and re-sends
+	// them over the new sink.
+	approver := h.ensureApprover(sessionID, sink)
+
 	sess.SetApprover(approver)
 	sess.SetPlanApprover(approver)
 
@@ -108,9 +122,11 @@ func (h *WSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer func() {
 		waiter.CancelAll()            // wake all pending Wait calls on disconnect
 		sess.SetClientToolWaiter(nil) // restore nil (no client to execute tools)
-		approver.Close()
-		sess.SetApprover(denyApprover{})
-		sess.SetPlanApprover(nil)
+		// Clear the sink so future sends don't target a dead connection, but
+		// do NOT close the approver or replace it with deny-all. Pending
+		// approvals stay registered — the agent loop keeps blocking until
+		// the user reconnects and responds, or the timeout fires.
+		approver.ClearSink()
 	}()
 
 	// Inbound command/control routing is transport-agnostic (see Router); this read
@@ -134,6 +150,40 @@ func (h *WSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	conn.Close(websocket.StatusInternalError, "stream error")
+}
+
+// ensureApprover returns the session-scoped RemoteApprover for sessionID,
+// creating one on first use. On a reconnect it calls UpdateSink to re-send any
+// pending approval requests over the new connection.
+func (h *WSHandler) ensureApprover(sessionID string, sink FrameSink) *RemoteApprover {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.approvers == nil {
+		h.approvers = make(map[string]*RemoteApprover)
+	}
+	ra, ok := h.approvers[sessionID]
+	if !ok {
+		ra = NewRemoteApprover(sink, h.approvalTimeout())
+		h.approvers[sessionID] = ra
+	} else {
+		ra.UpdateSink(sink)
+	}
+	return ra
+}
+
+// RemoveApprover closes and removes the session-scoped approver for sessionID.
+// Called on conversation deletion so blocked turns wake to a denial and the
+// approver is garbage-collected.
+func (h *WSHandler) RemoveApprover(sessionID string) {
+	h.mu.Lock()
+	ra, ok := h.approvers[sessionID]
+	if ok {
+		delete(h.approvers, sessionID)
+	}
+	h.mu.Unlock()
+	if ok {
+		ra.Close()
+	}
 }
 
 func (h *WSHandler) serverName() string {

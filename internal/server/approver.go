@@ -10,47 +10,66 @@ import (
 	"code-agent/internal/agent"
 )
 
+// pendingReq holds a single in-flight approval or plan-approval request. It keeps
+// the request data so it can be re-sent when a client reconnects after a disconnect.
+type pendingReq struct {
+	ch       chan bool       // wakes the blocked Approve/ApprovePlan goroutine
+	toolName string          // tool approval only
+	input    json.RawMessage // tool arguments (tool approval only)
+	plan     *agent.Plan     // plan approval only (nil for tool approval)
+}
+
 // RemoteApprover implements agent.Approver by asking a connected client. The
 // agent loop calls Approve synchronously and blocks on the verdict; over the wire
 // that becomes: send an approval_request frame, then wait for the matching
-// approval_response (delivered via Resolve). A deadline or a closed approver
-// (client gone) denies — the fail-safe "no answer = no" rule, the same default as
-// a nil Approver in the loop.
+// approval_response (delivered via Resolve). A deadline denies; a nil sink (no
+// client connected) blocks until a client reconnects and the request is re-sent.
 //
 // This is the one place the protocol's blocking, bidirectional control round-trip
 // is reconciled with an async event stream: Approve runs on the turn goroutine and
 // parks on a per-request channel; the connection's read loop runs Resolve on
 // another goroutine to unpark it.
+//
+// RemoteApprover is session-scoped: it survives WebSocket disconnects so a user
+// switching between conversations does not lose pending approvals. The owning
+// WSHandler calls UpdateSink on connect and ClearSink on disconnect; Close is
+// reserved for session teardown (DELETE /v1/conversations/{id}).
 type RemoteApprover struct {
-	sink    FrameSink
 	timeout time.Duration
 
 	mu      sync.Mutex
-	pending map[string]chan bool
+	sink    FrameSink // nil when no client connected; mutable via UpdateSink/ClearSink
+	pending map[string]*pendingReq
 	closed  bool
 }
 
 var _ agent.Approver = (*RemoteApprover)(nil)
 
 // NewRemoteApprover asks over sink. A non-positive timeout means "wait until
-// resolved or closed" (rely on Close at disconnect rather than a deadline).
+// resolved or closed" (rely on Close at session teardown rather than a deadline).
 func NewRemoteApprover(sink FrameSink, timeout time.Duration) *RemoteApprover {
-	return &RemoteApprover{sink: sink, timeout: timeout, pending: make(map[string]chan bool)}
+	return &RemoteApprover{sink: sink, timeout: timeout, pending: make(map[string]*pendingReq)}
 }
 
 // Approve sends an approval_request and blocks until the verdict arrives, the
-// deadline elapses, or the approver is closed. It denies on any path other than
-// an explicit approval.
+// deadline elapses, or the approver is closed. When no client is connected (sink
+// is nil) the send is skipped — the request waits in pending until UpdateSink
+// re-sends it. It denies on any path other than an explicit approval.
 func (a *RemoteApprover) Approve(toolName string, input json.RawMessage) bool {
 	id := newApprovalID()
-	ch := make(chan bool, 1)
+	req := &pendingReq{
+		ch:       make(chan bool, 1),
+		toolName: toolName,
+		input:    input,
+	}
 
 	a.mu.Lock()
 	if a.closed {
 		a.mu.Unlock()
 		return false
 	}
-	a.pending[id] = ch
+	a.pending[id] = req
+	snk := a.sink // capture under lock
 	a.mu.Unlock()
 
 	defer func() {
@@ -59,13 +78,17 @@ func (a *RemoteApprover) Approve(toolName string, input json.RawMessage) bool {
 		a.mu.Unlock()
 	}()
 
-	req := NewApprovalRequest(id, "", "", toolName, string(input), a.timeout.Milliseconds())
-	frame, err := json.Marshal(req)
-	if err != nil {
-		return false
-	}
-	if err := a.sink.Send(frame); err != nil {
-		return false // cannot ask the client: deny
+	// Send to current sink (if any). If sink is nil, the request stays pending
+	// and will be re-sent when a client connects via UpdateSink.
+	if snk != nil {
+		r := NewApprovalRequest(id, "", "", toolName, string(input), a.timeout.Milliseconds())
+		frame, err := json.Marshal(r)
+		if err != nil {
+			return false
+		}
+		// A send failure means the client disconnected mid-send. Don't deny —
+		// the request stays registered and will be re-sent on the next UpdateSink.
+		_ = snk.Send(frame)
 	}
 
 	var deadline <-chan time.Time
@@ -75,7 +98,7 @@ func (a *RemoteApprover) Approve(toolName string, input json.RawMessage) bool {
 		deadline = t.C
 	}
 	select {
-	case approved := <-ch:
+	case approved := <-req.ch:
 		return approved
 	case <-deadline:
 		return false // no answer in time: deny
@@ -86,29 +109,33 @@ func (a *RemoteApprover) Approve(toolName string, input json.RawMessage) bool {
 // matching id. Unknown or already-resolved ids are ignored.
 func (a *RemoteApprover) Resolve(id string, approved bool) {
 	a.mu.Lock()
-	ch, ok := a.pending[id]
+	req, ok := a.pending[id]
 	a.mu.Unlock()
 	if ok {
 		select {
-		case ch <- approved:
+		case req.ch <- approved:
 		default:
 		}
 	}
 }
 
 // ApprovePlan implements agent.PlanApprover by sending a plan_approval_request
-// and blocking until the client responds. Same fail-safe as Approve: any path
-// other than an explicit approval is a denial.
+// and blocking until the client responds. Same session-scoped semantics as
+// Approve: a nil sink skips the send and waits for UpdateSink to re-send.
 func (a *RemoteApprover) ApprovePlan(plan agent.Plan) agent.PlanDecision {
 	id := newApprovalID()
-	ch := make(chan bool, 1)
+	req := &pendingReq{
+		ch:   make(chan bool, 1),
+		plan: &plan,
+	}
 
 	a.mu.Lock()
 	if a.closed {
 		a.mu.Unlock()
 		return agent.PlanRejected
 	}
-	a.pending[id] = ch
+	a.pending[id] = req
+	snk := a.sink // capture under lock
 	a.mu.Unlock()
 
 	defer func() {
@@ -117,20 +144,21 @@ func (a *RemoteApprover) ApprovePlan(plan agent.Plan) agent.PlanDecision {
 		a.mu.Unlock()
 	}()
 
-	req := PlanApprovalRequest{
-		Type:       "plan_approval_request",
-		ID:         id,
-		PlanID:     plan.ID,
-		Title:      plan.Title,
-		Content:    plan.Content,
-		DeadlineMS: a.timeout.Milliseconds(),
-	}
-	frame, err := json.Marshal(req)
-	if err != nil {
-		return agent.PlanRejected
-	}
-	if err := a.sink.Send(frame); err != nil {
-		return agent.PlanRejected
+	if snk != nil {
+		r := PlanApprovalRequest{
+			Type:       "plan_approval_request",
+			ID:         id,
+			PlanID:     plan.ID,
+			Title:      plan.Title,
+			Content:    plan.Content,
+			DeadlineMS: a.timeout.Milliseconds(),
+		}
+		frame, err := json.Marshal(r)
+		if err != nil {
+			return agent.PlanRejected
+		}
+		// Send failure is not a denial — the request stays pending.
+		_ = snk.Send(frame)
 	}
 
 	var deadline <-chan time.Time
@@ -140,7 +168,7 @@ func (a *RemoteApprover) ApprovePlan(plan agent.Plan) agent.PlanDecision {
 		deadline = t.C
 	}
 	select {
-	case approved := <-ch:
+	case approved := <-req.ch:
 		if approved {
 			return agent.PlanApproved
 		}
@@ -152,17 +180,81 @@ func (a *RemoteApprover) ApprovePlan(plan agent.Plan) agent.PlanDecision {
 
 var _ agent.PlanApprover = (*RemoteApprover)(nil)
 
-// Close denies every pending approval and rejects future ones, so a turn waiting
-// on a vanished client stops immediately instead of hanging to its deadline.
+// UpdateSink sets a new (or replacement) FrameSink and re-sends every pending
+// request so a reconnected client sees them. Call on WebSocket connect.
+func (a *RemoteApprover) UpdateSink(sink FrameSink) {
+	a.mu.Lock()
+	a.sink = sink
+	pending := make([]*pendingReq, 0, len(a.pending))
+	for id, req := range a.pending {
+		// Stash the id in the channel buffer slot so we can correlate (safe:
+		// pendingReq.ch has capacity 1). We use a separate list because id is
+		// the map key and we need both id and req for re-sending.
+		pending = append(pending, req)
+		_ = id // keep key alive
+	}
+	a.mu.Unlock()
+
+	for _, req := range pending {
+		// Re-send under a fresh lock to get the sink reference and the id.
+		a.mu.Lock()
+		// Find the id for this request.
+		var reqID string
+		for id, r := range a.pending {
+			if r == req {
+				reqID = id
+				break
+			}
+		}
+		snk := a.sink
+		a.mu.Unlock()
+
+		if reqID == "" || snk == nil {
+			continue
+		}
+
+		if req.plan != nil {
+			r := PlanApprovalRequest{
+				Type:       "plan_approval_request",
+				ID:         reqID,
+				PlanID:     req.plan.ID,
+				Title:      req.plan.Title,
+				Content:    req.plan.Content,
+				DeadlineMS: a.timeout.Milliseconds(),
+			}
+			if frame, err := json.Marshal(r); err == nil {
+				_ = snk.Send(frame)
+			}
+		} else {
+			r := NewApprovalRequest(reqID, "", "", req.toolName, string(req.input), a.timeout.Milliseconds())
+			if frame, err := json.Marshal(r); err == nil {
+				_ = snk.Send(frame)
+			}
+		}
+	}
+}
+
+// ClearSink detaches the current sink without denying pending requests. The
+// requests stay registered so they can be re-sent on the next UpdateSink. Call on
+// WebSocket disconnect.
+func (a *RemoteApprover) ClearSink() {
+	a.mu.Lock()
+	a.sink = nil
+	a.mu.Unlock()
+}
+
+// Close denies every pending approval and rejects future ones. Only called at
+// session teardown (DELETE /v1/conversations/{id} or server shutdown), NOT on
+// WebSocket disconnect — the point of this type is to survive reconnects.
 func (a *RemoteApprover) Close() {
 	a.mu.Lock()
 	a.closed = true
 	pending := a.pending
-	a.pending = make(map[string]chan bool)
+	a.pending = make(map[string]*pendingReq)
 	a.mu.Unlock()
-	for _, ch := range pending {
+	for _, req := range pending {
 		select {
-		case ch <- false:
+		case req.ch <- false:
 		default:
 		}
 	}
