@@ -62,6 +62,16 @@ func (r *fakeConversationRepo) Delete(ctx context.Context, id string) error {
 	delete(r.sessions, id)
 	return nil
 }
+func (r *fakeConversationRepo) UpdateName(ctx context.Context, id string, name string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	s, ok := r.sessions[id]
+	if !ok {
+		return fmt.Errorf("session %q not found", id)
+	}
+	s.Name = name
+	return nil
+}
 func (r *fakeConversationRepo) Close() error { return nil }
 
 // ---- test adapters for ConversationEventStore ----

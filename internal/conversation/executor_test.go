@@ -42,6 +42,14 @@ func (r *fakeRepo) Delete(ctx context.Context, id string) error {
 	delete(r.sessions, id)
 	return nil
 }
+func (r *fakeRepo) UpdateName(ctx context.Context, id string, name string) error {
+	s, ok := r.sessions[id]
+	if !ok {
+		return &notFoundError{id}
+	}
+	s.Name = name
+	return nil
+}
 func (r *fakeRepo) Close() error { return nil }
 
 // fakeEventStore captures events for test assertions.

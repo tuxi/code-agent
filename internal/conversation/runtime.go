@@ -32,3 +32,11 @@ type RuntimeContext struct {
 type RunBuilder interface {
 	Build(ctx RuntimeContext) TurnRunner
 }
+
+// TitleGenerator optionally produces a concise human-readable title from the
+// first exchange of a conversation. It is invoked asynchronously after the first
+// turn so the user sees a descriptive name in session lists without blocking the
+// turn response.
+type TitleGenerator interface {
+	GenerateTitle(ctx context.Context, userMessage, assistantResponse string) (string, error)
+}

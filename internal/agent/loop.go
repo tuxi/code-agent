@@ -101,9 +101,17 @@ type Runner struct {
 	// Correlation IDs stamped onto every emitted event. Set per RunTurn (which is
 	// sequential on a Runner), so an event always carries which session and turn
 	// produced it.
-	emitSessionID string
-	emitTurnID    string
+	emitSessionID    string
+	emitTurnID       string
+	emitInvocationID string // set at the start of each model call; stamped on all events
 }
+
+// invocationSeq backs per-turn invocation ids; monotonically increases within a
+// single process. Combined with turn_id on the wire, clients get globally unique
+// (session, turn, invocation) triples.
+var invocationSeq atomic.Uint64
+
+func newInvocationID() string { return fmt.Sprintf("inv_%d", invocationSeq.Add(1)) }
 
 // nextSessionTurnID returns a session-scoped, monotonic turn identifier. Unlike
 // a process-global counter (which resets on restart and can produce duplicates
@@ -131,6 +139,7 @@ func (r *Runner) emit(e Event) {
 	e.At = time.Now()
 	e.SessionID = r.emitSessionID
 	e.TurnID = r.emitTurnID
+	e.InvocationID = r.emitInvocationID
 	r.Emitter.Emit(e)
 }
 
@@ -198,6 +207,7 @@ func (r *Runner) RunTurn(ctx context.Context, sess *session.Session, userInput s
 
 	r.emitSessionID = sess.ID
 	r.emitTurnID = nextSessionTurnID(sess)
+	r.emitInvocationID = "" // cleared each turn; set per model call
 
 	// Append the user's turn to the persistent session history.
 	sess.Messages = append(sess.Messages, model.Message{
@@ -274,6 +284,7 @@ func (r *Runner) RunTurn(ctx context.Context, sess *session.Session, userInput s
 			msgs = appendEphemeralUser(msgs, planningPrompt)
 		}
 
+		r.emitInvocationID = newInvocationID()
 		r.emit(Event{Kind: EventModelStarted})
 		modelStart := time.Now()
 		resp, err := r.complete(ctx, model.Request{

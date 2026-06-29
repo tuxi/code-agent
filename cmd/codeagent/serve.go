@@ -79,6 +79,7 @@ func runServe(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider 
 		ToolReg: toolReg, WSReg: wsReg, PlanRef: planRef,
 	}
 	executor := conversation.NewTurnExecutor(repo, eventStore, active, subs, rb)
+	executor.SetTitleGenerator(conversation.NewLLMTitleGenerator(provider, mc.Model))
 
 	handler := server.NewMux(repo, eventStore, executor, server.MuxOptions{
 		ServerName:   "codeagent/" + mc.Model,
@@ -94,9 +95,10 @@ func runServe(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider 
 	fmt.Printf("codeagent serve — http://%s  (default workspace: %s, model: %s)\n", addr, root, mc.Model)
 	fmt.Println("  GET  /healthz")
 	fmt.Println("  GET  /v1/conversations")
-	fmt.Println("  POST /v1/conversations            {\"workspace_path\":\"...\"}  -> {\"id\":\"...\"}")
+	fmt.Println("  POST   /v1/conversations            {\"workspace_path\":\"...\"}  -> {\"id\":\"...\"}")
+	fmt.Println("  PATCH  /v1/conversations/{id}        {\"name\":\"...\"}")
 	fmt.Println("  DELETE /v1/conversations/{id}")
-	fmt.Println("  GET  /v1/conversations/{id}/stream   (WebSocket)")
+	fmt.Println("  GET    /v1/conversations/{id}/stream   (WebSocket)")
 	fmt.Println("  GET  /v1/conversations/{id}/messages")
 	fmt.Println("  GET  /v1/conversations/{id}/events")
 	fmt.Println("  GET  /v2/conversations/{id}/stream   (WebSocket, same as v1)")

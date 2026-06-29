@@ -52,6 +52,8 @@ pkg/stabilityai/out
 deploy/
 assets/
 swag-docs/
-main
 
-/codeagent
+main
+codeagentd
+codeagent
+

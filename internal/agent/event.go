@@ -61,6 +61,13 @@ type Event struct {
 	SessionID string
 	TurnID    string
 
+	// InvocationID groups events produced by a single model call. Every event
+	// between model_started and the next model_started (or turn_finished) carries
+	// the same invocation_id, so clients can unambiguously associate thinking,
+	// tool calls, and compaction events with their parent model invocation
+	// without relying on implicit temporal ordering.
+	InvocationID string
+
 	// Tool events (ToolStarted / ToolFinished / Observed). For EventObserved,
 	// Observation carries the one-line summary and Failure the FailureType.
 	//

@@ -41,7 +41,7 @@ func renderPicker(p sessionPicker, width int) []string {
 	}
 	for i := start; i < end; i++ {
 		meta := p.metas[i]
-		title := sessionTitle(meta.Title)
+		title := effectiveTitle(meta)
 		if title == "" {
 			title = meta.ID
 		}
@@ -67,13 +67,22 @@ func formatSessionList(metas []session.Meta) string {
 	}
 	var b strings.Builder
 	for _, m := range metas {
-		t := sessionTitle(m.Title)
+		t := effectiveTitle(m)
 		if t == "" {
 			t = m.ID
 		}
 		fmt.Fprintf(&b, "%s — %s · %d msgs · %s\n", t, m.Model, m.MessageCount, humanAgo(m.UpdatedAt))
 	}
 	return strings.TrimRight(b.String(), "\n")
+}
+
+// effectiveTitle returns the best display title for a session, preferring the
+// persisted Name (auto-generated or user-set) over the derived Title fallback.
+func effectiveTitle(m session.Meta) string {
+	if m.Name != "" {
+		return m.Name
+	}
+	return sessionTitle(m.Title)
 }
 
 // sessionTitle flattens a first-message into a single clean line.

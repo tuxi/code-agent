@@ -105,6 +105,19 @@ func (m *MemoryStore) Close() error {
 	return nil
 }
 
+func (m *MemoryStore) UpdateName(_ context.Context, id string, name string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	sess, ok := m.sessions[id]
+	if !ok {
+		return fmt.Errorf("session %q not found", id)
+	}
+	sess.Name = name
+	sess.UpdatedAt = time.Now()
+	m.reindexMetas()
+	return nil
+}
+
 // ── EventStore ────────────────────────────────────────────────────────────
 
 func (m *MemoryStore) RecordEvent(_ context.Context, e EventRecord) error {
@@ -313,6 +326,7 @@ func (m *MemoryStore) reindexMetas() {
 
 		m.metas = append(m.metas, Meta{
 			ID:            s.ID,
+			Name:          s.Name,
 			Title:         title,
 			Model:         s.Model,
 			MessageCount:  len(s.Messages),

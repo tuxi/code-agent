@@ -33,6 +33,10 @@ type ConversationRepository interface {
 	// Delete removes a session and its messages/compactions/events. Idempotent.
 	Delete(ctx context.Context, id string) error
 
+	// UpdateName changes the display name of a session without loading/saving
+	// the full session. Used by the PATCH rename endpoint and async title generation.
+	UpdateName(ctx context.Context, id string, name string) error
+
 	// Close releases resources (e.g. the underlying SQLite connection).
 	Close() error
 }

@@ -25,6 +25,7 @@ type CreateConversationRequest struct {
 type ConversationRef struct {
 	ID            string `json:"id"`
 	WorkspacePath string `json:"workspace_path"`
+	Name          string `json:"name,omitempty"`
 }
 
 // ConversationDetail is GET /v1/conversations/{id}. Counts and timestamps are
@@ -33,6 +34,7 @@ type ConversationRef struct {
 type ConversationDetail struct {
 	ID            string `json:"id"`
 	WorkspacePath string `json:"workspace_path"`
+	Name          string `json:"name,omitempty"`
 	TurnCount     int    `json:"turn_count"`
 	MessageCount  int    `json:"message_count"`
 	CreatedAt     string `json:"created_at,omitempty"`
@@ -70,6 +72,7 @@ type MuxOptions struct {
 //	GET  /v1/conversations/{id}/messages     conversational backbone (derived)
 //	GET  /v1/conversations/{id}/events       recorded events, re-encoded to wire v1
 //	DELETE /v1/conversations/{id}            delete session + events
+//	PATCH /v1/conversations/{id}              rename — body: {"name":"..."}
 //	GET  /v1/conversations/{id}/stream       upgrade via TurnExecutor/TransportSession
 //	GET  /v2/conversations/{id}/stream       same (alias)
 //
@@ -97,6 +100,7 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 			refs = append(refs, ConversationRef{
 				ID:            m.ID,
 				WorkspacePath: m.WorkspacePath,
+				Name:          effectiveName(m),
 			})
 		}
 		writeJSON(w, http.StatusOK, refs)
@@ -126,6 +130,7 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 		detail := ConversationDetail{ID: id}
 		if s, err := repo.Load(r.Context(), id); err == nil {
 			detail.WorkspacePath = s.WorkspacePath
+			detail.Name = s.Name
 		}
 		for _, rec := range recs {
 			if detail.CreatedAt == "" {
@@ -206,6 +211,40 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 	mux.Handle("GET /v1/conversations/{id}/stream", ws)
 	mux.Handle("GET /v2/conversations/{id}/stream", ws)
 
+	mux.HandleFunc("PATCH /v1/conversations/{id}", func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+		var body struct {
+			Name string `json:"name"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, "invalid JSON body", http.StatusBadRequest)
+			return
+		}
+		if body.Name == "" {
+			http.Error(w, `"name" is required`, http.StatusBadRequest)
+			return
+		}
+		if len(body.Name) > 200 {
+			http.Error(w, `"name" must not exceed 200 characters`, http.StatusBadRequest)
+			return
+		}
+		if err := repo.UpdateName(r.Context(), id, body.Name); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		// Reload to return the full ref.
+		sess, err := repo.Load(r.Context(), id)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, http.StatusOK, ConversationRef{
+			ID:            sess.ID,
+			WorkspacePath: sess.WorkspacePath,
+			Name:          sess.Name,
+		})
+	})
+
 	mux.HandleFunc("DELETE /v1/conversations/{id}", func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
 		// Close and remove the session-scoped approver so blocked turns wake
@@ -246,6 +285,15 @@ func decodeStoredEvent(rec session.EventRecord) (agent.Event, bool) {
 		return ev, false
 	}
 	return ev, true
+}
+
+// effectiveName returns the display name for a session Meta, preferring the
+// persisted Name and falling back to Title (first user message truncation).
+func effectiveName(m session.Meta) string {
+	if m.Name != "" {
+		return m.Name
+	}
+	return m.Title
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

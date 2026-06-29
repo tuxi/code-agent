@@ -24,6 +24,7 @@ type wireEvent struct {
 	SessionID       string `json:"session_id,omitempty"`
 	ParentSessionID string `json:"parent_session_id,omitempty"`
 	TurnID          string `json:"turn_id,omitempty"`
+	InvocationID    string `json:"invocation_id,omitempty"`
 
 	// Tool / skill events.
 	CallID       string          `json:"call_id,omitempty"`
@@ -67,6 +68,7 @@ func toWire(e agent.Event) wireEvent {
 		At:           e.At.UTC().Format(rfc3339Millis),
 		SessionID:    e.SessionID,
 		TurnID:       e.TurnID,
+		InvocationID: e.InvocationID,
 		CallID:       e.CallID,
 		Step:         e.Step,
 		ToolName:     e.ToolName,

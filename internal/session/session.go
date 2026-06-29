@@ -22,6 +22,10 @@ type Session struct {
 	// and never derived from the event stream. An empty path means the server
 	// default workspace was used.
 	WorkspacePath string
+	// Name is the human-readable display name for this conversation. It is set
+	// after the first turn (truncated first user message) and may be replaced by
+	// an LLM-generated title or a user-supplied name via PATCH. Empty means unset.
+	Name string
 	// Model is the wire model string this session last ran with — stored so a
 	// listing can show it and a resume can report it.
 	Model string

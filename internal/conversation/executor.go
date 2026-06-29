@@ -3,8 +3,11 @@ package conversation
 import (
 	"context"
 	"encoding/json"
+	"strings"
+	"time"
 
 	"code-agent/internal/agent"
+	"code-agent/internal/model"
 	"code-agent/internal/session"
 )
 
@@ -22,10 +25,20 @@ type TurnExecutor struct {
 	subs   *SubscriptionManager
 	rb     RunBuilder
 
+	// titleGen, if set, asynchronously generates a human-readable title after the
+	// first turn completes. Nil means no auto-titling (tests, headless).
+	titleGen TitleGenerator
+
 	// OnSaveError, if set, is invoked when the post-turn save fails. Autosave
 	// is best-effort and never fails the turn; this only surfaces the warning
 	// (the REPL prints it, a server logs it). Default nil = silent.
 	OnSaveError func(error)
+}
+
+// SetTitleGenerator configures optional auto-titling. Separate from the
+// constructor to keep the mandatory dependencies clear.
+func (e *TurnExecutor) SetTitleGenerator(g TitleGenerator) {
+	e.titleGen = g
 }
 
 // NewTurnExecutor wires the execution pipeline.
@@ -89,6 +102,22 @@ func (e *TurnExecutor) ExecuteWithSession(parentCtx context.Context, sess *sessi
 		}
 	}
 
+	// 6. Auto-name: set an initial truncation-based name on the first turn, then
+	//    fire async LLM title generation if configured.
+	if sess.Name == "" {
+		initial := truncateForTitle(firstUserMessage(sess))
+		if initial != "" {
+			sess.Name = initial
+			// Persist the initial name (best-effort, fire-and-forget).
+			go func() {
+				_ = e.repo.UpdateName(context.WithoutCancel(parentCtx), sess.ID, initial)
+			}()
+		}
+	}
+	if e.titleGen != nil && turnCount(sess) == 1 {
+		go e.generateTitleAsync(sess)
+	}
+
 	return res, runErr
 }
 
@@ -121,6 +150,69 @@ func (e *TurnExecutor) RegisterTools(sessionID string, tools []agent.ClientToolD
 func (e *TurnExecutor) Shutdown() {
 	e.active.Shutdown()
 	e.subs.Shutdown()
+}
+
+// ---- auto-naming helpers ----
+
+// firstUserMessage returns the content of the first user message in the session.
+func firstUserMessage(sess *session.Session) string {
+	for _, m := range sess.Messages {
+		if m.Role == model.RoleUser {
+			return m.Content
+		}
+	}
+	return ""
+}
+
+// truncateForTitle collapses whitespace and truncates msg to a reasonable
+// display width for use as a fallback session title.
+func truncateForTitle(msg string) string {
+	msg = strings.TrimSpace(msg)
+	// First line only.
+	if idx := strings.IndexAny(msg, "\r\n"); idx >= 0 {
+		msg = msg[:idx]
+	}
+	// Collapse whitespace.
+	msg = strings.Join(strings.Fields(msg), " ")
+	const maxLen = 60
+	if len(msg) > maxLen {
+		msg = msg[:maxLen]
+	}
+	return strings.TrimSpace(msg)
+}
+
+// turnCount returns the number of user turns in the session.
+func turnCount(sess *session.Session) int {
+	n := 0
+	for _, m := range sess.Messages {
+		if m.Role == model.RoleUser {
+			n++
+		}
+	}
+	return n
+}
+
+// generateTitleAsync runs the LLM title generator in a background goroutine.
+// It uses a detached context with a timeout so it is not tied to the turn's
+// lifecycle. Best-effort: failures are silently ignored.
+func (e *TurnExecutor) generateTitleAsync(sess *session.Session) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	userMsg := firstUserMessage(sess)
+	assistantMsg := ""
+	for _, m := range sess.Messages {
+		if m.Role == model.RoleAssistant && m.Content != "" {
+			assistantMsg = m.Content
+			break
+		}
+	}
+
+	title, err := e.titleGen.GenerateTitle(ctx, userMsg, assistantMsg)
+	if err != nil || title == "" {
+		return
+	}
+	_ = e.repo.UpdateName(ctx, sess.ID, title)
 }
 
 // ---- internal emitters ----

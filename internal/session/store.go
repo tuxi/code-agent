@@ -17,6 +17,7 @@ type SessionStore interface {
 	Load(ctx context.Context, id string) (*Session, error)
 	List(ctx context.Context) ([]Meta, error)
 	Delete(ctx context.Context, id string) error
+	UpdateName(ctx context.Context, id string, name string) error
 	Close() error
 }
 
@@ -149,7 +150,8 @@ type LatencyBucket struct {
 // fields are aggregated from the session's compactions, not stored separately.
 type Meta struct {
 	ID           string
-	Title        string // first user message, truncated — a human label for pickers
+	Name         string // persisted display name (auto-generated or user-set); empty falls back to Title
+	Title        string // derived fallback: first user message, truncated — a human label for pickers
 	Model        string
 	MessageCount int
 	PromptTokens int

@@ -43,7 +43,7 @@ func run() error {
 	args := os.Args[1:]
 	modelName, args := runtime.ExtractModelFlag(args)
 
-	addr := "127.0.0.1:8787"
+	addr := "0.0.0.0:8787"
 	if len(args) > 0 {
 		addr = args[0]
 	}
@@ -112,6 +112,7 @@ func run() error {
 		ToolReg: toolReg, WSReg: wsReg, PlanRef: planRef,
 	}
 	executor := conversation.NewTurnExecutor(repo, eventStore, active, subs, rb)
+	executor.SetTitleGenerator(conversation.NewLLMTitleGenerator(provider, mc.Model))
 
 	handler := server.NewMux(repo, eventStore, executor, server.MuxOptions{
 		ServerName:   "codeagentd/" + mc.Model,
@@ -127,8 +128,9 @@ func run() error {
 	fmt.Printf("codeagentd serve — http://%s  (default workspace: %s, model: %s)\n", addr, root, mc.Model)
 	fmt.Println("  GET  /healthz")
 	fmt.Println("  GET  /v1/conversations")
-	fmt.Println("  POST /v1/conversations            {\"workspace_path\":\"...\"}  -> {\"id\":\"...\"}")
-	fmt.Println("  GET  /v1/conversations/{id}/stream   (WebSocket)")
+	fmt.Println("  POST  /v1/conversations            {\"workspace_path\":\"...\"}  -> {\"id\":\"...\"}")
+	fmt.Println("  PATCH /v1/conversations/{id}        {\"name\":\"...\"}")
+	fmt.Println("  GET   /v1/conversations/{id}/stream   (WebSocket)")
 
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		return err

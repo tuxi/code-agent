@@ -70,6 +70,10 @@ func (r *sqliteRepository) Delete(ctx context.Context, id string) error {
 	return r.store.Delete(ctx, id)
 }
 
+func (r *sqliteRepository) UpdateName(ctx context.Context, id string, name string) error {
+	return r.store.UpdateName(ctx, id, name)
+}
+
 func (r *sqliteRepository) Close() error {
 	return r.store.Close()
 }
