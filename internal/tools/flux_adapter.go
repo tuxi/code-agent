@@ -55,6 +55,16 @@ func (a *FluxWorkflowAdapter) Execute(ctx context.Context, ec ExecutionContext, 
 	if err != nil {
 		return ToolResult{Content: "flux error: " + err.Error()}, nil
 	}
+	// flux 约定：工具失败是带内 result（Success=false + Error），Go err 仍为 nil。
+	// 必须显式检查 Success，否则失败时 Data=nil 会被 marshal 成字符串 "null"，
+	// 真正的错误（如 "missing api key"）被静默吞掉，表现为「不报错但产出全是 null」。
+	if result == nil || !result.Success {
+		msg := "unknown error"
+		if result != nil && result.Error != "" {
+			msg = result.Error
+		}
+		return ToolResult{Content: "flux workflow failed: " + msg}, nil
+	}
 
 	b, _ := json.MarshalIndent(result.Data, "", "  ")
 	return ToolResult{Content: string(b)}, nil

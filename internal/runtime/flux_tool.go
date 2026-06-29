@@ -11,6 +11,7 @@ import (
 	fluxtool "github.com/tuxi/flux/tool"
 	builtin "github.com/tuxi/flux/tool/builtin"
 
+	"code-agent/internal/app"
 	"code-agent/internal/tools"
 )
 
@@ -22,8 +23,11 @@ type FluxStoreSet struct {
 }
 
 // RegisterFluxTool 将 Flux Workflow Engine 作为原生 Tool 注册到 code-agent。
+// mc 是 code-agent 已解析的主模型配置（BaseURL/Model/APIKey 来自 config.yaml，
+// APIKey 已由 api_key_env 解析）——flux 复用它，保证和 code-agent 用同一套 LLM 凭证，
+// 不再各读一套互不相干的 LLM_* 环境变量（那正是「config.yaml 设了 key 却读不到」的根因）。
 // stores: optional SQLite-backed stores (nil = in-memory fallback).
-func RegisterFluxTool(registry *tools.Registry, stores *FluxStoreSet) {
+func RegisterFluxTool(registry *tools.Registry, mc app.ModelConfig, stores *FluxStoreSet) {
 	// 1. 创建 flux 的工具注册表（DAG 节点可用的工具）
 	fluxReg := fluxtool.NewRegistry()
 	fluxReg.Register(builtin.NewMergeResultTool())
@@ -33,19 +37,29 @@ func RegisterFluxTool(registry *tools.Registry, stores *FluxStoreSet) {
 		fluxReg.Register(builtin.NewShellTool(wd))
 	}
 
-	// 2. LLM provider — 用环境变量（和 MCP server 一致）
-	baseURL := os.Getenv("LLM_BASE_URL")
+	// 2. LLM provider — 以 config.yaml 解析出的主模型为准；LLM_* 环境变量仅作可选覆盖。
+	baseURL := mc.BaseURL
+	if v := os.Getenv("LLM_BASE_URL"); v != "" {
+		baseURL = v
+	}
 	if baseURL == "" {
 		baseURL = "https://api.deepseek.com/v1"
 	}
-	modelName := os.Getenv("LLM_MODEL")
+	modelName := mc.Model
+	if v := os.Getenv("LLM_MODEL"); v != "" {
+		modelName = v
+	}
 	if modelName == "" {
-		modelName = "deepseek-v4-pro"
+		modelName = "deepseek-chat"
+	}
+	apiKey := mc.APIKey
+	if v := os.Getenv("LLM_API_KEY"); v != "" {
+		apiKey = v
 	}
 
 	provider := &fluxmodel.OpenAICompatibleProvider{
 		BaseURL:    baseURL,
-		APIKey:     os.Getenv("LLM_API_KEY"),
+		APIKey:     apiKey,
 		HTTPClient: &http.Client{Timeout: 5 * time.Minute},
 	}
 
