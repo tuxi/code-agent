@@ -5,11 +5,11 @@ import (
 	"os"
 	"time"
 
-	flux "flux"
-	fluxmodel "flux/model"
-	fluxstore "flux/store"
-	fluxtool "flux/tool"
-	builtin "flux/tool/builtin"
+	flux "github.com/tuxi/flux"
+	fluxmodel "github.com/tuxi/flux/model"
+	fluxstore "github.com/tuxi/flux/store"
+	fluxtool "github.com/tuxi/flux/tool"
+	builtin "github.com/tuxi/flux/tool/builtin"
 
 	"code-agent/internal/tools"
 )

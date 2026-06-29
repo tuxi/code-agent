@@ -9,8 +9,8 @@ import (
 	"fmt"
 	"sync"
 
-	"flux/runtime"
-	"flux/store"
+	"github.com/tuxi/flux/runtime"
+	"github.com/tuxi/flux/store"
 )
 
 // Store is a SQLite-backed implementation of both flux's WorkflowStore and AwaitStore.

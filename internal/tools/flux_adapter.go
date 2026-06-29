@@ -4,8 +4,8 @@ import (
 	"context"
 	"encoding/json"
 
-	flux "flux"
-	fluxtool "flux/tool"
+	flux "github.com/tuxi/flux"
+	fluxtool "github.com/tuxi/flux/tool"
 )
 
 // FluxWorkflowAdapter wraps flux.WorkflowTool as a code-agent tools.Tool.

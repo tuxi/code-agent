@@ -52,6 +52,6 @@ require (
 	modernc.org/memory v1.11.0 // indirect
 )
 
-require flux v0.0.0
+require github.com/tuxi/flux v0.0.0
 
-replace flux => /Users/xiaoyuan/Documents/work/git/flux
+replace github.com/tuxi/flux => /Users/xiaoyuan/Documents/work/git/flux
