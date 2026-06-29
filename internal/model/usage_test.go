@@ -7,6 +7,26 @@ import (
 	"testing"
 )
 
+// TestProviderClientHasNoTotalTimeout guards against reintroducing a fixed
+// http.Client.Timeout. Such a ceiling bounds the WHOLE exchange — including the
+// response body — so it kills any streamed or long generation that runs past
+// it ("context deadline exceeded ... while reading body" on long tasks). Total
+// per-attempt time must come from ResilientProvider's context deadline; the
+// client should only bound connect/TLS/time-to-first-byte via its Transport.
+func TestProviderClientHasNoTotalTimeout(t *testing.T) {
+	p := NewOpenAICompatibleProvider("https://example.test", "key")
+	if p.HTTPClient.Timeout != 0 {
+		t.Fatalf("http.Client.Timeout = %s, want 0 (no total ceiling — it would cap long/streamed body reads)", p.HTTPClient.Timeout)
+	}
+	tr, ok := p.HTTPClient.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("Transport = %T, want *http.Transport bounding connect/TLS/header phases", p.HTTPClient.Transport)
+	}
+	if tr.ResponseHeaderTimeout == 0 {
+		t.Fatal("ResponseHeaderTimeout = 0; time-to-first-byte should still be bounded")
+	}
+}
+
 // TestParsesCachedPromptTokens verifies the cached-input portion is read from
 // either provider's reporting shape (deepseek's flat field or OpenAI's nested
 // detail), and is 0 when neither is present.

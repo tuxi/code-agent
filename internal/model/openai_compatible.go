@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -23,10 +24,23 @@ func NewOpenAICompatibleProvider(baseURL, apiKey string) *OpenAICompatibleProvid
 		BaseURL: strings.TrimRight(baseURL, "/"),
 		APIKey:  apiKey,
 		HTTPClient: &http.Client{
-			// 30 s ceiling for the entire request (connect + TLS + headers +
-			// body). ResilientProvider tightens this via context deadlines,
-			// but bare callers that aren't wrapped still need a safety net.
-			Timeout: 30 * time.Second,
+			// No total Timeout: it is a hard ceiling on the WHOLE exchange
+			// including the response body, so a fixed value silently kills any
+			// streamed or long generation that runs past it (the classic
+			// "context deadline exceeded ... while reading body" on long tasks).
+			// Per-attempt total time is governed by ResilientProvider's context
+			// deadline (request_timeout_seconds) instead. Here we only bound the
+			// phases that SHOULD have a hard ceiling — connect, TLS, and time to
+			// first response byte — none of which scale with generation length.
+			Transport: &http.Transport{
+				Proxy:                 http.ProxyFromEnvironment,
+				DialContext:           (&net.Dialer{Timeout: 10 * time.Second}).DialContext,
+				TLSHandshakeTimeout:   10 * time.Second,
+				ResponseHeaderTimeout: 60 * time.Second,
+				ExpectContinueTimeout: 1 * time.Second,
+				MaxIdleConns:          100,
+				IdleConnTimeout:       90 * time.Second,
+			},
 		},
 	}
 }
