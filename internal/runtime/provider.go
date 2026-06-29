@@ -19,8 +19,10 @@ func BuildProvider(mc app.ModelConfig, pc app.ProviderConfig) (model.Provider, e
 	switch mc.Provider {
 	case "openai", "":
 		inner = model.NewOpenAICompatibleProvider(mc.BaseURL, mc.APIKey)
+	case "ollama":
+		inner = model.NewOllamaProvider(mc.BaseURL)
 	default:
-		return nil, fmt.Errorf("unsupported provider %q (only \"openai\"-compatible is wired so far)", mc.Provider)
+		return nil, fmt.Errorf("unsupported provider %q (supported: \"openai\", \"ollama\")", mc.Provider)
 	}
 	return &model.ResilientProvider{
 		Inner:      inner,

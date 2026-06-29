@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -114,12 +115,33 @@ type streamChunk struct {
 	} `json:"usage"`
 }
 
+// IsLocalBaseURL reports whether urlStr points to a loopback address. Local model
+// servers (Ollama, vLLM, llama.cpp, LM Studio) run on localhost and do not require
+// an API key, so both the config layer and the provider layer skip the key check
+// for these endpoints.
+func IsLocalBaseURL(urlStr string) bool {
+	if urlStr == "" {
+		return false
+	}
+	u, err := url.Parse(urlStr)
+	if err != nil {
+		return false
+	}
+	host := u.Hostname()
+	switch host {
+	case "localhost", "127.0.0.1", "::1", "0.0.0.0":
+		return true
+	}
+	return false
+}
+
 // CompleteStream is the streaming form of Complete (StreamingProvider). It calls
 // onText for each text delta as it arrives, accumulates tool-call deltas (the
 // loop needs them whole), and returns the same complete Response Complete would —
 // so everything downstream is identical; only a renderer saw the text live.
 func (p *OpenAICompatibleProvider) CompleteStream(ctx context.Context, req Request, onText func(string)) (Response, error) {
-	if p.APIKey == "" {
+	// Local endpoints (Ollama etc.) do not require an API key.
+	if p.APIKey == "" && !IsLocalBaseURL(p.BaseURL) {
 		return Response{}, fmt.Errorf("missing api key")
 	}
 	if p.BaseURL == "" || req.Model == "" {
@@ -139,7 +161,9 @@ func (p *OpenAICompatibleProvider) CompleteStream(ctx context.Context, req Reque
 	if err != nil {
 		return Response{}, err
 	}
-	httpReq.Header.Set("Authorization", "Bearer "+p.APIKey)
+	if p.APIKey != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+p.APIKey)
+	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "text/event-stream")
 
@@ -228,7 +252,8 @@ func (p *OpenAICompatibleProvider) CompleteStream(ctx context.Context, req Reque
 }
 
 func (p *OpenAICompatibleProvider) Complete(ctx context.Context, req Request) (Response, error) {
-	if p.APIKey == "" {
+	// Local endpoints (Ollama etc.) do not require an API key.
+	if p.APIKey == "" && !IsLocalBaseURL(p.BaseURL) {
 		return Response{}, fmt.Errorf("missing api key")
 	}
 	if p.BaseURL == "" {
@@ -261,7 +286,9 @@ func (p *OpenAICompatibleProvider) Complete(ctx context.Context, req Request) (R
 		return Response{}, err
 	}
 
-	httpReq.Header.Set("Authorization", "Bearer "+p.APIKey)
+	if p.APIKey != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+p.APIKey)
+	}
 	httpReq.Header.Set("Content-Type", "application/json")
 
 	resp, err := p.HTTPClient.Do(httpReq)

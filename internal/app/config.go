@@ -9,6 +9,7 @@ import (
 
 	"code-agent/internal/hooks"
 	"code-agent/internal/mcp"
+	"code-agent/internal/model"
 	"code-agent/internal/session"
 
 	"gopkg.in/yaml.v3"
@@ -308,7 +309,7 @@ func (c Config) SelectModel(name string) (ModelConfig, error) {
 		return ModelConfig{}, fmt.Errorf("unknown model %q; configured models: %s",
 			name, strings.Join(c.ModelNames(), ", "))
 	}
-	if mc.APIKey == "" {
+	if mc.APIKey == "" && !model.IsLocalBaseURL(mc.BaseURL) {
 		return ModelConfig{}, fmt.Errorf("model %q has no API key; set the %s environment variable",
 			name, mc.APIKeyEnv)
 	}

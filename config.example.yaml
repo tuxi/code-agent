@@ -43,6 +43,40 @@ models:
     context_window: 128000
     input_price_per_million: 2.0
     output_price_per_million: 8.0
+
+  # ── Local models via Ollama ───────────────────────────────────────────
+  # Two wiring options:
+  #   1) provider: ollama   — native /api/chat, keep_alive, no /v1 prefix
+  #   2) provider: openai   — Ollama's OpenAI-compatible /v1/chat/completions
+  # Both work; native gives you keep_alive (model stays loaded between turns).
+  # Install: brew install ollama && ollama serve
+  #
+  # Available coding models with native tool calling (verified on Ollama):
+  #   ollama pull qwen3-coder           # 18 GB, 30B MoE, proper tool_calls ✅
+  #   ollama pull qwen2.5-coder:14b     # 9.0 GB — fast, but uses XML tools format ⚠️
+  #   ollama pull qwen2.5-coder:7b      # 4.4 GB — fast subagent, XML tools ⚠️
+  #   ollama pull deepseek-coder-v2     # 16B MoE, ~10 GB (check tool support)
+  ollama-coder:
+    provider: ollama                # native Ollama protocol (/api/chat)
+    base_url: "http://localhost:11434"
+    model: "qwen3-coder"             # 18 GB, proper tool_calls, ~15-20 t/s on M1 Pro
+    temperature: 0.2
+    context_window: 65536
+
+  ollama-coder-fast:
+    provider: ollama
+    base_url: "http://localhost:11434"
+    model: "qwen2.5-coder:14b"      # 9.0 GB, faster but XML tools (use with provider: openai)
+    temperature: 0.2
+    context_window: 32768
+
+  # Other local servers (vLLM, llama.cpp, LM Studio, LocalAI) speak OpenAI-
+  # compatible protocol. Use provider: openai and point at their /v1 endpoint.
+  #   vllm:
+  #     provider: openai
+  #     base_url: "http://localhost:8000/v1"
+  #     model: "Qwen/Qwen2.5-Coder-14B"
+  #     context_window: 32768
 agent:
   max_steps: 32
   # compact when the prompt reaches this fraction of the model's context_window.

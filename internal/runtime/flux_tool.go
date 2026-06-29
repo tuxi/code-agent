@@ -3,6 +3,7 @@ package runtime
 import (
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	flux "github.com/tuxi/flux"
@@ -37,24 +38,31 @@ func RegisterFluxTool(registry *tools.Registry, mc app.ModelConfig, stores *Flux
 		fluxReg.Register(builtin.NewShellTool(wd))
 	}
 
-	// 2. LLM provider — 以 config.yaml 解析出的主模型为准；LLM_* 环境变量仅作可选覆盖。
-	baseURL := mc.BaseURL
-	if v := os.Getenv("LLM_BASE_URL"); v != "" {
-		baseURL = v
+	baseURL := os.Getenv("LLM_BASE_URL")
+	if baseURL == "" {
+		baseURL = mc.BaseURL
 	}
 	if baseURL == "" {
 		baseURL = "https://api.deepseek.com/v1"
 	}
-	modelName := mc.Model
-	if v := os.Getenv("LLM_MODEL"); v != "" {
-		modelName = v
+
+	if mc.Provider == "ollama" && !strings.HasSuffix(baseURL, "/v1") {
+		baseURL = strings.TrimRight(baseURL, "/") + "/v1"
 	}
+
+	modelName := os.Getenv("LLM_MODEL")
 	if modelName == "" {
-		modelName = "deepseek-chat"
+		modelName = mc.Model
 	}
-	apiKey := mc.APIKey
-	if v := os.Getenv("LLM_API_KEY"); v != "" {
-		apiKey = v
+
+	apiKey := os.Getenv("LLM_API_KEY")
+	if apiKey == "" {
+		apiKey = mc.APIKey
+	}
+	// Local providers (Ollama) don't require an API key, but flux's provider
+	// rejects an empty key. Pass a dummy value so flux can make calls.
+	if apiKey == "" && mc.Provider == "ollama" {
+		apiKey = "ollama"
 	}
 
 	provider := &fluxmodel.OpenAICompatibleProvider{
