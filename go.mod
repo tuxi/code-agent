@@ -10,6 +10,7 @@ require (
 	github.com/coder/websocket v1.8.15
 	github.com/mattn/go-runewidth v0.0.19
 	github.com/modelcontextprotocol/go-sdk v1.6.1
+	github.com/tuxi/flux v1.0.0
 	golang.org/x/net v0.56.0
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.52.0
@@ -51,7 +52,3 @@ require (
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
 )
-
-require github.com/tuxi/flux v0.0.0
-
-replace github.com/tuxi/flux => /Users/xiaoyuan/Documents/work/git/flux
