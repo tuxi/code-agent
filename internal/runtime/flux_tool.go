@@ -7,15 +7,23 @@ import (
 
 	flux "flux"
 	fluxmodel "flux/model"
+	fluxstore "flux/store"
 	fluxtool "flux/tool"
 	builtin "flux/tool/builtin"
 
 	"code-agent/internal/tools"
 )
 
+// FluxStoreSet holds the SQLite-backed Store implementations for flux.
+// nil fields mean in-memory fallback is used.
+type FluxStoreSet struct {
+	WorkflowStore fluxstore.WorkflowStore // nil → in-memory
+	AwaitStore    fluxstore.AwaitStore    // nil → in-memory
+}
+
 // RegisterFluxTool 将 Flux Workflow Engine 作为原生 Tool 注册到 code-agent。
-// Tool 嵌入模式：同进程，共享 LLM provider，事件可桥接。
-func RegisterFluxTool(registry *tools.Registry) {
+// stores: optional SQLite-backed stores (nil = in-memory fallback).
+func RegisterFluxTool(registry *tools.Registry, stores *FluxStoreSet) {
 	// 1. 创建 flux 的工具注册表（DAG 节点可用的工具）
 	fluxReg := fluxtool.NewRegistry()
 	fluxReg.Register(builtin.NewMergeResultTool())
@@ -41,16 +49,20 @@ func RegisterFluxTool(registry *tools.Registry) {
 		HTTPClient: &http.Client{Timeout: 5 * time.Minute},
 	}
 
-	// 3. 创建 FluxWorkflowTool
-	wt := flux.NewWorkflowTool(flux.WorkflowToolConfig{
+	// 3. 创建 FluxWorkflowTool（注入可选的 Store）
+	cfg := flux.WorkflowToolConfig{
 		Provider:  provider,
 		ModelName: modelName,
 		ToolReg:   fluxReg,
-	})
+	}
+	if stores != nil {
+		cfg.WFStore = stores.WorkflowStore
+		cfg.AwaitStore = stores.AwaitStore
+	}
+	wt := flux.NewWorkflowTool(cfg)
 
 	// 4. 包装为 code-agent Tool 并注册
 	if err := registry.Register(tools.NewFluxWorkflowAdapter(wt)); err != nil {
-		// 非致命：Flux tool 注册失败不阻止 code-agent 启动
-		return
+		return // 非致命
 	}
 }

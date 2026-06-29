@@ -121,7 +121,7 @@ func BuildRegistry(ctx context.Context, cfg app.Config, mc app.ModelConfig, prov
 
 	// Flux v3: Tool embedding — register plan_workflow as a native tool.
 	// Uses the same process and LLM provider as code-agent (lower latency than MCP).
-	RegisterFluxTool(registry)
+	RegisterFluxTool(registry, nil) // nil → in-memory stores; pass FluxStoreSet for SQLite
 
 	// Plan mode tools: enter_plan_mode and propose_plan. They use a RunnerRef for
 	// late binding — the Runner is constructed after the registry. The returned ref
