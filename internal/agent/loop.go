@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync/atomic"
 	"time"
 )
@@ -81,8 +82,9 @@ type Runner struct {
 	// layer can wire it from planModeToolNames after runner construction.
 	PlanTools *tools.Registry
 
-	// lastThinking stores the model's most recent thinking text (resp.Content)
-	// so propose_plan can extract the plan body without duplicating it in args.
+	// lastThinking stores the model's most recent thinking text (the response
+	// content, or the live-streamed text when the call failed) so propose_plan
+	// can extract the plan body without duplicating it in args.
 	lastThinking string
 
 	Compactor session.Compactor
@@ -287,22 +289,35 @@ func (r *Runner) RunTurn(ctx context.Context, sess *session.Session, userInput s
 		r.emitInvocationID = newInvocationID()
 		r.emit(Event{Kind: EventModelStarted})
 		modelStart := time.Now()
+		var streamed strings.Builder
 		resp, err := r.complete(ctx, model.Request{
 			Model:       r.ModelName,
 			Temperature: r.Temperature,
 			Messages:    msgs,
 			Tools:       toolDefs,
-		})
+		}, &streamed)
 		// Capture the model's text for plan extraction and thinking events.
+		// Prefer the complete response, but fall back to what was streamed live
+		// when the call failed before a Response could be assembled (e.g. a
+		// mid-stream timeout) — otherwise the thinking shown live would be lost
+		// from the persisted event log on a failed turn.
+		thinking := resp.Content
+		if thinking == "" {
+			thinking = strings.TrimSpace(streamed.String())
+		}
 		// Emit EventThinking BEFORE EventModelFinished so the logical event
 		// order is model_started → thinking → model_finished, and the at
 		// timestamp reflects when thinking was produced, not when the turn
 		// finished processing it.
-		if resp.Content != "" {
-			r.lastThinking = resp.Content
+		if thinking != "" {
+			r.lastThinking = thinking
 		}
-		if resp.Content != "" && resp.HasToolCalls() {
-			r.emit(Event{Kind: EventThinking, Text: resp.Content})
+		// Persist thinking when the model also requested tools (a finishing turn's
+		// text is persisted as TurnFinished instead, so emitting here would
+		// duplicate it), OR when the call failed — a failed turn produces no
+		// TurnFinished, so this is the only chance to retain the live thinking.
+		if thinking != "" && (resp.HasToolCalls() || err != nil) {
+			r.emit(Event{Kind: EventThinking, Text: thinking})
 		}
 		// Always emit ModelFinished, even on error: it pairs with ModelStarted, so
 		// a live renderer's "Thinking…" ticker is always stopped (no leaked timer).
@@ -610,7 +625,7 @@ func (r *Runner) finalAnswerAfterLimit(ctx context.Context, sess *session.Sessio
 		Temperature: r.Temperature,
 		Messages:    msgs,
 		// No Tools: the model must answer with text, not request more tools.
-	})
+	}, nil)
 	r.emit(Event{Kind: EventModelFinished, PromptTokens: resp.Usage.PromptTokens, Elapsed: time.Since(start), Err: errString(err)})
 	tok := resp.Usage.PromptTokens + resp.Usage.CompletionTokens
 	// A leaked tool-call markup (deepseek, when forced to answer with no tools) is
@@ -663,10 +678,18 @@ func errString(err error) string {
 // the provider supports it — emitting EventTokenDelta for each text delta. Either
 // way it returns the same complete Response, so the loop's control flow is
 // identical whether or not streaming happened.
-func (r *Runner) complete(ctx context.Context, req model.Request) (model.Response, error) {
+// complete calls the model. When streaming, each text delta is mirrored into
+// streamed (when non-nil) so the caller retains the live thinking text even if
+// the call ultimately fails — the provider returns an empty Response on a mid-
+// stream read error, discarding its own accumulation, so this is the only copy
+// that survives a failed turn.
+func (r *Runner) complete(ctx context.Context, req model.Request, streamed *strings.Builder) (model.Response, error) {
 	if r.Stream {
 		if sp, ok := r.Model.(model.StreamingProvider); ok {
 			return sp.CompleteStream(ctx, req, func(delta string) {
+				if streamed != nil {
+					streamed.WriteString(delta)
+				}
 				r.emit(Event{Kind: EventTokenDelta, Text: delta})
 			})
 		}
