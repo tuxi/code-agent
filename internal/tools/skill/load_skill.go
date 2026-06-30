@@ -17,11 +17,13 @@ import (
 )
 
 type LoadSkillTool struct {
-	Skills *skills.Registry
+	Skills     *skills.Registry
+	globalDir  string // re-scan fallback: user-level skills directory
+	projectDir string // re-scan fallback: project-local skills directory
 }
 
-func NewLoadSkillTool(reg *skills.Registry) *LoadSkillTool {
-	return &LoadSkillTool{Skills: reg}
+func NewLoadSkillTool(reg *skills.Registry, globalDir, projectDir string) *LoadSkillTool {
+	return &LoadSkillTool{Skills: reg, globalDir: globalDir, projectDir: projectDir}
 }
 
 type loadSkillInput struct {
@@ -32,9 +34,13 @@ type loadSkillInput struct {
 func (t *LoadSkillTool) Name() string { return "load_skill" }
 
 func (t *LoadSkillTool) Description() string {
-	return "Load a skill by name. With only a name, returns the full SKILL.md body and resource manifest. " +
+	return "Load a skill by name. With only a name, returns the full SKILL.md body. " +
 		"Call with an empty name to list all available skills. " +
-		"With resource set to a relative path (e.g. \"references/api.md\"), returns that file's content directly. Read-only."
+		"With resource set to a relative path (e.g. \"references/api.md\"), returns that file's content directly. " +
+		"Skills are plain Markdown files in the workspace's skills/ directory; you can CREATE a new skill " +
+		"yourself by writing a .md file there with create_file. The required format is a YAML frontmatter " +
+		"block (---) containing at minimum `name:` and `description:` fields, followed by the markdown body. " +
+		"Once written, call load_skill(name) and the new skill is immediately available — no restart needed."
 }
 
 func (t *LoadSkillTool) InputSchema() json.RawMessage {
@@ -53,6 +59,20 @@ func (t *LoadSkillTool) Execute(_ context.Context, _ tools.ExecutionContext, inp
 	}
 
 	s, ok := t.Skills.Get(in.Name)
+	if !ok {
+		// Hot-reload: the agent (or user) may have created a new skill file since
+		// startup. Re-scan the skills directories and merge any new discoveries into
+		// the cached registry so the newly created skill is immediately usable —
+		// no restart required. This matches the UX of "create SKILL.md then call
+		// load_skill" that Claude Code users expect (though CC achieves it by
+		// short-lived processes, not hot-reload).
+		if t.globalDir != "" || t.projectDir != "" {
+			if fresh, err := skills.Load(t.globalDir, t.projectDir); err == nil {
+				t.Skills.Merge(fresh)
+				s, ok = t.Skills.Get(in.Name)
+			}
+		}
+	}
 	if !ok {
 		return tools.ToolResult{}, fmt.Errorf("unknown skill %q; available: %s", in.Name, t.availableNames())
 	}
@@ -111,12 +131,13 @@ func (t *LoadSkillTool) loadResource(s skills.Skill, resource string) (tools.Too
 
 // AnnounceSkill lets the agent loop emit a versioned skill_loaded event without
 // knowing this tool by name (see tools.SkillAnnouncer).
-func (t *LoadSkillTool) AnnounceSkill(input json.RawMessage) (string, string, bool) {
+func (t *LoadSkillTool) AnnounceSkill(input json.RawMessage) (string, string, string, bool) {
 	in := parseInput(input)
 	if s, ok := t.Skills.Get(in.Name); ok {
-		return s.Name, s.Version, true
+		t.Skills.RecordLoad(s.Name)
+		return s.Name, s.Version, s.Source, true
 	}
-	return "", "", false
+	return "", "", "", false
 }
 
 func (t *LoadSkillTool) availableNames() string {

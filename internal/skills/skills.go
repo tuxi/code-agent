@@ -14,6 +14,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -38,15 +40,23 @@ type Resource struct {
 // resources. Loaded on demand, not held in the base prompt.
 type Skill struct {
 	Meta
-	Body      string
-	Dir       string     // absolute path to the skill directory; empty for bare-file skills
-	Resources []Resource // L3 files (references, scripts, assets); nil if none
+	Body       string
+	Dir        string     // absolute path to the skill directory; empty for bare-file skills
+	Resources  []Resource // L3 files (references, scripts, assets); nil if none
+	Source     string     // "global" or "project" — which dir it came from
+	sourcePath string     // path to the SKILL.md file; empty for bare-file skills
+	modTime    time.Time  // mtime of SKILL.md when last loaded
 }
 
-// Registry holds the skills loaded from a directory. It is read-only after Load.
+// Registry holds the skills loaded from a directory. Skills are reloaded
+// transparently on Get() when the source file's mtime is newer than the cached
+// value, so editing a SKILL.md takes effect on the next load_skill call without
+// restarting the agent. The mutex protects concurrent reloads.
 type Registry struct {
-	skills map[string]Skill
-	order  []string // skill names, sorted, for a stable index
+	mu         sync.RWMutex
+	skills     map[string]Skill
+	order      []string // skill names, sorted, for a stable index
+	loadCounts map[string]int
 
 	// Skipped records skills that failed to parse (dir name -> reason). A bad
 	// skill is skipped, never fatal — one malformed file must not blind the agent
@@ -71,18 +81,19 @@ type Registry struct {
 // recorded in Skipped.
 func Load(globalDir, projectDir string) (*Registry, error) {
 	r := &Registry{
-		skills:  make(map[string]Skill),
-		Skipped: make(map[string]string),
+		skills:     make(map[string]Skill),
+		Skipped:    make(map[string]string),
+		loadCounts: make(map[string]int),
 	}
 
 	// Load global (user-level) skills first, then project skills. Project wins on
 	// name conflict because later loads override earlier entries.
 	if globalDir != "" {
-		if err := loadDir(r, globalDir); err != nil {
+		if err := loadDir(r, globalDir, "global"); err != nil {
 			return nil, err
 		}
 	}
-	if err := loadDir(r, projectDir); err != nil {
+	if err := loadDir(r, projectDir, "project"); err != nil {
 		return nil, err
 	}
 	sort.Strings(r.order)
@@ -91,8 +102,9 @@ func Load(globalDir, projectDir string) (*Registry, error) {
 
 // loadDir appends skills from a single directory into r. A missing directory is
 // silent (no-op); other errors propagate. Project skills override global ones by
-// name because they are loaded second.
-func loadDir(r *Registry, dir string) error {
+// name because they are loaded second. source is "global" or "project" and is
+// recorded on each skill for telemetry.
+func loadDir(r *Registry, dir, source string) error {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -105,22 +117,38 @@ func loadDir(r *Registry, dir string) error {
 		var content []byte
 		var label string    // key for Skipped map and duplicate detection
 		var skillDir string // absolute path for directory-style skills; empty for bare files
+		var srcPath string  // path to the SKILL.md file; empty for bare files
+		var mt time.Time    // mtime of the source file
 
 		if e.IsDir() {
-			b, err := os.ReadFile(filepath.Join(dir, e.Name(), "SKILL.md"))
+			p := filepath.Join(dir, e.Name(), "SKILL.md")
+			info, err := os.Stat(p)
+			if err != nil {
+				continue
+			}
+			b, err := os.ReadFile(p)
 			if err != nil {
 				continue
 			}
 			content = b
 			label = e.Name()
 			skillDir = filepath.Join(dir, e.Name())
+			srcPath = p
+			mt = info.ModTime()
 		} else if strings.HasSuffix(e.Name(), ".md") {
-			b, err := os.ReadFile(filepath.Join(dir, e.Name()))
+			p := filepath.Join(dir, e.Name())
+			info, err := os.Stat(p)
+			if err != nil {
+				continue
+			}
+			b, err := os.ReadFile(p)
 			if err != nil {
 				continue
 			}
 			content = b
 			label = strings.TrimSuffix(e.Name(), ".md")
+			srcPath = p
+			mt = info.ModTime()
 		} else {
 			continue
 		}
@@ -131,13 +159,21 @@ func loadDir(r *Registry, dir string) error {
 			continue
 		}
 		skill.Dir = skillDir
+		skill.Source = source
+		skill.sourcePath = srcPath
+		skill.modTime = mt
 		if skillDir != "" {
 			skill.Resources = scanResources(skillDir)
 		}
 		// Project path (loaded second) deliberately overwrites global entries.
-		if _, dup := r.skills[skill.Name]; dup {
+		if existing, dup := r.skills[skill.Name]; dup {
 			if label != skill.Name {
 				r.Skipped[label] = fmt.Sprintf("duplicate skill name %q (project overrides global)", skill.Name)
+			}
+			// Warn when a project skill shadows a global skill — this is the most
+			// common source of "why is my skill different from what I expected?".
+			if existing.Source == "global" && source == "project" {
+				fmt.Fprintf(os.Stderr, "skills: project skill %q overrides global skill %q\n", skill.Name, existing.Source)
 			}
 		}
 		r.skills[skill.Name] = skill
@@ -193,6 +229,8 @@ func scanResources(skillDir string) []Resource {
 
 // Index returns the L1 metadata for every skill, in stable (sorted) order.
 func (r *Registry) Index() []Meta {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	out := make([]Meta, 0, len(r.order))
 	for _, name := range r.order {
 		out = append(out, r.skills[name].Meta)
@@ -200,14 +238,103 @@ func (r *Registry) Index() []Meta {
 	return out
 }
 
-// Get returns the full skill by name.
+// Get returns the full skill by name. When the skill has a source file on disk and
+// its mtime is newer than the cached value, Get re-parses the file transparently
+// before returning — so editing a SKILL.md takes effect on the next load_skill call
+// without restarting the agent. Bare-file skills and legacy entries without source
+// tracking return the cached value unchanged.
 func (r *Registry) Get(name string) (Skill, bool) {
+	r.mu.RLock()
 	s, ok := r.skills[strings.TrimSpace(name)]
-	return s, ok
+	r.mu.RUnlock()
+	if !ok {
+		return Skill{}, false
+	}
+	// No source file to check — return cached (bare-file or legacy).
+	if s.sourcePath == "" {
+		return s, true
+	}
+	info, err := os.Stat(s.sourcePath)
+	if err != nil || !info.ModTime().After(s.modTime) {
+		return s, true
+	}
+	// Reload: the source changed since we loaded it.
+	data, err := os.ReadFile(s.sourcePath)
+	if err != nil {
+		return s, true
+	}
+	reloaded, err := parseSkill(string(data))
+	if err != nil {
+		return s, true // keep the cached version on parse failure
+	}
+	reloaded.Dir = s.Dir
+	reloaded.Source = s.Source
+	reloaded.sourcePath = s.sourcePath
+	reloaded.modTime = info.ModTime()
+	if reloaded.Dir != "" {
+		reloaded.Resources = scanResources(reloaded.Dir)
+	}
+
+	r.mu.Lock()
+	oldName := name
+	r.skills[reloaded.Name] = reloaded
+	// If the skill renamed itself, clean up the old entry and update the order.
+	if reloaded.Name != oldName {
+		delete(r.skills, oldName)
+		for i, n := range r.order {
+			if n == oldName {
+				r.order[i] = reloaded.Name
+				break
+			}
+		}
+		sort.Strings(r.order)
+	}
+	r.mu.Unlock()
+	return reloaded, true
 }
 
 // Len reports how many skills loaded.
-func (r *Registry) Len() int { return len(r.order) }
+// Merge adds every skill from other into r that is not already present. First-write
+// wins — cached skills already loaded (or since modified+reloaded via Get) are not
+// replaced. New discoveries from a file-system re-scan simply appear.
+func (r *Registry) Merge(other *Registry) {
+	if other == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, name := range other.order {
+		if _, exists := r.skills[name]; exists {
+			continue
+		}
+		r.skills[name] = other.skills[name]
+		r.order = append(r.order, name)
+	}
+	sort.Strings(r.order)
+}
+
+func (r *Registry) Len() int {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return len(r.order)
+}
+
+// LoadCount returns how many times a skill has been loaded via load_skill. A skill
+// that is rarely loaded usually has a bad description (under-triggering). This is
+// an in-memory counter, reset on restart.
+func (r *Registry) LoadCount(name string) int {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.loadCounts[name]
+}
+
+// RecordLoad increments the in-memory load counter for a skill. Called by
+// LoadSkillTool.AnnounceSkill so every load_skill call is counted.
+func (r *Registry) RecordLoad(name string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.loadCounts[name]++
+}
 
 // PromptIndex renders the L1 index block for the system prompt: one line per
 // skill (name + description), and nothing else — never a body. Returns "" when
@@ -216,6 +343,8 @@ func (r *Registry) Len() int { return len(r.order) }
 // This is the guardrail against the static-injection trap: only this tiny index
 // ever enters the base prompt; bodies are pulled on demand via load_skill.
 func (r *Registry) PromptIndex() string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	if len(r.order) == 0 {
 		return ""
 	}

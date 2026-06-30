@@ -588,7 +588,7 @@ Design docs: [docs/p4.1-observation.md](docs/p4.1-observation.md),
 
 The third leg of the Claude-Code triad — **Tool** (capability) + **Observation /
 Reflection** (correction) + **Skill** (experience). Design + applied methodology:
-[docs/p6-skills.md](docs/p6-skills.md).
+[docs/p6-skills.md](docs/p6-skills.md). **Usage guide:** [docs/skills-guide.md](docs/skills-guide.md).
 
 - [x] **(P6.a)** `internal/skills` registry — `SKILL.md` (frontmatter + body),
   `Meta{name, description, version}`, `Index()` / `Get()`. `PromptIndex` renders
@@ -599,6 +599,11 @@ Reflection** (correction) + **Skill** (experience). Design + applied methodology
   because the *model* chose to, never auto-injected.
 - [x] **(P6.c)** Seed skills, chosen to change behavior not restate common sense:
   `codeagent-conventions`, `verify-change`, `review-change`.
+- [x] **(P6.1)** Claude Code interop improvements — required `name`, L3 resources
+  (`references/` `scripts/` `assets/`), `license` field, resource file access via
+  `load_skill`, plugin marketplace (`codeagent plugin install`), `skill init`
+  scaffolding, hot reload, eval harness, telemetry (source + load count). Design:
+  [docs/p6.1-skills-improvement-plan.md](docs/p6.1-skills-improvement-plan.md).
 - [x] **(P6 nudge)** A first-call ephemeral reminder makes skill-loading
   *consistent across models* (deepseek self-loads; glm needed the nudge) without
   forcing it — the model still pulls.

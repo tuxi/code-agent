@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // writeSkill creates skills/<name>/SKILL.md under dir with the given content.
@@ -359,6 +360,190 @@ func TestPromptIndex_NoLicenseNoise(t *testing.T) {
 	out := r.PromptIndex()
 	if strings.Contains(out, "[") && strings.Contains(out, "]") {
 		t.Errorf("PromptIndex with no-license skill should not contain bracket noise:\n%s", out)
+	}
+}
+
+func TestGet_HotReloadBody(t *testing.T) {
+	dir := t.TempDir()
+	writeSkill(t, dir, "evolving", "---\nname: evolving\ndescription: first version\n---\nBody v1.")
+
+	r, _ := Load("", dir)
+	s, ok := r.Get("evolving")
+	if !ok || s.Body != "Body v1." {
+		t.Fatalf("initial load: body = %q", s.Body)
+	}
+
+	// Overwrite the SKILL.md on disk with a new body and description.
+	os.WriteFile(filepath.Join(dir, "evolving", "SKILL.md"),
+		[]byte("---\nname: evolving\ndescription: updated description\n---\nBody v2."), 0o644)
+
+	s2, ok := r.Get("evolving")
+	if !ok {
+		t.Fatal("Get after modification not found")
+	}
+	if s2.Body != "Body v2." {
+		t.Errorf("body = %q, want Body v2.", s2.Body)
+	}
+	if s2.Meta.Description != "updated description" {
+		t.Errorf("description = %q, want 'updated description'", s2.Meta.Description)
+	}
+	// Index should still reflect the cached (pre-reload) metadata for now.
+	// After a Get reload, subsequent Index calls return the updated meta.
+	idx := r.Index()
+	for _, m := range idx {
+		if m.Name == "evolving" && m.Description != "updated description" {
+			t.Errorf("Index not updated after reload: description = %q", m.Description)
+		}
+	}
+}
+
+func TestGet_HotReloadResources(t *testing.T) {
+	dir := t.TempDir()
+	skillDir := filepath.Join(dir, "growing")
+	writeSkill(t, dir, "growing", "---\nname: growing\ndescription: a growing skill\n---\nSee references.")
+
+	// No resources initially.
+	r, _ := Load("", dir)
+	s, ok := r.Get("growing")
+	if !ok || len(s.Resources) != 0 {
+		t.Fatalf("expected 0 resources, got %d", len(s.Resources))
+	}
+
+	// Add a references directory and a file, then touch the SKILL.md so its
+	// mtime changes — Get() only reloads when the source file is newer.
+	os.MkdirAll(filepath.Join(skillDir, "references"), 0o755)
+	os.WriteFile(filepath.Join(skillDir, "references", "new.md"), []byte("# New"), 0o644)
+	// Touch SKILL.md to trigger the reload (resource scan is part of reload).
+	os.Chtimes(filepath.Join(skillDir, "SKILL.md"), time.Now(), time.Now())
+
+	s2, ok := r.Get("growing")
+	if !ok {
+		t.Fatal("Get after resource add not found")
+	}
+	if len(s2.Resources) != 1 {
+		t.Fatalf("expected 1 resource after add, got %d", len(s2.Resources))
+	}
+	if s2.Resources[0].Kind != "reference" {
+		t.Errorf("resource kind = %q, want reference", s2.Resources[0].Kind)
+	}
+}
+
+func TestGet_HotReloadNoOpWhenUnchanged(t *testing.T) {
+	dir := t.TempDir()
+	writeSkill(t, dir, "stable", "---\nname: stable\ndescription: unchanging\n---\nBody.")
+
+	r, _ := Load("", dir)
+	s1, _ := r.Get("stable")
+	s2, _ := r.Get("stable")
+	// Both should be identical — no stat change, no re-parse.
+	if s1.Body != s2.Body {
+		t.Error("unchanged file should return identical content")
+	}
+}
+
+func TestGet_HotReloadParseErrorKeepsCached(t *testing.T) {
+	dir := t.TempDir()
+	writeSkill(t, dir, "fragile", "---\nname: fragile\ndescription: breakable\n---\nOriginal body.")
+
+	r, _ := Load("", dir)
+	s1, _ := r.Get("fragile")
+
+	// Write broken content to disk.
+	os.WriteFile(filepath.Join(dir, "fragile", "SKILL.md"),
+		[]byte("no frontmatter here"), 0o644)
+
+	s2, ok := r.Get("fragile")
+	if !ok {
+		t.Fatal("should still find skill after broken write")
+	}
+	if s2.Body != s1.Body {
+		t.Errorf("should keep cached body on parse error: got %q", s2.Body)
+	}
+}
+
+func TestGet_BareFileHotReload(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "flat.md"),
+		[]byte("---\nname: flat\ndescription: a flat skill\n---\nFlat v1."), 0o644)
+	r, _ := Load("", dir)
+	s1, _ := r.Get("flat")
+	if s1.Body != "Flat v1." {
+		t.Fatalf("initial body = %q", s1.Body)
+	}
+
+	// Modify the bare file on disk.
+	os.WriteFile(filepath.Join(dir, "flat.md"),
+		[]byte("---\nname: flat\ndescription: a flat skill\n---\nFlat v2."), 0o644)
+
+	s2, _ := r.Get("flat")
+	if s2.Body != "Flat v2." {
+		t.Errorf("bare-file hot-reload: got %q, want Flat v2.", s2.Body)
+	}
+}
+
+func TestLoad_SourceTracking(t *testing.T) {
+	dir := t.TempDir()
+	writeSkill(t, dir, "my-skill", "---\nname: my-skill\ndescription: source test\n---\nbody")
+
+	r, _ := Load("", dir) // projectDir only → source = "project"
+	s, ok := r.Get("my-skill")
+	if !ok {
+		t.Fatal("skill not found")
+	}
+	if s.Source != "project" {
+		t.Errorf("Source = %q, want project", s.Source)
+	}
+}
+
+func TestLoad_GlobalSourceTracking(t *testing.T) {
+	globalDir := t.TempDir()
+	projDir := t.TempDir()
+	writeSkill(t, globalDir, "global-skill", "---\nname: global-skill\ndescription: from global\n---\nglobal body")
+	writeSkill(t, projDir, "project-skill", "---\nname: project-skill\ndescription: from project\n---\nproject body")
+
+	r, _ := Load(globalDir, projDir)
+	if s, ok := r.Get("global-skill"); ok && s.Source != "global" {
+		t.Errorf("global skill Source = %q, want global", s.Source)
+	}
+	if s, ok := r.Get("project-skill"); ok && s.Source != "project" {
+		t.Errorf("project skill Source = %q, want project", s.Source)
+	}
+}
+
+func TestLoad_ProjectOverridesGlobalWithWarning(t *testing.T) {
+	globalDir := t.TempDir()
+	projDir := t.TempDir()
+	writeSkill(t, globalDir, "shared", "---\nname: shared\ndescription: global version\n---\nglobal")
+	writeSkill(t, projDir, "override", "---\nname: shared\ndescription: project version\n---\nproject")
+
+	r, _ := Load(globalDir, projDir)
+	s, ok := r.Get("shared")
+	if !ok {
+		t.Fatal("shared skill not found")
+	}
+	if s.Body != "project" {
+		t.Errorf("Body = %q, want project (project should override global)", s.Body)
+	}
+	if s.Source != "project" {
+		t.Errorf("Source = %q, want project (override takes source)", s.Source)
+	}
+}
+
+func TestLoadCount_Increments(t *testing.T) {
+	dir := t.TempDir()
+	writeSkill(t, dir, "counted", "---\nname: counted\ndescription: count me\n---\nbody")
+	r, _ := Load("", dir)
+
+	if n := r.LoadCount("counted"); n != 0 {
+		t.Errorf("initial LoadCount = %d, want 0", n)
+	}
+	r.RecordLoad("counted")
+	r.RecordLoad("counted")
+	if n := r.LoadCount("counted"); n != 2 {
+		t.Errorf("LoadCount after two records = %d, want 2", n)
+	}
+	if n := r.LoadCount("nonexistent"); n != 0 {
+		t.Errorf("LoadCount for unknown = %d, want 0", n)
 	}
 }
 

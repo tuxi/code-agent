@@ -469,8 +469,8 @@ func (r *Runner) RunTurn(ctx context.Context, sess *session.Session, userInput s
 			// event. Interface-driven, so the loop stays tool-agnostic.
 			if known && execErr == nil {
 				if sa, ok := tool.(tools.SkillAnnouncer); ok {
-					if name, ver, loaded := sa.AnnounceSkill(input); loaded {
-						r.emit(Event{Kind: EventSkillLoaded, ToolName: name, Version: ver})
+					if name, ver, src, loaded := sa.AnnounceSkill(input); loaded {
+						r.emit(Event{Kind: EventSkillLoaded, ToolName: name, Version: ver, SkillSource: src})
 					}
 				}
 				// Todo checklist (8.4): same interface-driven pattern — the loop emits

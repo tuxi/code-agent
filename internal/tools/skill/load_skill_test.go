@@ -30,7 +30,7 @@ func loadReg(t *testing.T) *skills.Registry {
 }
 
 func TestLoadSkillExecute(t *testing.T) {
-	tool := NewLoadSkillTool(loadReg(t))
+	tool := NewLoadSkillTool(loadReg(t), "", "")
 	res, err := tool.Execute(context.Background(), tools.ExecutionContext{}, json.RawMessage(`{"name":"verify-change"}`))
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -67,7 +67,7 @@ func loadRegWithResources(t *testing.T) *skills.Registry {
 }
 
 func TestLoadSkill_ResourceManifest(t *testing.T) {
-	tool := NewLoadSkillTool(loadRegWithResources(t))
+	tool := NewLoadSkillTool(loadRegWithResources(t), "", "")
 	res, err := tool.Execute(context.Background(), tools.ExecutionContext{}, json.RawMessage(`{"name":"tool-skill"}`))
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -91,7 +91,7 @@ func TestLoadSkill_ResourceManifest(t *testing.T) {
 
 func TestLoadSkill_NoResourceManifestWhenEmpty(t *testing.T) {
 	// A skill without L3 resources must not show the manifest section.
-	tool := NewLoadSkillTool(loadReg(t)) // verify-change has no resources
+	tool := NewLoadSkillTool(loadReg(t), "", "") // verify-change has no resources
 	res, err := tool.Execute(context.Background(), tools.ExecutionContext{}, json.RawMessage(`{"name":"verify-change"}`))
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -120,7 +120,7 @@ func loadRegLicensed(t *testing.T) *skills.Registry {
 }
 
 func TestLoadSkill_LicenseInHeader(t *testing.T) {
-	tool := NewLoadSkillTool(loadRegLicensed(t))
+	tool := NewLoadSkillTool(loadRegLicensed(t), "", "")
 	res, err := tool.Execute(context.Background(), tools.ExecutionContext{}, json.RawMessage(`{"name":"licensed"}`))
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -131,7 +131,7 @@ func TestLoadSkill_LicenseInHeader(t *testing.T) {
 }
 
 func TestLoadSkill_NoLicenseBracketWhenEmpty(t *testing.T) {
-	tool := NewLoadSkillTool(loadReg(t)) // verify-change has no license
+	tool := NewLoadSkillTool(loadReg(t), "", "") // verify-change has no license
 	res, err := tool.Execute(context.Background(), tools.ExecutionContext{}, json.RawMessage(`{"name":"verify-change"}`))
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -151,7 +151,7 @@ func TestLoadSkill_ListMode(t *testing.T) {
 			[]byte("---\nname: "+name+"\ndescription: "+desc+"\n---\nbody"), 0o644)
 	}
 	reg, _ := skills.Load("", dir)
-	tool := NewLoadSkillTool(reg)
+	tool := NewLoadSkillTool(reg, "", "")
 
 	res, err := tool.Execute(context.Background(), tools.ExecutionContext{}, json.RawMessage(`{"name":""}`))
 	if err != nil {
@@ -170,7 +170,7 @@ func TestLoadSkill_ListMode(t *testing.T) {
 
 func TestLoadSkill_EmptyList(t *testing.T) {
 	reg, _ := skills.Load("", t.TempDir())
-	tool := NewLoadSkillTool(reg)
+	tool := NewLoadSkillTool(reg, "", "")
 	res, err := tool.Execute(context.Background(), tools.ExecutionContext{}, json.RawMessage(`{"name":""}`))
 	if err != nil {
 		t.Fatalf("empty list should not error: %v", err)
@@ -181,7 +181,7 @@ func TestLoadSkill_EmptyList(t *testing.T) {
 }
 
 func TestLoadSkill_ResourceAccess(t *testing.T) {
-	tool := NewLoadSkillTool(loadRegWithResources(t))
+	tool := NewLoadSkillTool(loadRegWithResources(t), "", "")
 	res, err := tool.Execute(context.Background(), tools.ExecutionContext{}, json.RawMessage(`{"name":"tool-skill","resource":"references/guide.md"}`))
 	if err != nil {
 		t.Fatalf("resource access: %v", err)
@@ -195,7 +195,7 @@ func TestLoadSkill_ResourceAccess(t *testing.T) {
 }
 
 func TestLoadSkill_ResourceNotFound(t *testing.T) {
-	tool := NewLoadSkillTool(loadRegWithResources(t))
+	tool := NewLoadSkillTool(loadRegWithResources(t), "", "")
 	_, err := tool.Execute(context.Background(), tools.ExecutionContext{}, json.RawMessage(`{"name":"tool-skill","resource":"references/nope.md"}`))
 	if err == nil {
 		t.Error("expected error for missing resource")
@@ -205,7 +205,7 @@ func TestLoadSkill_ResourceNotFound(t *testing.T) {
 }
 
 func TestLoadSkill_ResourcePathTraversal(t *testing.T) {
-	tool := NewLoadSkillTool(loadRegWithResources(t))
+	tool := NewLoadSkillTool(loadRegWithResources(t), "", "")
 	_, err := tool.Execute(context.Background(), tools.ExecutionContext{}, json.RawMessage(`{"name":"tool-skill","resource":"../../../etc/passwd"}`))
 	if err == nil {
 		t.Error("expected error for path traversal")
@@ -219,7 +219,7 @@ func TestLoadSkill_ResourceOnBareFile(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "flat.md"),
 		[]byte("---\nname: flat\ndescription: a flat skill\n---\nBody."), 0o644)
 	reg, _ := skills.Load("", dir)
-	tool := NewLoadSkillTool(reg)
+	tool := NewLoadSkillTool(reg, "", "")
 
 	_, err := tool.Execute(context.Background(), tools.ExecutionContext{}, json.RawMessage(`{"name":"flat","resource":"references/foo.md"}`))
 	if err == nil {
@@ -230,7 +230,7 @@ func TestLoadSkill_ResourceOnBareFile(t *testing.T) {
 }
 
 func TestLoadSkillUnknown(t *testing.T) {
-	tool := NewLoadSkillTool(loadReg(t))
+	tool := NewLoadSkillTool(loadReg(t), "", "")
 	_, err := tool.Execute(context.Background(), tools.ExecutionContext{}, json.RawMessage(`{"name":"nope"}`))
 	if err == nil {
 		t.Error("expected an error for an unknown skill")
@@ -240,12 +240,12 @@ func TestLoadSkillUnknown(t *testing.T) {
 }
 
 func TestAnnounceSkill(t *testing.T) {
-	tool := NewLoadSkillTool(loadReg(t))
-	name, ver, ok := tool.AnnounceSkill(json.RawMessage(`{"name":"verify-change"}`))
+	tool := NewLoadSkillTool(loadReg(t), "", "")
+	name, ver, _, ok := tool.AnnounceSkill(json.RawMessage(`{"name":"verify-change"}`))
 	if !ok || name != "verify-change" || ver != "1" {
 		t.Errorf("AnnounceSkill = (%q, %q, %v), want (verify-change, 1, true)", name, ver, ok)
 	}
-	if _, _, ok := tool.AnnounceSkill(json.RawMessage(`{"name":"nope"}`)); ok {
+	if _, _, _, ok := tool.AnnounceSkill(json.RawMessage(`{"name":"nope"}`)); ok {
 		t.Error("AnnounceSkill should report false for an unknown skill")
 	}
 }

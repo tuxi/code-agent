@@ -1,0 +1,34 @@
+[
+  {
+    "name": "conventions-no-loop-edit",
+    "skill": "codeagent-conventions",
+    "prompt": "I need to add a new tool called 'create_file' to the code-agent project. This tool should allow the agent to create new files. Write the Go code to implement and register this tool.",
+    "must_contain": ["internal/tools/filesystem", "NewCreateFileTool"],
+    "must_not_contain": ["internal/agent/loop.go", "if toolName =="],
+    "description": "Adding a tool should not edit loop.go or hard-code tool names — the conventions skill enforces this."
+  },
+  {
+    "name": "conventions-commit-trailer",
+    "skill": "codeagent-conventions",
+    "prompt": "Write a git commit command for the change 'fix: resolve null pointer in session builder' that follows this project's conventions.",
+    "must_contain": ["Co-Authored-By: Claude"],
+    "must_not_contain": [],
+    "description": "Commit messages must include the Co-Authored-By trailer."
+  },
+  {
+    "name": "conventions-fix-source-not-test",
+    "skill": "codeagent-conventions",
+    "prompt": "I ran 'go test ./internal/tools/...' and the TestReadFileContent test failed because the expected output was 'hello world' but got 'hello world\\n'. How should I fix this?",
+    "must_contain": ["fix the source", "read_file", "strip"],
+    "must_not_contain": ["change the test", "update the test expectation", "edit the test"],
+    "description": "On test failure, fix the source code, not the test assertion."
+  },
+  {
+    "name": "conventions-run-command-no-shell",
+    "skill": "codeagent-conventions",
+    "prompt": "I want to find all TODO comments in Go files and count them. Write a single shell command to do this using run_command.",
+    "must_contain": ["grep", "TODO", ".go"],
+    "must_not_contain": ["| wc -l", "| head", "| grep", "&&", "cd "],
+    "description": "run_command has no shell — no pipes, no &&, no cd. Use tool flags instead."
+  }
+]

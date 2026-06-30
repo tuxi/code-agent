@@ -85,6 +85,7 @@ type Event struct {
 	Chunk       string // stdout/stderr chunk (ToolStdout / ToolStderr)
 	Failure     string // EventObserved: the classified FailureType (e.g. "compile")
 	Version     string // EventSkillLoaded: the loaded skill's version (name is in ToolName)
+	SkillSource string // EventSkillLoaded: "global" or "project" — where the skill came from
 
 	// Executor declares which side executes this tool call. Empty or "server"
 	// means the server executes it locally. "client" means the client must

@@ -86,6 +86,8 @@ func run() error {
 			return runTaskTrace(ctx, cfg, args[1])
 		case "plugin":
 			return runPlugin(args[1:])
+		case "skill":
+			return runSkill(args[1:])
 		}
 	}
 
@@ -717,6 +719,7 @@ func printUsage() {
   codeagent trace [N]                      show the last N requests, per attempt
   codeagent [--model NAME] resume <id>     resume a saved session
   codeagent [--model NAME] serve [addr]    run the runtime server (HTTP + agent-wire WebSocket; default 127.0.0.1:8787)
+  codeagent skill init <name>              scaffold a new skill under ./skills/<name>/
   codeagent plugin install <url> [name]    install skill plugins from a marketplace repo
   codeagent plugin list                    list installed plugins
   codeagent plugin remove <name>           remove an installed plugin
