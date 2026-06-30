@@ -77,28 +77,40 @@ func openSQLiteStore(root string) (session.Store, error) {
 // home rather than the project dir (so it is never in a cloud-synced folder).
 // Sessions remain project-scoped via a per-project key: the basename plus a short
 // hash of the absolute path, so two projects sharing a basename do not collide.
+//
+// When a storeBaseDir is set (embedded/iOS host), the path no longer hashes the
+// root — because on iOS the root's absolute path contains the sandbox container
+// UUID, which changes across reinstalls. Hashing a moving target would orphan
+// every previous session DB. Instead a fixed key keeps the DB at a single,
+// stable location under the host-supplied data directory. (A non-embedded desktop
+// has stable $HOME paths so the hash remains correct there.)
 func storePath(root string) (string, error) {
-	abs, err := filepath.Abs(root)
-	if err != nil {
-		return "", err
-	}
 	base := storeBaseDir
 	if base == "" {
+		abs, err := filepath.Abs(root)
+		if err != nil {
+			return "", err
+		}
 		home, err := os.UserHomeDir()
 		if err != nil {
 			return "", err
 		}
 		base = filepath.Join(home, ".codeagent")
+		sum := sha256.Sum256([]byte(abs))
+		key := filepath.Base(abs) + "-" + hex.EncodeToString(sum[:])[:12]
+		return filepath.Join(base, "projects", key, "sessions.db"), nil
 	}
-	sum := sha256.Sum256([]byte(abs))
-	key := filepath.Base(abs) + "-" + hex.EncodeToString(sum[:])[:12]
-	return filepath.Join(base, "projects", key, "sessions.db"), nil
+	// Embedded host (iOS): storeBaseDir is already per-app and writable.
+	// Use a fixed key so the DB location survives sandbox-path (UUID) changes.
+	return filepath.Join(base, "sessions.db"), nil
 }
 
-// storeBaseDir optionally overrides the directory under which per-project session
-// databases live. Empty => $HOME/.codeagent (the desktop default). Embedded hosts
-// set it because on iOS $HOME is the read-only sandbox container; they point it at
-// a writable app-data directory such as Library/Application Support.
+// storeBaseDir optionally overrides the directory under which session databases
+// live. Empty => $HOME/.codeagent (the desktop default, with per-project hashing).
+// Embedded hosts set it because on iOS $HOME is the read-only sandbox container;
+// they point it at a writable app-data directory such as Library/Application
+// Support. When set, per-project hashing is disabled (the host is assumed to have
+// a single workspace), so the DB location is stable across reinstalls.
 var storeBaseDir string
 
 // SetStoreBaseDir overrides the session-store base directory process-wide. Pass an

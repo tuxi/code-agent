@@ -64,7 +64,7 @@ func TestRegisterBuiltinTools_SandboxedExcludesSubprocessTools(t *testing.T) {
 
 	// Read-only git tools that exist ONLY on the sandboxed profile — desktop reaches
 	// the same information through the shell, so they are not added there.
-	sandboxedOnlyTools := []string{"git_init", "git_status", "git_log"}
+	sandboxedOnlyTools := []string{"git_init", "git_clone", "git_status", "git_log"}
 	for _, name := range sandboxedOnlyTools {
 		if !sandboxed[name] {
 			t.Errorf("sandboxed profile: expected %q to be registered", name)

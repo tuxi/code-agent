@@ -56,11 +56,13 @@ func RegisterBuiltinTools(registry *tools.Registry, cfg app.Config, skillReg *sk
 	// Pure-Go git tools that work without a subprocess (go-git / go-gitdiff). On a
 	// sandboxed host (iOS) these replace the exec-backed git tools below and add what
 	// desktop gets through the shell — giving a self-contained git surface (init then
-	// commit / diff / apply_patch / status / log) without ever spawning git. git_init
-	// is the keystone: an iOS app folder starts un-versioned, so the rest depend on it.
+	// clone then commit / diff / apply_patch / status / log) without ever spawning git.
+	// git_init is the keystone for new projects; git_clone is the entry point for
+	// fetching remote repos for analysis.
 	if !cfg.Profile.AllowsSubprocess() {
 		for _, tool := range []tools.Tool{
 			git.NewGitInitTool(),
+			git.NewGitCloneTool(),
 			git.NewGitCommitToolGoGit(),
 			git.NewDiffToolGoGit(),
 			git.NewApplyPatchToolGoGit(),
@@ -135,10 +137,11 @@ func BuildRegistry(ctx context.Context, cfg app.Config, mc app.ModelConfig, prov
 	// the advertised list (the Registry preserves registration order). A server
 	// that fails to start is skipped inside Connect; a name collision surfaces
 	// here as a registration error.
-	// MCP servers and flux both rely on subprocesses (MCP launches each server over
-	// stdio; flux wires a shell tool into its workflow registry), so on a sandboxed
-	// host they are skipped. The Manager is still created so the caller's Close is a
-	// safe no-op.
+	// MCP servers rely on subprocesses (MCP launches each server over stdio), so on a
+	// sandboxed host they are skipped. The Manager is still created so the caller's
+	// Close is a safe no-op. Flux (plan_workflow) is registered under every profile —
+	// the tool itself needs no subprocess; only its internal shell sub-tool is skipped
+	// when sandboxed.
 	mgr := mcp.NewManager(McpTraceWriter())
 	if cfg.Profile.AllowsSubprocess() {
 		if n := len(cfg.MCP.Servers); n > 0 {
@@ -157,8 +160,14 @@ func BuildRegistry(ctx context.Context, cfg app.Config, mc app.ModelConfig, prov
 
 		// Flux v3: Tool embedding — register plan_workflow as a native tool.
 		// Uses the same process and LLM creds as code-agent (mc, resolved from config.yaml).
-		RegisterFluxTool(registry, mc, nil) // mc → reuse resolved LLM creds; nil → in-memory stores
+		RegisterFluxTool(registry, mc, nil, false) // mc → reuse resolved LLM creds; nil → in-memory stores
 	}
+
+	// Flux (plan_workflow) is intentionally NOT registered on sandboxed hosts (iOS).
+	// Without a shell, the only tool in flux's internal registry is merge_result —
+	// the DAG planner can't validate any real plan, and every invocation wastes a
+	// turn on "plan did not validate". It will be re-enabled when flux supports
+	// injecting code-agent's own tool set (instead of its separate, isolated registry).
 
 	// Plan mode tools: enter_plan_mode and propose_plan. They use a RunnerRef for
 	// late binding — the Runner is constructed after the registry. The returned ref

@@ -28,14 +28,20 @@ type FluxStoreSet struct {
 // APIKey 已由 api_key_env 解析）——flux 复用它，保证和 code-agent 用同一套 LLM 凭证，
 // 不再各读一套互不相干的 LLM_* 环境变量（那正是「config.yaml 设了 key 却读不到」的根因）。
 // stores: optional SQLite-backed stores (nil = in-memory fallback).
-func RegisterFluxTool(registry *tools.Registry, mc app.ModelConfig, stores *FluxStoreSet) {
+// sandboxed: if true, the internal shell tool is not registered into flux's own tool
+// registry (fork/exec is forbidden), so workflow steps only use merge_result. The
+// plan_workflow tool itself requires no subprocess and remains registered.
+func RegisterFluxTool(registry *tools.Registry, mc app.ModelConfig, stores *FluxStoreSet, sandboxed bool) {
 	// 1. 创建 flux 的工具注册表（DAG 节点可用的工具）
 	fluxReg := fluxtool.NewRegistry()
 	fluxReg.Register(builtin.NewMergeResultTool())
 
-	// shell tool: 使用当前工作目录
-	if wd, err := os.Getwd(); err == nil {
-		fluxReg.Register(builtin.NewShellTool(wd))
+	// shell tool: only on hosts that can fork/exec (desktop). On a sandboxed host
+	// (iOS) flux workflow steps still work with merge_result; they just can't shell.
+	if !sandboxed {
+		if wd, err := os.Getwd(); err == nil {
+			fluxReg.Register(builtin.NewShellTool(wd))
+		}
 	}
 
 	baseURL := os.Getenv("LLM_BASE_URL")
