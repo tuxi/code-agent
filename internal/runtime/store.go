@@ -82,14 +82,29 @@ func storePath(root string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
+	base := storeBaseDir
+	if base == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+		base = filepath.Join(home, ".codeagent")
 	}
 	sum := sha256.Sum256([]byte(abs))
 	key := filepath.Base(abs) + "-" + hex.EncodeToString(sum[:])[:12]
-	return filepath.Join(home, ".codeagent", "projects", key, "sessions.db"), nil
+	return filepath.Join(base, "projects", key, "sessions.db"), nil
 }
+
+// storeBaseDir optionally overrides the directory under which per-project session
+// databases live. Empty => $HOME/.codeagent (the desktop default). Embedded hosts
+// set it because on iOS $HOME is the read-only sandbox container; they point it at
+// a writable app-data directory such as Library/Application Support.
+var storeBaseDir string
+
+// SetStoreBaseDir overrides the session-store base directory process-wide. Pass an
+// absolute, writable path; call it before any store is opened. Empty restores the
+// $HOME/.codeagent default.
+func SetStoreBaseDir(dir string) { storeBaseDir = dir }
 
 // copyFile copies src to dst — a best-effort one-time migration of an existing
 // session DB snapshot to the new location.

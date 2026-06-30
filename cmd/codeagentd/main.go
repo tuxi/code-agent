@@ -43,7 +43,7 @@ func run() error {
 	args := os.Args[1:]
 	modelName, args := runtime.ExtractModelFlag(args)
 
-	addr := "0.0.0.0:8787"
+	addr := "127.0.0.1:8787"
 	if len(args) > 0 {
 		addr = args[0]
 	}

@@ -40,6 +40,8 @@ tests/**/coverage/
 *.njsproj
 *.sln
 
+/build
+
 config.yaml
 config/config.yaml
 .codeagent/
@@ -56,4 +58,5 @@ swag-docs/
 main
 codeagentd
 codeagent
+
 

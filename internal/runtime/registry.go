@@ -39,30 +39,41 @@ func WirePlanTools(registry *tools.Registry, plansDir string) *agent.RunnerRef {
 // the registry. It does NOT register task or MCP tools — those are registered
 // after the subagent's read-only toolset is frozen.
 func RegisterBuiltinTools(registry *tools.Registry, cfg app.Config, skillReg *skills.Registry) error {
-	// run_command and the job_* tools share one job registry, so a job_id
-	// returned by a background run_command is resolvable by job_status/logs/cancel.
-	runCmd := shell.NewRunCommandTool()
-	jobReg := runCmd.Jobs
-
-	for _, tool := range []tools.Tool{
+	// Pure-Go tools that work inside an OS sandbox (no subprocess, container-local
+	// filesystem and network only). Registered under every profile.
+	toolList := []tools.Tool{
 		filesystem.NewListFilesTool(),
 		filesystem.NewReadFileTool(),
 		filesystem.NewCreateFileTool(),
 		filesystem.NewEditFileTool(),
 		search.NewGrepTool(),
-		projectgraph.NewProjectGraphTool(),
-		git.NewDiffTool(),
-		git.NewApplyPatchTool(),
-		git.NewGitCommitTool(),
-		runCmd,
-		&shell.JobStatusTool{Jobs: jobReg},
-		&shell.JobLogsTool{Jobs: jobReg},
-		&shell.JobCancelTool{Jobs: jobReg},
 		skill.NewLoadSkillTool(skillReg),
 		websearch.NewTool(cfg.Web),
 		webfetch.NewTool(cfg.Web),
 		todo.NewTool(),
-	} {
+	}
+
+	// Subprocess-based tools (shell, git, gopls) are only assembled where the host
+	// can fork/exec. On a sandboxed host (iOS) they would compile but fail at every
+	// call, so they are left unregistered — the model never sees a tool it cannot use.
+	if cfg.Profile.AllowsSubprocess() {
+		// run_command and the job_* tools share one job registry, so a job_id
+		// returned by a background run_command is resolvable by job_status/logs/cancel.
+		runCmd := shell.NewRunCommandTool()
+		jobReg := runCmd.Jobs
+		toolList = append(toolList,
+			projectgraph.NewProjectGraphTool(),
+			git.NewDiffTool(),
+			git.NewApplyPatchTool(),
+			git.NewGitCommitTool(),
+			runCmd,
+			&shell.JobStatusTool{Jobs: jobReg},
+			&shell.JobLogsTool{Jobs: jobReg},
+			&shell.JobCancelTool{Jobs: jobReg},
+		)
+	}
+
+	for _, tool := range toolList {
 		if err := registry.Register(tool); err != nil {
 			return err
 		}
@@ -104,24 +115,30 @@ func BuildRegistry(ctx context.Context, cfg app.Config, mc app.ModelConfig, prov
 	// the advertised list (the Registry preserves registration order). A server
 	// that fails to start is skipped inside Connect; a name collision surfaces
 	// here as a registration error.
+	// MCP servers and flux both rely on subprocesses (MCP launches each server over
+	// stdio; flux wires a shell tool into its workflow registry), so on a sandboxed
+	// host they are skipped. The Manager is still created so the caller's Close is a
+	// safe no-op.
 	mgr := mcp.NewManager(McpTraceWriter())
-	if n := len(cfg.MCP.Servers); n > 0 {
-		fmt.Fprintf(os.Stderr, "[mcp] connecting to %d server(s)…\n", n)
-	}
-	if err := mgr.Connect(ctx, cfg.MCP.Servers); err != nil {
-		mgr.Close()
-		return nil, nil, nil, nil, err
-	}
-	for _, tool := range mgr.Tools() {
-		if err := registry.Register(tool); err != nil {
-			mgr.Close()
-			return nil, nil, nil, nil, fmt.Errorf("register mcp tool: %w", err)
+	if cfg.Profile.AllowsSubprocess() {
+		if n := len(cfg.MCP.Servers); n > 0 {
+			fmt.Fprintf(os.Stderr, "[mcp] connecting to %d server(s)…\n", n)
 		}
-	}
+		if err := mgr.Connect(ctx, cfg.MCP.Servers); err != nil {
+			mgr.Close()
+			return nil, nil, nil, nil, err
+		}
+		for _, tool := range mgr.Tools() {
+			if err := registry.Register(tool); err != nil {
+				mgr.Close()
+				return nil, nil, nil, nil, fmt.Errorf("register mcp tool: %w", err)
+			}
+		}
 
-	// Flux v3: Tool embedding — register plan_workflow as a native tool.
-	// Uses the same process and LLM creds as code-agent (mc, resolved from config.yaml).
-	RegisterFluxTool(registry, mc, nil) // mc → reuse resolved LLM creds; nil → in-memory stores
+		// Flux v3: Tool embedding — register plan_workflow as a native tool.
+		// Uses the same process and LLM creds as code-agent (mc, resolved from config.yaml).
+		RegisterFluxTool(registry, mc, nil) // mc → reuse resolved LLM creds; nil → in-memory stores
+	}
 
 	// Plan mode tools: enter_plan_mode and propose_plan. They use a RunnerRef for
 	// late binding — the Runner is constructed after the registry. The returned ref
