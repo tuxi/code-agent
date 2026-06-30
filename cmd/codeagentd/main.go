@@ -122,8 +122,9 @@ func run() error {
 	executor.SetTitleGenerator(conversation.NewLLMTitleGenerator(provider, mc.Model))
 
 	handler := server.NewMux(repo, eventStore, executor, server.MuxOptions{
-		ServerName:   "codeagentd/" + mc.Model,
-		Capabilities: defaultCapabilities,
+		ServerName:    "codeagentd/" + mc.Model,
+		Capabilities:  defaultCapabilities,
+		WorkspaceRoot: root,
 	})
 
 	srv := &http.Server{Addr: addr, Handler: handler}

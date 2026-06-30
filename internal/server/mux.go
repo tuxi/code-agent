@@ -3,15 +3,31 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 
 	"code-agent/internal/agent"
 	"code-agent/internal/conversation"
+	"code-agent/internal/repos"
 	"code-agent/internal/session"
 
 	"github.com/coder/websocket"
 )
+
+// statusForCloneCode maps a structured clone error code to an HTTP status.
+func statusForCloneCode(code string) int {
+	switch code {
+	case "invalid_url", "invalid_name":
+		return http.StatusBadRequest
+	case "repo_not_found", "ref_not_found":
+		return http.StatusNotFound
+	case "network_error":
+		return http.StatusBadGateway
+	default: // io_error and anything unexpected
+		return http.StatusInternalServerError
+	}
+}
 
 // CreateConversationRequest is the POST /v1/conversations body. workspace_path is
 // the client's desired project root directory; an empty workspace_path means "use
@@ -35,6 +51,28 @@ type WorkspaceRefDTO struct {
 	Root  string `json:"root,omitempty"`
 	Rel   string `json:"rel,omitempty"`
 	ExtID string `json:"ext_id,omitempty"`
+}
+
+// CloneRepoRequest is the POST /v1/repos/clone body. See docs/ios_github_clone_spec.md.
+type CloneRepoRequest struct {
+	URL   string `json:"url"`             // https GitHub URL or "owner/repo" shorthand
+	Ref   string `json:"ref,omitempty"`   // optional branch/tag
+	Name  string `json:"name,omitempty"`  // optional target dir name
+	Depth int    `json:"depth,omitempty"` // optional shallow depth (0 => default)
+}
+
+// CloneRepoResponse is returned on a successful clone. workspace_path is this
+// launch's absolute path (host displays it, does not persist it); workspace_ref is
+// the portable identity to create the conversation with.
+type CloneRepoResponse struct {
+	WorkspacePath string           `json:"workspace_path"`
+	WorkspaceRef  *WorkspaceRefDTO `json:"workspace_ref"`
+}
+
+// cloneErrorResponse is the structured error body keyed on a stable code.
+type cloneErrorResponse struct {
+	Error   string `json:"error"`   // invalid_url | repo_not_found | ref_not_found | network_error | io_error | invalid_name
+	Message string `json:"message"` // human-readable detail
 }
 
 // ConversationRef is the minimal conversation descriptor returned by create and
@@ -81,6 +119,10 @@ type MuxOptions struct {
 	Capabilities []string
 	// Accept carries WebSocket origin policy. Nil = same-origin only.
 	Accept *websocket.AcceptOptions
+	// WorkspaceRoot is the default workspace directory (cfg.Workspace.Root). The
+	// repo-clone endpoint clones into a subdirectory of it. Empty disables that
+	// endpoint (it returns 400).
+	WorkspaceRoot string
 }
 
 // NewMux builds the HTTP surface of `codeagent serve`:
@@ -295,6 +337,39 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
+	})
+
+	// Clone a public GitHub repo into the workspace. Used by the host's "Import from
+	// GitHub" flow before a conversation is created — the cloned directory lands under
+	// the workspace root and is returned as a workspace_ref, reusing the same
+	// relativize/re-anchor path as any other workspace project. See
+	// docs/ios_github_clone_spec.md.
+	mux.HandleFunc("POST /v1/repos/clone", func(w http.ResponseWriter, r *http.Request) {
+		if opts.WorkspaceRoot == "" {
+			writeJSON(w, http.StatusBadRequest, cloneErrorResponse{Error: "io_error", Message: "server has no workspace root configured"})
+			return
+		}
+		var req CloneRepoRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeJSON(w, http.StatusBadRequest, cloneErrorResponse{Error: "invalid_url", Message: "invalid JSON body"})
+			return
+		}
+		res, err := repos.Clone(r.Context(), opts.WorkspaceRoot, repos.CloneOptions{
+			URL: req.URL, Ref: req.Ref, Name: req.Name, Depth: req.Depth,
+		})
+		if err != nil {
+			var ce *repos.CloneError
+			if errors.As(err, &ce) {
+				writeJSON(w, statusForCloneCode(ce.Code), cloneErrorResponse{Error: ce.Code, Message: ce.Err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusInternalServerError, cloneErrorResponse{Error: "io_error", Message: err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusCreated, CloneRepoResponse{
+			WorkspacePath: res.AbsPath,
+			WorkspaceRef:  &WorkspaceRefDTO{Root: session.RootWorkspace, Rel: res.Rel},
+		})
 	})
 
 	mux.HandleFunc("DELETE /v1/conversations/{id}", func(w http.ResponseWriter, r *http.Request) {

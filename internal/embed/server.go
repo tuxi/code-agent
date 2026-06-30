@@ -265,8 +265,9 @@ func Assemble(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider 
 	executor.SetTitleGenerator(conversation.NewLLMTitleGenerator(provider, mc.Model))
 
 	handler := server.NewMux(repo, eventStore, executor, server.MuxOptions{
-		ServerName:   "codeagent/" + mc.Model,
-		Capabilities: defaultCapabilities,
+		ServerName:    "codeagent/" + mc.Model,
+		Capabilities:  defaultCapabilities,
+		WorkspaceRoot: root,
 	})
 	return handler, closers, nil
 }
