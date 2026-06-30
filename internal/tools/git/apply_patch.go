@@ -15,16 +15,38 @@ import (
 type ApplyPatchTool struct {
 	MaxBytes int
 	Timeout  time.Duration
+	backend  patchApplier
+}
+
+// patchApplier validates and applies a unified diff to the workspace atomically:
+// on failure nothing is changed. The exec backend uses `git apply` (desktop); the
+// go-git backend uses go-gitdiff in pure Go (iOS). It returns a human-readable
+// message and whether the patch applied; a non-nil error is an infrastructure
+// failure (a patch that does not apply is ok=false, not an error).
+type patchApplier interface {
+	Apply(ctx context.Context, rootAbs, patch string) (msg string, ok bool, err error)
 }
 
 type applyPatchInput struct {
 	Patch string `json:"patch"`
 }
 
+// NewApplyPatchTool returns the desktop tool, backed by the git binary.
 func NewApplyPatchTool() *ApplyPatchTool {
 	return &ApplyPatchTool{
 		MaxBytes: 200_000,
 		Timeout:  30 * time.Second,
+		backend:  &execApplier{timeout: 30 * time.Second},
+	}
+}
+
+// NewApplyPatchToolGoGit returns the sandboxed (iOS) tool, backed by go-gitdiff so
+// no subprocess is spawned.
+func NewApplyPatchToolGoGit() *ApplyPatchTool {
+	return &ApplyPatchTool{
+		MaxBytes: 200_000,
+		Timeout:  30 * time.Second,
+		backend:  &gogitApplier{},
 	}
 }
 
@@ -71,34 +93,45 @@ func (t *ApplyPatchTool) Execute(ctx context.Context, ec tools.ExecutionContext,
 		return tools.ToolResult{}, err
 	}
 
-	// 1. Validate with a dry run (git apply --check). If it fails, change nothing
-	//    and hand the error back so the model can fix the patch and retry.
-	if ok, msg := t.runWithFallback(ctx, rootAbs, patch, false); !ok {
+	msg, ok, err := t.backend.Apply(ctx, rootAbs, patch)
+	if err != nil {
+		return tools.ToolResult{}, err
+	}
+	if !ok {
 		return tools.ToolResult{
-			Content: "Patch did not validate; no files were changed.\n\n" + msg,
+			Content: "Patch did not apply; no files were changed.\n\n" + msg,
 		}, nil
 	}
-
-	// 2. Apply for real.
-	if ok, msg := t.runWithFallback(ctx, rootAbs, patch, true); !ok {
-		return tools.ToolResult{
-			Content: "Patch validated but failed to apply; no files were changed.\n\n" + msg,
-		}, nil
-	}
-
 	return tools.ToolResult{Content: "Patch applied successfully."}, nil
+}
+
+// execApplier applies patches via the git binary. It is the desktop backend.
+type execApplier struct {
+	timeout time.Duration
+}
+
+func (a *execApplier) Apply(ctx context.Context, rootAbs, patch string) (string, bool, error) {
+	// 1. Validate with a dry run (git apply --check). If it fails, change nothing.
+	if ok, msg := a.runWithFallback(ctx, rootAbs, patch, false); !ok {
+		return msg, false, nil
+	}
+	// 2. Apply for real.
+	if ok, msg := a.runWithFallback(ctx, rootAbs, patch, true); !ok {
+		return msg, false, nil
+	}
+	return "", true, nil
 }
 
 // runWithFallback runs git apply (check or apply) trying the default path mode
 // first and then -p0, to support both a/.. b/.. headers and bare paths. It
 // returns whether the operation succeeded and a human-readable message.
-func (t *ApplyPatchTool) runWithFallback(ctx context.Context, rootAbs, patch string, apply bool) (bool, string) {
-	primary := t.runGitApply(ctx, rootAbs, patch, apply, "")
+func (a *execApplier) runWithFallback(ctx context.Context, rootAbs, patch string, apply bool) (bool, string) {
+	primary := a.runGitApply(ctx, rootAbs, patch, apply, "")
 	if primary.Err == nil {
 		return true, primary.Content
 	}
 
-	fallback := t.runGitApply(ctx, rootAbs, patch, apply, "-p0")
+	fallback := a.runGitApply(ctx, rootAbs, patch, apply, "-p0")
 	if fallback.Err == nil {
 		return true, fallback.Content
 	}
@@ -124,7 +157,7 @@ type applyPatchExecResult struct {
 	Err     error
 }
 
-func (t *ApplyPatchTool) runGitApply(ctx context.Context, rootAbs, patch string, apply bool, stripOption string) applyPatchExecResult {
+func (a *execApplier) runGitApply(ctx context.Context, rootAbs, patch string, apply bool, stripOption string) applyPatchExecResult {
 	args := []string{"-C", rootAbs, "apply", "--recount"}
 	if !apply {
 		args = append(args, "--check")
@@ -133,7 +166,7 @@ func (t *ApplyPatchTool) runGitApply(ctx context.Context, rootAbs, patch string,
 		args = append(args, stripOption)
 	}
 
-	cmdCtx, cancel := context.WithTimeout(ctx, t.Timeout)
+	cmdCtx, cancel := context.WithTimeout(ctx, a.timeout)
 	defer cancel()
 
 	cmd := exec.CommandContext(cmdCtx, "git", args...)

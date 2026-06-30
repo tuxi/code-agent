@@ -16,13 +16,36 @@ import (
 // commit message is passed verbatim via stdin (git commit -F -). This avoids
 // the quoting and escaping problems that arise when embedding a multi-line
 // message with special characters into a shell command string.
+//
+// The actual git work is delegated to a committer backend: the exec backend
+// shells out to the git binary (desktop); the go-git backend does it in pure Go
+// (iOS, where subprocesses are forbidden — see NewGitCommitToolGoGit).
 type GitCommitTool struct {
 	Timeout time.Duration
+	backend committer
 }
 
+// committer performs the stage+commit against a workspace. A non-nil error is an
+// infrastructure failure (cannot open repo, timeout); the ordinary "nothing to
+// commit" outcome is reported through the result/note, not as an error.
+type committer interface {
+	Commit(ctx context.Context, root, message string, all bool) (gitCommitResult, string, error)
+}
+
+// NewGitCommitTool returns the desktop tool, backed by the git binary.
 func NewGitCommitTool() *GitCommitTool {
 	return &GitCommitTool{
 		Timeout: 30 * time.Second,
+		backend: &execCommitter{timeout: 30 * time.Second},
+	}
+}
+
+// NewGitCommitToolGoGit returns the sandboxed (iOS) tool, backed by go-git so no
+// subprocess is spawned.
+func NewGitCommitToolGoGit() *GitCommitTool {
+	return &GitCommitTool{
+		Timeout: 30 * time.Second,
+		backend: &gogitCommitter{},
 	}
 }
 
@@ -89,7 +112,21 @@ func (t *GitCommitTool) Execute(ctx context.Context, ec tools.ExecutionContext, 
 		return tools.ToolResult{}, err
 	}
 
-	cmdCtx, cancel := context.WithTimeout(ctx, t.Timeout)
+	res, note, err := t.backend.Commit(ctx, rootAbs, msg, in.All)
+	if err != nil {
+		res.ExitCode = -1
+		return t.result(res, note)
+	}
+	return t.result(res, note)
+}
+
+// execCommitter shells out to the git binary. It is the desktop backend.
+type execCommitter struct {
+	timeout time.Duration
+}
+
+func (c *execCommitter) Commit(ctx context.Context, rootAbs, msg string, all bool) (gitCommitResult, string, error) {
+	cmdCtx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
 
 	res := gitCommitResult{}
@@ -97,17 +134,15 @@ func (t *GitCommitTool) Execute(ctx context.Context, ec tools.ExecutionContext, 
 	// When all=true, stage everything first (git add -A), then capture what was
 	// staged so the model can inspect it. git add -A respects .gitignore natively,
 	// so we don't need to parse it ourselves.
-	if in.All {
+	if all {
 		addCmd := exec.CommandContext(cmdCtx, "git", "-C", rootAbs, "add", "-A")
 		addOut, addErr := addCmd.CombinedOutput()
 		if errors.Is(cmdCtx.Err(), context.DeadlineExceeded) {
-			res.ExitCode = -1
-			return t.result(res, "git add -A timed out")
+			return res, "git add -A timed out", fmt.Errorf("git add -A timed out")
 		}
 		if addErr != nil {
-			res.ExitCode = -1
 			res.Stderr = strings.TrimSpace(string(addOut))
-			return t.result(res, "git add -A failed: "+addErr.Error())
+			return res, "git add -A failed: " + addErr.Error(), addErr
 		}
 
 		statusCmd := exec.CommandContext(cmdCtx, "git", "-C", rootAbs, "status", "--short")
@@ -116,17 +151,13 @@ func (t *GitCommitTool) Execute(ctx context.Context, ec tools.ExecutionContext, 
 	}
 
 	// Build args: git -C <root> commit -F -
-	args := []string{"-C", rootAbs, "commit", "-F", "-"}
-
-	cmd := exec.CommandContext(cmdCtx, "git", args...)
+	cmd := exec.CommandContext(cmdCtx, "git", "-C", rootAbs, "commit", "-F", "-")
 	cmd.Dir = rootAbs
 	cmd.Stdin = strings.NewReader(msg)
 
 	output, err := cmd.CombinedOutput()
-
 	if errors.Is(cmdCtx.Err(), context.DeadlineExceeded) {
-		res.ExitCode = -1
-		return t.result(res, "git commit timed out")
+		return res, "git commit timed out", fmt.Errorf("git commit timed out")
 	}
 
 	content := string(output)
@@ -135,14 +166,12 @@ func (t *GitCommitTool) Execute(ctx context.Context, ec tools.ExecutionContext, 
 	if err != nil {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
+			// Exit code 1 from git commit usually means "nothing to commit" —
+			// return the output (not an error) so the model can read and decide.
 			res.ExitCode = exitErr.ExitCode()
-		} else {
-			res.ExitCode = -1
-			return t.result(res, "git commit failed to start: "+err.Error())
+			return res, "", nil
 		}
-		// Exit code 1 from git commit usually means "nothing to commit" —
-		// return the output so the model can read it and decide what to do.
-		return t.result(res, "")
+		return res, "git commit failed to start: " + err.Error(), err
 	}
 
 	// Success: extract the commit hash from the output.
@@ -150,8 +179,7 @@ func (t *GitCommitTool) Execute(ctx context.Context, ec tools.ExecutionContext, 
 	res.Hash = extractHash(content)
 	res.ShortHash = shortHash(res.Hash)
 	res.Subject = firstLine(msg)
-
-	return t.result(res, "")
+	return res, "", nil
 }
 
 func (t *GitCommitTool) result(res gitCommitResult, note string) (tools.ToolResult, error) {

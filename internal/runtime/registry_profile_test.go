@@ -28,15 +28,18 @@ func registerForProfile(t *testing.T, profile app.Profile) map[string]bool {
 }
 
 func TestRegisterBuiltinTools_SandboxedExcludesSubprocessTools(t *testing.T) {
-	// Tools that shell out — must be absent under the sandboxed (iOS) profile.
+	// Tools that shell out and have no pure-Go replacement yet — must be absent under
+	// the sandboxed (iOS) profile.
 	subprocessTools := []string{
 		"run_command", "job_status", "job_logs", "job_cancel",
-		"project_graph", "git_diff", "apply_patch", "git_commit",
+		"project_graph",
 	}
-	// Pure-Go tools — must be present under every profile.
+	// Pure-Go tools — must be present under every profile. git_commit / git_diff /
+	// apply_patch are here because the sandboxed profile registers go-git-backed
+	// implementations of them.
 	pureGoTools := []string{
 		"list_files", "read_file", "create_file", "edit_file",
-		"grep", "load_skill", "todo_write",
+		"grep", "load_skill", "todo_write", "git_commit", "git_diff", "apply_patch",
 	}
 
 	full := registerForProfile(t, app.ProfileFull)
@@ -53,6 +56,21 @@ func TestRegisterBuiltinTools_SandboxedExcludesSubprocessTools(t *testing.T) {
 	for _, name := range pureGoTools {
 		if !sandboxed[name] {
 			t.Errorf("sandboxed profile: pure-Go tool %q must be registered", name)
+		}
+		if !full[name] {
+			t.Errorf("full profile: tool %q must be registered", name)
+		}
+	}
+
+	// Read-only git tools that exist ONLY on the sandboxed profile — desktop reaches
+	// the same information through the shell, so they are not added there.
+	sandboxedOnlyTools := []string{"git_init", "git_status", "git_log"}
+	for _, name := range sandboxedOnlyTools {
+		if !sandboxed[name] {
+			t.Errorf("sandboxed profile: expected %q to be registered", name)
+		}
+		if full[name] {
+			t.Errorf("full profile: %q must NOT be registered (desktop uses the shell)", name)
 		}
 	}
 }

@@ -53,6 +53,26 @@ func RegisterBuiltinTools(registry *tools.Registry, cfg app.Config, skillReg *sk
 		todo.NewTool(),
 	}
 
+	// Pure-Go git tools that work without a subprocess (go-git / go-gitdiff). On a
+	// sandboxed host (iOS) these replace the exec-backed git tools below and add what
+	// desktop gets through the shell — giving a self-contained git surface (init then
+	// commit / diff / apply_patch / status / log) without ever spawning git. git_init
+	// is the keystone: an iOS app folder starts un-versioned, so the rest depend on it.
+	if !cfg.Profile.AllowsSubprocess() {
+		for _, tool := range []tools.Tool{
+			git.NewGitInitTool(),
+			git.NewGitCommitToolGoGit(),
+			git.NewDiffToolGoGit(),
+			git.NewApplyPatchToolGoGit(),
+			git.NewGitStatusTool(),
+			git.NewGitLogTool(),
+		} {
+			if err := registry.Register(tool); err != nil {
+				return err
+			}
+		}
+	}
+
 	// Subprocess-based tools (shell, git, gopls) are only assembled where the host
 	// can fork/exec. On a sandboxed host (iOS) they would compile but fail at every
 	// call, so they are left unregistered — the model never sees a tool it cannot use.
