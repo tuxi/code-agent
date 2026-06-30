@@ -51,6 +51,9 @@ CREATE TABLE IF NOT EXISTS sessions (
 	context_window    INTEGER,
 	compact_threshold INTEGER,
 	workspace_path    TEXT,
+	workspace_root    TEXT,
+	workspace_rel     TEXT,
+	workspace_ext_id  TEXT,
 	name              TEXT,
 	created_at        TEXT,
 	updated_at        TEXT,
@@ -123,6 +126,11 @@ func (s *Store) open() error {
 		`ALTER TABLE requests ADD COLUMN cached_prompt_tokens INTEGER`,
 		`ALTER TABLE sessions ADD COLUMN metadata TEXT`,
 		`ALTER TABLE sessions ADD COLUMN workspace_path TEXT`,
+		// Portable workspace identity (iOS reinstall safety): persisted instead of the
+		// frozen absolute workspace_path, which now serves only as a display hint.
+		`ALTER TABLE sessions ADD COLUMN workspace_root TEXT`,
+		`ALTER TABLE sessions ADD COLUMN workspace_rel TEXT`,
+		`ALTER TABLE sessions ADD COLUMN workspace_ext_id TEXT`,
 		`ALTER TABLE sessions ADD COLUMN name TEXT`,
 		// v2: re-index session_events by at for chronological ordering.
 		// The original index was on (session_id, id); rebuild on (session_id, at).
@@ -187,14 +195,17 @@ func (s *Store) save(ctx context.Context, sess *session.Session) error {
 		metaJSON = string(b)
 	}
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO sessions (id, model, summary, prompt_tokens, context_window, compact_threshold, workspace_path, name, created_at, updated_at, metadata)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO sessions (id, model, summary, prompt_tokens, context_window, compact_threshold, workspace_path, workspace_root, workspace_rel, workspace_ext_id, name, created_at, updated_at, metadata)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			model=excluded.model, summary=excluded.summary, prompt_tokens=excluded.prompt_tokens,
 			context_window=excluded.context_window, compact_threshold=excluded.compact_threshold,
-			workspace_path=excluded.workspace_path, name=excluded.name, updated_at=excluded.updated_at, metadata=excluded.metadata`,
+			workspace_path=excluded.workspace_path, workspace_root=excluded.workspace_root,
+			workspace_rel=excluded.workspace_rel, workspace_ext_id=excluded.workspace_ext_id,
+			name=excluded.name, updated_at=excluded.updated_at, metadata=excluded.metadata`,
 		sess.ID, sess.Model, sess.Summary, sess.PromptTokens, sess.ContextWindow, sess.CompactThreshold,
-		sess.WorkspacePath, sess.Name, formatTime(sess.CreatedAt), formatTime(sess.UpdatedAt), metaJSON); err != nil {
+		sess.WorkspacePath, sess.Workspace.Root, sess.Workspace.Rel, sess.Workspace.ExtID,
+		sess.Name, formatTime(sess.CreatedAt), formatTime(sess.UpdatedAt), metaJSON); err != nil {
 		return fmt.Errorf("save session row: %w", err)
 	}
 
@@ -238,10 +249,14 @@ func (s *Store) Load(ctx context.Context, id string) (*session.Session, error) {
 	var sess session.Session
 	var createdAt, updatedAt, metaJSON, name string
 	err := s.db.QueryRowContext(ctx, `
-		SELECT id, model, summary, prompt_tokens, context_window, compact_threshold, COALESCE(workspace_path, ''), COALESCE(name, ''), created_at, updated_at, COALESCE(metadata, '')
+		SELECT id, model, summary, prompt_tokens, context_window, compact_threshold, COALESCE(workspace_path, ''),
+		       COALESCE(workspace_root, ''), COALESCE(workspace_rel, ''), COALESCE(workspace_ext_id, ''),
+		       COALESCE(name, ''), created_at, updated_at, COALESCE(metadata, '')
 		FROM sessions WHERE id=?`, id).
 		Scan(&sess.ID, &sess.Model, &sess.Summary, &sess.PromptTokens, &sess.ContextWindow,
-			&sess.CompactThreshold, &sess.WorkspacePath, &name, &createdAt, &updatedAt, &metaJSON)
+			&sess.CompactThreshold, &sess.WorkspacePath,
+			&sess.Workspace.Root, &sess.Workspace.Rel, &sess.Workspace.ExtID,
+			&name, &createdAt, &updatedAt, &metaJSON)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf("session %q not found", id)
 	}
@@ -251,6 +266,8 @@ func (s *Store) Load(ctx context.Context, id string) (*session.Session, error) {
 	sess.CreatedAt = parseTime(createdAt)
 	sess.UpdatedAt = parseTime(updatedAt)
 	sess.Name = name
+	// workspace_path is the (frozen) display hint for the portable ref.
+	sess.Workspace.AbsHint = sess.WorkspacePath
 	sess.Metadata = map[string]any{}
 	if metaJSON != "" {
 		if err := json.Unmarshal([]byte(metaJSON), &sess.Metadata); err != nil {
@@ -307,7 +324,8 @@ func (s *Store) Load(ctx context.Context, id string) (*session.Session, error) {
 
 func (s *Store) List(ctx context.Context) ([]session.Meta, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT s.id, s.model, s.prompt_tokens, s.updated_at, COALESCE(s.workspace_path, ''), COALESCE(s.name, ''),
+		SELECT s.id, s.model, s.prompt_tokens, s.updated_at, COALESCE(s.workspace_path, ''),
+		       COALESCE(s.workspace_root, ''), COALESCE(s.workspace_rel, ''), COALESCE(s.workspace_ext_id, ''), COALESCE(s.name, ''),
 		       (SELECT COUNT(*) FROM messages m WHERE m.session_id = s.id),
 		       (SELECT COALESCE((SELECT content FROM messages m WHERE m.session_id = s.id AND m.role = 'user' ORDER BY m.seq LIMIT 1), '')),
 		       (SELECT COUNT(*) FROM compactions c WHERE c.session_id = s.id AND c.after_tokens >= 0),
@@ -323,10 +341,12 @@ func (s *Store) List(ctx context.Context) ([]session.Meta, error) {
 	for rows.Next() {
 		var m session.Meta
 		var updatedAt, lastCompacted string
-		if err := rows.Scan(&m.ID, &m.Model, &m.PromptTokens, &updatedAt, &m.WorkspacePath, &m.Name,
+		if err := rows.Scan(&m.ID, &m.Model, &m.PromptTokens, &updatedAt, &m.WorkspacePath,
+			&m.Workspace.Root, &m.Workspace.Rel, &m.Workspace.ExtID, &m.Name,
 			&m.MessageCount, &m.Title, &m.Compactions, &m.TotalSaved, &lastCompacted); err != nil {
 			return nil, err
 		}
+		m.Workspace.AbsHint = m.WorkspacePath
 		m.UpdatedAt = parseTime(updatedAt)
 		m.LastCompacted = parseTime(lastCompacted)
 		out = append(out, m)

@@ -15,9 +15,26 @@ import (
 
 // CreateConversationRequest is the POST /v1/conversations body. workspace_path is
 // the client's desired project root directory; an empty workspace_path means "use
-// the server's default workspace."
+// the server's default workspace." workspace_ext_id is the host's stable identifier
+// for a workspace outside the launch workspaceDir (an iOS security-scoped-bookmark
+// id); empty for workspace-local paths and on desktop. See spec §6.1.
 type CreateConversationRequest struct {
-	WorkspacePath string `json:"workspace_path,omitempty"`
+	WorkspacePath  string `json:"workspace_path,omitempty"`
+	WorkspaceExtID string `json:"workspace_ext_id,omitempty"`
+}
+
+// RebindRequest is the POST /v1/conversations/{id}/rebind body: the host re-supplies
+// the fresh absolute path of an external workspace for this launch. See spec §6.2bis.
+type RebindRequest struct {
+	WorkspacePath string `json:"workspace_path"`
+}
+
+// WorkspaceRefDTO is the structured workspace identity returned in ConversationDetail,
+// so the host can map ext_id back to a security-scoped bookmark.
+type WorkspaceRefDTO struct {
+	Root  string `json:"root,omitempty"`
+	Rel   string `json:"rel,omitempty"`
+	ExtID string `json:"ext_id,omitempty"`
 }
 
 // ConversationRef is the minimal conversation descriptor returned by create and
@@ -30,15 +47,18 @@ type ConversationRef struct {
 
 // ConversationDetail is GET /v1/conversations/{id}. Counts and timestamps are
 // derived from the recorded event stream; workspace_path comes from the session
-// metadata (identity, not an event).
+// metadata (identity, not an event). workspace_ref + needs_rebind let an iOS host
+// re-anchor an external workspace before opening the stream (spec §6.2bis/§6.3).
 type ConversationDetail struct {
-	ID            string `json:"id"`
-	WorkspacePath string `json:"workspace_path"`
-	Name          string `json:"name,omitempty"`
-	TurnCount     int    `json:"turn_count"`
-	MessageCount  int    `json:"message_count"`
-	CreatedAt     string `json:"created_at,omitempty"`
-	UpdatedAt     string `json:"updated_at,omitempty"`
+	ID            string           `json:"id"`
+	WorkspacePath string           `json:"workspace_path"`
+	WorkspaceRef  *WorkspaceRefDTO `json:"workspace_ref,omitempty"`
+	NeedsRebind   bool             `json:"needs_rebind,omitempty"`
+	Name          string           `json:"name,omitempty"`
+	TurnCount     int              `json:"turn_count"`
+	MessageCount  int              `json:"message_count"`
+	CreatedAt     string           `json:"created_at,omitempty"`
+	UpdatedAt     string           `json:"updated_at,omitempty"`
 }
 
 // MessageView is one entry of GET /v1/conversations/{id}/messages. v1 reconstructs
@@ -110,7 +130,7 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 		var req CreateConversationRequest
 		_ = json.NewDecoder(r.Body).Decode(&req)
 
-		sess, err := repo.Create(r.Context(), req.WorkspacePath)
+		sess, err := repo.Create(r.Context(), req.WorkspacePath, req.WorkspaceExtID)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -131,6 +151,16 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 		if s, err := repo.Load(r.Context(), id); err == nil {
 			detail.WorkspacePath = s.WorkspacePath
 			detail.Name = s.Name
+			if s.Workspace.Root != "" {
+				detail.WorkspaceRef = &WorkspaceRefDTO{
+					Root:  s.Workspace.Root,
+					Rel:   s.Workspace.Rel,
+					ExtID: s.Workspace.ExtID,
+				}
+			}
+			if nr, err := repo.NeedsRebind(r.Context(), id); err == nil {
+				detail.NeedsRebind = nr
+			}
 		}
 		for _, rec := range recs {
 			if detail.CreatedAt == "" {
@@ -243,6 +273,28 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 			WorkspacePath: sess.WorkspacePath,
 			Name:          sess.Name,
 		})
+	})
+
+	// Rebind re-supplies an external workspace's absolute path for this launch. The
+	// host calls it in Phase 1 (HTTP, before the WS stream) when detail.needs_rebind
+	// is true, so any turn's Load resolves the workspace correctly. No-race by design:
+	// the stream is not yet open. See spec §6.2bis.
+	mux.HandleFunc("POST /v1/conversations/{id}/rebind", func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+		var body RebindRequest
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, "invalid JSON body", http.StatusBadRequest)
+			return
+		}
+		if body.WorkspacePath == "" {
+			http.Error(w, `"workspace_path" is required`, http.StatusBadRequest)
+			return
+		}
+		if err := repo.Rebind(r.Context(), id, body.WorkspacePath); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
 	})
 
 	mux.HandleFunc("DELETE /v1/conversations/{id}", func(w http.ResponseWriter, r *http.Request) {

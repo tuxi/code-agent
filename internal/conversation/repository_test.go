@@ -19,7 +19,7 @@ func newTestRepo(t *testing.T) ConversationRepository {
 		t.Fatalf("open store: %v", err)
 	}
 	t.Cleanup(func() { store.Close() })
-	return NewSQLiteRepository(store, 128000, 90000, "test-model", func(workspaceRoot string) string {
+	return NewSQLiteRepository(store, 128000, 90000, "test-model", "", func(workspaceRoot string) string {
 		return "" // no skills in tests
 	})
 }
@@ -34,7 +34,7 @@ func newTestRepoWithSkills(t *testing.T, index string) ConversationRepository {
 		t.Fatalf("open store: %v", err)
 	}
 	t.Cleanup(func() { store.Close() })
-	return NewSQLiteRepository(store, 128000, 90000, "test-model", func(string) string {
+	return NewSQLiteRepository(store, 128000, 90000, "test-model", "", func(string) string {
 		return index
 	})
 }
@@ -45,7 +45,7 @@ func TestRepoCreate(t *testing.T) {
 
 	// Create workspace dir so Builder can read CODEAGENT.md (absent is OK).
 	dir := t.TempDir()
-	sess, err := repo.Create(ctx, dir)
+	sess, err := repo.Create(ctx, dir, "")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -71,7 +71,7 @@ func TestRepoCreate_SkillsIndex(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
 
-	sess, err := repo.Create(ctx, dir)
+	sess, err := repo.Create(ctx, dir, "")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -94,7 +94,7 @@ func TestRepoCreate_Load(t *testing.T) {
 	ctx := context.Background()
 
 	dir := t.TempDir()
-	created, err := repo.Create(ctx, dir)
+	created, err := repo.Create(ctx, dir, "")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -137,8 +137,8 @@ func TestRepoList(t *testing.T) {
 	}
 
 	// Create two sessions.
-	s1, _ := repo.Create(ctx, dir)
-	s2, _ := repo.Create(ctx, dir)
+	s1, _ := repo.Create(ctx, dir, "")
+	s2, _ := repo.Create(ctx, dir, "")
 
 	metas, err = repo.List(ctx)
 	if err != nil {
@@ -161,7 +161,7 @@ func TestRepoList_WorkspacePath(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
 
-	repo.Create(ctx, dir)
+	repo.Create(ctx, dir, "")
 
 	metas, err := repo.List(ctx)
 	if err != nil {
@@ -180,7 +180,7 @@ func TestRepoSave(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
 
-	sess, _ := repo.Create(ctx, dir)
+	sess, _ := repo.Create(ctx, dir, "")
 
 	// Modify and save.
 	sess.Summary = "test summary"
@@ -199,7 +199,7 @@ func TestRepoDelete(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
 
-	sess, _ := repo.Create(ctx, dir)
+	sess, _ := repo.Create(ctx, dir, "")
 
 	if err := repo.Delete(ctx, sess.ID); err != nil {
 		t.Fatalf("Delete: %v", err)
@@ -233,7 +233,7 @@ func TestRepoCreate_MissingWorkspace(t *testing.T) {
 	ctx := context.Background()
 
 	// A path that does not exist.
-	sess, err := repo.Create(ctx, "/nonexistent/path/for/test")
+	sess, err := repo.Create(ctx, "/nonexistent/path/for/test", "")
 	if err != nil {
 		// The Builder tries to read CODEAGENT.md — a missing file is OK,
 		// but some OSes may reject reading from a non-existent directory.

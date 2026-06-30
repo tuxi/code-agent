@@ -17,11 +17,18 @@ type Session struct {
 	// ID is the durable identity assigned at creation. It is the key under which
 	// the session is persisted and the handle used to resume it.
 	ID string
-	// WorkspacePath is the absolute project root directory this session runs in.
-	// It is conversation identity metadata, not an event — set at creation time
-	// and never derived from the event stream. An empty path means the server
-	// default workspace was used.
+	// WorkspacePath is the absolute project root directory this session runs in,
+	// resolved for the *current* process. It is conversation identity metadata, not
+	// an event. On persistence it is NOT the durable identity — see Workspace: the
+	// repository writes a portable WorkspaceRef and re-derives WorkspacePath on load
+	// (re-anchor), so the value survives an iOS sandbox-path change. An empty path
+	// means the server default workspace was used.
 	WorkspacePath string
+
+	// Workspace is the portable, persisted identity of WorkspacePath. The repository
+	// fills it on create (relativize) and resolves it back into WorkspacePath on load.
+	// See WorkspaceRef and docs/ios_workspace_path_spec.md.
+	Workspace WorkspaceRef
 	// Name is the human-readable display name for this conversation. It is set
 	// after the first turn (truncated first user message) and may be replaced by
 	// an LLM-generated title or a user-supplied name via PATCH. Empty means unset.

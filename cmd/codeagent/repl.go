@@ -142,7 +142,7 @@ func repl(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider mode
 
 	// Build the TurnExecutor — the single execution entry point. The REPL holds
 	// `sess` across turns and drives each turn through ExecuteWithSession.
-	repo := conversation.NewSQLiteRepository(store, mc.ContextWindow, cfg.CompactThreshold(mc), mc.Model, func(string) string { return skillReg.PromptIndex() })
+	repo := conversation.NewSQLiteRepository(store, mc.ContextWindow, cfg.CompactThreshold(mc), mc.Model, "", func(string) string { return skillReg.PromptIndex() })
 	eventStore := &conversation.StoreEventAdapter{Store: store}
 	active := conversation.NewActiveTurnRegistry()
 	subs := conversation.NewSubscriptionManager()

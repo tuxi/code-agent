@@ -195,6 +195,53 @@ func (r WorkspaceRef) resolve(currentWorkspaceDir string, hostSuppliedAbs string
 - `root="external"` 的会话：**必须**由 host 重传，否则按 §5.2 报 `ErrExternalNeedsHostRebind`。
 - `root="workspace"` 的会话：host 可以不传，runtime 用 re-anchor 自给自足；传了也接受（兜底）。
 
+### 6.2bis external rebind：入口形态与时序（host 侧定稿）
+
+§6.2 只说了「attach 可重传 `workspace_path`」，但没定**重传走哪个通道、什么时机**。基于
+AgentKit 实际的两阶段连接时序（Phase 1 HTTP → Phase 2 WS），host 侧定稿如下。
+
+#### 决策：HTTP、Phase 1、WS attach 之前。**不走 WS hello / 握手后帧。**
+
+三条理由：
+1. **`hello` 是 server→client，载不动 host→server 的 path。** 「hello 消息」选项在当前协议
+   方向上不成立——除非新增 client-hello，那是更大的协议改动。
+2. **握手后帧（类 `register_tools`）会引入「首 turn 竞态」。** rebind 帧在 hello 之后才到，
+   而用户首条输入也走 WS；runtime 必须为 external 会话**阻塞首 turn 直到 rebind 帧到达**，
+   否则 `Load` 可能在绑定刷新前就跑。有状态 gating，易错。
+3. **HTTP-in-Phase-1 天然无竞态、且与 create 对称。** 流还没开、任何 turn 的 `Load` 还没跑，
+   绑定就已刷新好；而 `createConversation` 本就是 HTTP POST 带 `workspace_path`。
+
+#### Wire 形状
+```
+// Phase 1: host 先取 detail
+GET /v1/conversations/{id}
+→ { ..., "workspace_ref": {"root":"external","ext_id":"BKMK-7f3a"},
+        "needs_rebind": true }
+
+// needs_rebind=true → host 用 ext_id 查 bookmark → 解析出本次启动的绝对路径
+//                     → startAccessingSecurityScopedResource → 重传
+POST /v1/conversations/{id}/rebind
+     { "workspace_path": "/var/mobile/.../Documents/MyProject" }
+→ 200  // runtime 刷新内存 ResolvedWorkspace.AbsPath，校验路径存在
+
+// Phase 2: 之后才开 WS stream，此时 Load 已能正确解析
+WS  /v1/conversations/{id}/stream
+```
+
+#### 契约点（runtime 落实）
+- **`needs_rebind` 语义**：`true` 当且仅当 `root=="external"` 且本次进程启动尚未 rebind。
+  `root=="workspace"` **永远 false**（runtime 自锚定，host 零参与）。
+- **rebind 幂等**；host 对 external 会话可无条件调用（即便 `needs_rebind=false`）做防御。
+- **rebind 校验路径存在**，不存在返回错误 → host 提示「workspace 失联，请重新授权/重选」。
+- **顺序保证由 host 负责**：rebind 返回 200 后才开 WS（host 侧保证）。
+- rebind **只刷新内存绑定**，不改持久 ref 的 `rel`/`ext_id`（与 §6.2、§5.2 一致）。
+
+#### 兜底选项（仅当 runtime 坚持单通道）
+若必须收在 WS 上，**用 stream URL 的 query param**（`…/stream?workspace_path=…`），
+**不要用握手后帧**。query param 在 upgrade 时即可得 → 同样无竞态，host 侧
+`connectionValidatorRequest` 正好能塞。代价：绝对路径进 URL（loopback 无真实日志，影响小）。
+优先级仍低于 HTTP-rebind。
+
 ### 6.3 `GET /v1/conversations` / detail
 - 返回的 `workspace_path` = **本次启动 re-anchor 后的绝对路径**（对 `external` 未重传者可返回
   空或带 `needs_rebind: true` 标记，供 UI 提示）。
@@ -290,7 +337,9 @@ func migrateLegacyWorkspacePaths(db, currentWorkspaceDir string) {
 - [ ] DB schema 增 `workspace_root` / `workspace_rel` / `workspace_ext_id`，`workspace_path` 降级 hint。
 - [ ] create：绝对 `workspace_path` → relativize（§5.1）；接受可选 `workspace_ext_id`。
 - [ ] load/list/detail：re-anchor（§5.2）用本次 `workspaceDir`；返回结构化 `workspace_ref`。
-- [ ] attach/resume：接受可选 `workspace_path` 覆盖运行态绑定；external 未重传则报错。
+- [ ] `POST /v1/conversations/{id}/rebind`（§6.2bis）：HTTP、Phase 1、WS 前；接受
+      `workspace_path` 覆盖运行态绑定，校验存在性，幂等；external 未 rebind 则 Load 报错。
+- [ ] detail/list 返回 `workspace_ref` + `needs_rebind`（external 且本次未 rebind → true）。
 - [ ] `safeJoin` + 统一 `normalize`（EvalSymlinks+Clean）+ 越界校验。
 - [ ] 启动时一次性迁移（§9），幂等。
 - [ ] mac 回归：external.ext_id=绝对路径，行为不变。

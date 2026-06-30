@@ -95,6 +95,7 @@ func run() error {
 		mc.ContextWindow,
 		cfg.CompactThreshold(mc),
 		mc.Model,
+		"", // desktop: absolute workspace paths are stable; no re-anchoring
 		func(workspacePath string) string {
 			inst, err := wsReg.Get(workspacePath)
 			if err != nil {

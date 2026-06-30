@@ -22,18 +22,46 @@ import (
 type fakeConversationRepo struct {
 	mu       sync.Mutex
 	sessions map[string]*session.Session
+	rebinds  map[string]string
 }
 
 func newFakeConversationRepo() *fakeConversationRepo {
-	return &fakeConversationRepo{sessions: make(map[string]*session.Session)}
+	return &fakeConversationRepo{sessions: make(map[string]*session.Session), rebinds: map[string]string{}}
 }
 
-func (r *fakeConversationRepo) Create(ctx context.Context, workspacePath string) (*session.Session, error) {
+func (r *fakeConversationRepo) Create(ctx context.Context, workspacePath, workspaceExtID string) (*session.Session, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	s := &session.Session{ID: fmt.Sprintf("sess_%d", len(r.sessions)+1), WorkspacePath: workspacePath}
+	if workspaceExtID != "" {
+		s.Workspace = session.WorkspaceRef{Root: session.RootExternal, ExtID: workspaceExtID}
+	}
 	r.sessions[s.ID] = s
 	return s, nil
+}
+
+func (r *fakeConversationRepo) Rebind(ctx context.Context, id, absPath string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.sessions[id]; !ok {
+		return fmt.Errorf("session %q not found", id)
+	}
+	r.rebinds[id] = absPath
+	return nil
+}
+
+func (r *fakeConversationRepo) NeedsRebind(ctx context.Context, id string) (bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	s, ok := r.sessions[id]
+	if !ok {
+		return false, fmt.Errorf("session %q not found", id)
+	}
+	if s.Workspace.Root != session.RootExternal {
+		return false, nil
+	}
+	_, rebound := r.rebinds[id]
+	return !rebound, nil
 }
 
 func (r *fakeConversationRepo) Load(ctx context.Context, id string) (*session.Session, error) {
@@ -107,6 +135,70 @@ func storedEvent(ev agent.Event) session.EventRecord {
 // is skipped.
 func newTestMux(repo conversation.ConversationRepository, events conversation.ConversationEventStore) http.Handler {
 	return NewMux(repo, events, nil, MuxOptions{})
+}
+
+// TestMuxRebindFlow walks the host's Phase-1 attach contract: create an external
+// conversation with a bookmark ext_id, see needs_rebind=true + workspace_ref in
+// detail, POST the fresh path to /rebind, then see needs_rebind=false.
+func TestMuxRebindFlow(t *testing.T) {
+	repo := newFakeConversationRepo()
+	srv := httptest.NewServer(newTestMux(repo, &fakeEventStore{}))
+	defer srv.Close()
+
+	// Create with an external bookmark id.
+	resp, err := http.Post(srv.URL+"/v1/conversations", "application/json",
+		strings.NewReader(`{"workspace_path":"/var/old/MyProj","workspace_ext_id":"BKMK-7f3a"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ref ConversationRef
+	_ = json.NewDecoder(resp.Body).Decode(&ref)
+	resp.Body.Close()
+	if ref.ID == "" {
+		t.Fatal("no id from create")
+	}
+
+	getDetail := func() ConversationDetail {
+		r, err := http.Get(srv.URL + "/v1/conversations/" + ref.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer r.Body.Close()
+		var d ConversationDetail
+		_ = json.NewDecoder(r.Body).Decode(&d)
+		return d
+	}
+
+	d := getDetail()
+	if !d.NeedsRebind {
+		t.Error("needs_rebind = false, want true before rebind")
+	}
+	if d.WorkspaceRef == nil || d.WorkspaceRef.Root != "external" || d.WorkspaceRef.ExtID != "BKMK-7f3a" {
+		t.Errorf("workspace_ref = %+v, want external/BKMK-7f3a", d.WorkspaceRef)
+	}
+
+	// Rebind to a fresh absolute path.
+	rb, err := http.Post(srv.URL+"/v1/conversations/"+ref.ID+"/rebind", "application/json",
+		strings.NewReader(`{"workspace_path":"/var/new/MyProj"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rb.Body.Close()
+	if rb.StatusCode != http.StatusNoContent {
+		t.Fatalf("rebind status = %d, want 204", rb.StatusCode)
+	}
+
+	if getDetail().NeedsRebind {
+		t.Error("needs_rebind = true, want false after rebind")
+	}
+
+	// Missing workspace_path → 400.
+	bad, _ := http.Post(srv.URL+"/v1/conversations/"+ref.ID+"/rebind", "application/json",
+		strings.NewReader(`{}`))
+	if bad.StatusCode != http.StatusBadRequest {
+		t.Errorf("rebind without path status = %d, want 400", bad.StatusCode)
+	}
+	bad.Body.Close()
 }
 
 func TestMuxHealthz(t *testing.T) {

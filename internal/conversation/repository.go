@@ -17,11 +17,26 @@ import (
 type ConversationRepository interface {
 	// Create builds a new session with the given workspace path and persists it.
 	// The returned session has a system prompt, project memory, and skills index
-	// already baked in. An empty workspacePath means "server default."
-	Create(ctx context.Context, workspacePath string) (*session.Session, error)
+	// already baked in. An empty workspacePath means "server default." workspaceExtID
+	// is the host's stable identifier for an external (outside-workspaceDir) workspace
+	// — an iOS security-scoped-bookmark id — and is empty for workspace-local paths
+	// and on desktop. See docs/ios_workspace_path_spec.md §6.1.
+	Create(ctx context.Context, workspacePath, workspaceExtID string) (*session.Session, error)
 
 	// Load returns the full session by id, or an error if not found.
 	Load(ctx context.Context, id string) (*session.Session, error)
+
+	// Rebind records a host-supplied fresh absolute path for an external session's
+	// workspace, valid for THIS process launch only (it does not change the persisted
+	// ref). It validates the path exists. Idempotent — the host may call it for any
+	// external session before opening the stream. See spec §6.2bis.
+	Rebind(ctx context.Context, id, absPath string) error
+
+	// NeedsRebind reports whether a session's workspace is external and not yet
+	// resolvable this launch, so the host must Rebind before any turn runs. It is
+	// always false for workspace-rooted sessions (the runtime self-anchors) and on
+	// desktop. Drives the detail endpoint's needs_rebind flag.
+	NeedsRebind(ctx context.Context, id string) (bool, error)
 
 	// Save persists a session. Called after every turn (best-effort autosave)
 	// and when a session's metadata changes.

@@ -21,11 +21,13 @@ func newFakeRepo() *fakeRepo {
 	return &fakeRepo{sessions: make(map[string]*session.Session)}
 }
 
-func (r *fakeRepo) Create(ctx context.Context, workspacePath string) (*session.Session, error) {
+func (r *fakeRepo) Create(ctx context.Context, workspacePath, workspaceExtID string) (*session.Session, error) {
 	s := &session.Session{ID: "new_id", WorkspacePath: workspacePath, Model: "test"}
 	r.sessions[s.ID] = s
 	return s, nil
 }
+func (r *fakeRepo) Rebind(ctx context.Context, id, absPath string) error     { return nil }
+func (r *fakeRepo) NeedsRebind(ctx context.Context, id string) (bool, error) { return false, nil }
 func (r *fakeRepo) Load(ctx context.Context, id string) (*session.Session, error) {
 	s, ok := r.sessions[id]
 	if !ok {

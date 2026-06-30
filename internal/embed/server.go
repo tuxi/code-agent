@@ -228,11 +228,20 @@ func Assemble(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider 
 	wsReg := runtime.NewWorkspaceRegistry(root)
 	closers = append(closers, func() { wsReg.Close() })
 
+	// Re-anchor persisted workspace refs only on the sandboxed (iOS) host, where the
+	// sandbox path changes across launches. On desktop the root may be "." / cwd, and
+	// re-anchoring there would wrongly rebind sessions to the launch directory — so
+	// pass "" to keep absolute behavior unchanged.
+	currentWorkspaceDir := ""
+	if cfg.Profile == app.ProfileSandboxed {
+		currentWorkspaceDir = root
+	}
 	repo := conversation.NewSQLiteRepository(
 		telemetryStore,
 		mc.ContextWindow,
 		cfg.CompactThreshold(mc),
 		mc.Model,
+		currentWorkspaceDir,
 		func(workspacePath string) string {
 			inst, err := wsReg.Get(workspacePath)
 			if err != nil {

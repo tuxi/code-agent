@@ -157,7 +157,8 @@ type Meta struct {
 	PromptTokens int
 	UpdatedAt    time.Time
 
-	WorkspacePath string // absolute project root directory
+	WorkspacePath string       // absolute project root, re-anchored for this launch
+	Workspace     WorkspaceRef // portable identity; the repository re-anchors WorkspacePath from it
 
 	Compactions   int       // number of finalized compactions
 	TotalSaved    int       // total tokens reclaimed across them
