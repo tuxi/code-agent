@@ -6,6 +6,7 @@ import (
 	"code-agent/internal/app"
 	"code-agent/internal/approve"
 	"code-agent/internal/model"
+	"code-agent/internal/plugins"
 	"code-agent/internal/runtime"
 	"code-agent/internal/session"
 	"code-agent/internal/ui"
@@ -83,6 +84,8 @@ func run() error {
 				return fmt.Errorf("usage: codeagent task-trace <sub-session-id>  (see 'codeagent tasks')")
 			}
 			return runTaskTrace(ctx, cfg, args[1])
+		case "plugin":
+			return runPlugin(args[1:])
 		}
 	}
 
@@ -651,6 +654,57 @@ func runTUI(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider mo
 	return tui.Run(ctx, backend, runner, sess, store, header, resume, modelSwap, cfg.ModelNames(), approver, goalOps)
 }
 
+// runPlugin handles `codeagent plugin <subcommand> [args...]`.
+func runPlugin(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: codeagent plugin <install|list|remove> [args...]")
+	}
+	switch args[0] {
+	case "install":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: codeagent plugin install <repo-url> [plugin-name]")
+		}
+		repoURL := args[1]
+		pluginName := ""
+		if len(args) >= 3 {
+			pluginName = args[2]
+		}
+		n, err := plugins.InstallPlugin(repoURL, pluginName)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("Installed %d skill(s) from plugin %q.\n", n, pluginName)
+		fmt.Println("Restart codeagent or start a new session for them to appear.")
+		return nil
+	case "list":
+		installed, err := plugins.LoadInstalled()
+		if err != nil {
+			return err
+		}
+		if len(installed) == 0 {
+			fmt.Println("No plugins installed.")
+			fmt.Println("Install one with: codeagent plugin install <repo-url> <plugin-name>")
+			return nil
+		}
+		fmt.Println("Installed plugins:")
+		for _, ip := range installed {
+			fmt.Printf("  %s  (from %s, %d skills)\n", ip.Plugin.Name, ip.MarketplaceName, len(ip.Plugin.Skills))
+		}
+		return nil
+	case "remove":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: codeagent plugin remove <plugin-name>")
+		}
+		if err := plugins.UninstallPlugin(args[1]); err != nil {
+			return err
+		}
+		fmt.Printf("Removed plugin %q.\n", args[1])
+		return nil
+	default:
+		return fmt.Errorf("unknown plugin subcommand: %s (try install, list, remove)", args[0])
+	}
+}
+
 func printUsage() {
 	fmt.Println(`Usage:
   codeagent [--model NAME]                 start the TUI workspace (new session)
@@ -663,6 +717,9 @@ func printUsage() {
   codeagent trace [N]                      show the last N requests, per attempt
   codeagent [--model NAME] resume <id>     resume a saved session
   codeagent [--model NAME] serve [addr]    run the runtime server (HTTP + agent-wire WebSocket; default 127.0.0.1:8787)
+  codeagent plugin install <url> [name]    install skill plugins from a marketplace repo
+  codeagent plugin list                    list installed plugins
+  codeagent plugin remove <name>           remove an installed plugin
 
 Sessions are stored per-project in .codeagent/sessions.db and persist across
 runs, so a long conversation (and its summary) survives exit.

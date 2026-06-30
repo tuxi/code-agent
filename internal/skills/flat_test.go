@@ -16,8 +16,7 @@ func TestLoad_ManyFlatFiles(t *testing.T) {
 		"gamma.md":   "---\nname: gamma\ndescription: third skill\n---\nbody gamma",
 		"delta.md":   "---\nname: delta\ndescription: fourth skill\n---\nbody delta",
 		"epsilon.md": "---\nname: epsilon\ndescription: fifth skill\n---\nbody epsilon",
-		// This one has no "name" field — falls back to filename "zeta".
-		"zeta.md":    "---\ndescription: no name field\n---\nbody zeta",
+		"zeta.md":    "---\nname: zeta\ndescription: named skill\n---\nbody zeta",
 		// Non-.md file — must be silently skipped.
 		"README.txt": "ignore me",
 		// Directory-style — must coexist with flat files.

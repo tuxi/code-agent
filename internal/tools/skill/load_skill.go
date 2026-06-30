@@ -11,6 +11,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -23,53 +25,103 @@ func NewLoadSkillTool(reg *skills.Registry) *LoadSkillTool {
 }
 
 type loadSkillInput struct {
-	Name string `json:"name"`
+	Name     string `json:"name"`
+	Resource string `json:"resource"` // optional: relative path to a resource file (e.g. "references/api.md")
 }
 
 func (t *LoadSkillTool) Name() string { return "load_skill" }
 
 func (t *LoadSkillTool) Description() string {
-	return "Load a skill's full instructions by name (see the Skills list in the system prompt). " +
-		"Call this when the task matches a skill, before proceeding. Read-only."
+	return "Load a skill by name. With only a name, returns the full SKILL.md body and resource manifest. " +
+		"Call with an empty name to list all available skills. " +
+		"With resource set to a relative path (e.g. \"references/api.md\"), returns that file's content directly. Read-only."
 }
 
 func (t *LoadSkillTool) InputSchema() json.RawMessage {
 	return tools.Object(map[string]tools.Property{
-		"name": {Type: "string", Description: "The skill name to load, from the Skills list in the system prompt."},
+		"name":     {Type: "string", Description: "The skill name to load. Use an empty string to list available skills."},
+		"resource": {Type: "string", Description: "Optional: relative path to a resource file inside the skill (e.g. \"references/api.md\"). When set, returns that file's content instead of the SKILL.md body."},
 	}, "name").JSON()
 }
 
 func (t *LoadSkillTool) Execute(_ context.Context, _ tools.ExecutionContext, input json.RawMessage) (tools.ToolResult, error) {
-	name := parseName(input)
-	if name == "" {
-		return tools.ToolResult{}, fmt.Errorf("name is required")
-	}
-	s, ok := t.Skills.Get(name)
-	if !ok {
-		return tools.ToolResult{}, fmt.Errorf("unknown skill %q; available: %s", name, t.available())
+	in := parseInput(input)
+
+	// List mode: empty name → return the available skills index.
+	if in.Name == "" {
+		return tools.ToolResult{Content: t.availableList()}, nil
 	}
 
-	// A visible header so a transcript shows WHAT was loaded ("Loaded skill:
-	// verify-change (v1)"), not just an anonymous wall of markdown.
+	s, ok := t.Skills.Get(in.Name)
+	if !ok {
+		return tools.ToolResult{}, fmt.Errorf("unknown skill %q; available: %s", in.Name, t.availableNames())
+	}
+
+	// Resource mode: return a specific L3 file's content.
+	if in.Resource != "" {
+		return t.loadResource(s, in.Resource)
+	}
+
+	// Body mode: return SKILL.md body + resource manifest.
+	return t.loadBody(s), nil
+}
+
+// loadBody returns the SKILL.md body with header and optional resource manifest.
+func (t *LoadSkillTool) loadBody(s skills.Skill) tools.ToolResult {
 	header := "Loaded skill: " + s.Name
 	if s.Version != "" {
 		header += " (v" + s.Version + ")"
 	}
-	return tools.ToolResult{Content: header + "\n\n" + s.Body}, nil
+	if s.License != "" {
+		header += " [" + s.License + "]"
+	}
+	var b strings.Builder
+	b.WriteString(header)
+	b.WriteString("\n\n")
+	b.WriteString(s.Body)
+
+	if len(s.Resources) > 0 {
+		b.WriteString("\n\n---\nResources available in this skill:\n")
+		for _, res := range s.Resources {
+			fmt.Fprintf(&b, "  %s  (%s)\n", res.Path, res.Kind)
+		}
+	}
+	return tools.ToolResult{Content: b.String()}
+}
+
+// loadResource reads and returns a single L3 resource file. The resource path is
+// resolved relative to the skill directory, and a path-traversal guard rejects any
+// result outside the skill root.
+func (t *LoadSkillTool) loadResource(s skills.Skill, resource string) (tools.ToolResult, error) {
+	if s.Dir == "" {
+		return tools.ToolResult{}, fmt.Errorf("skill %q has no resource directory (it is a bare file)", s.Name)
+	}
+	resolved := filepath.Clean(filepath.Join(s.Dir, resource))
+	// Path-traversal guard: the resolved path must stay inside the skill directory.
+	if !strings.HasPrefix(resolved, s.Dir+string(filepath.Separator)) {
+		return tools.ToolResult{}, fmt.Errorf("resource path %q escapes skill directory", resource)
+	}
+	content, err := os.ReadFile(resolved)
+	if err != nil {
+		return tools.ToolResult{}, fmt.Errorf("resource %q not found in skill %q", resource, s.Name)
+	}
+	header := fmt.Sprintf("Loaded resource: %s/%s", s.Name, resource)
+	return tools.ToolResult{Content: header + "\n\n" + string(content)}, nil
 }
 
 // AnnounceSkill lets the agent loop emit a versioned skill_loaded event without
 // knowing this tool by name (see tools.SkillAnnouncer).
 func (t *LoadSkillTool) AnnounceSkill(input json.RawMessage) (string, string, bool) {
-	if s, ok := t.Skills.Get(parseName(input)); ok {
+	in := parseInput(input)
+	if s, ok := t.Skills.Get(in.Name); ok {
 		return s.Name, s.Version, true
 	}
 	return "", "", false
 }
 
-func (t *LoadSkillTool) available() string {
+func (t *LoadSkillTool) availableNames() string {
 	names := make([]string, 0)
-	for _, m := range t.Skills.Index() { // Index() is already sorted
+	for _, m := range t.Skills.Index() {
 		names = append(names, m.Name)
 	}
 	if len(names) == 0 {
@@ -78,12 +130,32 @@ func (t *LoadSkillTool) available() string {
 	return strings.Join(names, ", ")
 }
 
-func parseName(input json.RawMessage) string {
+// availableList returns a formatted skill index, one line per skill. This is the
+// recovery path when the model forgets names — it can call load_skill(name="").
+func (t *LoadSkillTool) availableList() string {
+	if len(t.Skills.Index()) == 0 {
+		return "(no skills loaded)"
+	}
+	var b strings.Builder
+	b.WriteString("Available skills:\n")
+	for _, m := range t.Skills.Index() {
+		line := fmt.Sprintf("- %s: %s", m.Name, m.Description)
+		if m.License != "" {
+			line += fmt.Sprintf(" [%s]", m.License)
+		}
+		fmt.Fprintln(&b, line)
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+func parseInput(input json.RawMessage) loadSkillInput {
 	var in loadSkillInput
 	if len(input) > 0 {
 		_ = json.Unmarshal(input, &in)
 	}
-	return strings.TrimSpace(in.Name)
+	in.Name = strings.TrimSpace(in.Name)
+	in.Resource = strings.TrimSpace(in.Resource)
+	return in
 }
 
 var (

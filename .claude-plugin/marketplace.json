@@ -1,0 +1,24 @@
+{
+  "name": "code-agent-skills",
+  "owner": {
+    "name": "code-agent",
+    "email": ""
+  },
+  "metadata": {
+    "description": "Seed skills for the code-agent project — conventions, verification, and code review playbooks.",
+    "version": "1.0.0"
+  },
+  "plugins": [
+    {
+      "name": "seed-skills",
+      "description": "Core code-agent skills: project conventions, verify-change, and review-change playbooks",
+      "source": "./",
+      "strict": false,
+      "skills": [
+        "./skills/codeagent-conventions",
+        "./skills/verify-change",
+        "./skills/review-change"
+      ]
+    }
+  ]
+}

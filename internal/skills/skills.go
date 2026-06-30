@@ -23,13 +23,24 @@ type Meta struct {
 	Name        string
 	Description string
 	Version     string // e.g. "1"; carried from day one for skill_loaded telemetry
+	License     string // e.g. "Proprietary" or "Apache-2.0"; empty when unspecified
 }
 
-// Skill is the full L2 view: the metadata plus the SKILL.md body. Loaded on
-// demand, not held in the base prompt.
+// Resource is an L3 file bundled with a skill — a reference document, a script,
+// or an asset (template, font, icon). Path is absolute so the model can pass it
+// directly to read_file or run_command.
+type Resource struct {
+	Path string // absolute path on disk
+	Kind string // "reference", "script", or "asset"
+}
+
+// Skill is the full L2 view: the metadata plus the SKILL.md body and optional L3
+// resources. Loaded on demand, not held in the base prompt.
 type Skill struct {
 	Meta
-	Body string
+	Body      string
+	Dir       string     // absolute path to the skill directory; empty for bare-file skills
+	Resources []Resource // L3 files (references, scripts, assets); nil if none
 }
 
 // Registry holds the skills loaded from a directory. It is read-only after Load.
@@ -50,9 +61,8 @@ type Registry struct {
 //     The directory name is just a container; the skill's identity comes from the
 //     YAML frontmatter inside SKILL.md.
 //  2. Bare-file style: skills/<name>.md
-//     The .md file is the skill directly; the filename (without .md) is only used
-//     as a fallback identity when the frontmatter is missing a "name" field.
-//     Frontmatter "name" always takes precedence.
+//     The .md file is the skill directly; the frontmatter MUST declare a "name"
+//     field — the filename is never used as a fallback.
 //
 // Both layouts can coexist in the same directory. globalDir is loaded first and
 // supplies skills that are available to every project; projectDir is loaded
@@ -93,7 +103,8 @@ func loadDir(r *Registry, dir string) error {
 
 	for _, e := range entries {
 		var content []byte
-		var label string // key for Skipped map and duplicate detection fallback
+		var label string    // key for Skipped map and duplicate detection
+		var skillDir string // absolute path for directory-style skills; empty for bare files
 
 		if e.IsDir() {
 			b, err := os.ReadFile(filepath.Join(dir, e.Name(), "SKILL.md"))
@@ -102,6 +113,7 @@ func loadDir(r *Registry, dir string) error {
 			}
 			content = b
 			label = e.Name()
+			skillDir = filepath.Join(dir, e.Name())
 		} else if strings.HasSuffix(e.Name(), ".md") {
 			b, err := os.ReadFile(filepath.Join(dir, e.Name()))
 			if err != nil {
@@ -118,8 +130,9 @@ func loadDir(r *Registry, dir string) error {
 			r.Skipped[label] = err.Error()
 			continue
 		}
-		if skill.Name == "" {
-			skill.Name = label
+		skill.Dir = skillDir
+		if skillDir != "" {
+			skill.Resources = scanResources(skillDir)
 		}
 		// Project path (loaded second) deliberately overwrites global entries.
 		if _, dup := r.skills[skill.Name]; dup {
@@ -142,6 +155,40 @@ func contains(slice []string, s string) bool {
 		}
 	}
 	return false
+}
+
+// scanResources walks the references/, scripts/, and assets/ subdirectories of
+// skillDir (if they exist) and returns a sorted list of absolute paths tagged by
+// kind. It is non-recursive — only direct children of each dir are listed — to
+// keep the manifest short enough for the model to scan.
+func scanResources(skillDir string) []Resource {
+	var out []Resource
+	scan := func(sub, kind string) {
+		entries, err := os.ReadDir(filepath.Join(skillDir, sub))
+		if err != nil {
+			return
+		}
+		for _, e := range entries {
+			if e.IsDir() {
+				continue
+			}
+			out = append(out, Resource{
+				Path: filepath.Join(skillDir, sub, e.Name()),
+				Kind: kind,
+			})
+		}
+	}
+	scan("references", "reference")
+	scan("scripts", "script")
+	scan("assets", "asset")
+	// Sort by kind then path for a stable manifest.
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Kind != out[j].Kind {
+			return out[i].Kind < out[j].Kind
+		}
+		return out[i].Path < out[j].Path
+	})
+	return out
 }
 
 // Index returns the L1 metadata for every skill, in stable (sorted) order.
@@ -179,7 +226,11 @@ func (r *Registry) PromptIndex() string {
 		"over-investigation. Do not guess a skill's contents; load it.\n")
 	for _, name := range r.order {
 		m := r.skills[name].Meta
-		fmt.Fprintf(&b, "- %s: %s\n", m.Name, m.Description)
+		line := fmt.Sprintf("- %s: %s", m.Name, m.Description)
+		if m.License != "" {
+			line += fmt.Sprintf(" [%s]", m.License)
+		}
+		fmt.Fprintln(&b, line)
 	}
 	return strings.TrimRight(b.String(), "\n")
 }
@@ -189,6 +240,7 @@ type frontmatter struct {
 	Name        string `yaml:"name"`
 	Description string `yaml:"description"`
 	Version     string `yaml:"version"`
+	License     string `yaml:"license"`
 }
 
 // parseSkill splits a SKILL.md into its YAML frontmatter and markdown body. The
@@ -216,9 +268,11 @@ func parseSkill(content string) (Skill, error) {
 	if err := yaml.Unmarshal([]byte(strings.Join(lines[1:end], "\n")), &fm); err != nil {
 		return Skill{}, fmt.Errorf("invalid frontmatter YAML: %w", err)
 	}
-	// name: when absent, the caller falls back to the directory/filename so a bare
-	// .md file without a frontmatter "name" still parses. description is still
-	// required — a skill without one is useless to the model.
+	// Both name and description are required — a skill without either is useless to
+	// the model and incompatible with the Claude Code skill format.
+	if strings.TrimSpace(fm.Name) == "" {
+		return Skill{}, fmt.Errorf("frontmatter missing required field 'name'")
+	}
 	if strings.TrimSpace(fm.Description) == "" {
 		return Skill{}, fmt.Errorf("frontmatter missing required field 'description'")
 	}
@@ -228,6 +282,7 @@ func parseSkill(content string) (Skill, error) {
 			Name:        strings.TrimSpace(fm.Name),
 			Description: strings.TrimSpace(fm.Description),
 			Version:     strings.TrimSpace(fm.Version),
+			License:     strings.TrimSpace(fm.License),
 		},
 		Body: strings.TrimSpace(strings.Join(lines[end+1:], "\n")),
 	}, nil
