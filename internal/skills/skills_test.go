@@ -46,7 +46,7 @@ func TestLoadAndIndex(t *testing.T) {
 	writeSkill(t, dir, "verify-change", verifyChange)
 	writeSkill(t, dir, "codeagent-conventions", conventions)
 
-	r, err := Load(dir)
+	r, err := Load("", dir)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -79,7 +79,7 @@ func TestLoadAndIndex(t *testing.T) {
 func TestPromptIndexHasNoBodyLeak(t *testing.T) {
 	dir := t.TempDir()
 	writeSkill(t, dir, "verify-change", verifyChange)
-	r, _ := Load(dir)
+	r, _ := Load("", dir)
 
 	out := r.PromptIndex()
 	if !strings.Contains(out, "verify-change") {
@@ -95,14 +95,14 @@ func TestPromptIndexHasNoBodyLeak(t *testing.T) {
 }
 
 func TestPromptIndexEmptyWhenNoSkills(t *testing.T) {
-	r, _ := Load(t.TempDir())
+	r, _ := Load("", t.TempDir())
 	if got := r.PromptIndex(); got != "" {
 		t.Errorf("PromptIndex with no skills = %q, want empty", got)
 	}
 }
 
 func TestLoadMissingDirIsEmptyNotError(t *testing.T) {
-	r, err := Load(filepath.Join(t.TempDir(), "does-not-exist"))
+	r, err := Load("", filepath.Join(t.TempDir(), "does-not-exist"))
 	if err != nil {
 		t.Fatalf("missing dir should not error, got %v", err)
 	}
@@ -115,9 +115,8 @@ func TestLoadSkipsMalformed(t *testing.T) {
 	dir := t.TempDir()
 	writeSkill(t, dir, "good", verifyChange)
 	writeSkill(t, dir, "no-frontmatter", "# just markdown, no fence")
-	writeSkill(t, dir, "missing-name", "---\ndescription: has no name\n---\nbody")
 
-	r, err := Load(dir)
+	r, err := Load("", dir)
 	if err != nil {
 		t.Fatalf("Load should not fail on malformed skills: %v", err)
 	}
@@ -127,11 +126,103 @@ func TestLoadSkipsMalformed(t *testing.T) {
 	if _, ok := r.Get("verify-change"); !ok {
 		t.Error("the good skill should still load")
 	}
-	if len(r.Skipped) != 2 {
-		t.Errorf("Skipped = %v, want 2 entries", r.Skipped)
+	if len(r.Skipped) != 1 {
+		t.Errorf("Skipped = %v, want 1 entry (no-frontmatter)", r.Skipped)
 	}
-	if msg := r.Skipped["missing-name"]; !strings.Contains(msg, "name") {
-		t.Errorf("skip reason for missing-name = %q, want it to mention 'name'", msg)
+}
+
+func TestLoad_NameFallback(t *testing.T) {
+	dir := t.TempDir()
+	// Name missing from frontmatter → falls back to directory name.
+	writeSkill(t, dir, "my-skill", "---\ndescription: a useful skill\n---\ncontents")
+
+	r, err := Load("", dir)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if r.Len() != 1 {
+		t.Fatalf("Len = %d, want 1", r.Len())
+	}
+	s, ok := r.Get("my-skill")
+	if !ok {
+		t.Fatal("skill not found by its directory-name fallback")
+	}
+	if s.Meta.Description != "a useful skill" {
+		t.Errorf("Description = %q", s.Meta.Description)
+	}
+}
+
+func TestLoad_BareFile(t *testing.T) {
+	dir := t.TempDir()
+	// Bare .md file (not in a subdirectory).
+	if err := os.WriteFile(filepath.Join(dir, "bare-skill.md"),
+		[]byte("---\nname: bare-skill\ndescription: a bare file skill\n---\nBare body."), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// A non-.md file in the same dir should be ignored.
+	if err := os.WriteFile(filepath.Join(dir, "README.txt"), []byte("ignore"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	r, err := Load("", dir)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if r.Len() != 1 {
+		t.Fatalf("Len = %d, want 1", r.Len())
+	}
+	s, ok := r.Get("bare-skill")
+	if !ok {
+		t.Fatal("bare-file skill not loaded")
+	}
+	if s.Meta.Description != "a bare file skill" {
+		t.Errorf("Description = %q", s.Meta.Description)
+	}
+}
+
+func TestLoad_BareFileNameFallback(t *testing.T) {
+	dir := t.TempDir()
+	// Bare .md file with no "name" field → name = filename without .md.
+	if err := os.WriteFile(filepath.Join(dir, "industry-funnel.md"),
+		[]byte("---\ndescription: funnel analysis\n---\nFunnel body."), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	r, err := Load("", dir)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	s, ok := r.Get("industry-funnel")
+	if !ok {
+		t.Fatalf("bare-file skill not found by filename fallback, loaded: %v", r.Index())
+	}
+	if s.Meta.Name != "industry-funnel" {
+		t.Errorf("Name = %q, want industry-funnel", s.Meta.Name)
+	}
+}
+
+func TestLoad_BothLayoutsCoexist(t *testing.T) {
+	dir := t.TempDir()
+	// Directory-style.
+	writeSkill(t, dir, "dir-skill", "---\nname: dir-skill\ndescription: from a directory\n---\nDir body")
+	// Bare-file style.
+	if err := os.WriteFile(filepath.Join(dir, "file-skill.md"),
+		[]byte("---\nname: file-skill\ndescription: from a file\n---\nFile body."), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	r, err := Load("", dir)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if r.Len() != 2 {
+		t.Fatalf("Len = %d, want 2", r.Len())
+	}
+	if _, ok := r.Get("dir-skill"); !ok {
+		t.Error("directory-style skill missing")
+	}
+	if _, ok := r.Get("file-skill"); !ok {
+		t.Error("bare-file skill missing")
 	}
 }
 

@@ -20,6 +20,12 @@ FRAMEWORK_NAME="CodeAgentRuntime"   # => Swift module name: `import CodeAgentRun
 IOS_MIN="15.0"               # MinimumOSVersion written into every inner Info.plist
 PKG="./mobile"               # Go package bound (symbol prefix is `Mobile`, its package name)
 OUT_DIR="${1:-build}"
+# Skills shipped with the iOS app. These SKILL.md files are user-level (global)
+# skills, copied into the Application Support directory on first launch so they
+# are available to every workspace. The user can add their own skills there later.
+# List skill directory names (not full paths).
+BUNDLED_SKILLS=(review-change verify-change)
+SKILLS_SRC="./skills"
 # -------------------------------------------------------------------------------
 
 OUT="${OUT_DIR}/${FRAMEWORK_NAME}.xcframework"
@@ -73,6 +79,26 @@ while IFS= read -r -d '' plist; do
     || true
 done < <(find "${OUT}" -name Info.plist -print0)
 
+# ---- package skills alongside the xcframework -----------------------------------
+echo "==> packaging skills"
+SKILLS_OUT="${OUT_DIR}/skills"
+rm -rf "${SKILLS_OUT}"
+mkdir -p "${SKILLS_OUT}"
+copied=0
+skipped=0
+for skill in "${BUNDLED_SKILLS[@]}"; do
+  src="${SKILLS_SRC}/${skill}"
+  if [ -f "${src}/SKILL.md" ]; then
+    cp -R "${src}" "${SKILLS_OUT}/"
+    echo "    bundled: ${skill}"
+    ((copied++)) || true
+  else
+    echo "    skipped: ${skill} (no SKILL.md at ${src})"
+    ((skipped++)) || true
+  fi
+done
+echo "    skills: ${copied} bundled, ${skipped} skipped"
+
 echo "==> verifying"
 echo "    slices:"
 find "${OUT}" -maxdepth 1 -mindepth 1 -type d -exec basename {} \; | sed 's/^/      /'
@@ -81,5 +107,6 @@ find "${OUT}" -maxdepth 2 -name "*.framework" | sed 's/^/      /'
 
 echo
 echo "==> done: ${OUT}"
-echo "    Swift:  import ${FRAMEWORK_NAME}        // symbols prefixed Mobile* (Go package name)"
-echo "    SPM:    .binaryTarget(name: \"${FRAMEWORK_NAME}\", path: \"${OUT}\")"
+echo "    Swift:     import ${FRAMEWORK_NAME}        // symbols prefixed Mobile* (Go package name)"
+echo "    SPM:       .binaryTarget(name: \"${FRAMEWORK_NAME}\", path: \"${OUT}\")"
+echo "    resources: .copy(\"${SKILLS_OUT}\")              // skills → copy into Application Support/skills (global/user-level)"

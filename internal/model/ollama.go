@@ -201,6 +201,57 @@ func (tc ollamaToolCall) toToolCall() ToolCall {
 var qwenFuncStart = "<function="
 var qwenParamStart = "<parameter="
 
+// parseQwenJSONToolCalls extracts tool calls from Qwen's JSON-in-content format
+// used by qwen2.5-coder models. Handles both bare JSON and markdown-fenced blocks.
+//
+//	{"name":"read_file","arguments":{"path":"."}}
+//
+//	```json
+//	{"name":"read_file","arguments":{"path":"main.go"}}
+//	{"name":"edit_file","arguments":{"path":"main.go","old":"...","new":"// TODO"}}
+//	```
+func parseQwenJSONToolCalls(content string) []ToolCall {
+	type qwenCall struct {
+		Name      string          `json:"name"`
+		Arguments json.RawMessage `json:"arguments"`
+	}
+
+	// Strip ```json / ``` fences and extract JSON objects.
+	body := strings.TrimSpace(content)
+	body = strings.TrimPrefix(body, "```json")
+	body = strings.TrimPrefix(body, "```")
+	body = strings.TrimSuffix(body, "```")
+	body = strings.TrimSpace(body)
+
+	if !strings.HasPrefix(body, "{") {
+		return nil
+	}
+
+	// Parse one JSON object per line (when multi-line) or the whole block.
+	var calls []ToolCall
+	dec := json.NewDecoder(strings.NewReader(body))
+	for dec.More() {
+		var c qwenCall
+		if err := dec.Decode(&c); err != nil {
+			break
+		}
+		if c.Name != "" {
+			calls = append(calls, ToolCall{
+				ID:   c.Name,
+				Type: "function",
+				Function: FunctionCall{
+					Name:      c.Name,
+					Arguments: string(c.Arguments),
+				},
+			})
+		}
+	}
+	if len(calls) == 0 {
+		return nil
+	}
+	return calls
+}
+
 // parseQwenXMLToolCalls extracts tool calls from Qwen's XML-format content.
 // Returns nil when the content does not match the expected format.
 func parseQwenXMLToolCalls(content string) []ToolCall {
@@ -321,8 +372,10 @@ func (p *OllamaProvider) Complete(ctx context.Context, req Request) (Response, e
 	// Fallback: Qwen models with an empty / minimal Ollama template may
 	// output function calls as XML text in content instead of native
 	// tool_calls. Parse and promote to proper tool calls.
-	if len(toolCalls) == 0 && strings.Contains(or.Message.Content, qwenFuncStart) {
-		if parsed := parseQwenXMLToolCalls(or.Message.Content); len(parsed) > 0 {
+	if len(toolCalls) == 0 && or.Message.Content != "" {
+		if parsed := parseQwenJSONToolCalls(or.Message.Content); len(parsed) > 0 {
+			toolCalls = parsed
+		} else if parsed := parseQwenXMLToolCalls(or.Message.Content); len(parsed) > 0 {
 			toolCalls = parsed
 		}
 	}
@@ -432,9 +485,11 @@ func (p *OllamaProvider) CompleteStream(ctx context.Context, req Request, onText
 	}
 
 	finalContent := strings.TrimSpace(content.String())
-	// Fallback: Qwen XML-format tool calls in content (see Complete).
-	if len(toolCalls) == 0 && strings.Contains(finalContent, qwenFuncStart) {
-		if parsed := parseQwenXMLToolCalls(finalContent); len(parsed) > 0 {
+	// Fallback: Qwen JSON/XML-format tool calls in content (see Complete).
+	if len(toolCalls) == 0 && finalContent != "" {
+		if parsed := parseQwenJSONToolCalls(finalContent); len(parsed) > 0 {
+			toolCalls = parsed
+		} else if parsed := parseQwenXMLToolCalls(finalContent); len(parsed) > 0 {
 			toolCalls = parsed
 		}
 	}

@@ -36,15 +36,21 @@ type WorkspaceRegistry struct {
 	// defaultRoot is the server's configured default workspace (cfg.Workspace.Root),
 	// used as a fallback when Get receives an empty workspacePath.
 	defaultRoot string
+
+	// globalSkillsDir is the optional user-level skills directory. Passed to
+	// skills.Load as the first (global) dir; project-local skills override it.
+	globalSkillsDir string
 }
 
 // NewWorkspaceRegistry creates a registry that builds instances on demand. Caller
-// must call Close() to shut down all per-workspace stores.
-func NewWorkspaceRegistry(defaultRoot string) *WorkspaceRegistry {
+// must call Close() to shut down all per-workspace stores. globalSkillsDir is the
+// optional user-level skills directory (shared across workspaces); see app.Config.
+func NewWorkspaceRegistry(defaultRoot, globalSkillsDir string) *WorkspaceRegistry {
 	return &WorkspaceRegistry{
 		instances:         make(map[string]*WorkspaceInstance),
 		sessionWorkspaces: make(map[string]*WorkspaceInstance),
 		defaultRoot:       defaultRoot,
+		globalSkillsDir:   globalSkillsDir,
 	}
 }
 
@@ -119,7 +125,7 @@ func (wr *WorkspaceRegistry) buildInstance(root string) (*WorkspaceInstance, err
 		return nil, fmt.Errorf("workspace_registry: open store for %s: %w", root, err)
 	}
 
-	skillReg, err := skills.Load(filepath.Join(root, "skills"))
+	skillReg, err := skills.Load(wr.globalSkillsDir, filepath.Join(root, "skills"))
 	if err != nil {
 		store.Close()
 		return nil, fmt.Errorf("workspace_registry: load skills for %s: %w", root, err)
@@ -127,6 +133,11 @@ func (wr *WorkspaceRegistry) buildInstance(root string) (*WorkspaceInstance, err
 
 	fmt.Fprintf(os.Stderr, "[workspace] initialized %s (%d skills)\n",
 		root, skillReg.Len())
+	if len(skillReg.Skipped) > 0 {
+		for label, reason := range skillReg.Skipped {
+			fmt.Fprintf(os.Stderr, "[workspace]   skipped skill %q: %s\n", label, reason)
+		}
+	}
 
 	return &WorkspaceInstance{
 		RootPath: root,

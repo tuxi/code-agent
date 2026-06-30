@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 
 	"code-agent/internal/app"
 	"code-agent/internal/conversation"
@@ -52,6 +53,11 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	if cfg.GlobalSkillsDir == "" {
+		if home, err := os.UserHomeDir(); err == nil {
+			cfg.GlobalSkillsDir = filepath.Join(home, ".codeagent", "skills")
+		}
+	}
 	if cfg.StoreFactory != nil {
 		runtime.StoreFactory = cfg.StoreFactory
 	}
@@ -86,7 +92,7 @@ func run() error {
 	}
 	defer mcpMgr.Close()
 
-	wsReg := runtime.NewWorkspaceRegistry(root)
+	wsReg := runtime.NewWorkspaceRegistry(root, cfg.GlobalSkillsDir)
 	defer wsReg.Close()
 
 	// Execution Model components.

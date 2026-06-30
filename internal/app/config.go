@@ -61,6 +61,12 @@ type Config struct {
 	// callers must Close it. This field is code-level only (yaml:"-").
 	StoreFactory session.StoreFactory `yaml:"-"`
 
+	// GlobalSkillsDir is an optional directory of user-level skills loaded for every
+	// workspace. Skills here act as a shared capability pool (always available); a
+	// project-local skill of the same name takes precedence. Embedded hosts set it in
+	// StartServer from the dataDir parameter. Code-level only (yaml:"-").
+	GlobalSkillsDir string `yaml:"-"`
+
 	// Profile selects the platform capability set the runtime assembles for. It is
 	// code-level only (set by the embedded host, not the YAML) so a desktop config
 	// file can never accidentally downgrade itself. Default (full) assumes a host

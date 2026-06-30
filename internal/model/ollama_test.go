@@ -376,7 +376,71 @@ func TestOllamaCompleteStream(t *testing.T) {
 	}
 }
 
-// ── Qwen XML tool-call fallback ─────────────────────────────────────────
+// ── Qwen JSON + XML tool-call fallback ─────────────────────────────────
+
+func TestParseQwenJSONToolCalls(t *testing.T) {
+	content := `{"name":"read_file","arguments":{"path":"main.go"}}`
+	calls := parseQwenJSONToolCalls(content)
+	if len(calls) != 1 {
+		t.Fatalf("got %d calls, want 1", len(calls))
+	}
+	tc := calls[0]
+	if tc.Function.Name != "read_file" {
+		t.Errorf("name = %q, want read_file", tc.Function.Name)
+	}
+	if tc.Function.Arguments != `{"path":"main.go"}` {
+		t.Errorf("args = %s", tc.Function.Arguments)
+	}
+}
+
+func TestParseQwenJSONToolCalls_PlainText(t *testing.T) {
+	if calls := parseQwenJSONToolCalls("hello world"); calls != nil {
+		t.Errorf("expected nil for plain text, got %v", calls)
+	}
+	if calls := parseQwenJSONToolCalls(""); calls != nil {
+		t.Errorf("expected nil for empty, got %v", calls)
+	}
+}
+
+func TestOllamaComplete_QwenJSONFallback(t *testing.T) {
+	// Simulate qwen2.5-coder returning JSON in content with no tool_calls.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(ollamaChatResponse{
+			Message: struct {
+				Role      string           `json:"role"`
+				Content   string           `json:"content"`
+				ToolCalls []ollamaToolCall `json:"tool_calls,omitempty"`
+			}{
+				Role:    "assistant",
+				Content: `{"name":"read_file","arguments":{"path":"main.go"}}`,
+			},
+			Done:            true,
+			PromptEvalCount: 5,
+			EvalCount:       3,
+		})
+	}))
+	defer srv.Close()
+
+	p := NewOllamaProvider(srv.URL)
+	resp, err := p.Complete(context.Background(), Request{
+		Model:    "qwen2.5-coder:14b",
+		Messages: []Message{{Role: RoleUser, Content: "read main.go"}},
+		Tools:    []ToolDefinition{{Type: "function", Function: ToolFunction{Name: "read_file"}}},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if resp.FinishReason != "tool_calls" {
+		t.Errorf("FinishReason = %q, want tool_calls", resp.FinishReason)
+	}
+	if len(resp.ToolCalls) != 1 {
+		t.Fatalf("ToolCalls = %d, want 1", len(resp.ToolCalls))
+	}
+	if resp.ToolCalls[0].Function.Name != "read_file" {
+		t.Errorf("name = %q", resp.ToolCalls[0].Function.Name)
+	}
+}
 
 func TestParseQwenXMLToolCalls_SingleParam(t *testing.T) {
 	content := `<function=plan_workflow>

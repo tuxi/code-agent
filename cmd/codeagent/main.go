@@ -45,6 +45,13 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	// User-level skills on the desktop are under ~/.codeagent/skills/. The embedded
+	// (iOS) host sets this from its dataDir instead; see embed.StartServer.
+	if cfg.GlobalSkillsDir == "" {
+		if home, err := os.UserHomeDir(); err == nil {
+			cfg.GlobalSkillsDir = filepath.Join(home, ".codeagent", "skills")
+		}
+	}
 	// Wire the config-level factory (set by external consumers like DreamAI) into
 	// the package-level injection point so all entry points and internal helpers
 	// (WorkspaceRegistry, etc.) use it.

@@ -6,7 +6,7 @@ import "testing"
 // malformed seed SKILL.md is caught here rather than at runtime. Skips cleanly
 // if no skills are committed.
 func TestRepoSeedSkillsAreValid(t *testing.T) {
-	reg, err := Load("../../skills")
+	reg, err := Load("", "../../skills")
 	if err != nil {
 		t.Fatalf("loading repo skills: %v", err)
 	}

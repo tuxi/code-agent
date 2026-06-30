@@ -114,7 +114,11 @@ func BuildRegistry(ctx context.Context, cfg app.Config, mc app.ModelConfig, prov
 	root := cfg.Workspace.Root
 	registry := tools.NewRegistry()
 
-	skillReg, err := skills.Load(filepath.Join(root, "skills"))
+	skillReg, err := skills.Load(cfg.GlobalSkillsDir, filepath.Join(root, "skills"))
+	fmt.Fprintf(os.Stderr, "[registry] skills: %d loaded, %d skipped\n", skillReg.Len(), len(skillReg.Skipped))
+	for label, reason := range skillReg.Skipped {
+		fmt.Fprintf(os.Stderr, "[registry]   skipped %q: %s\n", label, reason)
+	}
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}

@@ -22,7 +22,7 @@ func loadReg(t *testing.T) *skills.Registry {
 	if err := os.WriteFile(filepath.Join(sd, "SKILL.md"), []byte(md), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	reg, err := skills.Load(dir)
+	reg, err := skills.Load("", dir)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -11,7 +11,7 @@ import (
 // profile and returns the set of registered tool names.
 func registerForProfile(t *testing.T, profile app.Profile) map[string]bool {
 	t.Helper()
-	skillReg, err := skills.Load(t.TempDir()) // empty dir => empty skills registry
+	skillReg, err := skills.Load("", t.TempDir()) // empty dir => empty skills registry
 	if err != nil {
 		t.Fatalf("skills.Load: %v", err)
 	}

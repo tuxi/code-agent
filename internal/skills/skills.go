@@ -43,45 +43,105 @@ type Registry struct {
 	Skipped map[string]string
 }
 
-// Load reads every skill under dir. Each skill is a folder containing a
-// SKILL.md. A missing directory is not an error (an empty registry); a malformed
-// SKILL.md is skipped and recorded in Skipped.
-func Load(dir string) (*Registry, error) {
+// Load reads skills from projectDir (and, when set, from globalDir first).
+// Two filesystem layouts are supported under each directory:
+//
+//  1. Directory-style: skills/<name>/SKILL.md
+//     The directory name is just a container; the skill's identity comes from the
+//     YAML frontmatter inside SKILL.md.
+//  2. Bare-file style: skills/<name>.md
+//     The .md file is the skill directly; the filename (without .md) is only used
+//     as a fallback identity when the frontmatter is missing a "name" field.
+//     Frontmatter "name" always takes precedence.
+//
+// Both layouts can coexist in the same directory. globalDir is loaded first and
+// supplies skills that are available to every project; projectDir is loaded
+// second and can override a global skill by using the same name. A missing
+// directory is not an error (an empty step); a malformed skill is skipped and
+// recorded in Skipped.
+func Load(globalDir, projectDir string) (*Registry, error) {
 	r := &Registry{
 		skills:  make(map[string]Skill),
 		Skipped: make(map[string]string),
 	}
 
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return r, nil
+	// Load global (user-level) skills first, then project skills. Project wins on
+	// name conflict because later loads override earlier entries.
+	if globalDir != "" {
+		if err := loadDir(r, globalDir); err != nil {
+			return nil, err
 		}
-		return nil, err
 	}
-
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		content, err := os.ReadFile(filepath.Join(dir, e.Name(), "SKILL.md"))
-		if err != nil {
-			continue // a folder without a SKILL.md is just not a skill
-		}
-		skill, err := parseSkill(string(content))
-		if err != nil {
-			r.Skipped[e.Name()] = err.Error()
-			continue
-		}
-		if _, dup := r.skills[skill.Name]; dup {
-			r.Skipped[e.Name()] = fmt.Sprintf("duplicate skill name %q", skill.Name)
-			continue
-		}
-		r.skills[skill.Name] = skill
-		r.order = append(r.order, skill.Name)
+	if err := loadDir(r, projectDir); err != nil {
+		return nil, err
 	}
 	sort.Strings(r.order)
 	return r, nil
+}
+
+// loadDir appends skills from a single directory into r. A missing directory is
+// silent (no-op); other errors propagate. Project skills override global ones by
+// name because they are loaded second.
+func loadDir(r *Registry, dir string) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+
+	for _, e := range entries {
+		var content []byte
+		var label string // key for Skipped map and duplicate detection fallback
+
+		if e.IsDir() {
+			b, err := os.ReadFile(filepath.Join(dir, e.Name(), "SKILL.md"))
+			if err != nil {
+				continue
+			}
+			content = b
+			label = e.Name()
+		} else if strings.HasSuffix(e.Name(), ".md") {
+			b, err := os.ReadFile(filepath.Join(dir, e.Name()))
+			if err != nil {
+				continue
+			}
+			content = b
+			label = strings.TrimSuffix(e.Name(), ".md")
+		} else {
+			continue
+		}
+
+		skill, err := parseSkill(string(content))
+		if err != nil {
+			r.Skipped[label] = err.Error()
+			continue
+		}
+		if skill.Name == "" {
+			skill.Name = label
+		}
+		// Project path (loaded second) deliberately overwrites global entries.
+		if _, dup := r.skills[skill.Name]; dup {
+			if label != skill.Name {
+				r.Skipped[label] = fmt.Sprintf("duplicate skill name %q (project overrides global)", skill.Name)
+			}
+		}
+		r.skills[skill.Name] = skill
+		if !contains(r.order, skill.Name) {
+			r.order = append(r.order, skill.Name)
+		}
+	}
+	return nil
+}
+
+func contains(slice []string, s string) bool {
+	for _, v := range slice {
+		if v == s {
+			return true
+		}
+	}
+	return false
 }
 
 // Index returns the L1 metadata for every skill, in stable (sorted) order.
@@ -156,9 +216,9 @@ func parseSkill(content string) (Skill, error) {
 	if err := yaml.Unmarshal([]byte(strings.Join(lines[1:end], "\n")), &fm); err != nil {
 		return Skill{}, fmt.Errorf("invalid frontmatter YAML: %w", err)
 	}
-	if strings.TrimSpace(fm.Name) == "" {
-		return Skill{}, fmt.Errorf("frontmatter missing required field 'name'")
-	}
+	// name: when absent, the caller falls back to the directory/filename so a bare
+	// .md file without a frontmatter "name" still parses. description is still
+	// required — a skill without one is useless to the model.
 	if strings.TrimSpace(fm.Description) == "" {
 		return Skill{}, fmt.Errorf("frontmatter missing required field 'description'")
 	}

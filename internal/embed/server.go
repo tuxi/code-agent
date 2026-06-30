@@ -132,6 +132,9 @@ func StartServer(ctx context.Context, opt Options) (*Handle, error) {
 	}
 	if dataDir != "" {
 		runtime.SetStoreBaseDir(filepath.Join(dataDir, ".codeagent"))
+		// User-level skills — shared across all workspaces. On iOS this is where
+		// bundled + user-imported skills live (Application Support/skills/).
+		cfg.GlobalSkillsDir = filepath.Join(dataDir, "skills")
 	}
 
 	injectSecrets(&cfg, opt.Secrets)
@@ -225,7 +228,7 @@ func Assemble(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider 
 	}
 	closers = append(closers, func() { mcpMgr.Close() })
 
-	wsReg := runtime.NewWorkspaceRegistry(root)
+	wsReg := runtime.NewWorkspaceRegistry(root, cfg.GlobalSkillsDir)
 	closers = append(closers, func() { wsReg.Close() })
 
 	// Re-anchor persisted workspace refs only on the sandboxed (iOS) host, where the
