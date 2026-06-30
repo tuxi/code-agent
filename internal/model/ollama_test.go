@@ -375,3 +375,135 @@ func TestOllamaCompleteStream(t *testing.T) {
 		t.Errorf("Usage = %+v, want 10/3", resp.Usage)
 	}
 }
+
+// ── Qwen XML tool-call fallback ─────────────────────────────────────────
+
+func TestParseQwenXMLToolCalls_SingleParam(t *testing.T) {
+	content := `<function=plan_workflow>
+<parameter=goal>
+生成一张橘猫在夕阳背景下玩耍的图片
+</parameter>
+</function>`
+
+	calls := parseQwenXMLToolCalls(content)
+	if len(calls) != 1 {
+		t.Fatalf("got %d calls, want 1", len(calls))
+	}
+	tc := calls[0]
+	if tc.Function.Name != "plan_workflow" {
+		t.Errorf("name = %q, want plan_workflow", tc.Function.Name)
+	}
+	if tc.Function.Arguments != `{"goal":"生成一张橘猫在夕阳背景下玩耍的图片"}` {
+		t.Errorf("args = %s", tc.Function.Arguments)
+	}
+	if tc.ID != "plan_workflow" {
+		t.Errorf("id = %q", tc.ID)
+	}
+	if tc.Type != "function" {
+		t.Errorf("type = %q", tc.Type)
+	}
+}
+
+func TestParseQwenXMLToolCalls_MultiParam(t *testing.T) {
+	content := `<function=search>
+<parameter=query>
+golang error handling
+</parameter>
+<parameter=max_results>
+10
+</parameter>
+</function>`
+
+	calls := parseQwenXMLToolCalls(content)
+	if len(calls) != 1 {
+		t.Fatalf("got %d calls, want 1", len(calls))
+	}
+	tc := calls[0]
+	if tc.Function.Name != "search" {
+		t.Errorf("name = %q", tc.Function.Name)
+	}
+	if tc.Function.Arguments != `{"max_results":"10","query":"golang error handling"}` {
+		t.Errorf("args = %s", tc.Function.Arguments)
+	}
+}
+
+func TestParseQwenXMLToolCalls_PlainTextPassthrough(t *testing.T) {
+	// Content without <function= should return nil (no tool calls).
+	calls := parseQwenXMLToolCalls("这是一段普通的文本回复")
+	if calls != nil {
+		t.Errorf("expected nil for plain text, got %v", calls)
+	}
+
+	calls = parseQwenXMLToolCalls("")
+	if calls != nil {
+		t.Errorf("expected nil for empty string, got %v", calls)
+	}
+}
+
+func TestParseQwenXMLToolCalls_MultipleFunctions(t *testing.T) {
+	content := `<function=read_file>
+<parameter=path>
+main.go
+</parameter>
+</function>
+<function=write_file>
+<parameter=path>
+output.txt
+</parameter>
+<parameter=content>
+hello
+</parameter>
+</function>`
+
+	calls := parseQwenXMLToolCalls(content)
+	if len(calls) != 2 {
+		t.Fatalf("got %d calls, want 2", len(calls))
+	}
+	if calls[0].Function.Name != "read_file" {
+		t.Errorf("first call name = %q", calls[0].Function.Name)
+	}
+	if calls[1].Function.Name != "write_file" {
+		t.Errorf("second call name = %q", calls[1].Function.Name)
+	}
+}
+
+func TestOllamaComplete_QwenXMLFallback(t *testing.T) {
+	// Simulate qwen3-coder returning XML-format function calls in content
+	// with no native tool_calls and a bare {{ .Prompt }} template.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(ollamaChatResponse{
+			Message: struct {
+				Role      string           `json:"role"`
+				Content   string           `json:"content"`
+				ToolCalls []ollamaToolCall `json:"tool_calls,omitempty"`
+			}{
+				Role:    "assistant",
+				Content: "<function=plan_workflow>\n<parameter=goal>\ntest goal\n</parameter>\n</function>",
+			},
+			Done:            true,
+			PromptEvalCount: 10,
+			EvalCount:       5,
+		})
+	}))
+	defer srv.Close()
+
+	p := NewOllamaProvider(srv.URL)
+	resp, err := p.Complete(context.Background(), Request{
+		Model:       "qwen3-coder",
+		Messages:    []Message{{Role: RoleUser, Content: "plan a workflow"}},
+		Tools:       []ToolDefinition{{Type: "function", Function: ToolFunction{Name: "plan_workflow"}}},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if resp.FinishReason != "tool_calls" {
+		t.Errorf("FinishReason = %q, want tool_calls", resp.FinishReason)
+	}
+	if len(resp.ToolCalls) != 1 {
+		t.Fatalf("ToolCalls = %d, want 1 (parsed from XML content)", len(resp.ToolCalls))
+	}
+	if resp.ToolCalls[0].Function.Name != "plan_workflow" {
+		t.Errorf("name = %q", resp.ToolCalls[0].Function.Name)
+	}
+}

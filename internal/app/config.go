@@ -60,7 +60,32 @@ type Config struct {
 	// set this to their own factory. The returned Store owns its lifecycle;
 	// callers must Close it. This field is code-level only (yaml:"-").
 	StoreFactory session.StoreFactory `yaml:"-"`
+
+	// Profile selects the platform capability set the runtime assembles for. It is
+	// code-level only (set by the embedded host, not the YAML) so a desktop config
+	// file can never accidentally downgrade itself. Default (full) assumes a host
+	// that can spawn subprocesses and reach the whole filesystem; Sandboxed is for
+	// embedded hosts like iOS. See Profile.
+	Profile Profile `yaml:"-"`
 }
+
+// Profile is the platform capability set the runtime assembles for. The default
+// (full) assumes a desktop host. The sandboxed profile is for embedded hosts like
+// iOS, where the OS forbids fork/exec and confines the app to its container, so
+// every subprocess-based tool (shell, git, gopls, MCP stdio servers, hooks) is
+// left unregistered rather than failing at call time.
+type Profile string
+
+const (
+	// ProfileFull is the default desktop profile: all tools registered.
+	ProfileFull Profile = ""
+	// ProfileSandboxed omits subprocess-based tools for OS-sandboxed hosts (iOS).
+	ProfileSandboxed Profile = "sandboxed"
+)
+
+// AllowsSubprocess reports whether the host permits spawning child processes.
+// When false, subprocess-based tools and MCP stdio servers are not assembled.
+func (p Profile) AllowsSubprocess() bool { return p != ProfileSandboxed }
 
 // ProviderConfig tunes the transport resilience layer (ResilientProvider):
 // per-attempt timeout, retry count, and backoff. Durations are expressed in
@@ -175,18 +200,30 @@ type WebFetchConfig struct {
 }
 
 func LoadConfig(path string) (Config, error) {
+	var data []byte
+	if path != "" {
+		b, err := os.ReadFile(path)
+		if err == nil {
+			data = b
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return Config{}, err
+		}
+	}
+	return LoadConfigBytes(data)
+}
+
+// LoadConfigBytes parses configuration from raw YAML bytes (nil or empty =>
+// built-in defaults), applying the same normalization and validation as
+// LoadConfig. Embedded hosts (iOS/macOS in-app) supply config in-memory rather
+// than from a file path, since the app sandbox has no fixed config.yaml.
+func LoadConfigBytes(data []byte) (Config, error) {
 	cfg := Config{
 		Agent:     AgentConfig{MaxSteps: 8},
 		Workspace: WorkspaceConfig{Root: "."},
 	}
 
-	if path != "" {
-		data, err := os.ReadFile(path)
-		if err == nil {
-			if err := yaml.Unmarshal(data, &cfg); err != nil {
-				return Config{}, err
-			}
-		} else if !errors.Is(err, os.ErrNotExist) {
+	if len(data) > 0 {
+		if err := yaml.Unmarshal(data, &cfg); err != nil {
 			return Config{}, err
 		}
 	}
@@ -226,7 +263,11 @@ func LoadConfig(path string) (Config, error) {
 		if mc.ContextWindow <= 0 {
 			mc.ContextWindow = defaultContextWindow
 		}
-		if mc.APIKeyEnv != "" {
+		// Injection-priority: a key already set on the struct (e.g. injected by an
+		// embedded host from the iOS Keychain) wins over the env lookup. On a normal
+		// CLI run APIKey is always empty here (yaml:"-"), so env resolution is
+		// unchanged; only an in-process caller that pre-sets it skips env.
+		if mc.APIKey == "" && mc.APIKeyEnv != "" {
 			mc.APIKey = os.Getenv(mc.APIKeyEnv)
 		}
 		cfg.Models[name] = mc

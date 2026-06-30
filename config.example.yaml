@@ -52,14 +52,14 @@ models:
   # Install: brew install ollama && ollama serve
   #
   # Available coding models with native tool calling (verified on Ollama):
-  #   ollama pull qwen3-coder           # 18 GB, 30B MoE, proper tool_calls ✅
-  #   ollama pull qwen2.5-coder:14b     # 9.0 GB — fast, but uses XML tools format ⚠️
-  #   ollama pull qwen2.5-coder:7b      # 4.4 GB — fast subagent, XML tools ⚠️
-  #   ollama pull deepseek-coder-v2     # 16B MoE, ~10 GB (check tool support)
+  #   ollama pull qwen3-coder              # 18 GB, 30B MoE
+  #   ollama create qwen3-coder-tool -f docs/ollama-modelfile   # ← fix tool calling
+  #   (The upstream modelfile uses {{ .Prompt }} which breaks tool calls.
+  #    Our custom modelfile adds proper Qwen chat markers.)
   ollama-coder:
     provider: ollama                # native Ollama protocol (/api/chat)
     base_url: "http://localhost:11434"
-    model: "qwen3-coder"             # 18 GB, proper tool_calls, ~15-20 t/s on M1 Pro
+    model: "qwen3-coder-tool"        # custom modelfile — proper tool_calls ✅
     temperature: 0.2
     context_window: 65536
 

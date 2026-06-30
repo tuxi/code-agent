@@ -1,0 +1,45 @@
+FROM qwen3-coder
+
+TEMPLATE """
+{{- if .System }}<|im_start|>system
+{{ .System }}<|im_end|>
+{{ end }}
+{{- if .Tools }}
+<|im_start|>system
+# Tools
+You have access to the following functions. Use them to answer the user's question.
+You may call one or more functions.
+
+You are provided with function signatures within <tools></tools> XML tags:
+<tools>
+{{- range .Tools }}
+{"type": "function", "function": {{ .Function }}}
+{{- end }}
+</tools>
+
+For each function call, return a JSON object with the function name and arguments within <tool_call></tool_call> XML tags:
+<tool_call>
+{"name": "<function-name>", "arguments": <args-json-object>}
+</tool_call>
+
+If you do not need to call a function, just reply normally.
+<|im_end|>
+{{ end }}
+{{- range .Messages }}
+<|im_start|>{{ .Role }}
+{{ .Content }}
+{{- if eq .Role "assistant" }}
+{{- if .ToolCalls }}
+<tool_call>
+{{- range .ToolCalls }}
+{"name": "{{ .Function.Name }}", "arguments": {{ .Function.Arguments }}}
+{{- end }}
+</tool_call>
+{{- end }}
+{{- end }}
+<|im_end|>
+{{ end }}
+<|im_start|>assistant
+"""
+
+PARAMETER num_ctx 65536

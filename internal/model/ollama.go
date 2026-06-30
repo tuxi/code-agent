@@ -180,6 +180,92 @@ func (tc ollamaToolCall) toToolCall() ToolCall {
 	}
 }
 
+// ── Qwen-format tool-call fallback ──────────────────────────────────────
+
+// qwenXMLToolCallRE matches the XML-like function-call format that Qwen
+// models (qwen3-coder, qwen2.5-coder) emit when the Ollama template does not
+// include tool-calling instructions (<|im_start|> / <|tool_calls_section|>
+// markers). The model falls back to its training format:
+//
+//	<function=plan_workflow>
+//	<parameter=goal>
+//	多行参数值...
+//	</parameter>
+//	</function>
+//
+// When the native tool_calls array is empty but the content matches this
+// pattern, we parse it and synthesise proper ToolCall structs so the agent
+// loop still dispatches tool execution. This is a stop-gap: the permanent fix
+// is an Ollama modelfile with a proper Qwen 3 chat template that includes
+// tool-calling markers (see docs/ollama-qwen3-tool-calling.md).
+var qwenFuncStart = "<function="
+var qwenParamStart = "<parameter="
+
+// parseQwenXMLToolCalls extracts tool calls from Qwen's XML-format content.
+// Returns nil when the content does not match the expected format.
+func parseQwenXMLToolCalls(content string) []ToolCall {
+	s := strings.TrimSpace(content)
+	if !strings.HasPrefix(s, qwenFuncStart) {
+		return nil
+	}
+
+	// Split on <function= lines — each is one call.
+	var calls []ToolCall
+	parts := strings.Split(s, qwenFuncStart)
+	for _, part := range parts[1:] { // first element is empty (before first <function=)
+		tc := parseOneQwenFunc(strings.TrimSpace(part))
+		if tc.Function.Name != "" {
+			calls = append(calls, tc)
+		}
+	}
+	return calls
+}
+
+func parseOneQwenFunc(block string) ToolCall {
+	// block: "plan_workflow>\n<parameter=goal>\nvalue\n</parameter>\n</function>"
+	idx := strings.Index(block, ">")
+	if idx < 0 {
+		return ToolCall{}
+	}
+	name := strings.TrimSpace(block[:idx])
+	rest := block[idx+1:]
+
+	params := map[string]string{}
+	for {
+		pi := strings.Index(rest, qwenParamStart)
+		if pi < 0 {
+			break
+		}
+		rest = rest[pi+len(qwenParamStart):] // "goal>\nvalue\n</parameter>..."
+
+		eq := strings.Index(rest, ">")
+		if eq < 0 {
+			break
+		}
+		paramName := strings.TrimSpace(rest[:eq])
+		rest = rest[eq+1:]
+
+		endTag := "</parameter>"
+		end := strings.Index(rest, endTag)
+		if end < 0 {
+			break
+		}
+		paramValue := strings.TrimSpace(rest[:end])
+		rest = rest[end+len(endTag):]
+		params[paramName] = paramValue
+	}
+
+	args, _ := json.Marshal(params)
+	return ToolCall{
+		ID:   name, // use function name as call id
+		Type: "function",
+		Function: FunctionCall{
+			Name:      name,
+			Arguments: string(args),
+		},
+	}
+}
+
 // ── Provider interface ───────────────────────────────────────────────────
 
 // Complete sends a non-streaming chat request to Ollama's /api/chat.
@@ -230,6 +316,15 @@ func (p *OllamaProvider) Complete(ctx context.Context, req Request) (Response, e
 	toolCalls := make([]ToolCall, len(or.Message.ToolCalls))
 	for i, tc := range or.Message.ToolCalls {
 		toolCalls[i] = tc.toToolCall()
+	}
+
+	// Fallback: Qwen models with an empty / minimal Ollama template may
+	// output function calls as XML text in content instead of native
+	// tool_calls. Parse and promote to proper tool calls.
+	if len(toolCalls) == 0 && strings.Contains(or.Message.Content, qwenFuncStart) {
+		if parsed := parseQwenXMLToolCalls(or.Message.Content); len(parsed) > 0 {
+			toolCalls = parsed
+		}
 	}
 
 	finish := "stop"
@@ -336,13 +431,21 @@ func (p *OllamaProvider) CompleteStream(ctx context.Context, req Request, onText
 		return Response{}, err
 	}
 
+	finalContent := strings.TrimSpace(content.String())
+	// Fallback: Qwen XML-format tool calls in content (see Complete).
+	if len(toolCalls) == 0 && strings.Contains(finalContent, qwenFuncStart) {
+		if parsed := parseQwenXMLToolCalls(finalContent); len(parsed) > 0 {
+			toolCalls = parsed
+		}
+	}
+
 	finish := "stop"
 	if len(toolCalls) > 0 {
 		finish = "tool_calls"
 	}
 
 	return Response{
-		Content:      strings.TrimSpace(content.String()),
+		Content:      finalContent,
 		ToolCalls:    toolCalls,
 		FinishReason: finish,
 		Usage:        usage,
