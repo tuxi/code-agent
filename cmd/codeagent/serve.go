@@ -20,7 +20,9 @@ import (
 func runServe(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider model.Provider, addr string) error {
 	root := cfg.Workspace.Root
 
-	handler, closers, err := embed.Assemble(ctx, cfg, mc, provider)
+	// The CLI serve path uses process lifecycle, not the in-app suspend/resume
+	// verbs, so it ignores the returned Runtime bundle.
+	handler, _, closers, err := embed.Assemble(ctx, cfg, mc, provider)
 	if err != nil {
 		return err
 	}

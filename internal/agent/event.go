@@ -31,6 +31,15 @@ const (
 	EventCompacted     EventKind = "compacted"
 	EventTurnFinished  EventKind = "turn_finished"
 
+	// Lifecycle (v1.2). Emitted around suspend/resume so a client can drive the
+	// "已暂停 / 恢复中 / 思考中" UI labels off the event stream. TurnResumed fires
+	// when ResumeTurn re-enters the loop; TurnPaused/TurnFailed are emitted by the
+	// lifecycle layer (executor/embed) at the suspend and unrecoverable-resume
+	// boundaries.
+	EventTurnResumed EventKind = "turn_resumed"
+	EventTurnPaused  EventKind = "turn_paused"
+	EventTurnFailed  EventKind = "turn_failed"
+
 	// Subagent delegation (8.3). A `task` tool call brackets a nested run on an
 	// isolated session with these events, so a renderer can present the delegation
 	// distinctly (and keep the subagent's own event stream — tagged with its own

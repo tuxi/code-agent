@@ -76,11 +76,15 @@ type cloneErrorResponse struct {
 }
 
 // ConversationRef is the minimal conversation descriptor returned by create and
-// list.
+// list. TurnStatus/PausedAt surface the turn lifecycle (v1.2 §3.2) so a host can
+// list interrupted sessions and render a "continue" entry — a paused status with
+// paused_at (unix seconds) marks a turn the host may resume.
 type ConversationRef struct {
 	ID            string `json:"id"`
 	WorkspacePath string `json:"workspace_path"`
 	Name          string `json:"name,omitempty"`
+	TurnStatus    string `json:"turn_status,omitempty"`
+	PausedAt      int64  `json:"paused_at,omitempty"`
 }
 
 // ConversationDetail is GET /v1/conversations/{id}. Counts and timestamps are
@@ -163,6 +167,8 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 				ID:            m.ID,
 				WorkspacePath: m.WorkspacePath,
 				Name:          effectiveName(m),
+				TurnStatus:    m.TurnStatus,
+				PausedAt:      m.PausedAt,
 			})
 		}
 		writeJSON(w, http.StatusOK, refs)

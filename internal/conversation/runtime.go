@@ -11,6 +11,9 @@ import (
 // as an interface keeps the executor testable with a fake.
 type TurnRunner interface {
 	RunTurn(ctx context.Context, sess *session.Session, userInput string) (agent.TurnResult, error)
+	// ResumeTurn continues an interrupted turn from persisted history without
+	// appending a new user message (v1.2 §3.2).
+	ResumeTurn(ctx context.Context, sess *session.Session) (agent.TurnResult, error)
 }
 
 // RuntimeContext is the parameter bundle for RunBuilder.Build. It collects

@@ -226,6 +226,46 @@ func (r *Runner) RunTurn(ctx context.Context, sess *session.Session, userInput s
 	sess.UpdatedAt = time.Now()
 	r.emit(Event{Kind: EventTurnStarted, Text: userInput})
 
+	return r.drive(ctx, sess)
+}
+
+// ResumeTurn continues an interrupted turn from the persisted history WITHOUT
+// appending a new user message (v1.2 §3.2). It is the resume counterpart to
+// RunTurn: the session's Messages already end at a consistent boundary (a
+// balanced tool batch, or a user message whose turn was cut off before the first
+// model call — guaranteed by the cancel-mid-batch fill and per-iteration
+// checkpoint), so re-entering the same loop simply re-issues the interrupted
+// step. The caller (the serve/embedded lifecycle layer) invokes this for a
+// session whose turn_status is paused.
+func (r *Runner) ResumeTurn(ctx context.Context, sess *session.Session) (TurnResult, error) {
+	if r.Model == nil {
+		return TurnResult{}, errors.New("missing model provider")
+	}
+	if r.Tools == nil {
+		r.Tools = tools.NewRegistry()
+	}
+	if r.MaxSteps <= 0 {
+		r.MaxSteps = defaultMaxSteps
+	}
+
+	r.emitSessionID = sess.ID
+	// Continue under a fresh turn id: the paused turn's events are already
+	// persisted, and a new id keeps the resumed run's events unambiguous while
+	// still correlating to the same session.
+	r.emitTurnID = nextSessionTurnID(sess)
+	r.emitInvocationID = ""
+
+	sess.UpdatedAt = time.Now()
+	r.emit(Event{Kind: EventTurnResumed})
+
+	return r.drive(ctx, sess)
+}
+
+// drive runs the uniform agent loop over the session's current history until a
+// final answer or the per-turn step limit. It is shared by RunTurn (which
+// appends the user message first) and ResumeTurn (which does not), so both paths
+// execute identical control flow.
+func (r *Runner) drive(ctx context.Context, sess *session.Session) (TurnResult, error) {
 	var turn TurnResult
 
 	// Reflection (P4.3) per-turn state: at most one self-check pass, and the

@@ -12,10 +12,12 @@ package embed
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
 	"path/filepath"
+	"time"
 
 	"code-agent/internal/app"
 	"code-agent/internal/conversation"
@@ -76,6 +78,16 @@ type Options struct {
 	DataDir string
 }
 
+// Runtime is the set of live components Assemble builds that the lifecycle verbs
+// (Suspend / ResumeSession / Reconfigure) operate on, distinct from the HTTP
+// handler. Assemble returns it so the embedded Handle can drive suspend/resume and
+// hot-reload; the CLI serve path ignores it (it uses process lifecycle).
+type Runtime struct {
+	Executor *conversation.TurnExecutor
+	Builder  *runtime.ServeRunBuilder
+	Repo     conversation.ConversationRepository
+}
+
 // Handle is a running embedded server. The host must call Stop to release the
 // listener, the MCP subprocesses, and the SQLite stores.
 type Handle struct {
@@ -85,6 +97,12 @@ type Handle struct {
 	cancel   context.CancelFunc
 	closers  []func() // run in reverse on Stop, mirroring runServe's defers
 	serveErr chan error
+
+	// Lifecycle state (v1.2). srvCtx is the server-scoped context resumed turns run
+	// under (so Stop cancels them); cfg + rt back Suspend/ResumeSession/Reconfigure.
+	srvCtx context.Context
+	cfg    app.Config
+	rt     *Runtime
 }
 
 // Port returns the actual TCP port the server is listening on. With Addr empty
@@ -106,6 +124,78 @@ func (h *Handle) Stop() error {
 	}
 	h.srv = nil
 	return err
+}
+
+// suspendTimeout bounds how long Suspend waits for in-flight turns to unwind. The
+// host runs its own (shorter) background watchdog; correctness does not depend on
+// this completing (the per-iteration checkpoint already persisted a consistent
+// history), so this is only an upper bound on the paused-status flush.
+const suspendTimeout = 2 * time.Second
+
+// Suspend cancels every in-flight turn as an app suspend and records each as
+// paused, returning once they have unwound (bounded by suspendTimeout) — the host
+// calls it in its background grace window instead of Stop (v1.2 §3.1). It does NOT
+// tear down the server: the process stays resumable on return to the foreground.
+// Safe to call when idle (no-op) and repeatedly (idempotent).
+func (h *Handle) Suspend() error {
+	if h.rt == nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), suspendTimeout)
+	defer cancel()
+	h.rt.Executor.SuspendAll(ctx)
+	return nil
+}
+
+// ResumeSession continues a paused turn for the given session (v1.2 §3.2). It
+// validates the session exists, then drives the resume ASYNCHRONOUSLY under the
+// server-scoped context and returns immediately: progress and outcome flow over
+// the event stream (turn_resumed / turn_finished / turn_paused / turn_failed) and
+// the turn_status field, not this call's return. A resume of a session already
+// running is a no-op. The error covers only failure to START (unknown session).
+func (h *Handle) ResumeSession(sessionID string) error {
+	if h.rt == nil {
+		return fmt.Errorf("runtime not started")
+	}
+	if _, err := h.rt.Repo.Load(h.srvCtx, sessionID); err != nil {
+		return err
+	}
+	go func() {
+		// BeginTurn inside Resume enforces mutual exclusion; a concurrent turn makes
+		// this a no-op (ErrBusy), which is the intended "already running" behavior.
+		_, _ = h.rt.Executor.Resume(h.srvCtx, sessionID)
+	}()
+	return nil
+}
+
+// Reconfigure hot-swaps the API keys and/or model without dropping the server or
+// changing the port (v1.2 §3.3) — the fix for the setting-page churn that
+// restart() caused. secretsJSON is the same shape Start takes (pass "" to keep
+// current keys); modelName selects a configured model (pass "" to keep current).
+// The swap lands at the next turn boundary; in-flight turns finish on the old
+// config.
+func (h *Handle) Reconfigure(secretsJSON, modelName string) error {
+	if h.rt == nil {
+		return fmt.Errorf("runtime not started")
+	}
+	secrets, err := parseSecretsJSON(secretsJSON)
+	if err != nil {
+		return err
+	}
+	// Start from the base config, re-inject secrets, and select the (possibly new)
+	// model, so a bare model switch keeps the existing keys and vice versa.
+	cfg := h.cfg
+	injectSecrets(&cfg, secrets)
+	mc, err := cfg.SelectModel(modelName)
+	if err != nil {
+		return err
+	}
+	provider, err := runtime.BuildProvider(mc, cfg.Provider)
+	if err != nil {
+		return err
+	}
+	h.rt.Builder.Reconfigure(mc, provider)
+	return nil
 }
 
 // StartServer assembles the runtime and starts the agent-wire HTTP/WS server on
@@ -152,7 +242,7 @@ func StartServer(ctx context.Context, opt Options) (*Handle, error) {
 	// observers and background goroutines tied to it wind down.
 	srvCtx, cancel := context.WithCancel(ctx)
 
-	h := &Handle{cancel: cancel, serveErr: make(chan error, 1)}
+	h := &Handle{cancel: cancel, serveErr: make(chan error, 1), srvCtx: srvCtx, cfg: cfg}
 	// On any error after this point, release whatever we already acquired.
 	ok := false
 	defer func() {
@@ -164,11 +254,17 @@ func StartServer(ctx context.Context, opt Options) (*Handle, error) {
 		}
 	}()
 
-	handler, closers, err := Assemble(srvCtx, cfg, mc, provider)
+	handler, rt, closers, err := Assemble(srvCtx, cfg, mc, provider)
 	if err != nil {
 		return nil, err
 	}
 	h.closers = closers
+	h.rt = rt
+
+	// Reconcile any turn left mid-flight by a previous process death (jetsam) to
+	// paused, so the host lists a single "paused" status to offer "continue"
+	// (v1.2 §3.2). Best-effort — a failure here must not block startup.
+	_ = rt.Executor.ReconcileInterrupted(srvCtx)
 
 	addr := opt.Addr
 	if addr == "" {
@@ -205,7 +301,7 @@ func StartServer(ctx context.Context, opt Options) (*Handle, error) {
 // The provider must already be built (callers differ in how they resolve creds:
 // the CLI from env, the embedded host from injected secrets). On error, any
 // resources opened before the failure are released before returning.
-func Assemble(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider model.Provider) (http.Handler, []func(), error) {
+func Assemble(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider model.Provider) (http.Handler, *Runtime, []func(), error) {
 	root := cfg.Workspace.Root
 	var closers []func()
 	release := func() {
@@ -216,7 +312,7 @@ func Assemble(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider 
 
 	telemetryStore, err := runtime.OpenStore(root)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	closers = append(closers, func() { telemetryStore.Close() })
 	runtime.AttachObserver(provider, telemetryStore, ctx)
@@ -224,7 +320,7 @@ func Assemble(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider 
 	toolReg, _, mcpMgr, planRef, err := runtime.BuildRegistry(ctx, cfg, mc, provider, telemetryStore, nil)
 	if err != nil {
 		release()
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	closers = append(closers, func() { mcpMgr.Close() })
 
@@ -257,10 +353,7 @@ func Assemble(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider 
 
 	active := conversation.NewActiveTurnRegistry()
 	subs := conversation.NewSubscriptionManager()
-	rb := &runtime.ServeRunBuilder{
-		Cfg: cfg, MC: mc, Provider: provider,
-		ToolReg: toolReg, WSReg: wsReg, PlanRef: planRef,
-	}
+	rb := runtime.NewServeRunBuilder(cfg, mc, provider, toolReg, wsReg, planRef)
 	executor := conversation.NewTurnExecutor(repo, eventStore, active, subs, rb)
 	executor.SetTitleGenerator(conversation.NewLLMTitleGenerator(provider, mc.Model))
 
@@ -269,7 +362,22 @@ func Assemble(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider 
 		Capabilities:  defaultCapabilities,
 		WorkspaceRoot: root,
 	})
-	return handler, closers, nil
+	rt := &Runtime{Executor: executor, Builder: rb, Repo: repo}
+	return handler, rt, closers, nil
+}
+
+// parseSecretsJSON decodes the JSON secrets object Reconfigure receives (gomobile
+// cannot bridge a map, so secrets cross as a JSON string). Empty input yields a
+// nil map, i.e. "keep the current keys".
+func parseSecretsJSON(secretsJSON string) (map[string]string, error) {
+	if secretsJSON == "" {
+		return nil, nil
+	}
+	var m map[string]string
+	if err := json.Unmarshal([]byte(secretsJSON), &m); err != nil {
+		return nil, fmt.Errorf("invalid secretsJSON: %w", err)
+	}
+	return m, nil
 }
 
 // injectSecrets overrides resolved API keys from the host-supplied secrets map.

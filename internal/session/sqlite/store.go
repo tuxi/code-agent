@@ -341,6 +341,7 @@ func (s *Store) List(ctx context.Context) ([]session.Meta, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT s.id, s.model, s.prompt_tokens, s.updated_at, COALESCE(s.workspace_path, ''),
 		       COALESCE(s.workspace_root, ''), COALESCE(s.workspace_rel, ''), COALESCE(s.workspace_ext_id, ''), COALESCE(s.name, ''),
+		       COALESCE(s.metadata, ''),
 		       (SELECT COUNT(*) FROM messages m WHERE m.session_id = s.id),
 		       (SELECT COALESCE((SELECT content FROM messages m WHERE m.session_id = s.id AND m.role = 'user' ORDER BY m.seq LIMIT 1), '')),
 		       (SELECT COUNT(*) FROM compactions c WHERE c.session_id = s.id AND c.after_tokens >= 0),
@@ -355,18 +356,37 @@ func (s *Store) List(ctx context.Context) ([]session.Meta, error) {
 	var out []session.Meta
 	for rows.Next() {
 		var m session.Meta
-		var updatedAt, lastCompacted string
+		var updatedAt, lastCompacted, metadata string
 		if err := rows.Scan(&m.ID, &m.Model, &m.PromptTokens, &updatedAt, &m.WorkspacePath,
-			&m.Workspace.Root, &m.Workspace.Rel, &m.Workspace.ExtID, &m.Name,
+			&m.Workspace.Root, &m.Workspace.Rel, &m.Workspace.ExtID, &m.Name, &metadata,
 			&m.MessageCount, &m.Title, &m.Compactions, &m.TotalSaved, &lastCompacted); err != nil {
 			return nil, err
 		}
 		m.Workspace.AbsHint = m.WorkspacePath
 		m.UpdatedAt = parseTime(updatedAt)
 		m.LastCompacted = parseTime(lastCompacted)
+		m.TurnStatus, m.PausedAt = turnLifecycleFromMetadata(metadata)
 		out = append(out, m)
 	}
 	return out, rows.Err()
+}
+
+// turnLifecycleFromMetadata extracts the turn_status and paused_at fields from a
+// session's persisted metadata JSON so List can surface them on Meta without
+// loading the whole session (v1.2 §3.2). A blank or unparseable blob yields the
+// zero values — a session with no lifecycle metadata is simply not paused.
+func turnLifecycleFromMetadata(metadata string) (status string, pausedAt int64) {
+	if metadata == "" {
+		return "", 0
+	}
+	var meta struct {
+		TurnStatus string  `json:"turn_status"`
+		PausedAt   float64 `json:"paused_at"`
+	}
+	if err := json.Unmarshal([]byte(metadata), &meta); err != nil {
+		return "", 0
+	}
+	return meta.TurnStatus, int64(meta.PausedAt)
 }
 
 func (s *Store) Stats(ctx context.Context) (session.Stats, error) {

@@ -3,6 +3,7 @@ package conversation
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"time"
 
@@ -60,6 +61,62 @@ func (e *TurnExecutor) Execute(ctx context.Context, sessionID string, input stri
 // ExecuteWithSession runs a turn against an already-loaded session — the REPL
 // and TUI path, where the caller holds a session handle across turns.
 func (e *TurnExecutor) ExecuteWithSession(parentCtx context.Context, sess *session.Session, input string) (agent.TurnResult, error) {
+	res, runErr := e.driveTurn(parentCtx, sess,
+		func(ctx context.Context, runner TurnRunner) (agent.TurnResult, error) {
+			return runner.RunTurn(ctx, sess, input)
+		},
+		e.recordRunStatus,
+	)
+
+	// Auto-name: set an initial truncation-based name on the first turn, then fire
+	// async LLM title generation if configured. Only the fresh-input path names;
+	// a resume continues an already-named conversation.
+	if sess.Name == "" {
+		initial := truncateForTitle(firstUserMessage(sess))
+		if initial != "" {
+			sess.Name = initial
+			go func() {
+				_ = e.repo.UpdateName(context.WithoutCancel(parentCtx), sess.ID, initial)
+			}()
+		}
+	}
+	if e.titleGen != nil && turnCount(sess) == 1 {
+		go e.generateTitleAsync(sess)
+	}
+
+	return res, runErr
+}
+
+// Resume continues an interrupted (paused) turn for a session, driving the agent
+// loop from persisted history without appending a new user message (v1.2 §3.2).
+// It loads the session, runs, and records the terminal turn_status (done on
+// success, paused on a retryable failure, failed when unrecoverable / over the
+// retry cap). Callers invoke it asynchronously — the embedded host's
+// Server.ResumeSession launches it and observes progress over the event stream.
+func (e *TurnExecutor) Resume(parentCtx context.Context, sessionID string) (agent.TurnResult, error) {
+	sess, err := e.repo.Load(parentCtx, sessionID)
+	if err != nil {
+		return agent.TurnResult{}, err
+	}
+	return e.driveTurn(parentCtx, sess,
+		func(ctx context.Context, runner TurnRunner) (agent.TurnResult, error) {
+			return runner.ResumeTurn(ctx, sess)
+		},
+		e.recordResumeStatus,
+	)
+}
+
+// driveTurn is the shared execution core for both a fresh turn (ExecuteWithSession)
+// and a resume (Resume): claim the slot, assemble the publisher + runner, run the
+// supplied driver, record the terminal lifecycle status, emit the matching
+// lifecycle event, and save. The two paths differ only in the run closure
+// (RunTurn vs ResumeTurn) and the status recorder.
+func (e *TurnExecutor) driveTurn(
+	parentCtx context.Context,
+	sess *session.Session,
+	run func(ctx context.Context, runner TurnRunner) (agent.TurnResult, error),
+	recordStatus func(sess *session.Session, runErr error),
+) (agent.TurnResult, error) {
 	// 1. Claim the turn (mutual exclusion).
 	turnCtx, cancel, err := e.active.BeginTurn(sess.ID, parentCtx)
 	if err != nil {
@@ -72,9 +129,7 @@ func (e *TurnExecutor) ExecuteWithSession(parentCtx context.Context, sess *sessi
 
 	// 2. Assemble the composite publisher: persist events + fan out to live subscribers.
 	pub := compositeEmitter{
-		// Persist every non-ephemeral event to the EventStore.
 		&eventStoreEmitter{ctx: parentCtx, events: e.events},
-		// Fan out to WS/TUI subscribers (non-blocking).
 		e.subs.Emitter(sess.ID),
 	}
 
@@ -93,36 +148,119 @@ func (e *TurnExecutor) ExecuteWithSession(parentCtx context.Context, sess *sessi
 	}
 	runner := e.rb.Build(rctx)
 
-	// 4. Run the turn.
-	res, runErr := runner.RunTurn(turnCtx, sess, input)
+	// 4. Run, marking running while in flight so a mid-turn crash leaves a
+	//    detectable "interrupted" status (reconciled to paused on next start).
+	sess.SetTurnStatus(session.TurnStatusRunning)
+	res, runErr := run(turnCtx, runner)
 
-	// 5. Save — always, even on error/cancel. RunTurn appends the user message
-	//    before its first cancellation checkpoint, so partial history is consistent
-	//    and resumable. WithoutCancel keeps the save from being aborted by the
-	//    turn's (or the caller's) cancellation.
+	// 5. Record the terminal status BEFORE the save, then emit the lifecycle event
+	//    so a client sees paused/failed transitions.
+	recordStatus(sess, runErr)
+	e.emitLifecycle(pub, sess)
+
+	// 6. Save — always, even on error/cancel. The cancel-mid-batch fill + running
+	//    marker keep the persisted history consistent and resumable. WithoutCancel
+	//    keeps the save from being aborted by the turn's (or caller's) cancellation.
 	if !sess.IsEmpty() {
 		if serr := e.repo.Save(context.WithoutCancel(parentCtx), sess); serr != nil && e.OnSaveError != nil {
 			e.OnSaveError(serr)
 		}
 	}
 
-	// 6. Auto-name: set an initial truncation-based name on the first turn, then
-	//    fire async LLM title generation if configured.
-	if sess.Name == "" {
-		initial := truncateForTitle(firstUserMessage(sess))
-		if initial != "" {
-			sess.Name = initial
-			// Persist the initial name (best-effort, fire-and-forget).
-			go func() {
-				_ = e.repo.UpdateName(context.WithoutCancel(parentCtx), sess.ID, initial)
-			}()
-		}
-	}
-	if e.titleGen != nil && turnCount(sess) == 1 {
-		go e.generateTitleAsync(sess)
-	}
-
 	return res, runErr
+}
+
+// maxResumeAttempts caps consecutive failed resumes of one session before it is
+// declared failed, so a permanently-unresumable history is not retried forever
+// (v1.2 §3.2.1).
+const maxResumeAttempts = 5
+
+// recordRunStatus sets the terminal turn_status for a fresh turn: done on success
+// or user stop, paused only when the turn was cancelled by an app suspend (so the
+// host can auto-continue it).
+func (e *TurnExecutor) recordRunStatus(sess *session.Session, runErr error) {
+	switch {
+	case runErr == nil:
+		sess.SetTurnStatus(session.TurnStatusDone)
+	case errors.Is(runErr, context.Canceled) && e.active.WasSuspended(sess.ID):
+		sess.MarkPaused(time.Now())
+	default:
+		// User stop or a turn error: the partial history is saved, but this is not a
+		// candidate for automatic resume — the user drives the next step.
+		sess.SetTurnStatus(session.TurnStatusDone)
+	}
+}
+
+// recordResumeStatus classifies a resume outcome (v1.2 §3.2.1): success clears the
+// attempt counter and marks done; a re-suspend goes back to paused untouched; a
+// retryable failure re-pauses (incrementing attempts, escalating to failed past
+// the cap); a non-retryable failure fails outright.
+func (e *TurnExecutor) recordResumeStatus(sess *session.Session, runErr error) {
+	switch {
+	case runErr == nil:
+		sess.SetTurnStatus(session.TurnStatusDone)
+		sess.ClearResumeAttempts()
+	case errors.Is(runErr, context.Canceled):
+		// The resume was interrupted (re-suspended, or the server torn down), not a
+		// genuine failure — stay paused for the next attempt, without counting it.
+		sess.MarkPaused(time.Now())
+	case model.IsRetryable(runErr):
+		if sess.IncResumeAttempts() > maxResumeAttempts {
+			sess.SetTurnStatus(session.TurnStatusFailed)
+		} else {
+			sess.MarkPaused(time.Now())
+		}
+	default:
+		sess.SetTurnStatus(session.TurnStatusFailed)
+	}
+}
+
+// emitLifecycle publishes the paused/failed lifecycle event matching the session's
+// just-recorded terminal status, so a connected client updates its label. A done
+// turn already emitted turn_finished from the loop, so nothing is published here.
+func (e *TurnExecutor) emitLifecycle(pub agent.Emitter, sess *session.Session) {
+	var kind agent.EventKind
+	switch sess.TurnStatus() {
+	case session.TurnStatusPaused:
+		kind = agent.EventTurnPaused
+	case session.TurnStatusFailed:
+		kind = agent.EventTurnFailed
+	default:
+		return
+	}
+	pub.Emit(agent.Event{Kind: kind, SessionID: sess.ID, At: time.Now()})
+}
+
+// SuspendAll cancels every in-flight turn as an app suspend and awaits their
+// unwind (bounded by ctx), returning the suspended session ids. The turns' own
+// unwind records turn_status=paused. Called by the embedded host on background.
+func (e *TurnExecutor) SuspendAll(ctx context.Context) []string {
+	return e.active.SuspendAll(ctx)
+}
+
+// ReconcileInterrupted rewrites any session left mid-turn (turn_status running or
+// resuming) to paused at startup: after a cold start nothing is actually running,
+// so such a status marks a turn the process death interrupted. This unifies the
+// hard-kill and clean-suspend paths — the host lists a single "paused" status to
+// offer "continue" (v1.2 §3.2).
+func (e *TurnExecutor) ReconcileInterrupted(ctx context.Context) error {
+	metas, err := e.repo.List(ctx)
+	if err != nil {
+		return err
+	}
+	now := time.Now()
+	for _, m := range metas {
+		if m.TurnStatus != session.TurnStatusRunning && m.TurnStatus != session.TurnStatusResuming {
+			continue
+		}
+		sess, err := e.repo.Load(ctx, m.ID)
+		if err != nil {
+			continue // best-effort: skip a session that won't load
+		}
+		sess.MarkPaused(now)
+		_ = e.repo.Save(ctx, sess)
+	}
+	return nil
 }
 
 // Cancel stops the in-flight turn for a session at the next checkpoint.

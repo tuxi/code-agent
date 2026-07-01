@@ -84,9 +84,49 @@ func (s *Server) Endpoint() string {
 	return s.h.LoopbackURL()
 }
 
-// Stop shuts the server down and releases all runtime resources. Call it when the
-// app moves to the background (iOS will suspend the process) and Start again on
-// return to the foreground. Safe to call more than once.
+// Suspend cancels in-flight turns and marks them paused, then returns within a
+// bounded window (v1.2 §3.1). Call it in the app's background grace window —
+// NOT Stop, which now tears the runtime down. The process stays alive and
+// resumable; on return to the foreground call ResumeSession. Safe when idle and
+// when called repeatedly. Swift: `suspend() throws`.
+func (s *Server) Suspend() error {
+	if s == nil || s.h == nil {
+		return nil
+	}
+	return s.h.Suspend()
+}
+
+// ResumeSession continues a paused turn for sessionID (v1.2 §3.2). It returns
+// immediately after validating the session; the resumed turn runs asynchronously
+// and its progress/outcome arrive over the WebSocket event stream (turn_resumed /
+// turn_finished / turn_paused / turn_failed) and the conversation's turn_status.
+// The host calls this on foreground for the active session (silent auto-resume),
+// or when the user taps "continue" on a cold-start paused session. The error
+// covers only failure to start (e.g. unknown session). Swift:
+// `resumeSession(_ sessionID: String) throws`.
+func (s *Server) ResumeSession(sessionID string) error {
+	if s == nil || s.h == nil {
+		return nil
+	}
+	return s.h.ResumeSession(sessionID)
+}
+
+// Reconfigure hot-swaps API keys and/or the model without dropping the server or
+// changing the port (v1.2 §3.3) — the setting-page path that replaces the old
+// restart(). secretsJSON is the same shape as Start's (pass "" to keep the current
+// keys); modelName selects a configured model (pass "" to keep the current one).
+// The swap lands at the next turn; in-flight turns finish on the old config.
+// Swift: `reconfigure(secretsJSON:modelName:) throws`.
+func (s *Server) Reconfigure(secretsJSON, modelName string) error {
+	if s == nil || s.h == nil {
+		return nil
+	}
+	return s.h.Reconfigure(secretsJSON, modelName)
+}
+
+// Stop shuts the server down and releases all runtime resources. Call it ONLY on
+// real teardown — user-initiated quit or a memory warning — NOT on backgrounding
+// (use Suspend for that). Safe to call more than once. Swift: `stop() throws`.
 func (s *Server) Stop() error {
 	if s == nil || s.h == nil {
 		return nil

@@ -114,10 +114,7 @@ func run() error {
 	eventStore := &conversation.StoreEventAdapter{Store: telemetryStore}
 	active := conversation.NewActiveTurnRegistry()
 	subs := conversation.NewSubscriptionManager()
-	rb := &runtime.ServeRunBuilder{
-		Cfg: cfg, MC: mc, Provider: provider,
-		ToolReg: toolReg, WSReg: wsReg, PlanRef: planRef,
-	}
+	rb := runtime.NewServeRunBuilder(cfg, mc, provider, toolReg, wsReg, planRef)
 	executor := conversation.NewTurnExecutor(repo, eventStore, active, subs, rb)
 	executor.SetTitleGenerator(conversation.NewLLMTitleGenerator(provider, mc.Model))
 

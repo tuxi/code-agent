@@ -15,6 +15,7 @@ import (
 type fakeRepo struct {
 	sessions map[string]*session.Session
 	events   []session.EventRecord
+	metas    []session.Meta // returned by List when set
 }
 
 func newFakeRepo() *fakeRepo {
@@ -39,7 +40,7 @@ func (r *fakeRepo) Save(ctx context.Context, s *session.Session) error {
 	r.sessions[s.ID] = s
 	return nil
 }
-func (r *fakeRepo) List(ctx context.Context) ([]session.Meta, error) { return nil, nil }
+func (r *fakeRepo) List(ctx context.Context) ([]session.Meta, error) { return r.metas, nil }
 func (r *fakeRepo) Delete(ctx context.Context, id string) error {
 	delete(r.sessions, id)
 	return nil
@@ -84,6 +85,11 @@ type stubRunner struct {
 
 func (s *stubRunner) RunTurn(ctx context.Context, sess *session.Session, input string) (agent.TurnResult, error) {
 	s.lastInput = input
+	return agent.TurnResult{}, nil
+}
+
+func (s *stubRunner) ResumeTurn(ctx context.Context, sess *session.Session) (agent.TurnResult, error) {
+	s.lastInput = "" // resume appends no user input
 	return agent.TurnResult{}, nil
 }
 

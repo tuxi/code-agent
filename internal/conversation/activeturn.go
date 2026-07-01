@@ -28,6 +28,14 @@ type activeTurn struct {
 	planApprover agent.PlanApprover     // set by WS handler; nil = auto-approve
 	clientWaiter agent.ClientToolWaiter // set by WS handler; nil = no client executor
 	clientTools  []agent.ClientToolDef  // set by register_tools message; nil until registered
+
+	// suspended marks that this in-flight turn was cancelled by SuspendAll (app
+	// backgrounding), not by a user stop. The turn goroutine reads it as it unwinds
+	// to record turn_status=paused rather than done (v1.2 §3). Reset by FinishTurn.
+	suspended bool
+	// done is closed by FinishTurn when the turn goroutine exits, so SuspendAll can
+	// await a clean unwind (and its paused-status save) within a bounded window.
+	done chan struct{}
 }
 
 // ClientTools returns the client-registered tools for a session (nil if none).
@@ -81,6 +89,8 @@ func (r *ActiveTurnRegistry) BeginTurn(sessionID string, parentCtx context.Conte
 	}
 	ctx, cancel := context.WithCancel(parentCtx)
 	t.cancel = cancel
+	t.suspended = false
+	t.done = make(chan struct{})
 	return ctx, cancel, nil
 }
 
@@ -94,9 +104,56 @@ func (r *ActiveTurnRegistry) FinishTurn(sessionID string) {
 		return
 	}
 	t.cancel = nil
+	t.suspended = false
+	if t.done != nil {
+		close(t.done) // wake any SuspendAll awaiting this turn's unwind
+		t.done = nil
+	}
 	if t.approver == nil && t.planApprover == nil && t.clientWaiter == nil {
 		delete(r.turns, sessionID)
 	}
+}
+
+// SuspendAll cancels every in-flight turn as an app-suspend (not a user stop),
+// then waits — bounded by ctx — for each to unwind so its turn_status=paused save
+// lands. It returns the session ids it suspended. Correctness does not depend on
+// the await completing: the per-iteration Checkpointer has already persisted a
+// consistent history, so ctx expiring (the host's watchdog) only means the paused
+// label may lag, never that the session is unresumable (v1.2 §2.2.1/§3.1).
+func (r *ActiveTurnRegistry) SuspendAll(ctx context.Context) []string {
+	r.mu.Lock()
+	var ids []string
+	var dones []chan struct{}
+	for id, t := range r.turns {
+		if t.cancel != nil {
+			t.suspended = true
+			t.cancel()
+			ids = append(ids, id)
+			if t.done != nil {
+				dones = append(dones, t.done)
+			}
+		}
+	}
+	r.mu.Unlock()
+
+	for _, d := range dones {
+		select {
+		case <-d:
+		case <-ctx.Done():
+			return ids
+		}
+	}
+	return ids
+}
+
+// WasSuspended reports whether the session's current (or just-finished) turn was
+// cancelled by SuspendAll. The turn goroutine consults it while unwinding to
+// choose between turn_status paused (suspend) and done (normal/user-cancel).
+func (r *ActiveTurnRegistry) WasSuspended(sessionID string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	t, ok := r.turns[sessionID]
+	return ok && t.suspended
 }
 
 // Cancel stops the in-flight turn for the given session at the next checkpoint.
@@ -216,6 +273,10 @@ func (r *ActiveTurnRegistry) Shutdown() {
 		}
 		if t.cancel != nil {
 			t.cancel()
+		}
+		if t.done != nil {
+			close(t.done) // release any SuspendAll awaiting this turn
+			t.done = nil
 		}
 	}
 	r.turns = nil

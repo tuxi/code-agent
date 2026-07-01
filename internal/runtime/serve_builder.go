@@ -1,6 +1,8 @@
 package runtime
 
 import (
+	"sync"
+
 	"code-agent/internal/agent"
 	"code-agent/internal/app"
 	"code-agent/internal/conversation"
@@ -12,18 +14,46 @@ import (
 // ServeRunBuilder is the conversation.RunBuilder for the HTTP/WebSocket server. It
 // wraps BuildRunner and uses the per-turn publisher from TurnExecutor (which fans
 // out to event store + WS subscribers).
+//
+// MC and Provider are guarded by mu so Reconfigure can hot-swap the model/creds
+// (v1.2 §3.3) without racing an in-flight Build. An in-flight turn keeps the
+// runner it was built with; the swap lands at the next Build, i.e. the next turn
+// boundary — the same guarantee the TUI's /use already relies on.
 type ServeRunBuilder struct {
-	Cfg      app.Config
-	MC       app.ModelConfig
-	Provider model.Provider
-	ToolReg  *tools.Registry
-	WSReg    *WorkspaceRegistry
-	PlanRef  *agent.RunnerRef // late-bound per-turn in Build()
+	Cfg     app.Config
+	ToolReg *tools.Registry
+	WSReg   *WorkspaceRegistry
+	PlanRef *agent.RunnerRef // late-bound per-turn in Build()
+
+	mu       sync.RWMutex
+	mc       app.ModelConfig
+	provider model.Provider
+}
+
+// NewServeRunBuilder constructs the builder with the initial model + provider.
+func NewServeRunBuilder(cfg app.Config, mc app.ModelConfig, provider model.Provider, toolReg *tools.Registry, wsReg *WorkspaceRegistry, planRef *agent.RunnerRef) *ServeRunBuilder {
+	return &ServeRunBuilder{
+		Cfg: cfg, ToolReg: toolReg, WSReg: wsReg, PlanRef: planRef,
+		mc: mc, provider: provider,
+	}
+}
+
+// Reconfigure hot-swaps the model config and provider used by future turns
+// (v1.2 §3.3). It does not touch the listener or any in-flight turn.
+func (b *ServeRunBuilder) Reconfigure(mc app.ModelConfig, provider model.Provider) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.mc = mc
+	b.provider = provider
 }
 
 // Build creates a per-turn TurnRunner that resolves skills from the session's
 // workspace, merges client-registered tools, and wires plan tools + client waiter.
 func (b *ServeRunBuilder) Build(ctx conversation.RuntimeContext) conversation.TurnRunner {
+	b.mu.RLock()
+	mc, provider := b.mc, b.provider
+	b.mu.RUnlock()
+
 	// Resolve skills for the session's workspace.
 	workspacePath := ctx.Session.WorkspacePath
 	var skillReg *skills.Registry
@@ -31,7 +61,7 @@ func (b *ServeRunBuilder) Build(ctx conversation.RuntimeContext) conversation.Tu
 		skillReg = inst.SkillReg
 	}
 
-	runner := BuildRunner(b.Cfg, b.MC, b.Provider, b.ToolReg, skillReg, ctx.Approver, ctx.Publisher)
+	runner := BuildRunner(b.Cfg, mc, provider, b.ToolReg, skillReg, ctx.Approver, ctx.Publisher)
 	if workspacePath != "" {
 		runner.WorkspaceRoot = workspacePath
 	}

@@ -163,6 +163,12 @@ type Meta struct {
 	Compactions   int       // number of finalized compactions
 	TotalSaved    int       // total tokens reclaimed across them
 	LastCompacted time.Time // zero if never compacted
+
+	// Turn lifecycle (v1.2), read from the session's Metadata. TurnStatus is ""
+	// for a normal session; a "paused" value with PausedAt lets a client list
+	// interrupted sessions and render a "continue" entry (agent-wire v1.2 §3.2).
+	TurnStatus string // "" | running | paused | resuming | done | failed
+	PausedAt   int64  // unix seconds when paused; 0 if not paused
 }
 
 // Stats is aggregate compaction telemetry across all stored sessions — the real
