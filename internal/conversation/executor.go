@@ -127,11 +127,10 @@ func (e *TurnExecutor) driveTurn(
 		e.active.FinishTurn(sess.ID)
 	}()
 
-	// 2. Assemble the composite publisher: persist events + fan out to live subscribers.
-	pub := compositeEmitter{
-		&eventStoreEmitter{ctx: parentCtx, events: e.events},
-		e.subs.Emitter(sess.ID),
-	}
+	// 2. Assemble the publisher: persist each event (assigning its seq) then fan the
+	//    seq-stamped event out to live subscribers, so a client's live seq matches
+	//    what replay will report (v1.2 §4).
+	pub := &sequencingEmitter{ctx: parentCtx, events: e.events, live: e.subs.Emitter(sess.ID)}
 
 	// 3. Build a fresh turnRunner for this turn.
 	rctx := RuntimeContext{
@@ -378,38 +377,38 @@ func (e *TurnExecutor) generateTitleAsync(sess *session.Session) {
 	_ = e.repo.UpdateName(ctx, sess.ID, title)
 }
 
-// ---- internal emitters ----
+// ---- internal emitter ----
 
-// compositeEmitter fans one event to multiple sinks. If a sink panics, the
-// next sink still receives the event (best-effort per sink).
-type compositeEmitter []agent.Emitter
-
-func (c compositeEmitter) Emit(e agent.Event) {
-	for _, s := range c {
-		s.Emit(e)
-	}
-}
-
-// eventStoreEmitter persists each event to the ConversationEventStore. It skips
-// ephemeral token-delta events (too frequent to persist usefully).
-type eventStoreEmitter struct {
+// sequencingEmitter persists each event to the ConversationEventStore — which
+// assigns its monotonic seq — then stamps that seq onto the event and forwards it
+// to the live subscriber sink, so a client's live seq is identical to the one the
+// replay path (ReplaySince) will report (v1.2 §4). Persistence is best-effort: a
+// marshal or write failure still forwards the event live (with seq 0) rather than
+// dropping it. Ephemeral token deltas are not persisted (too frequent) and carry
+// no seq; they are only forwarded live.
+type sequencingEmitter struct {
 	ctx    context.Context
 	events ConversationEventStore
+	live   agent.Emitter
 }
 
-func (e *eventStoreEmitter) Emit(ev agent.Event) {
+func (s *sequencingEmitter) Emit(ev agent.Event) {
 	if ev.Kind == agent.EventTokenDelta {
-		return // ephemeral, not persisted
+		s.live.Emit(ev)
+		return
 	}
-	payload, err := json.Marshal(ev)
-	if err != nil {
-		return // best-effort: a marshal error is not actionable
+	// Marshal BEFORE stamping seq: the persisted payload must not carry seq (that
+	// lives in the rowid); replay re-stamps it from the row.
+	if payload, err := json.Marshal(ev); err == nil {
+		if seq, aerr := s.events.Append(s.ctx, session.EventRecord{
+			SessionID: ev.SessionID,
+			TurnID:    ev.TurnID,
+			Kind:      string(ev.Kind),
+			At:        ev.At,
+			Payload:   payload,
+		}); aerr == nil {
+			ev.Seq = seq
+		}
 	}
-	_ = e.events.Append(e.ctx, session.EventRecord{
-		SessionID: ev.SessionID,
-		TurnID:    ev.TurnID,
-		Kind:      string(ev.Kind),
-		At:        ev.At,
-		Payload:   payload,
-	})
+	s.live.Emit(ev)
 }

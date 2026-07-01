@@ -58,14 +58,26 @@ func (r *fakeRepo) Close() error { return nil }
 // fakeEventStore captures events for test assertions.
 type fakeEventStore struct {
 	records []session.EventRecord
+	seq     int64
 }
 
-func (s *fakeEventStore) Append(ctx context.Context, e session.EventRecord) error {
+func (s *fakeEventStore) Append(ctx context.Context, e session.EventRecord) (int64, error) {
+	s.seq++
+	e.Seq = s.seq
 	s.records = append(s.records, e)
-	return nil
+	return s.seq, nil
 }
 func (s *fakeEventStore) Replay(ctx context.Context, sessionID string) ([]session.EventRecord, error) {
 	return s.records, nil
+}
+func (s *fakeEventStore) ReplaySince(ctx context.Context, sessionID string, sinceSeq int64) ([]session.EventRecord, error) {
+	var out []session.EventRecord
+	for _, r := range s.records {
+		if r.Seq > sinceSeq {
+			out = append(out, r)
+		}
+	}
+	return out, nil
 }
 
 // fakeRunBuilder returns a stubRunner that records what it was given.

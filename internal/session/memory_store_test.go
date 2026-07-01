@@ -257,7 +257,7 @@ func TestMemoryStoreEventRoundTrip(t *testing.T) {
 		{SessionID: "s2", TurnID: "t9", Kind: "turn_started", At: now, Payload: json.RawMessage(`{"text":"other session"}`)},
 	}
 	for _, e := range events {
-		if err := store.RecordEvent(ctx, e); err != nil {
+		if _, err := store.RecordEvent(ctx, e); err != nil {
 			t.Fatalf("RecordEvent: %v", err)
 		}
 	}
@@ -283,7 +283,7 @@ func TestMemoryStoreEventRoundTrip(t *testing.T) {
 func TestMemoryStoreDeleteRemovesEvents(t *testing.T) {
 	store := newMemStore(t)
 	ctx := context.Background()
-	if err := store.RecordEvent(ctx, EventRecord{SessionID: "doomed", Kind: "thinking", At: time.Now()}); err != nil {
+	if _, err := store.RecordEvent(ctx, EventRecord{SessionID: "doomed", Kind: "thinking", At: time.Now()}); err != nil {
 		t.Fatalf("RecordEvent: %v", err)
 	}
 	if err := store.Delete(ctx, "doomed"); err != nil {
@@ -305,14 +305,14 @@ func TestMemoryStoreRecentEventsByKind(t *testing.T) {
 
 	// Record 3 events of "task_started" across different sessions.
 	for i, sid := range []string{"s1", "s2", "s3"} {
-		if err := store.RecordEvent(ctx, EventRecord{
+		if _, err := store.RecordEvent(ctx, EventRecord{
 			SessionID: sid, Kind: "task_started", At: now.Add(time.Duration(i) * time.Second),
 		}); err != nil {
 			t.Fatal(err)
 		}
 	}
 	// Record a different kind — must not appear in the result.
-	if err := store.RecordEvent(ctx, EventRecord{
+	if _, err := store.RecordEvent(ctx, EventRecord{
 		SessionID: "s4", Kind: "thinking", At: now,
 	}); err != nil {
 		t.Fatal(err)

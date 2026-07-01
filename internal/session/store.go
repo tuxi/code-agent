@@ -26,11 +26,17 @@ type SessionStore interface {
 // Consumers that don't need timeline replay or event search can provide a no-op
 // implementation. Best-effort by convention: a write failure must not fail a run.
 type EventStore interface {
-	// RecordEvent appends one agent event to the per-session event log.
-	// SessionEvents reads them back in emission order — the foundation for
-	// timeline replay/search/analytics.
-	RecordEvent(ctx context.Context, e EventRecord) error
+	// RecordEvent appends one agent event to the per-session event log and returns
+	// the monotonic seq assigned to it (the rowid), so the live emitter can stamp
+	// the same seq the replay path will report. SessionEvents reads them back in
+	// emission order — the foundation for timeline replay/search/analytics.
+	RecordEvent(ctx context.Context, e EventRecord) (int64, error)
 	SessionEvents(ctx context.Context, sessionID string) ([]EventRecord, error)
+
+	// SessionEventsSince returns the session's events with seq strictly greater
+	// than sinceSeq, in seq order — the incremental replay a reconnecting client
+	// uses to catch up without re-fetching the whole log (v1.2 §4).
+	SessionEventsSince(ctx context.Context, sessionID string, sinceSeq int64) ([]EventRecord, error)
 
 	// RecentEventsByKind returns the most recent events of one kind across all
 	// sessions, newest first. It indexes a class of event without scanning every
@@ -79,6 +85,11 @@ type StoreFactory func(root string) (Store, error)
 // the full event as JSON (the source of truth); Kind/At are denormalized as the
 // query index.
 type EventRecord struct {
+	// Seq is the per-store monotonic sequence number assigned at insert (the
+	// session_events rowid). It is 0 on an unpersisted record and set on read. The
+	// wire exposes it so a reconnecting client replays only events with seq greater
+	// than the last it saw (agent-wire v1.2 §4).
+	Seq       int64
 	SessionID string
 	TurnID    string
 	Kind      string

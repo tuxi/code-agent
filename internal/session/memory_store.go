@@ -31,6 +31,7 @@ type MemoryStore struct {
 	sessions map[string]*Session // id → session (owned copy)
 	metas    []Meta              // ordered by UpdatedAt desc
 	events   []EventRecord       // all events, insertion order
+	eventSeq int64               // store-wide monotonic event seq (mirrors sqlite rowid)
 	requests []RequestRecord     // all requests, insertion order
 	closed   bool
 }
@@ -120,11 +121,15 @@ func (m *MemoryStore) UpdateName(_ context.Context, id string, name string) erro
 
 // ── EventStore ────────────────────────────────────────────────────────────
 
-func (m *MemoryStore) RecordEvent(_ context.Context, e EventRecord) error {
+func (m *MemoryStore) RecordEvent(_ context.Context, e EventRecord) (int64, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	// A store-wide monotonic seq (1-based), mirroring the sqlite rowid so both
+	// backends assign seqs the same way (v1.2 §4).
+	m.eventSeq++
+	e.Seq = m.eventSeq
 	m.events = append(m.events, e)
-	return nil
+	return e.Seq, nil
 }
 
 func (m *MemoryStore) SessionEvents(_ context.Context, sessionID string) ([]EventRecord, error) {
@@ -133,6 +138,18 @@ func (m *MemoryStore) SessionEvents(_ context.Context, sessionID string) ([]Even
 	var out []EventRecord
 	for _, e := range m.events {
 		if e.SessionID == sessionID {
+			out = append(out, e)
+		}
+	}
+	return out, nil
+}
+
+func (m *MemoryStore) SessionEventsSince(_ context.Context, sessionID string, sinceSeq int64) ([]EventRecord, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []EventRecord
+	for _, e := range m.events {
+		if e.SessionID == sessionID && e.Seq > sinceSeq {
 			out = append(out, e)
 		}
 	}

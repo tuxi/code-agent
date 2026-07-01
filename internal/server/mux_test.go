@@ -108,22 +108,37 @@ func (r *fakeConversationRepo) Close() error { return nil }
 type fakeEventStore struct {
 	mu   sync.Mutex
 	recs map[string][]session.EventRecord
+	seq  int64
 }
 
-func (s *fakeEventStore) Append(ctx context.Context, e session.EventRecord) error {
+func (s *fakeEventStore) Append(ctx context.Context, e session.EventRecord) (int64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.recs == nil {
 		s.recs = make(map[string][]session.EventRecord)
 	}
+	s.seq++
+	e.Seq = s.seq
 	s.recs[e.SessionID] = append(s.recs[e.SessionID], e)
-	return nil
+	return s.seq, nil
 }
 
 func (s *fakeEventStore) Replay(ctx context.Context, sessionID string) ([]session.EventRecord, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.recs[sessionID], nil
+}
+
+func (s *fakeEventStore) ReplaySince(ctx context.Context, sessionID string, sinceSeq int64) ([]session.EventRecord, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []session.EventRecord
+	for _, r := range s.recs[sessionID] {
+		if r.Seq > sinceSeq {
+			out = append(out, r)
+		}
+	}
+	return out, nil
 }
 
 func storedEvent(ev agent.Event) session.EventRecord {
@@ -354,6 +369,48 @@ func TestMuxGetEventsReEncodesToWire(t *testing.T) {
 	}
 	if frames[2]["elapsed_ms"].(float64) != 731 {
 		t.Errorf("elapsed_ms = %v, want 731", frames[2]["elapsed_ms"])
+	}
+}
+
+// TestMuxGetEventsSince covers the v1.2 §4 incremental replay: every frame carries
+// its seq, and ?since=<seq> returns only the tail after that seq.
+func TestMuxGetEventsSince(t *testing.T) {
+	id := "sess_seq"
+	events := &fakeEventStore{}
+	at := time.Date(2026, 6, 24, 10, 0, 0, 0, time.UTC)
+	for i := 0; i < 4; i++ {
+		_, _ = events.Append(context.Background(), storedEvent(agent.Event{
+			Kind: agent.EventTurnStarted, SessionID: id, TurnID: "t1", At: at.Add(time.Duration(i) * time.Second),
+		}))
+	}
+	repo := newFakeConversationRepo()
+	repo.sessions[id] = &session.Session{ID: id, WorkspacePath: "/tmp/test"}
+	srv := httptest.NewServer(newTestMux(repo, events))
+	defer srv.Close()
+
+	seqsOf := func(url string) []float64 {
+		t.Helper()
+		resp, err := http.Get(url)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		var frames []map[string]any
+		if err := json.NewDecoder(resp.Body).Decode(&frames); err != nil {
+			t.Fatal(err)
+		}
+		var out []float64
+		for _, f := range frames {
+			out = append(out, f["seq"].(float64))
+		}
+		return out
+	}
+
+	if got := seqsOf(srv.URL + "/v1/conversations/" + id + "/events"); len(got) != 4 || got[0] != 1 || got[3] != 4 {
+		t.Fatalf("full replay seqs = %v, want [1 2 3 4]", got)
+	}
+	if got := seqsOf(srv.URL + "/v1/conversations/" + id + "/events?since=2"); len(got) != 2 || got[0] != 3 || got[1] != 4 {
+		t.Fatalf("since=2 seqs = %v, want [3 4]", got)
 	}
 }
 

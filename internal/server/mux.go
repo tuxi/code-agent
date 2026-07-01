@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 
 	"code-agent/internal/agent"
 	"code-agent/internal/conversation"
@@ -252,7 +253,10 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 
 	mux.HandleFunc("GET /v1/conversations/{id}/events", func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
-		recs, ok := loadEvents(r.Context(), eventStore, repo, id, w)
+		// ?since=<seq> replays only events after the client's last seen seq (v1.2
+		// §4) — the incremental catch-up a client runs on reconnect. Absent/invalid
+		// => full replay.
+		recs, ok := loadEventsSince(r.Context(), eventStore, repo, id, parseSince(r), w)
 		if !ok {
 			return
 		}
@@ -262,6 +266,9 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 			if !ok {
 				continue
 			}
+			// The seq is the row identity, not part of the stored payload — stamp it
+			// so replayed frames carry the same seq the live stream reported.
+			ev.Seq = rec.Seq
 			if frame, err := Encode(ev, "", ""); err == nil {
 				frames = append(frames, frame)
 			}
@@ -397,7 +404,21 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 // existence: a 404 is written when the id is unknown to both the event log and
 // the Repository.
 func loadEvents(ctx context.Context, eventStore conversation.ConversationEventStore, repo conversation.ConversationRepository, id string, w http.ResponseWriter) ([]session.EventRecord, bool) {
-	recs, err := eventStore.Replay(ctx, id)
+	return loadEventsSince(ctx, eventStore, repo, id, 0, w)
+}
+
+// loadEventsSince is loadEvents with an incremental floor: sinceSeq > 0 replays
+// only events after that seq (v1.2 §4), else the full log. The existence 404 is
+// still resolved against the Repository when the (possibly filtered) result is
+// empty, so an unknown id 404s and a known id with no newer events returns [].
+func loadEventsSince(ctx context.Context, eventStore conversation.ConversationEventStore, repo conversation.ConversationRepository, id string, sinceSeq int64, w http.ResponseWriter) ([]session.EventRecord, bool) {
+	var recs []session.EventRecord
+	var err error
+	if sinceSeq > 0 {
+		recs, err = eventStore.ReplaySince(ctx, id, sinceSeq)
+	} else {
+		recs, err = eventStore.Replay(ctx, id)
+	}
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return nil, false
@@ -409,6 +430,20 @@ func loadEvents(ctx context.Context, eventStore conversation.ConversationEventSt
 		}
 	}
 	return recs, true
+}
+
+// parseSince reads the ?since=<seq> query parameter as a non-negative int64. A
+// missing or malformed value yields 0 (full replay).
+func parseSince(r *http.Request) int64 {
+	v := r.URL.Query().Get("since")
+	if v == "" {
+		return 0
+	}
+	n, err := strconv.ParseInt(v, 10, 64)
+	if err != nil || n < 0 {
+		return 0
+	}
+	return n
 }
 
 // decodeStoredEvent unmarshals one persisted raw agent.Event payload.

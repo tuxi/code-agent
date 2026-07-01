@@ -20,7 +20,7 @@ func TestEventStoreRoundTrip(t *testing.T) {
 		{SessionID: "s2", TurnID: "t9", Kind: "turn_started", At: now, Payload: json.RawMessage(`{"text":"other session"}`)},
 	}
 	for _, e := range events {
-		if err := store.RecordEvent(ctx, e); err != nil {
+		if _, err := store.RecordEvent(ctx, e); err != nil {
 			t.Fatalf("RecordEvent: %v", err)
 		}
 	}
@@ -48,7 +48,7 @@ func TestDeleteRemovesEvents(t *testing.T) {
 	store := NewMemoryStore()
 	t.Cleanup(func() { store.Close() })
 	ctx := context.Background()
-	if err := store.RecordEvent(ctx, EventRecord{SessionID: "doomed", Kind: "thinking", At: time.Now()}); err != nil {
+	if _, err := store.RecordEvent(ctx, EventRecord{SessionID: "doomed", Kind: "thinking", At: time.Now()}); err != nil {
 		t.Fatalf("RecordEvent: %v", err)
 	}
 	if err := store.Delete(ctx, "doomed"); err != nil {

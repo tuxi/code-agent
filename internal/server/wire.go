@@ -25,6 +25,11 @@ type wireEvent struct {
 	ParentSessionID string `json:"parent_session_id,omitempty"`
 	TurnID          string `json:"turn_id,omitempty"`
 	InvocationID    string `json:"invocation_id,omitempty"`
+	// Seq is the per-session monotonic event sequence (v1.2 §4). A client records
+	// the highest seq it has seen and, on reconnect, requests
+	// GET …/events?since=<seq> to replay only the tail it missed. Live events carry
+	// the same seq the replay path reports.
+	Seq int64 `json:"seq,omitempty"`
 
 	// Tool / skill events.
 	CallID       string          `json:"call_id,omitempty"`
@@ -70,6 +75,7 @@ func toWire(e agent.Event) wireEvent {
 		SessionID:    e.SessionID,
 		TurnID:       e.TurnID,
 		InvocationID: e.InvocationID,
+		Seq:          e.Seq,
 		CallID:       e.CallID,
 		Step:         e.Step,
 		ToolName:     e.ToolName,

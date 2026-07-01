@@ -70,6 +70,13 @@ type Event struct {
 	SessionID string
 	TurnID    string
 
+	// Seq is the monotonic per-store sequence number assigned when the event is
+	// persisted (v1.2 §4). It is 0 on the core path and stamped by the transport
+	// layer — live by the sequencing emitter, on read by the replay endpoint — so a
+	// reconnecting client can ask for only events with a greater seq. omitempty so
+	// it never bloats the persisted payload (the seq lives in the row, not the blob).
+	Seq int64 `json:"seq,omitempty"`
+
 	// InvocationID groups events produced by a single model call. Every event
 	// between model_started and the next model_started (or turn_finished) carries
 	// the same invocation_id, so clients can unambiguously associate thinking,

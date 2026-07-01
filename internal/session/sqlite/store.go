@@ -433,27 +433,50 @@ func (s *Store) RecordRequest(ctx context.Context, r session.RequestRecord) erro
 	return err
 }
 
-func (s *Store) RecordEvent(ctx context.Context, e session.EventRecord) error {
-	_, err := s.db.ExecContext(ctx, `
+func (s *Store) RecordEvent(ctx context.Context, e session.EventRecord) (int64, error) {
+	res, err := s.db.ExecContext(ctx, `
 		INSERT INTO session_events (session_id, turn_id, kind, at, payload)
 		VALUES (?, ?, ?, ?, ?)`,
 		e.SessionID, e.TurnID, e.Kind, formatTime(e.At), string(e.Payload))
-	return err
+	if err != nil {
+		return 0, err
+	}
+	return res.LastInsertId() // the rowid is the wire seq (v1.2 §4)
 }
 
 func (s *Store) SessionEvents(ctx context.Context, sessionID string) ([]session.EventRecord, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT session_id, turn_id, kind, at, COALESCE(payload, '')
+		SELECT id, session_id, turn_id, kind, at, COALESCE(payload, '')
 		FROM session_events WHERE session_id=? ORDER BY at ASC, id ASC`, sessionID)
 	if err != nil {
 		return nil, err
 	}
+	return scanEventRows(rows)
+}
+
+// SessionEventsSince returns events with rowid (seq) greater than sinceSeq, in seq
+// order — the incremental catch-up for a reconnecting client (v1.2 §4). Ordering
+// by id (not at) makes "seq > since" an exact, gap-free tail of what the client
+// already holds.
+func (s *Store) SessionEventsSince(ctx context.Context, sessionID string, sinceSeq int64) ([]session.EventRecord, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, session_id, turn_id, kind, at, COALESCE(payload, '')
+		FROM session_events WHERE session_id=? AND id > ? ORDER BY id ASC`, sessionID, sinceSeq)
+	if err != nil {
+		return nil, err
+	}
+	return scanEventRows(rows)
+}
+
+// scanEventRows reads event rows (id, session_id, turn_id, kind, at, payload) into
+// EventRecords, mapping the rowid onto Seq. It closes rows.
+func scanEventRows(rows *sql.Rows) ([]session.EventRecord, error) {
 	defer rows.Close()
 	var out []session.EventRecord
 	for rows.Next() {
 		var e session.EventRecord
 		var at, payload string
-		if err := rows.Scan(&e.SessionID, &e.TurnID, &e.Kind, &at, &payload); err != nil {
+		if err := rows.Scan(&e.Seq, &e.SessionID, &e.TurnID, &e.Kind, &at, &payload); err != nil {
 			return nil, err
 		}
 		e.At = parseTime(at)

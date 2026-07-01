@@ -65,7 +65,7 @@ func (e EventStoreEmitter) Emit(ev agent.Event) {
 	// every delta would bloat the event log (hundreds per answer), so skip them.
 	if ev.Kind != agent.EventTokenDelta {
 		if payload, err := json.Marshal(ev); err == nil {
-			_ = e.Store.RecordEvent(e.Ctx, session.EventRecord{
+			_, _ = e.Store.RecordEvent(e.Ctx, session.EventRecord{
 				SessionID: ev.SessionID,
 				TurnID:    ev.TurnID,
 				Kind:      string(ev.Kind),

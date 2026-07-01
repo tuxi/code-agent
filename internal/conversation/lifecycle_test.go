@@ -108,6 +108,41 @@ func TestResume_ExceedsRetryCapFails(t *testing.T) {
 	}
 }
 
+// emitterFunc adapts a func to agent.Emitter.
+type emitterFunc func(agent.Event)
+
+func (f emitterFunc) Emit(e agent.Event) { f(e) }
+
+// TestSequencingEmitterStampsLiveSeq is the v1.2 §4 invariant: a persisted event's
+// live broadcast carries the same monotonic seq the store assigned, while an
+// ephemeral token delta is forwarded live but neither persisted nor seq'd.
+func TestSequencingEmitterStampsLiveSeq(t *testing.T) {
+	events := &fakeEventStore{}
+	var live []agent.Event
+	se := &sequencingEmitter{
+		ctx:    context.Background(),
+		events: events,
+		live:   emitterFunc(func(e agent.Event) { live = append(live, e) }),
+	}
+
+	se.Emit(agent.Event{Kind: agent.EventTurnStarted, SessionID: "s"})
+	se.Emit(agent.Event{Kind: agent.EventThinking, SessionID: "s"})
+	se.Emit(agent.Event{Kind: agent.EventTokenDelta, SessionID: "s"}) // ephemeral
+
+	if len(live) != 3 {
+		t.Fatalf("live got %d events, want 3", len(live))
+	}
+	if live[0].Seq != 1 || live[1].Seq != 2 {
+		t.Errorf("live seqs = %d,%d want 1,2", live[0].Seq, live[1].Seq)
+	}
+	if live[2].Seq != 0 {
+		t.Errorf("token_delta live seq = %d, want 0 (not persisted)", live[2].Seq)
+	}
+	if len(events.records) != 2 {
+		t.Errorf("persisted %d events, want 2 (token_delta skipped)", len(events.records))
+	}
+}
+
 // blockingRunner parks until the turn context is cancelled, so a test can suspend
 // it mid-flight.
 type blockingRunner struct{ started chan struct{} }

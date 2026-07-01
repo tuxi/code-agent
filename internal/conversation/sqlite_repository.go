@@ -227,12 +227,16 @@ type StoreEventAdapter struct {
 	Store session.EventStore
 }
 
-func (a *StoreEventAdapter) Append(ctx context.Context, e session.EventRecord) error {
+func (a *StoreEventAdapter) Append(ctx context.Context, e session.EventRecord) (int64, error) {
 	return a.Store.RecordEvent(ctx, e)
 }
 
 func (a *StoreEventAdapter) Replay(ctx context.Context, sessionID string) ([]session.EventRecord, error) {
 	return a.Store.SessionEvents(ctx, sessionID)
+}
+
+func (a *StoreEventAdapter) ReplaySince(ctx context.Context, sessionID string, sinceSeq int64) ([]session.EventRecord, error) {
+	return a.Store.SessionEventsSince(ctx, sessionID, sinceSeq)
 }
 
 // Compile-time check.
