@@ -143,6 +143,36 @@ func TestSequencingEmitterStampsLiveSeq(t *testing.T) {
 	}
 }
 
+// TestResume_NoOpWhenNotPaused is the bug-2 regression: resuming a session that is
+// not paused (done/failed/normal) must NOT drive a turn — a host that calls resume
+// on every foreground would otherwise re-invoke the model on a complete
+// conversation and produce a spurious turn.
+func TestResume_NoOpWhenNotPaused(t *testing.T) {
+	repo := newFakeRepo()
+	s := &session.Session{
+		ID: "s1",
+		Messages: []model.Message{
+			{Role: model.RoleSystem, Content: "sys"},
+			{Role: model.RoleUser, Content: "hi"},
+		},
+		Metadata: map[string]any{},
+	}
+	s.SetTurnStatus(session.TurnStatusDone)
+	repo.sessions["s1"] = s
+	runner := &scriptRunner{}
+	ex := newExecutorWith(repo, runner)
+
+	if _, err := ex.Resume(context.Background(), "s1"); err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	if runner.ranResume {
+		t.Error("Resume drove a turn on a done session; it must no-op unless paused")
+	}
+	if got := repo.sessions["s1"].TurnStatus(); got != session.TurnStatusDone {
+		t.Errorf("status changed to %q; want unchanged done", got)
+	}
+}
+
 // blockingRunner parks until the turn context is cancelled, so a test can suspend
 // it mid-flight.
 type blockingRunner struct{ started chan struct{} }

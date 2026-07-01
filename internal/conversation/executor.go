@@ -98,6 +98,14 @@ func (e *TurnExecutor) Resume(parentCtx context.Context, sessionID string) (agen
 	if err != nil {
 		return agent.TurnResult{}, err
 	}
+	// Only a paused turn is resumable. A host that calls resume on every foreground
+	// (the silent auto-resume pattern) will hit sessions that are done/failed/empty;
+	// re-driving those would re-invoke the model on a complete conversation and
+	// produce a spurious turn (e.g. the model answering the ephemeral skills
+	// reminder). No-op unless there is genuinely an interrupted turn to continue.
+	if sess.TurnStatus() != session.TurnStatusPaused {
+		return agent.TurnResult{}, nil
+	}
 	return e.driveTurn(parentCtx, sess,
 		func(ctx context.Context, runner TurnRunner) (agent.TurnResult, error) {
 			return runner.ResumeTurn(ctx, sess)

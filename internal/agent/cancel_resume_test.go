@@ -111,6 +111,104 @@ func TestCancelBeforeAnyToolRuns(t *testing.T) {
 	assertBalancedToolCalls(t, sess.Messages)
 }
 
+// ctxAbortTool models a ctx-aware tool interrupted by Suspend: it cancels the turn
+// context and returns context.Canceled instead of completing.
+type ctxAbortTool struct{ cancel context.CancelFunc }
+
+func (t *ctxAbortTool) Name() string                 { return "probe" }
+func (t *ctxAbortTool) Description() string          { return "ctx-aware tool that aborts on cancel" }
+func (t *ctxAbortTool) InputSchema() json.RawMessage { return tools.Object(nil).JSON() }
+func (t *ctxAbortTool) Execute(_ context.Context, _ tools.ExecutionContext, _ json.RawMessage) (tools.ToolResult, error) {
+	t.cancel()
+	return tools.ToolResult{}, context.Canceled
+}
+
+// TestSuspendDuringToolLeavesBalancedResumableHistory is the composition guard the
+// client flagged: a Suspend landing WHILE a tool runs must leave a balanced,
+// resumable history (every tool_call has a result) and surface no error — so the
+// auto-resume that follows turn_paused re-sends cleanly instead of hitting
+// "insufficient tool messages following tool_calls". The interrupted tool records
+// the neutral marker (not "Tool error: context canceled"), and the rest of the
+// batch is filled by the loop-top cancel check.
+func TestSuspendDuringToolLeavesBalancedResumableHistory(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	reg := tools.NewRegistry()
+	if err := reg.Register(&ctxAbortTool{cancel: cancel}); err != nil {
+		t.Fatalf("register probe: %v", err)
+	}
+	provider := &scriptedProvider{responses: []model.Response{{
+		ToolCalls: []model.ToolCall{
+			{ID: "c1", Type: "function", Function: model.FunctionCall{Name: "probe", Arguments: "{}"}},
+			{ID: "c2", Type: "function", Function: model.FunctionCall{Name: "probe", Arguments: "{}"}},
+		},
+		FinishReason: "tool_calls",
+	}}}
+	rec := &capturingEmitter{}
+	runner := &Runner{Model: provider, Tools: reg, MaxSteps: 5, Emitter: rec}
+	sess := newSession()
+
+	_, err := runner.RunTurn(ctx, sess, "go")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("RunTurn err = %v, want context.Canceled", err)
+	}
+
+	assertBalancedToolCalls(t, sess.Messages)
+
+	toolResults := 0
+	for _, m := range sess.Messages {
+		if m.Role == model.RoleTool {
+			toolResults++
+			if m.Content != toolInterruptedObservation {
+				t.Errorf("tool %s result = %q, want interrupted marker (no 'Tool error')", m.ToolCallID, m.Content)
+			}
+		}
+	}
+	if toolResults != 2 {
+		t.Fatalf("got %d tool results, want 2 (balanced with the 2 calls)", toolResults)
+	}
+	for _, e := range rec.events {
+		if e.Err != "" {
+			t.Errorf("event %s surfaced an error on suspend: %q", e.Kind, e.Err)
+		}
+	}
+}
+
+// cancelProvider always fails with context.Canceled, simulating a model call
+// aborted by an iOS Suspend mid-stream.
+type cancelProvider struct{}
+
+func (cancelProvider) Complete(context.Context, model.Request) (model.Response, error) {
+	return model.Response{}, context.Canceled
+}
+
+// TestCancellationNotSurfacedAsError is the bug-1 regression: when a turn is
+// cancelled (Suspend aborting an in-flight request), no emitted event may carry a
+// "context canceled" error — otherwise the client shows a spurious error on an
+// otherwise-resumable turn. model_finished still fires (to stop the ticker) but
+// with an empty error.
+func TestCancellationNotSurfacedAsError(t *testing.T) {
+	rec := &capturingEmitter{}
+	runner := &Runner{Model: cancelProvider{}, Tools: tools.NewRegistry(), MaxSteps: 3, Emitter: rec}
+
+	_, err := runner.RunTurn(context.Background(), newSession(), "hi")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("RunTurn err = %v, want context.Canceled", err)
+	}
+
+	var sawModelFinished bool
+	for _, e := range rec.events {
+		if e.Err != "" {
+			t.Errorf("event %s surfaced cancellation as an error: %q", e.Kind, e.Err)
+		}
+		if e.Kind == EventModelFinished {
+			sawModelFinished = true
+		}
+	}
+	if !sawModelFinished {
+		t.Error("model_finished was not emitted on cancellation (ticker would leak)")
+	}
+}
+
 // assertBalancedToolCalls enforces the resume invariant: every assistant message
 // carrying tool calls is followed by exactly one tool result per call id, so the
 // history is valid to resend to the provider.

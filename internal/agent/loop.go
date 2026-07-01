@@ -363,16 +363,27 @@ func (r *Runner) drive(ctx context.Context, sess *session.Session) (TurnResult, 
 		// text is persisted as TurnFinished instead, so emitting here would
 		// duplicate it), OR when the call failed — a failed turn produces no
 		// TurnFinished, so this is the only chance to retain the live thinking.
-		if thinking != "" && (resp.HasToolCalls() || err != nil) {
+		// A context cancellation is excluded: its partial thinking is re-generated
+		// when the turn resumes, so emitting it here is noise on a clean suspend.
+		if thinking != "" && (resp.HasToolCalls() || (err != nil && !errors.Is(err, context.Canceled))) {
 			r.emit(Event{Kind: EventThinking, Text: thinking})
 		}
 		// Always emit ModelFinished, even on error: it pairs with ModelStarted, so
 		// a live renderer's "Thinking…" ticker is always stopped (no leaked timer).
+		// A context cancellation is an intentional interruption (Ctrl-C, or an iOS
+		// Suspend that aborted the in-flight request), NOT a model failure — surface
+		// no error for it, or the client shows a spurious "context canceled" on an
+		// otherwise-resumable turn. The turn_paused lifecycle event is the real
+		// signal. Genuine model errors are reported as before.
+		emitErr := err
+		if errors.Is(err, context.Canceled) {
+			emitErr = nil
+		}
 		r.emit(Event{
 			Kind:         EventModelFinished,
 			PromptTokens: resp.Usage.PromptTokens,
 			Elapsed:      time.Since(modelStart),
-			Err:          errString(err),
+			Err:          errString(emitErr),
 		})
 		if err != nil {
 			return turn, err
@@ -527,8 +538,18 @@ func (r *Runner) drive(ctx context.Context, sess *session.Session) (TurnResult, 
 				}
 			}
 			if execErr != nil {
-				step.Error = execErr.Error()
-				observation = "Tool error: " + execErr.Error()
+				if errors.Is(execErr, context.Canceled) {
+					// The tool was interrupted by a suspend/cancel, not a genuine
+					// failure. Record the neutral interrupted marker (no error) so the
+					// persisted history stays resumable and the client sees no spurious
+					// "context canceled" — the next loop-top ctx check fills the rest of
+					// the batch and returns.
+					observation = toolInterruptedObservation
+					execErr = nil
+				} else {
+					step.Error = execErr.Error()
+					observation = "Tool error: " + execErr.Error()
+				}
 			}
 
 			// Skill telemetry (P6): if the tool loaded a skill, emit a versioned
