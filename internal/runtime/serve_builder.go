@@ -50,6 +50,7 @@ func (b *ServeRunBuilder) Build(ctx conversation.RuntimeContext) conversation.Tu
 	b.PlanRef.R = runner
 	runner.PlanApprover = ctx.PlanApprover
 	runner.ClientWaiter = ctx.ClientWaiter
-	runner.Stream = true // emit token_delta events for live "thinking" feel on the client
+	runner.Checkpointer = ctx.Checkpointer // mid-turn crash-safety (v1.2 §2); nil in headless builds
+	runner.Stream = true                   // emit token_delta events for live "thinking" feel on the client
 	return runner
 }

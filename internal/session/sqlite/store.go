@@ -107,7 +107,22 @@ CREATE INDEX IF NOT EXISTS idx_session_events_session ON session_events(session_
 // Used at construction and to recover the connection after the file moved out
 // from under it (SQLITE_READONLY_DBMOVED) — see Save.
 func (s *Store) open() error {
-	db, err := sql.Open("sqlite", s.path)
+	// WAL + synchronous=NORMAL is the crash-safe storage config the iOS lifecycle
+	// contract requires (docs/protocols/agent-wire-v1.2-lifecycle-suspend-resume.md
+	// §2.2.1): a per-turn-iteration checkpoint must survive a jetsam SIGKILL
+	// mid-write as "last committed boundary or nothing, never half". In WAL mode
+	// synchronous=NORMAL is durable against app/process kill (only host power-loss
+	// can lose the last committed txn — not our failure mode) and avoids an fsync
+	// per commit, which matters now that we checkpoint every loop iteration, not
+	// just at the turn boundary. busy_timeout lets a write wait out a concurrent
+	// reader instead of failing "database is locked".
+	//
+	// Pragmas ride in the DSN so the driver applies them on EVERY connection it
+	// opens, not once: journal_mode persists in the file header, but synchronous
+	// and busy_timeout are per-connection and would be lost if the pool reconnected.
+	// modernc strips this query from the file path for a non-"file:" DSN.
+	dsn := s.path + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)"
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return fmt.Errorf("open sqlite %q: %w", s.path, err)
 	}

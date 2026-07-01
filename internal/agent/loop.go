@@ -89,6 +89,13 @@ type Runner struct {
 
 	Compactor session.Compactor
 
+	// Checkpointer, if set, persists the session mid-turn at each consistent loop
+	// boundary (v1.2 §2). Best-effort: a checkpoint error never fails the turn — the
+	// caller's turn-boundary Save is the backstop. Set by the serve/embedded path
+	// (which holds the repository); CLI/TUI leave it nil and save only at the
+	// turn boundary as before.
+	Checkpointer Checkpointer
+
 	// Emitter, if set, receives the turn's event stream (thinking, tool calls,
 	// compaction, model latency). The loop emits; it never writes to stdout
 	// itself, so the UI is fully decoupled from the runtime.
@@ -389,9 +396,28 @@ func (r *Runner) RunTurn(ctx context.Context, sess *session.Session, userInput s
 
 		// Execute EVERY requested tool call. Each one must get a tool result
 		// with a matching tool_call_id, or the next request will be rejected.
-		for _, call := range resp.ToolCalls {
+		//
+		// If the context is cancelled mid-batch (Ctrl-C, or an iOS Suspend), we do
+		// NOT bail with a dangling assistant message: the tool_calls message above
+		// references every call in resp.ToolCalls, so leaving some without a result
+		// would persist an inconsistent history the provider rejects on resume
+		// ("insufficient tool messages following tool_calls"). Instead we append a
+		// synthetic interrupted-result for this call and every one after it, keeping
+		// the batch balanced, then return. On resume the model sees they did not run
+		// and re-issues what it still needs (v1.2 §2.2).
+		var cancelErr error
+		for idx, call := range resp.ToolCalls {
 			if err := ctx.Err(); err != nil {
-				return turn, err
+				cancelErr = err
+				for _, rem := range resp.ToolCalls[idx:] {
+					sess.Messages = append(sess.Messages, model.Message{
+						Role:       model.RoleTool,
+						ToolCallID: rem.ID,
+						Content:    toolInterruptedObservation,
+					})
+				}
+				sess.UpdatedAt = time.Now()
+				break
 			}
 			input := json.RawMessage(call.Function.Arguments)
 
@@ -523,6 +549,17 @@ func (r *Runner) RunTurn(ctx context.Context, sess *session.Session, userInput s
 			})
 			sess.UpdatedAt = time.Now()
 		}
+		// The batch was cut short by cancellation; history is now balanced (every
+		// call has a result), so returning leaves a resumable session.
+		if cancelErr != nil {
+			return turn, cancelErr
+		}
+
+		// Checkpoint at this consistent boundary (v1.2 §2): the tool batch is
+		// complete and history is balanced, so a hard process kill (iOS jetsam)
+		// before the next model call loses at most the in-progress step, not the
+		// whole turn. Best-effort — never fails the turn.
+		r.checkpoint(ctx, sess)
 	}
 
 	// Step limit reached. Don't discard the work: the model has gathered tool
@@ -600,6 +637,13 @@ const (
 	stepLimitNudge   = "You've reached the step limit and cannot call more tools. Give your best final answer now, based on everything gathered so far."
 )
 
+// toolInterruptedObservation is the placeholder tool result written for a call
+// that never ran because the turn was cancelled/suspended mid-batch. It keeps the
+// assistant tool_calls message balanced (one result per call) so the persisted
+// history is valid to resend, and tells the model the call did not execute so it
+// re-issues if still needed (v1.2 §2.2).
+const toolInterruptedObservation = "This tool call did not run: the turn was interrupted (app suspended or cancelled) before it executed. Re-issue the call if the result is still needed."
+
 // finalAnswerAfterLimit makes one tool-free model call so the agent answers from
 // what it already gathered when the step limit is hit. The nudge is ephemeral
 // (not persisted); only the answer is appended to history, so the conversation
@@ -639,6 +683,25 @@ func (r *Runner) finalAnswerAfterLimit(ctx context.Context, sess *session.Sessio
 	sess.PromptTokens = resp.Usage.PromptTokens
 	sess.UpdatedAt = time.Now()
 	return resp.Content, tok
+}
+
+// Checkpointer persists the session mid-turn, at the consistent boundary after
+// each completed loop iteration (v1.2 §2). It bounds the blast radius of a hard
+// process kill (iOS jetsam) to the in-progress step, whereas the caller's
+// turn-boundary Save is the backstop. Implementations must be crash-safe and
+// SHOULD detach cancellation (persist even as the turn is being suspended).
+type Checkpointer interface {
+	Checkpoint(ctx context.Context, sess *session.Session) error
+}
+
+// checkpoint persists the session at a consistent boundary. Nil-safe and
+// best-effort: a checkpoint failure is swallowed so it never fails the turn — the
+// turn-boundary Save surfaces persistent errors.
+func (r *Runner) checkpoint(ctx context.Context, sess *session.Session) {
+	if r.Checkpointer == nil {
+		return
+	}
+	_ = r.Checkpointer.Checkpoint(ctx, sess)
 }
 
 // maybeCompact compacts the session when it has grown past the token threshold.

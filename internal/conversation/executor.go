@@ -86,6 +86,10 @@ func (e *TurnExecutor) ExecuteWithSession(parentCtx context.Context, sess *sessi
 		PlanApprover: e.active.PlanApprover(sess.ID),
 		ClientWaiter: e.active.ClientToolWaiter(sess.ID),
 		ClientTools:  e.active.ClientTools(sess.ID),
+		// Mid-turn crash-safety (v1.2 §2): persist at each loop boundary so a hard
+		// kill loses at most the in-progress step. The turn-boundary Save below is
+		// still the backstop.
+		Checkpointer: repoCheckpointer{repo: e.repo, onErr: e.OnSaveError},
 	}
 	runner := e.rb.Build(rctx)
 
@@ -124,6 +128,27 @@ func (e *TurnExecutor) ExecuteWithSession(parentCtx context.Context, sess *sessi
 // Cancel stops the in-flight turn for a session at the next checkpoint.
 func (e *TurnExecutor) Cancel(sessionID string) {
 	e.active.Cancel(sessionID)
+}
+
+// repoCheckpointer persists the session mid-turn via the repository (v1.2 §2). It
+// detaches cancellation with WithoutCancel so a checkpoint fired as the turn is
+// being suspended still commits, and skips an empty session (nothing to persist
+// yet). Best-effort: it reports a failure through onErr but never blocks the turn —
+// the turn-boundary Save in ExecuteWithSession is the authoritative write.
+type repoCheckpointer struct {
+	repo  ConversationRepository
+	onErr func(error)
+}
+
+func (c repoCheckpointer) Checkpoint(ctx context.Context, sess *session.Session) error {
+	if sess.IsEmpty() {
+		return nil
+	}
+	err := c.repo.Save(context.WithoutCancel(ctx), sess)
+	if err != nil && c.onErr != nil {
+		c.onErr(err)
+	}
+	return err
 }
 
 // SetApprover associates an approver with a session.

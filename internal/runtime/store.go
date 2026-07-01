@@ -53,7 +53,7 @@ func openSQLiteStore(root string) (session.Store, error) {
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		if old := filepath.Join(root, ".codeagent", "sessions.db"); old != path {
 			if _, err := os.Stat(old); err == nil {
-				_ = copyFile(old, path)
+				_ = copyDB(old, path)
 			}
 		}
 	}
@@ -65,6 +65,13 @@ func openSQLiteStore(root string) (session.Store, error) {
 		// for manual recovery) and start fresh rather than block startup forever.
 		quarantine := path + ".corrupt-" + time.Now().Format("20060102-150405")
 		if os.Rename(path, quarantine) == nil {
+			// Move the WAL sidecars aside with it: a stale -wal/-shm left next to
+			// the path would attach to the freshly-created DB and re-corrupt it,
+			// and keeping them with the quarantine preserves a complete recovery
+			// set. Best-effort — a missing sidecar is normal.
+			for _, ext := range dbSidecars {
+				_ = os.Rename(path+ext, quarantine+ext)
+			}
 			fmt.Fprintf(os.Stderr, "warning: session DB unreadable (%v); moved aside to %s, starting fresh\n", err, quarantine)
 			return sqlite.New(path)
 		}
@@ -117,6 +124,30 @@ var storeBaseDir string
 // absolute, writable path; call it before any store is opened. Empty restores the
 // $HOME/.codeagent default.
 func SetStoreBaseDir(dir string) { storeBaseDir = dir }
+
+// dbSidecars are the WAL-mode auxiliary files SQLite keeps beside the main DB.
+// Since v1.2 the store runs in WAL (see sqlite.Store.open), so every copy / move /
+// quarantine of the DB must carry these too: a main file without its -wal drops
+// every committed-but-not-yet-checkpointed transaction — precisely the tail a
+// crash-safe checkpoint exists to preserve. See
+// docs/protocols/agent-wire-v1.2-lifecycle-suspend-resume.md §2.2.2.
+var dbSidecars = []string{"-wal", "-shm"}
+
+// copyDB copies a SQLite database and its WAL sidecars from src to dst. It is the
+// WAL-safe form of copyFile used by the one-time migration: copying only the main
+// file would silently lose the -wal tail. Sidecar copies are best-effort — an
+// absent sidecar (the DB was checkpointed, or predates WAL) is normal, not an error.
+func copyDB(src, dst string) error {
+	if err := copyFile(src, dst); err != nil {
+		return err
+	}
+	for _, ext := range dbSidecars {
+		if _, err := os.Stat(src + ext); err == nil {
+			_ = copyFile(src+ext, dst+ext)
+		}
+	}
+	return nil
+}
 
 // copyFile copies src to dst — a best-effort one-time migration of an existing
 // session DB snapshot to the new location.

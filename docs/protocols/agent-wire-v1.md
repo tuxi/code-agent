@@ -2,6 +2,8 @@
 
 > 状态：v1（正式）。CodeAgent 从 CLI 迈向 CLI / macOS / iOS / Web 多前端架构的第一份传输契约。
 > 实现位置：`internal/server`（Layer 2）。core（`internal/agent`，Layer 1）不感知本协议。
+>
+> **版本链**：v1（本文，基准）→ [v1.1 客户端工具执行](agent-wire-v1.1-client-tool-execution.md) → [v1.2 生命周期 Suspend/Resume/Reconfigure](agent-wire-v1.2-lifecycle-suspend-resume.md)。同一 major 内只增不改（见 §5）。
 
 ---
 
@@ -162,7 +164,7 @@ agent-core (Layer 1)          agent-server (Layer 2)         frontends (Layer 3)
 
 ### 5.1 `seq`（v2 预留）
 
-每会话单调递增序号 `seq`，用于 WS 重连恢复（`resume_after_seq=1024`）。v1 不实现，但信封为其留位。
+每会话单调递增序号 `seq`，用于 WS 重连恢复（`resume_after_seq=1024`）。v1 不实现，但信封为其留位。**v1.2 落地此预留**（复用 `session_events.id` 自增值作 `seq`，新增 `attach(since:)` 重放，见 [v1.2 §4](agent-wire-v1.2-lifecycle-suspend-resume.md)）。
 
 ---
 

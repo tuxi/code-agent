@@ -23,6 +23,11 @@ type RuntimeContext struct {
 	PlanApprover agent.PlanApprover     // nil = auto-approve plans (test/headless path)
 	ClientWaiter agent.ClientToolWaiter // nil = no client tool executor
 	ClientTools  []agent.ClientToolDef  // client-registered tools (nil if none)
+
+	// Checkpointer persists the session mid-turn (v1.2 §2). The TurnExecutor sets
+	// it from its repository so the Runner can checkpoint at each loop boundary;
+	// nil in headless/test builders keeps turn-boundary-only saving.
+	Checkpointer agent.Checkpointer
 }
 
 // RunBuilder is the seam the transport layer (cmd/codeagent) fills. It assembles
