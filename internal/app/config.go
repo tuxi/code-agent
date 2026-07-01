@@ -145,6 +145,41 @@ type AgentConfig struct {
 	// model (e.g. a flash-class one) to make read-only investigation cheap. An
 	// unknown or key-less name falls back to the main model at runtime.
 	SubagentModel string `yaml:"subagent_model"`
+
+	// ClientToolTimeoutSeconds is the lease for a single client-executed tool
+	// call (v1.1): how long the loop blocks waiting for the client to deliver a
+	// tool_result before giving up with "client timeout". 0 uses the built-in
+	// 2-minute default. Raise it when clients run long operations — e.g. a
+	// DreamAI sidecar whose generate tool drives image/video generation that
+	// routinely exceeds two minutes.
+	ClientToolTimeoutSeconds int `yaml:"client_tool_timeout_seconds"`
+
+	// BuiltinTools, when non-nil, is a deny-by-default allowlist of built-in tool
+	// names to register: only the named tools are exposed to the model; everything
+	// else (shell, filesystem, git, project_graph, plan_workflow, task, MCP, …) is
+	// left out. When nil/unset, every tool registers (the default, unchanged
+	// behavior). An empty list registers no built-ins at all.
+	//
+	// Use it to lock down a deployment that must NOT expose codeagentd's server-side
+	// shell/filesystem to end users — e.g. the DreamAI sidecar, whose only needed
+	// tool (dreamai_generate) is registered at runtime over the wire, not as a
+	// built-in. Set `builtin_tools: []` (or `[web_search, web_fetch]`) there.
+	BuiltinTools *[]string `yaml:"builtin_tools"`
+}
+
+// ToolAllowed reports whether a tool may be registered. Nil BuiltinTools means
+// "no restriction" (all tools allowed). A non-nil list is a deny-by-default
+// allowlist: only the named tools are allowed.
+func (c AgentConfig) ToolAllowed(name string) bool {
+	if c.BuiltinTools == nil {
+		return true
+	}
+	for _, n := range *c.BuiltinTools {
+		if n == name {
+			return true
+		}
+	}
+	return false
 }
 
 type WorkspaceConfig struct {

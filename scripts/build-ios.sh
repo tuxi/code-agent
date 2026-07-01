@@ -24,7 +24,7 @@ OUT_DIR="${1:-build}"
 # skills, copied into the Application Support directory on first launch so they
 # are available to every workspace. The user can add their own skills there later.
 # List skill directory names (not full paths).
-BUNDLED_SKILLS=(review-change verify-change)
+BUNDLED_SKILLS=(review-change verify-change skill-creator)
 SKILLS_SRC="./skills"
 # -------------------------------------------------------------------------------
 

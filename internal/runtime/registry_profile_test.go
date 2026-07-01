@@ -27,6 +27,56 @@ func registerForProfile(t *testing.T, profile app.Profile) map[string]bool {
 	return got
 }
 
+// registerWithAllowlist builds a registry under the full profile but with an
+// AgentConfig.BuiltinTools allowlist, returning the set of registered tool names.
+func registerWithAllowlist(t *testing.T, allow []string) map[string]bool {
+	t.Helper()
+	skillReg, err := skills.Load("", t.TempDir())
+	if err != nil {
+		t.Fatalf("skills.Load: %v", err)
+	}
+	reg := tools.NewRegistry()
+	cfg := app.Config{Agent: app.AgentConfig{BuiltinTools: &allow}}
+	if err := RegisterBuiltinTools(reg, cfg, skillReg); err != nil {
+		t.Fatalf("RegisterBuiltinTools: %v", err)
+	}
+	got := map[string]bool{}
+	for _, n := range reg.Names() {
+		got[n] = true
+	}
+	return got
+}
+
+// TestRegisterBuiltinTools_Allowlist locks down a deployment (e.g. DreamAI sidecar):
+// a non-nil BuiltinTools allowlist must register ONLY the named tools and drop the
+// dangerous server-side shell/filesystem tools.
+func TestRegisterBuiltinTools_Allowlist(t *testing.T) {
+	dangerous := []string{"run_command", "read_file", "create_file", "edit_file", "list_files", "grep"}
+
+	// Allow only web_search: every dangerous tool must be absent, web_search present.
+	got := registerWithAllowlist(t, []string{"web_search"})
+	if !got["web_search"] {
+		t.Error("allowlisted web_search must be registered")
+	}
+	for _, name := range dangerous {
+		if got[name] {
+			t.Errorf("allowlist [web_search]: dangerous tool %q must NOT be registered", name)
+		}
+	}
+
+	// Empty allowlist: nothing registers.
+	none := registerWithAllowlist(t, []string{})
+	if len(none) != 0 {
+		t.Errorf("empty allowlist: expected zero tools, got %v", none)
+	}
+
+	// Nil (unset) allowlist: behaves as before — read_file present (no restriction).
+	full := registerForProfile(t, app.ProfileFull) // cfg with nil BuiltinTools
+	if !full["read_file"] {
+		t.Error("nil allowlist (default): read_file must be registered")
+	}
+}
+
 func TestRegisterBuiltinTools_SandboxedExcludesSubprocessTools(t *testing.T) {
 	// Tools that shell out and have no pure-Go replacement yet — must be absent under
 	// the sandboxed (iOS) profile.

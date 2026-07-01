@@ -9,6 +9,7 @@ import (
 	"code-agent/internal/session"
 	"code-agent/internal/skills"
 	"code-agent/internal/tools"
+	"time"
 )
 
 // BuildCompactor builds the summary compactor used to keep long sessions inside
@@ -50,5 +51,8 @@ func BuildRunner(cfg app.Config, mc app.ModelConfig, provider model.Provider, re
 		Compactor:     BuildCompactor(mc, provider),
 		Emitter:       emitter,
 		WorkspaceRoot: cfg.Workspace.Root,
+		// Client-tool lease (0 = loop's built-in 2-minute default). Raised by
+		// deployments whose client tools run long (e.g. DreamAI media generation).
+		ClientToolTimeout: time.Duration(cfg.Agent.ClientToolTimeoutSeconds) * time.Second,
 	}
 }

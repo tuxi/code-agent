@@ -19,8 +19,8 @@ func (fakeSkillTool) InputSchema() json.RawMessage { return tools.Object(nil).JS
 func (fakeSkillTool) Execute(_ context.Context, _ tools.ExecutionContext, _ json.RawMessage) (tools.ToolResult, error) {
 	return tools.ToolResult{Content: "Loaded skill: verify-change (v1)\n\nbody"}, nil
 }
-func (fakeSkillTool) AnnounceSkill(json.RawMessage) (string, string, bool) {
-	return "verify-change", "1", true
+func (fakeSkillTool) AnnounceSkill(json.RawMessage) (string, string, string, bool) {
+	return "verify-change", "1", "", true
 }
 
 func TestSkillLoadedEvent(t *testing.T) {

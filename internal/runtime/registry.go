@@ -47,7 +47,7 @@ func RegisterBuiltinTools(registry *tools.Registry, cfg app.Config, skillReg *sk
 		filesystem.NewCreateFileTool(),
 		filesystem.NewEditFileTool(),
 		search.NewGrepTool(),
-		skill.NewLoadSkillTool(skillReg),
+		skill.NewLoadSkillTool(skillReg, cfg.GlobalSkillsDir, filepath.Join(cfg.Workspace.Root, "skills")),
 		websearch.NewTool(cfg.Web),
 		webfetch.NewTool(cfg.Web),
 		todo.NewTool(),
@@ -69,6 +69,9 @@ func RegisterBuiltinTools(registry *tools.Registry, cfg app.Config, skillReg *sk
 			git.NewGitStatusTool(),
 			git.NewGitLogTool(),
 		} {
+			if !cfg.Agent.ToolAllowed(tool.Name()) {
+				continue
+			}
 			if err := registry.Register(tool); err != nil {
 				return err
 			}
@@ -96,6 +99,9 @@ func RegisterBuiltinTools(registry *tools.Registry, cfg app.Config, skillReg *sk
 	}
 
 	for _, tool := range toolList {
+		if !cfg.Agent.ToolAllowed(tool.Name()) {
+			continue
+		}
 		if err := registry.Register(tool); err != nil {
 			return err
 		}
@@ -133,8 +139,10 @@ func BuildRegistry(ctx context.Context, cfg app.Config, mc app.ModelConfig, prov
 	// subagent cannot spawn a subagent: recursion is capped at depth 1 by
 	// construction (see tools.Subset / NewSubAgent).
 	sub := NewSubAgent(cfg, mc, provider, root, registry, skillReg.PromptIndex(), store, progress)
-	if err := registry.Register(task.NewTool(sub)); err != nil {
-		return nil, nil, nil, nil, err
+	if taskTool := task.NewTool(sub); cfg.Agent.ToolAllowed(taskTool.Name()) {
+		if err := registry.Register(taskTool); err != nil {
+			return nil, nil, nil, nil, err
+		}
 	}
 
 	// MCP tools are registered AFTER the built-ins, so they appear after them in
@@ -156,6 +164,9 @@ func BuildRegistry(ctx context.Context, cfg app.Config, mc app.ModelConfig, prov
 			return nil, nil, nil, nil, err
 		}
 		for _, tool := range mgr.Tools() {
+			if !cfg.Agent.ToolAllowed(tool.Name()) {
+				continue
+			}
 			if err := registry.Register(tool); err != nil {
 				mgr.Close()
 				return nil, nil, nil, nil, fmt.Errorf("register mcp tool: %w", err)
@@ -164,7 +175,9 @@ func BuildRegistry(ctx context.Context, cfg app.Config, mc app.ModelConfig, prov
 
 		// Flux v3: Tool embedding — register plan_workflow as a native tool.
 		// Uses the same process and LLM creds as code-agent (mc, resolved from config.yaml).
-		RegisterFluxTool(registry, mc, nil, false) // mc → reuse resolved LLM creds; nil → in-memory stores
+		if cfg.Agent.ToolAllowed("plan_workflow") {
+			RegisterFluxTool(registry, mc, nil, false) // mc → reuse resolved LLM creds; nil → in-memory stores
+		}
 	}
 
 	// Flux (plan_workflow) is intentionally NOT registered on sandboxed hosts (iOS).

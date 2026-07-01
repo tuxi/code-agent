@@ -87,6 +87,18 @@ agent:
   # investigation fast and cheap. An unknown/key-less name falls back to the main
   # model at runtime.
   subagent_model: deepseek
+  # Lease for a single client-executed tool call (v1.1 client tool execution).
+  # How long the loop waits for the client to deliver a tool_result before giving
+  # up with "client timeout". Optional; 0 = built-in 2-minute default. Raise it
+  # when client tools run long (e.g. a sidecar that generates images/video).
+  # client_tool_timeout_seconds: 900
+  # Deny-by-default allowlist of built-in tool names. Optional; unset = register
+  # all (default). When set (even empty), ONLY the named built-ins register —
+  # shell/filesystem/git/plan_workflow/task/MCP are dropped. Use it to lock down a
+  # deployment that must not expose the server's shell/filesystem to end users
+  # (e.g. a DreamAI sidecar whose only tool is registered at runtime over the wire):
+  #   builtin_tools: []            # expose no built-ins at all
+  #   builtin_tools: [web_search]  # expose only web_search
 
 # Transport resilience: each model call gets a per-attempt timeout and retries
 # transient failures (timeout, 429, 5xx) with exponential backoff. All optional.
