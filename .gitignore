@@ -59,5 +59,9 @@ main
 codeagentd
 codeagent
 
+# project_graph Swift index store helper (auto-compiled on first use)
+internal/tools/project_graph/indexstore-helper/indexstore-helper
+internal/tools/project_graph/indexstore-helper/.build/
+internal/tools/project_graph/indexstore-helper/.swiftpm/
 
 .DS_Store

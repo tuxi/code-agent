@@ -60,12 +60,10 @@ func (a pendingAdapter) notImplemented() error {
 	return fmt.Errorf("%s adapter is not implemented yet (planned backend: %q via %q)", a.language, a.plan, a.binary)
 }
 
-// NewSwiftAdapter returns the Swift backend. It is a stub pending a sourcekitten
-// integration (the PRD permits a stub here); Available() reflects whether
-// sourcekitten is installed.
-func NewSwiftAdapter() LanguageAdapter {
-	return pendingAdapter{language: "swift", binary: "sourcekitten", plan: "sourcekitten structure"}
-}
+// NewSwiftAdapter returns the Swift backend, delegating to sourcekitten.
+// FindSymbol is implemented (per-file structure walk); FindReferences is a
+// planned follow-up.
+func NewSwiftAdapter() LanguageAdapter { return &swiftAdapter{} }
 
 // NewRustAdapter returns the Rust backend, pending a rust-analyzer integration.
 func NewRustAdapter() LanguageAdapter {

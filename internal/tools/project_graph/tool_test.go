@@ -4,6 +4,7 @@ import (
 	"code-agent/internal/tools"
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -175,5 +176,102 @@ func TestUnknownAction(t *testing.T) {
 	_, err := tool.Execute(context.Background(), tools.ExecutionContext{WorkspaceRoot: "."}, json.RawMessage(`{"action":"frobnicate"}`))
 	if err == nil {
 		t.Error("expected an error for an unknown action")
+	}
+}
+
+// errorAdapter always returns an error from FindSymbol and FindReferences.
+type errorAdapter struct {
+	lang string
+}
+
+func (e errorAdapter) Language() string                                 { return e.lang }
+func (e errorAdapter) Available() bool                                  { return true }
+func (e errorAdapter) FindSymbol(context.Context, string, string) ([]Symbol, error) {
+	return nil, fmt.Errorf("simulated failure")
+}
+func (e errorAdapter) FindReferences(context.Context, string, string) ([]Reference, error) {
+	return nil, fmt.Errorf("simulated failure")
+}
+
+func TestAllAdaptersFailFindSymbol(t *testing.T) {
+	tool := &ProjectGraphTool{
+		Adapters: []LanguageAdapter{errorAdapter{lang: "go"}},
+		Timeout:  time.Second,
+	}
+	_, err := tool.Execute(context.Background(), tools.ExecutionContext{WorkspaceRoot: "."}, json.RawMessage(`{"action":"find_symbol","query":"X"}`))
+	if err == nil {
+		t.Error("expected an error when all adapters fail for find_symbol")
+	}
+	if !strings.Contains(err.Error(), "returned no results") {
+		t.Errorf("error should mention 'returned no results', got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "simulated failure") {
+		t.Errorf("error should include the original adapter error, got: %v", err)
+	}
+}
+
+func TestAllAdaptersFailFindReferences(t *testing.T) {
+	tool := &ProjectGraphTool{
+		Adapters: []LanguageAdapter{errorAdapter{lang: "swift"}},
+		Timeout:  time.Second,
+	}
+	_, err := tool.Execute(context.Background(), tools.ExecutionContext{WorkspaceRoot: "."}, json.RawMessage(`{"action":"find_references","symbol":"viewModel"}`))
+	if err == nil {
+		t.Error("expected an error when all adapters fail for find_references")
+	}
+	if !strings.Contains(err.Error(), "returned no results") {
+		t.Errorf("error should mention 'returned no results', got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "simulated failure") {
+		t.Errorf("error should include the original adapter error, got: %v", err)
+	}
+}
+
+func TestStubErrorsFiltered(t *testing.T) {
+	// Stub adapters (rust, python) return "not implemented yet" errors.
+	// These should be filtered out so they don't cause false-positive
+	// "all backends failed" errors.
+	tool := &ProjectGraphTool{
+		Adapters: []LanguageAdapter{
+			fakeAdapter{lang: "go", avail: true}, // returns empty, no error
+			errorAdapter{lang: "swift"},           // returns "simulated failure" — a real error
+		},
+		Timeout: time.Second,
+	}
+	_, err := tool.Execute(context.Background(), tools.ExecutionContext{WorkspaceRoot: "."}, json.RawMessage(`{"action":"find_references","symbol":"viewModel"}`))
+	if err == nil {
+		t.Error("expected an error because one adapter returned a real error and no results were found")
+	}
+	if !strings.Contains(err.Error(), "swift: simulated failure") {
+		t.Errorf("error should include the Swift adapter's error, got: %v", err)
+	}
+	if strings.Contains(err.Error(), "not implemented") {
+		t.Errorf("error should NOT include 'not implemented' (stub noise), got: %v", err)
+	}
+}
+
+func TestPartialAdapterFailureStillReturnsResults(t *testing.T) {
+	// When one adapter fails but another succeeds, we should get results.
+	tool := &ProjectGraphTool{
+		Adapters: []LanguageAdapter{
+			errorAdapter{lang: "swift"}, // fails
+			fakeAdapter{ // succeeds
+				lang:    "go",
+				avail:   true,
+				symbols: []Symbol{{Name: "Foo", Kind: "struct", File: "a.go", Line: 1}},
+			},
+		},
+		Timeout: time.Second,
+	}
+	res, err := tool.Execute(context.Background(), tools.ExecutionContext{WorkspaceRoot: "."}, json.RawMessage(`{"action":"find_symbol","query":"Foo"}`))
+	if err != nil {
+		t.Fatalf("expected partial success, got error: %v", err)
+	}
+	var syms []Symbol
+	if err := json.Unmarshal([]byte(res.Content), &syms); err != nil {
+		t.Fatalf("not JSON: %v", err)
+	}
+	if len(syms) != 1 || syms[0].Name != "Foo" {
+		t.Errorf("expected 1 result from the working adapter, got: %+v", syms)
 	}
 }

@@ -33,7 +33,7 @@ func NewProjectGraphTool() *ProjectGraphTool {
 			NewRustAdapter(),
 			NewPythonAdapter(),
 		},
-		Timeout: 30 * time.Second,
+		Timeout: 90 * time.Second,
 	}
 }
 
@@ -113,15 +113,21 @@ func (t *ProjectGraphTool) findSymbol(ctx context.Context, root string, in proje
 	}
 
 	var symbols []Symbol
+	var errs []string
 	for _, a := range adapters {
 		found, err := a.FindSymbol(ctx, root, query)
 		if err != nil {
-			continue // a backend that errors (e.g. stub) must not fail the whole query
+			errs = append(errs, fmt.Sprintf("%s: %v", a.Language(), err))
+			continue
 		}
 		symbols = append(symbols, found...)
 	}
 	if symbols == nil {
 		symbols = []Symbol{}
+	}
+	realErrs := filterRealErrors(errs)
+	if len(symbols) == 0 && len(realErrs) > 0 {
+		return tools.ToolResult{}, fmt.Errorf("find_symbol returned no results, but some backends failed: %s. Specify 'language' to restrict to a single backend.", strings.Join(realErrs, "; "))
 	}
 	return jsonResult(symbols)
 }
@@ -137,9 +143,11 @@ func (t *ProjectGraphTool) findReferences(ctx context.Context, root string, in p
 	}
 
 	var refs []Reference
+	var errs []string
 	for _, a := range adapters {
 		found, err := a.FindReferences(ctx, root, symbol)
 		if err != nil {
+			errs = append(errs, fmt.Sprintf("%s: %v", a.Language(), err))
 			continue
 		}
 		refs = append(refs, found...)
@@ -147,7 +155,27 @@ func (t *ProjectGraphTool) findReferences(ctx context.Context, root string, in p
 	if refs == nil {
 		refs = []Reference{}
 	}
+	// When no results were found and at least one backend returned a real
+	// (non-stub) error, surface the error so the agent doesn't silently
+	// interpret "indexing failed" as "no references exist".
+	realErrs := filterRealErrors(errs)
+	if len(refs) == 0 && len(realErrs) > 0 {
+		return tools.ToolResult{}, fmt.Errorf("find_references returned no results, but some backends failed: %s. Use grep for text-level search, or specify 'language' to restrict to a single backend.", strings.Join(realErrs, "; "))
+	}
 	return jsonResult(refs)
+}
+
+// filterRealErrors excludes "not implemented yet" errors from stub adapters.
+// These are expected noise; they don't indicate an operational failure.
+func filterRealErrors(errs []string) []string {
+	var out []string
+	for _, e := range errs {
+		if strings.Contains(e, "not implemented yet") {
+			continue
+		}
+		out = append(out, e)
+	}
+	return out
 }
 
 func (t *ProjectGraphTool) renameCheck(ctx context.Context, root string, in projectGraphInput) (tools.ToolResult, error) {
