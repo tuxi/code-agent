@@ -65,6 +65,42 @@ func TestRemoteApproverTimeoutDenies(t *testing.T) {
 	}
 }
 
+// Zero timeout (the server default) means an approval waits indefinitely — an
+// overnight turn parked on an approval must still be approvable the next
+// morning, and the request frame carries no deadline_ms.
+func TestRemoteApproverZeroTimeoutWaitsForVerdict(t *testing.T) {
+	sink := &syncSink{}
+	a := NewRemoteApprover(sink, 0)
+
+	got := make(chan bool, 1)
+	go func() { got <- a.Approve("run_command", nil) }()
+
+	id := waitApprovalID(t, sink)
+	var req map[string]any
+	if err := json.Unmarshal(sink.at(0), &req); err != nil {
+		t.Fatalf("unmarshal request frame: %v", err)
+	}
+	if _, present := req["deadline_ms"]; present {
+		t.Error("zero-timeout approval_request must not carry deadline_ms")
+	}
+
+	select {
+	case <-got:
+		t.Fatal("Approve returned without a verdict despite zero timeout")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	a.Resolve(id, true)
+	select {
+	case v := <-got:
+		if !v {
+			t.Error("Approve returned false after an approval")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Approve did not return after Resolve")
+	}
+}
+
 func TestRemoteApproverCloseDeniesPending(t *testing.T) {
 	sink := &syncSink{}
 	a := NewRemoteApprover(sink, 0) // no deadline; rely on Close

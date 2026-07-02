@@ -68,6 +68,7 @@ func RegisterBuiltinTools(registry *tools.Registry, cfg app.Config, skillReg *sk
 		for _, tool := range []tools.Tool{
 			git.NewGitInitTool(),
 			git.NewGitCloneTool(),
+			git.NewGitPullTool(),
 			git.NewGitCommitToolGoGit(),
 			git.NewDiffToolGoGit(),
 			git.NewApplyPatchToolGoGit(),

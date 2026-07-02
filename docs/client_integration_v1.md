@@ -201,15 +201,15 @@ turn 进行中，副作用工具（如 `run_command`、`apply_patch`）需要确
   "type": "approval_request",
   "id": "appr_3f9a1c",
   "tool_name": "run_command",
-  "tool_args": { "command": "git push" },
-  "deadline_ms": 120000
+  "tool_args": { "command": "git push" }
 }
 ```
 
 - **`id` 是关联键**——回复时必须原样带回。
 - ⚠️ **v1 实际行为**：`session_id` / `turn_id` 当前**不下发**（审批器没有 turn 上下文）。因为一条 WS 只服务一个会话，客户端本就知道是哪个会话，用 `id` 关联即可。schema 允许这两个字段，未来可能补上，客户端按可选处理。
 - 收到此帧时，**该 turn 已暂停、在等你的回复**。
-- `deadline_ms` 内不回复，或连接断开 → 服务端按**拒绝**处理（fail-safe）。
+- `deadline_ms` **可选**：仅当服务端显式配置了审批超时才出现，期限内不回复按拒绝。**默认不下发 = 无期限**——审批一直挂起等用户，隔夜再批准也有效。
+- **断线不会拒绝**：未决审批跨连接存活。切走对话/断线后重连，服务端会用**同一 `id` 重发** `approval_request`——客户端按 `id` 去重（同 `id` 的重复帧覆盖或忽略即可），回复照常带原 `id`。
 
 ### 3.5 入站：命令 + 审批应答（client → server）
 
@@ -255,7 +255,7 @@ server → turn_finished {text}   ← 本轮结束，可发下一条
 client → {type:send_message, text:"提交并推送"}
 server → turn_started
 server → tool_started {tool_name:"run_command", tool_args:{command:"git push"}}
-server → {type:approval_request, id:"appr_x", tool_args:{...}, deadline_ms:120000}   ⏸ turn 暂停
+server → {type:approval_request, id:"appr_x", tool_args:{...}}                       ⏸ turn 暂停
         ── 客户端弹审批卡片 ──
 client → {type:approval_response, id:"appr_x", approved:true}                        ▶ turn 继续
 server → tool_finished {tool_name:"run_command", observation:"..."}
@@ -271,7 +271,7 @@ server → turn_finished {text:"已推送"}
 3. **`tool_args` 是结构化 JSON 对象**（`{"command":"..."}`），不是字符串。
 4. **`at` 是 RFC3339 毫秒 UTC**。
 5. **忽略未知 `kind` 和未知字段**（前向兼容）；版本只在 `hello` 协商一次，别期望逐事件带版本。收到不认识的 `kind` 应 no-op，**不要崩**——服务端新增事件不该让旧客户端挂掉。
-6. **审批是阻塞往返**：收到 `approval_request` 即代表 turn 在等你；尽快在 `deadline_ms` 内回 `approval_response`。
+6. **审批是阻塞往返**：收到 `approval_request` 即代表 turn 在等你回 `approval_response`；默认无期限（帧里带 `deadline_ms` 时才有超时）。重连后同 `id` 的重发帧要去重。
 7. **一轮一发**：`turn_finished` 之前不要再 `send_message`。
 8. **断线重连**：WS 重连只给新 `hello`。用 `seq` 精确续传（v1.2 §4 起可用，本条旧文"`seq` 是 v2 预留"已过时）：断线前记住收到的最大 `seq`，重连后先 `GET /events?since=<seq>` 补缺口、再接实时流（去重同 §2 恢复流程）。`token_delta` 不持久化，断线期间的打字机增量补不回来——用补回的 `turn_finished.text` 还原最终文本即可。
 

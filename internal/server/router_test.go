@@ -51,6 +51,43 @@ func TestRouterSendMessage(t *testing.T) {
 	}
 }
 
+// ctxCapturingCommands records the ctx each SendMessage call receives.
+type ctxCapturingCommands struct {
+	ctxs chan context.Context
+}
+
+func (f *ctxCapturingCommands) SendMessage(ctx context.Context, _ string) (agent.TurnResult, error) {
+	f.ctxs <- ctx
+	return agent.TurnResult{}, nil
+}
+func (f *ctxCapturingCommands) Cancel()                             {}
+func (f *ctxCapturingCommands) RegisterTools([]agent.ClientToolDef) {}
+
+// A turn must survive the connection that started it: switching conversations
+// closes the WS and cancels the read-loop ctx, but the in-flight turn (often
+// parked on an approval) must keep running. Turn cancellation flows through
+// cancel_turn / SuspendAll / Shutdown, never through transport teardown.
+func TestRouterSendMessageDetachesFromConnectionContext(t *testing.T) {
+	cmds := &ctxCapturingCommands{ctxs: make(chan context.Context, 2)}
+	r := Router{Commands: cmds}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	r.Route(ctx, []byte(`{"type":"send_message","text":"hi"}`))
+	r.Route(ctx, []byte(`{"type":"agent_input","kind":"text","text":"hi"}`))
+	cancel() // simulate the WS closing right after dispatch
+
+	for i := 0; i < 2; i++ {
+		select {
+		case got := <-cmds.ctxs:
+			if got.Err() != nil {
+				t.Errorf("turn ctx died with the connection: %v", got.Err())
+			}
+		case <-time.After(time.Second):
+			t.Fatal("send_message did not reach the command target")
+		}
+	}
+}
+
 func TestRouterCancelTurn(t *testing.T) {
 	cmds := newFakeCommands()
 	r := Router{Commands: cmds}

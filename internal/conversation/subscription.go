@@ -9,8 +9,9 @@ import (
 // SubscriptionManager manages per-session event subscribers. It creates and
 // destroys internal sessionBus instances (lazily, on first Subscribe), exposed
 // through two operations: Subscribe (for WS bridges) and Emitter (for TurnExecutor
-// to publish events). When a session has zero subscribers and zero active turns,
-// its bus is cleaned up.
+// to publish events). When a session's last subscriber leaves, its bus is cleaned
+// up — safe even mid-turn, because emitters resolve the bus per Emit rather than
+// holding it (see Emitter).
 type SubscriptionManager struct {
 	mu    sync.Mutex
 	buses map[string]*sessionBus
@@ -111,12 +112,34 @@ func (m *SubscriptionManager) Subscribe(sessionID string) (<-chan agent.Event, f
 	}
 }
 
-// Emitter returns an agent.Emitter for a session's bus. TurnExecutor uses this
-// to fan events to all live subscribers during a turn. It always returns a
-// valid emitter (the bus is created if absent), so the agent loop can emit
-// unconditionally.
+// Emitter returns an agent.Emitter for a session. TurnExecutor uses this to fan
+// events to all live subscribers during a turn.
+//
+// The emitter resolves the session's bus at every Emit, never caching it: a turn
+// outlives any single connection, and the bus that existed when the turn started
+// is closed and replaced when the last subscriber disconnects and a new one
+// reconnects (removeIfIdle → getOrCreate). A publisher holding the stale bus
+// would emit into the void and the reconnected client would miss every live
+// event until the next replay. Emitting with no bus (no subscribers) is a drop —
+// persistence happens upstream in sequencingEmitter.
 func (m *SubscriptionManager) Emitter(sessionID string) agent.Emitter {
-	return m.getOrCreate(sessionID)
+	return dynamicEmitter{m: m, sessionID: sessionID}
+}
+
+// dynamicEmitter is the per-session handle Emitter returns; see there for why it
+// must not cache the bus.
+type dynamicEmitter struct {
+	m         *SubscriptionManager
+	sessionID string
+}
+
+func (d dynamicEmitter) Emit(e agent.Event) {
+	d.m.mu.Lock()
+	b, ok := d.m.buses[d.sessionID]
+	d.m.mu.Unlock()
+	if ok {
+		b.Emit(e)
+	}
 }
 
 // Shutdown closes all buses.
@@ -156,4 +179,7 @@ func (m *SubscriptionManager) removeIfIdle(sessionID string) {
 }
 
 // Compile-time checks.
-var _ agent.Emitter = (*sessionBus)(nil)
+var (
+	_ agent.Emitter = (*sessionBus)(nil)
+	_ agent.Emitter = dynamicEmitter{}
+)

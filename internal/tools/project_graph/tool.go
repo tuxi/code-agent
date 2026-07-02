@@ -36,7 +36,7 @@ func NewProjectGraphTool() *ProjectGraphTool {
 			NewRustAdapter(),
 			NewPythonAdapter(),
 		},
-		Timeout: 90 * time.Second,
+		Timeout: 300 * time.Second,
 	}
 }
 

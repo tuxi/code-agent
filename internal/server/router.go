@@ -58,7 +58,13 @@ func (r Router) Route(ctx context.Context, data []byte) {
 	case MsgTypeSendMessage:
 		var m SendMessage
 		if json.Unmarshal(data, &m) == nil && r.Commands != nil {
-			go func() { _, _ = r.Commands.SendMessage(ctx, m.Text) }()
+			// The turn outlives the connection that started it: switching
+			// conversations closes the WS, and cancelling here would kill an
+			// in-flight turn (and any tool the user later approves). Turn
+			// lifetime is owned by the session registry — cancel_turn,
+			// SuspendAll, Shutdown — never by the transport.
+			turnCtx := context.WithoutCancel(ctx)
+			go func() { _, _ = r.Commands.SendMessage(turnCtx, m.Text) }()
 		}
 	case MsgTypeRegisterTools:
 		var m RegisterTools
@@ -73,7 +79,10 @@ func (r Router) Route(ctx context.Context, data []byte) {
 		switch m.Kind {
 		case "text":
 			if r.Commands != nil {
-				go func() { _, _ = r.Commands.SendMessage(ctx, m.Text) }()
+				// Same detachment as send_message: the turn must survive this
+				// connection closing.
+				turnCtx := context.WithoutCancel(ctx)
+				go func() { _, _ = r.Commands.SendMessage(turnCtx, m.Text) }()
 			}
 		case "tool_result":
 			if m.ToolResult != nil && r.ToolResults != nil {

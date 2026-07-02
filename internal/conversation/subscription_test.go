@@ -98,6 +98,35 @@ func TestSubscriptionManager_DifferentSessions(t *testing.T) {
 	}
 }
 
+// A turn's publisher outlives connections. When the last subscriber leaves the
+// bus is closed and removed, and a reconnect creates a fresh one — an Emitter
+// handle obtained before that churn (at turn start) must still reach the new
+// subscriber, or a client that switches away and back misses every live event
+// for the rest of the turn.
+func TestSubscriptionManager_EmitterSurvivesBusChurn(t *testing.T) {
+	m := NewSubscriptionManager()
+	defer m.Shutdown()
+
+	emitter := m.Emitter("s1") // obtained at turn start
+
+	_, unsub1 := m.Subscribe("s1")
+	unsub1() // last subscriber leaves: bus closed and removed
+
+	ch2, unsub2 := m.Subscribe("s1") // client switches back: fresh bus
+	defer unsub2()
+
+	emitter.Emit(agent.Event{Kind: agent.EventTurnFinished, Text: "late"})
+
+	select {
+	case e := <-ch2:
+		if e.Text != "late" {
+			t.Errorf("Text = %q, want late", e.Text)
+		}
+	default:
+		t.Error("resubscribed client missed event from a pre-churn emitter handle")
+	}
+}
+
 func TestSubscriptionManager_Shutdown(t *testing.T) {
 	m := NewSubscriptionManager()
 

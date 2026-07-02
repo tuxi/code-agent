@@ -4,6 +4,7 @@ import (
 	"code-agent/internal/tools"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -101,6 +102,61 @@ func TestGitLog_LimitAndPath(t *testing.T) {
 	}
 	if strings.Contains(out, "add other.txt") {
 		t.Errorf("path-filtered log leaked unrelated commit:\n%s", out)
+	}
+}
+
+func TestGitLog_ShallowClone(t *testing.T) {
+	// Create a remote with 3 commits.
+	remoteDir := t.TempDir()
+	remote, err := gogit.PlainInit(remoteDir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	remoteWt, err := remote.Worktree()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, fn := range []string{"a.txt", "b.txt", "c.txt"} {
+		if err := os.WriteFile(filepath.Join(remoteDir, fn), []byte(fn+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := remoteWt.Add(fn); err != nil {
+			t.Fatal(err)
+		}
+		msg := fmt.Sprintf("commit %d", i+1)
+		if _, err := remoteWt.Commit(msg, &gogit.CommitOptions{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Shallow clone with depth 2 (should only have the 2 most recent commits).
+	workspace := t.TempDir()
+	_, err = gogit.PlainClone(workspace, false, &gogit.CloneOptions{
+		URL:   "file://" + remoteDir,
+		Depth: 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// git log should return truncated results without error.
+	out := runTool(t, NewGitLogTool(), workspace, gitLogInput{Limit: 10})
+	if !strings.Contains(out, "commit 3") {
+		t.Errorf("expected most recent commit in output:\n%s", out)
+	}
+	if !strings.Contains(out, "truncated") && !strings.Contains(out, "shallow") {
+		t.Errorf("expected truncated/shallow note in output:\n%s", out)
+	}
+	// Should have 2 commits (depth 2), not 3.
+	lines := strings.Split(out, "\n")
+	commitLines := 0
+	for _, l := range lines {
+		if strings.Contains(l, "commit ") {
+			commitLines++
+		}
+	}
+	if commitLines != 2 {
+		t.Errorf("expected 2 commits from shallow clone (depth=2), got %d:\n%s", commitLines, out)
 	}
 }
 

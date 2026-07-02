@@ -62,7 +62,10 @@ type WSHandler struct {
 	WriteTimeout time.Duration
 
 	// ApprovalTimeout bounds how long a side-effecting tool waits for the client's
-	// verdict before denying. Zero uses a 2m default.
+	// verdict before denying. Zero (the default) means wait indefinitely: an
+	// approval stays pending across disconnects until the user answers it or the
+	// conversation is deleted (RemoveApprover → Close denies it). An overnight
+	// turn parked on an approval must still be approvable the next morning.
 	ApprovalTimeout time.Duration
 
 	// ClientToolTimeout bounds how long a client-executed tool waits for the
@@ -194,8 +197,5 @@ func (h *WSHandler) serverName() string {
 }
 
 func (h *WSHandler) approvalTimeout() time.Duration {
-	if h.ApprovalTimeout > 0 {
-		return h.ApprovalTimeout
-	}
-	return 2 * time.Minute
+	return h.ApprovalTimeout // zero = wait indefinitely (see field doc)
 }

@@ -3,6 +3,7 @@ package projectgraph
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -10,6 +11,10 @@ import (
 	"runtime"
 	"strings"
 )
+
+// errEarlyExit is a sentinel error used to stop file iteration early once
+// Phase 1 has found at least one matching USR.
+var errEarlyExit = errors.New("early exit: USR found")
 
 // swiftAdapter delegates Swift semantic queries to sourcekitten (SourceKit).
 //
@@ -137,8 +142,12 @@ func (a *swiftAdapter) FindReferences(ctx context.Context, root, symbol string) 
 			for u := range usrs {
 				targetUSRs[u] = true
 			}
+			// Stop scanning files early once we have the symbol's USR.
+			if len(targetUSRs) > 0 {
+				return errEarlyExit
+			}
 			return nil
-		}); err != nil {
+		}); err != nil && err != errEarlyExit {
 			return nil, err
 		}
 

@@ -105,6 +105,69 @@ func (s *stubRunner) ResumeTurn(ctx context.Context, sess *session.Session) (age
 	return agent.TurnResult{}, nil
 }
 
+// ctxCheckingEventStore refuses Append on a canceled ctx, like a real SQLite
+// store would.
+type ctxCheckingEventStore struct {
+	fakeEventStore
+}
+
+func (s *ctxCheckingEventStore) Append(ctx context.Context, e session.EventRecord) (int64, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	return s.fakeEventStore.Append(ctx, e)
+}
+
+// emitAfterCancelBuilder builds a runner that cancels the turn's parent ctx
+// mid-run (simulating the WS connection closing while the turn is in flight)
+// and then emits an event through the publisher.
+type emitAfterCancelBuilder struct {
+	cancelParent context.CancelFunc
+}
+
+func (b *emitAfterCancelBuilder) Build(rc RuntimeContext) TurnRunner {
+	return &emitAfterCancelRunner{pub: rc.Publisher, cancel: b.cancelParent}
+}
+
+type emitAfterCancelRunner struct {
+	pub    agent.Emitter
+	cancel context.CancelFunc
+}
+
+func (r *emitAfterCancelRunner) RunTurn(ctx context.Context, sess *session.Session, input string) (agent.TurnResult, error) {
+	r.cancel() // the connection that started the turn goes away
+	r.pub.Emit(agent.Event{Kind: agent.EventTurnFinished, SessionID: sess.ID})
+	return agent.TurnResult{}, nil
+}
+
+func (r *emitAfterCancelRunner) ResumeTurn(ctx context.Context, sess *session.Session) (agent.TurnResult, error) {
+	return agent.TurnResult{}, nil
+}
+
+// funcRunBuilder builds a runner that hands the RuntimeContext to a closure —
+// for tests that need to drive the publisher mid-turn.
+type funcRunBuilder struct {
+	fn func(rc RuntimeContext)
+}
+
+func (b *funcRunBuilder) Build(rc RuntimeContext) TurnRunner {
+	return &funcRunner{rc: rc, fn: b.fn}
+}
+
+type funcRunner struct {
+	rc RuntimeContext
+	fn func(rc RuntimeContext)
+}
+
+func (r *funcRunner) RunTurn(ctx context.Context, sess *session.Session, input string) (agent.TurnResult, error) {
+	r.fn(r.rc)
+	return agent.TurnResult{}, nil
+}
+
+func (r *funcRunner) ResumeTurn(ctx context.Context, sess *session.Session) (agent.TurnResult, error) {
+	return agent.TurnResult{}, nil
+}
+
 type notFoundError struct{ id string }
 
 func (e *notFoundError) Error() string { return "session " + e.id + " not found" }
@@ -216,6 +279,66 @@ func TestTurnExecutor_OnSaveError(t *testing.T) {
 	_, _ = exec.Execute(context.Background(), "s", "msg")
 	if saveErr == nil {
 		t.Error("OnSaveError should be called")
+	}
+}
+
+// Events emitted after the caller's ctx dies (the WS that started the turn
+// closed — e.g. the user switched conversations) must still be persisted, or
+// replay shows a tool started but never finished.
+func TestTurnExecutor_PersistsEventsAfterCallerContextCanceled(t *testing.T) {
+	repo := newFakeRepo()
+	events := &ctxCheckingEventStore{}
+	repo.sessions["s1"] = &session.Session{ID: "s1", Model: "test"}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	rb := &emitAfterCancelBuilder{cancelParent: cancel}
+	exec := NewTurnExecutor(repo, events, NewActiveTurnRegistry(), NewSubscriptionManager(), rb)
+
+	if _, err := exec.Execute(ctx, "s1", "hello"); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	if len(events.records) != 1 {
+		t.Fatalf("got %d persisted events, want 1 (emit after caller cancel must still land)", len(events.records))
+	}
+	if events.records[0].Kind != string(agent.EventTurnFinished) {
+		t.Errorf("persisted kind = %q, want %q", events.records[0].Kind, agent.EventTurnFinished)
+	}
+}
+
+// The user's switch-away-and-back scenario: a turn is in flight, its only
+// subscriber disconnects (bus torn down) and a new one connects (fresh bus).
+// Events the turn emits afterwards — e.g. tool_finished right after the user
+// approves on the new connection — must reach the new subscriber live, not only
+// via the next replay.
+func TestTurnExecutor_LiveEventsReachResubscribedClient(t *testing.T) {
+	repo := newFakeRepo()
+	repo.sessions["s1"] = &session.Session{ID: "s1", Model: "test"}
+	subs := NewSubscriptionManager()
+	defer subs.Shutdown()
+
+	_, unsub1 := subs.Subscribe("s1") // the connection that starts the turn
+
+	var ch2 <-chan agent.Event
+	rb := &funcRunBuilder{fn: func(rc RuntimeContext) {
+		unsub1()                      // user switches away mid-turn
+		ch2, _ = subs.Subscribe("s1") // ...and back on a new connection
+		rc.Publisher.Emit(agent.Event{Kind: agent.EventTurnFinished, SessionID: "s1"})
+	}}
+
+	exec := NewTurnExecutor(repo, &fakeEventStore{}, NewActiveTurnRegistry(), subs, rb)
+	if _, err := exec.Execute(context.Background(), "s1", "hello"); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	select {
+	case e := <-ch2:
+		if e.Kind != agent.EventTurnFinished {
+			t.Errorf("kind = %q, want %q", e.Kind, agent.EventTurnFinished)
+		}
+	default:
+		t.Error("resubscribed client missed a live event emitted mid-turn")
 	}
 }
 

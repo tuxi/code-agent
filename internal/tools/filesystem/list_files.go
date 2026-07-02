@@ -1,6 +1,7 @@
 package filesystem
 
 import (
+	"code-agent/internal/assetref"
 	"code-agent/internal/tools"
 	"code-agent/internal/workspace"
 	"context"
@@ -18,6 +19,30 @@ type ListFilesTool struct {
 
 type listFilesInput struct {
 	Path string `json:"path"`
+}
+
+type listFilesOutput struct {
+	Kind         string                `json:"kind"`
+	Path         string                `json:"path"`
+	AbsolutePath string                `json:"absolute_path,omitempty"`
+	Items        []listFilesOutputItem `json:"items"`
+}
+
+type listFilesOutputItem struct {
+	AssetID      string `json:"asset_id"`
+	Kind         string `json:"kind"`
+	Path         string `json:"path"`
+	AbsolutePath string `json:"absolute_path,omitempty"`
+	DisplayName  string `json:"display_name,omitempty"`
+	MIMEType     string `json:"mime_type,omitempty"`
+}
+
+type listFilesEntry struct {
+	rel     string
+	abs     string
+	kind    string
+	display string
+	mime    string
 }
 
 func NewListFilesTool() *ListFilesTool {
@@ -73,15 +98,26 @@ func (l *ListFilesTool) Execute(ctx context.Context, ec tools.ExecutionContext, 
 	if !info.IsDir() {
 		return tools.ToolResult{}, fmt.Errorf("path is not a directory: %s", in.Path)
 	}
-	var entries []string
+	targetRel, err := filepath.Rel(rootAbs, targetAbs)
+	if err != nil {
+		targetRel = filepath.Clean(in.Path)
+	}
+	targetRel = filepath.ToSlash(targetRel)
+	if targetRel == "." {
+		targetRel = "."
+	}
+
+	var entries []listFilesEntry
 	err = filepath.WalkDir(targetAbs, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return nil
 		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
+		if ctx != nil {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			default:
+			}
 		}
 		name := d.Name()
 		if workspace.ShouldSkipName(name) {
@@ -108,21 +144,85 @@ func (l *ListFilesTool) Execute(ctx context.Context, ec tools.ExecutionContext, 
 		if err != nil {
 			return nil
 		}
-		item := filepath.ToSlash(relFromRoot)
-		if d.IsDir() {
-			item += "/"
+		rel := filepath.ToSlash(relFromRoot)
+		abs, err := filepath.Abs(path)
+		if err != nil {
+			abs = path
 		}
-		entries = append(entries, item)
+		entry := listFilesEntry{
+			rel:     rel,
+			abs:     abs,
+			kind:    "file",
+			display: rel,
+			mime:    assets.MIMEType(rel),
+		}
+		if d.IsDir() {
+			entry.kind = "directory"
+			entry.display = rel + "/"
+			entry.mime = ""
+		}
+		entries = append(entries, entry)
 		return nil
 	})
 	if err != nil {
 		return tools.ToolResult{}, err
 	}
-	sort.Strings(entries)
+	sort.SliceStable(entries, func(i, j int) bool {
+		return entries[i].display < entries[j].display
+	})
+	output, assetRefs, err := l.assetResult(rootAbs, ec, targetRel, targetAbs, entries)
+	if err != nil {
+		return tools.ToolResult{}, err
+	}
 	if len(entries) == 0 {
-		return tools.ToolResult{Content: "(empty)"}, nil
+		return tools.ToolResult{Content: "(empty)", Output: output, Assets: assetRefs}, nil
+	}
+	lines := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		lines = append(lines, entry.display)
 	}
 	return tools.ToolResult{
-		Content: strings.Join(entries, "\n"),
+		Content: strings.Join(lines, "\n"),
+		Output:  output,
+		Assets:  assetRefs,
 	}, nil
+}
+
+func (l *ListFilesTool) assetResult(rootAbs string, ec tools.ExecutionContext, rel, abs string, entries []listFilesEntry) (json.RawMessage, []assets.Ref, error) {
+	workspaceID := assets.WorkspaceID(rootAbs)
+	items := make([]listFilesOutputItem, 0, len(entries))
+	refs := make([]assets.Ref, 0, len(entries))
+	for i, entry := range entries {
+		id := assets.StableID(ec.TurnID, ec.CallID, i+1, "list_files", entry.kind, entry.rel)
+		items = append(items, listFilesOutputItem{
+			AssetID:      id,
+			Kind:         entry.kind,
+			Path:         entry.rel,
+			AbsolutePath: entry.abs,
+			DisplayName:  entry.display,
+			MIMEType:     entry.mime,
+		})
+		refs = append(refs, assets.Ref{
+			ID:                    id,
+			Kind:                  entry.kind,
+			URI:                   assets.WorkspaceURI(workspaceID, entry.rel, nil),
+			DisplayName:           entry.display,
+			WorkspaceID:           workspaceID,
+			WorkspaceRelativePath: entry.rel,
+			AbsolutePath:          entry.abs,
+			MIMEType:              entry.mime,
+			SourceTurnID:          ec.TurnID,
+			SourceCallID:          ec.CallID,
+		})
+	}
+	output, err := tools.JSONOutput(listFilesOutput{
+		Kind:         "directory_listing",
+		Path:         rel,
+		AbsolutePath: abs,
+		Items:        items,
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	return output, refs, nil
 }

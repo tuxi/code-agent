@@ -105,14 +105,15 @@ agent-core (Layer 1)          agent-server (Layer 2)         frontends (Layer 3)
 ```json
 // server → client（turn 阻塞，等回答）
 { "type": "approval_request", "id": "appr_7", "session_id": "sess_root", "turn_id": "turn_42",
-  "tool_name": "run_command", "tool_args": { "command": "git push" }, "deadline_ms": 120000 }
+  "tool_name": "run_command", "tool_args": { "command": "git push" } }
 
 // client → server
 { "type": "approval_response", "id": "appr_7", "approved": true }
 ```
 
 - `id` 关联请求与响应。
-- **客户端断线或超 `deadline_ms` → 默认拒绝**，对齐 core 里"nil Approver 一律拒"的 fail-safe 规则。
+- `deadline_ms` **可选**：仅当服务端显式配置了审批超时才下发（如 `"deadline_ms": 120000`），超时未回复 → 拒绝。**默认不配置超时、不下发该字段 = 无期限等待**——审批一直挂起，用户隔夜回来仍可批准。
+- **断线不拒绝**：审批器是会话级的，跨连接存活；客户端重连后服务端用**同一 `id` 重发**未决的 `approval_request`，客户端按 `id` 去重。拒绝的 fail-safe 只在显式拒绝、超时（若配置）或会话删除（`DELETE /v1/conversations/{id}`）时发生，对齐 core 里"nil Approver 一律拒"的规则。
 - auto 模式**不发** `approval_request`，改为发 `auto_approved` 事件（纯观测）。
 
 #### 计划审批（v1.1）
@@ -124,8 +125,7 @@ agent-core (Layer 1)          agent-server (Layer 2)         frontends (Layer 3)
 { "type": "plan_approval_request", "id": "plan_appr_1",
   "session_id": "sess_root", "turn_id": "turn_42",
   "plan_id": "plan_abc", "title": "Add Auth",
-  "content": "# Plan\n1. Step one\n2. Step two",
-  "deadline_ms": 120000 }
+  "content": "# Plan\n1. Step one\n2. Step two" }
 
 // client → server
 { "type": "plan_approval_response", "id": "plan_appr_1", "approved": true }

@@ -148,6 +148,14 @@ number of displayed lines, not necessarily total file lines) and
 
 Fixture: [fixtures/tool-assets/tool_finished_read_file_assets.json](fixtures/tool-assets/tool_finished_read_file_assets.json).
 
+### `list_files`
+
+`output.kind = "directory_listing"`. Each listed entry should carry path,
+optional absolute path, display name, `kind = "file"` or `kind = "directory"`,
+and `asset_id`. Each entry should also have a matching `assets[]` entry. The
+plain `observation` remains the newline-separated listing and keeps directory
+trailing slashes for readability.
+
 ### `project_graph`
 
 `output.kind = "symbols"` or `output.kind = "references"`, depending on action.
@@ -218,6 +226,34 @@ Phase 1 annotation is intentionally conservative. The runtime annotates exact
 file/path references derived from structured assets, such as
 `workspace_relative_path`, `display_name`, and `path:line`. It does not broadly
 annotate plain symbol names in prose.
+
+Line mention annotations are also allowed when they can be resolved safely to a
+known `file_location` asset. Supported forms include:
+
+- `第 109 行`
+- `第109行`
+- `line 109`
+- `L109`
+- `109 行`
+
+To avoid turning ordinary numbers into links, the runtime should only annotate a
+line mention when one of these is true:
+
+- the current turn's structured assets reference exactly one file; or
+- the assistant answer has a nearby annotation for the same file/path.
+
+The annotation still points at the concrete line asset via `asset_id`; no new
+protocol shape is needed.
+
+Markdown table line-number cells are treated as line mentions when the table
+header contains a line column, such as `行`, `行号`, or `line`. If the same row
+contains a file/path column, the runtime resolves the line number against that
+file; a cell such as `同上` may inherit the previous row's file. A line cell may
+contain multiple comma-separated line numbers, such as `16, 70, 119`, and each
+number may become its own annotation. Shortened display paths with `...` may be
+resolved by basename only when that basename is unique among the turn's
+structured assets. Numeric cells in tables without a line-number header are not
+annotated.
 
 ## 6. Out of Scope For Phase 1
 

@@ -4,12 +4,14 @@ import (
 	"code-agent/internal/tools"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"path/filepath"
 	"strings"
 
 	gogit "github.com/go-git/go-git/v5"
+	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/object"
 )
 
@@ -94,14 +96,24 @@ func (t *GitLogTool) Execute(ctx context.Context, ec tools.ExecutionContext, inp
 	}
 	defer iter.Close()
 
+	// Detect shallow clones so we can annotate the output.
+	shallowList, _ := repo.Storer.Shallow()
+	isShallow := len(shallowList) > 0
+
 	var b strings.Builder
 	n := 0
+	truncated := false
 	for n < limit {
 		c, err := iter.Next()
 		if err == io.EOF {
 			break
 		}
 		if err != nil {
+			if errors.Is(err, plumbing.ErrObjectNotFound) {
+				// Hit the shallow-clone boundary — history beyond this point is missing.
+				truncated = true
+				break
+			}
 			return tools.ToolResult{}, err
 		}
 		fmt.Fprintf(&b, "%s  %s  %s  %s\n",
@@ -115,7 +127,12 @@ func (t *GitLogTool) Execute(ctx context.Context, ec tools.ExecutionContext, inp
 	if n == 0 {
 		return tools.ToolResult{Content: "No commits."}, nil
 	}
-	return tools.ToolResult{Content: strings.TrimRight(b.String(), "\n")}, nil
+	result := strings.TrimRight(b.String(), "\n")
+	if truncated || isShallow {
+		result += "\n\n(History is truncated — this is a shallow clone. " +
+			"Use git_clone to re-clone if you need the full history.)"
+	}
+	return tools.ToolResult{Content: result}, nil
 }
 
 // subjectOf returns the first line of a commit message.

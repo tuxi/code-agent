@@ -137,8 +137,10 @@ func (e *TurnExecutor) driveTurn(
 
 	// 2. Assemble the publisher: persist each event (assigning its seq) then fan the
 	//    seq-stamped event out to live subscribers, so a client's live seq matches
-	//    what replay will report (v1.2 §4).
-	pub := &sequencingEmitter{ctx: parentCtx, events: e.events, live: e.subs.Emitter(sess.ID)}
+	//    what replay will report (v1.2 §4). WithoutCancel: events emitted after the
+	//    caller disconnects (or the turn is cancelled) must still land in the store,
+	//    or replay shows a tool started but never finished.
+	pub := &sequencingEmitter{ctx: context.WithoutCancel(parentCtx), events: e.events, live: e.subs.Emitter(sess.ID)}
 
 	// 3. Build a fresh turnRunner for this turn.
 	rctx := RuntimeContext{
