@@ -2,6 +2,7 @@ package jobs
 
 import (
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -86,5 +87,93 @@ func TestCancelUnknownJob(t *testing.T) {
 	r := NewRegistry()
 	if err := r.Cancel("job_999"); err == nil {
 		t.Error("expected an error cancelling an unknown job")
+	}
+}
+
+// recordingSink captures Sink callbacks for assertions. Mutex-guarded because
+// callbacks arrive from job goroutines (the Sink contract).
+type recordingSink struct {
+	mu       sync.Mutex
+	started  []string // commands
+	output   []byte
+	finished []Snapshot
+}
+
+func (s *recordingSink) JobStarted(id, command string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.started = append(s.started, command)
+}
+func (s *recordingSink) JobOutput(id string, chunk []byte) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.output = append(s.output, chunk...)
+}
+func (s *recordingSink) JobFinished(id string, snap Snapshot) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.finished = append(s.finished, snap)
+}
+
+func (s *recordingSink) state() (started []string, output string, finished []Snapshot) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.started...), string(s.output), append([]Snapshot(nil), s.finished...)
+}
+
+func TestSinkObservesLifecycle(t *testing.T) {
+	sink := &recordingSink{}
+	r := NewRegistry()
+	r.Sink = sink
+
+	job := r.Start(".", "echo tee-marker", []string{"echo", "tee-marker"})
+	job.Wait()
+
+	started, output, finished := sink.state()
+	if len(started) != 1 || started[0] != "echo tee-marker" {
+		t.Errorf("started = %v, want the command", started)
+	}
+	if !strings.Contains(output, "tee-marker") {
+		t.Errorf("sink output = %q, want it to contain tee-marker", output)
+	}
+	if len(finished) != 1 || finished[0].Status != Exited {
+		t.Errorf("finished = %+v, want one exited snapshot", finished)
+	}
+	// The tee must not starve the buffer: job_logs still sees the output.
+	if !strings.Contains(job.Logs(), "tee-marker") {
+		t.Errorf("Logs() = %q, want tee-marker despite the sink tee", job.Logs())
+	}
+}
+
+func TestSinkStartFailureStillPairs(t *testing.T) {
+	sink := &recordingSink{}
+	r := NewRegistry()
+	r.Sink = sink
+
+	r.Start(".", "no-such-binary-xyz", []string{"no-such-binary-xyz"}).Wait()
+
+	started, _, finished := sink.state()
+	if len(started) != 1 {
+		t.Errorf("started count = %d, want 1", len(started))
+	}
+	if len(finished) != 1 || finished[0].Status != Failed {
+		t.Errorf("finished = %+v, want exactly one failed snapshot (Started/Finished must pair)", finished)
+	}
+}
+
+func TestSinkObservesCancel(t *testing.T) {
+	sink := &recordingSink{}
+	r := NewRegistry()
+	r.Sink = sink
+
+	job := r.Start(".", "sleep 30", []string{"sleep", "30"})
+	if err := r.Cancel(job.Snapshot().ID); err != nil {
+		t.Fatalf("cancel: %v", err)
+	}
+	job.Wait()
+
+	_, _, finished := sink.state()
+	if len(finished) != 1 || finished[0].Status != Canceled {
+		t.Errorf("finished = %+v, want one canceled snapshot", finished)
 	}
 }

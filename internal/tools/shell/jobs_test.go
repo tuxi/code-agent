@@ -94,4 +94,86 @@ func TestJobToolsUnknownID(t *testing.T) {
 	if _, err := status.Execute(context.Background(), tools.ExecutionContext{WorkspaceRoot: "."}, json.RawMessage(`{"job_id":"job_nope"}`)); err == nil {
 		t.Error("job_status on an unknown id should error")
 	}
+	wait := &JobWaitTool{Jobs: tool.Jobs}
+	if _, err := wait.Execute(context.Background(), tools.ExecutionContext{WorkspaceRoot: "."}, json.RawMessage(`{"job_id":"job_nope"}`)); err == nil {
+		t.Error("job_wait on an unknown id should error")
+	}
+}
+
+// TestJobWaitFinished proves the P8.7 core claim: ONE job_wait call carries the
+// model across the whole job, returning the terminal status + output tail —
+// no job_status polling loop.
+func TestJobWaitFinished(t *testing.T) {
+	tool := NewRunCommandTool()
+	res, err := tool.Execute(context.Background(), tools.ExecutionContext{WorkspaceRoot: "."}, json.RawMessage(`{"command":"echo done-marker","background":true}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var br backgroundResult
+	if err := json.Unmarshal([]byte(res.Content), &br); err != nil {
+		t.Fatalf("not JSON: %v\n%s", err, res.Content)
+	}
+
+	wait := &JobWaitTool{Jobs: tool.Jobs}
+	wres, err := wait.Execute(context.Background(), tools.ExecutionContext{WorkspaceRoot: "."}, json.RawMessage(`{"job_id":"`+br.JobID+`"}`))
+	if err != nil {
+		t.Fatalf("job_wait: %v", err)
+	}
+	for _, want := range []string{`"status": "exited"`, `"exit_code": 0`, "done-marker"} {
+		if !strings.Contains(wres.Content, want) {
+			t.Errorf("job_wait result missing %s:\n%s", want, wres.Content)
+		}
+	}
+}
+
+// TestJobWaitTimeout: an unfinished job returns status "running" with guidance,
+// not an error — the model decides whether to wait again or move on.
+func TestJobWaitTimeout(t *testing.T) {
+	tool := NewRunCommandTool()
+	res, err := tool.Execute(context.Background(), tools.ExecutionContext{WorkspaceRoot: "."}, json.RawMessage(`{"command":"sleep 30","background":true}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var br backgroundResult
+	if err := json.Unmarshal([]byte(res.Content), &br); err != nil {
+		t.Fatalf("not JSON: %v\n%s", err, res.Content)
+	}
+	defer tool.Jobs.Cancel(br.JobID)
+
+	wait := &JobWaitTool{Jobs: tool.Jobs}
+	wres, err := wait.Execute(context.Background(), tools.ExecutionContext{WorkspaceRoot: "."}, json.RawMessage(`{"job_id":"`+br.JobID+`","timeout_seconds":1}`))
+	if err != nil {
+		t.Fatalf("job_wait: %v", err)
+	}
+	if !strings.Contains(wres.Content, `"status": "running"`) {
+		t.Errorf("job_wait on a running job should report running:\n%s", wres.Content)
+	}
+	if !strings.Contains(wres.Content, "note") {
+		t.Errorf("timeout result should carry guidance for the model:\n%s", wres.Content)
+	}
+	if strings.Contains(wres.Content, "output_tail") {
+		t.Errorf("timeout result should not include output_tail:\n%s", wres.Content)
+	}
+}
+
+// TestJobWaitCancelledContext: a cancelled turn context aborts the wait
+// immediately instead of blocking out the timeout.
+func TestJobWaitCancelledContext(t *testing.T) {
+	tool := NewRunCommandTool()
+	res, err := tool.Execute(context.Background(), tools.ExecutionContext{WorkspaceRoot: "."}, json.RawMessage(`{"command":"sleep 30","background":true}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var br backgroundResult
+	if err := json.Unmarshal([]byte(res.Content), &br); err != nil {
+		t.Fatalf("not JSON: %v\n%s", err, res.Content)
+	}
+	defer tool.Jobs.Cancel(br.JobID)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	wait := &JobWaitTool{Jobs: tool.Jobs}
+	if _, err := wait.Execute(ctx, tools.ExecutionContext{WorkspaceRoot: "."}, json.RawMessage(`{"job_id":"`+br.JobID+`"}`)); err == nil {
+		t.Error("job_wait with a cancelled context should return the context error")
+	}
 }

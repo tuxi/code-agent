@@ -1,0 +1,7 @@
+{
+  "event_id": "evt_fixed",
+  "kind": "job_output",
+  "at": "2026-06-24T10:00:00.123Z",
+  "session_id": "job_1",
+  "chunk": "Cloning repository...\n"
+}

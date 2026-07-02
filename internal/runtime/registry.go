@@ -3,6 +3,7 @@ package runtime
 import (
 	"code-agent/internal/agent"
 	"code-agent/internal/app"
+	"code-agent/internal/jobs"
 	"code-agent/internal/mcp"
 	"code-agent/internal/model"
 	"code-agent/internal/session"
@@ -38,7 +39,11 @@ func WirePlanTools(registry *tools.Registry, plansDir string) *agent.RunnerRef {
 // git, shell, search, project_graph, skill loader, web search/fetch, todo) into
 // the registry. It does NOT register task or MCP tools — those are registered
 // after the subagent's read-only toolset is frozen.
-func RegisterBuiltinTools(registry *tools.Registry, cfg app.Config, skillReg *skills.Registry) error {
+//
+// jobSink, when non-nil, observes every background job's lifecycle (P8.7 Phase
+// A) — pass NewJobEventSink(...) to persist job events under the job's own id
+// partition, or nil for jobs invisible to the event stream (tests).
+func RegisterBuiltinTools(registry *tools.Registry, cfg app.Config, skillReg *skills.Registry, jobSink jobs.Sink) error {
 	// Pure-Go tools that work inside an OS sandbox (no subprocess, container-local
 	// filesystem and network only). Registered under every profile.
 	toolList := []tools.Tool{
@@ -83,9 +88,11 @@ func RegisterBuiltinTools(registry *tools.Registry, cfg app.Config, skillReg *sk
 	// call, so they are left unregistered — the model never sees a tool it cannot use.
 	if cfg.Profile.AllowsSubprocess() {
 		// run_command and the job_* tools share one job registry, so a job_id
-		// returned by a background run_command is resolvable by job_status/logs/cancel.
+		// returned by a background run_command is resolvable by job_status/logs/
+		// cancel/wait.
 		runCmd := shell.NewRunCommandTool()
 		jobReg := runCmd.Jobs
+		jobReg.Sink = jobSink // before any Start (jobs.Registry.Sink contract)
 		toolList = append(toolList,
 			projectgraph.NewProjectGraphTool(),
 			git.NewDiffTool(),
@@ -95,6 +102,7 @@ func RegisterBuiltinTools(registry *tools.Registry, cfg app.Config, skillReg *sk
 			&shell.JobStatusTool{Jobs: jobReg},
 			&shell.JobLogsTool{Jobs: jobReg},
 			&shell.JobCancelTool{Jobs: jobReg},
+			&shell.JobWaitTool{Jobs: jobReg},
 		)
 	}
 
@@ -129,7 +137,15 @@ func BuildRegistry(ctx context.Context, cfg app.Config, mc app.ModelConfig, prov
 		return nil, nil, nil, nil, err
 	}
 
-	if err := RegisterBuiltinTools(registry, cfg, skillReg); err != nil {
+	// Background jobs get their own event partition (P8.7 Phase A): each job's
+	// lifecycle + output persists under SessionID = job id, replayable via
+	// GET /v1/conversations/{job_id}/events — the same store-only observability
+	// the subagent transcript already has. Store-less builds keep jobs unobserved.
+	var jobSink jobs.Sink
+	if store != nil {
+		jobSink = NewJobEventSink(EventStoreEmitter{Ctx: ctx, Store: store})
+	}
+	if err := RegisterBuiltinTools(registry, cfg, skillReg, jobSink); err != nil {
 		return nil, nil, nil, nil, err
 	}
 

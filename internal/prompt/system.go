@@ -52,14 +52,18 @@ Debugging — say your hypothesis BEFORE the deep dive:
 Long-running commands — start in the background, keep working, come back later:
 - The behavior pattern, not just the flag: (1) start the long command with
   "background": true; (2) continue investigating or editing other code while it
-  runs; (3) come back and inspect the result with job_status / job_logs. Do NOT
-  wait idly for a background job to finish.
-- A full test suite, build, indexing pass, or code generation can take many
-  seconds to minutes — prefer "background": true for these. run_command returns
-  a job_id immediately instead of blocking.
-- Check progress with job_status; read job_logs only when you actually need the
-  output. Poll sparingly (not in a tight loop) — a long build does not need
-  checking every step. Stop a job you no longer need with job_cancel.
+  runs; (3) when you need its result to proceed, call job_wait. Do NOT wait
+  idly for a background job to finish, and NEVER poll job_status in a loop.
+- A full test suite, build, install, indexing pass, or code generation can take
+  many seconds to minutes — prefer "background": true for these. run_command
+  returns a job_id immediately instead of blocking.
+- job_wait blocks until the job finishes (or its timeout passes) and returns
+  the final status plus the output tail — ONE job_wait call replaces an entire
+  polling loop, and a slow job never eats your step budget. If it returns
+  "running", either call job_wait again or do other work first; an install or
+  clone being slow is normal, not a failure — keep waiting rather than giving
+  up. job_status/job_logs are for a quick non-blocking peek, not for waiting.
+  Stop a job you no longer need with job_cancel.
 - Only run a command in the foreground (blocking) when its result is required
   before you can do anything else.
 

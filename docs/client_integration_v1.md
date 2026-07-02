@@ -111,7 +111,7 @@ v1 只含 user/assistant；工具/系统消息的全量保真属于 P1-B。
   → 连 ws .../stream                        （读 hello）
   → 之后按 §3 接收增量事件
 ```
-即"先补历史、再接实时流"。注意衔接：连上 WS 那一刻起的事件是增量；历史那批没有 `event_id`，实时那批有——客户端以"连接时刻"为界去重，不要依赖 `event_id` 跨两批对齐（v1 无 `seq`，见 §6）。
+即"先补历史、再接实时流"。衔接用 `seq`（v1.2 §4 起两批都带）：历史批取最大 `seq`，实时批丢弃 `seq` ≤ 该值的帧即可精确去重。历史那批没有 `event_id`（它是发送时才盖的传输戳）——去重对齐用 `seq`，不要用 `event_id`。
 
 ---
 
@@ -145,9 +145,10 @@ v1 只含 user/assistant；工具/系统消息的全量保真属于 P1-B。
 | `event_id` | string | 全局唯一，可用于去重/日志 |
 | `kind` | string | 判别式，见下表 |
 | `at` | string | **RFC3339 毫秒、UTC**，如 `2026-06-24T10:00:00.123Z` |
-| `session_id` | string | 产生事件的会话 |
+| `session_id` | string | 产生事件的会话（job 事件此处为 **job id**） |
 | `parent_session_id` | string | 仅 subagent 事件：父会话，用于嵌套渲染 |
 | `turn_id` | string | 产生事件的 turn，用于把一轮的事件聚到一起 |
+| `seq` | int | 会话内**单调递增**的事件序号（v1.2 §4 已落地），直播帧与 `GET /events` 回放帧一致。续传时记录收到的**最大 `seq`**，用 `GET /events?since=<seq>` 只取增量。⚠️ 单调但**有空洞**（底层是跨会话共享的自增 id），**不要**用"已收条数"当 N；`token_delta` 不带（瞬态、不持久化） |
 
 各 `kind` 的额外字段：
 
@@ -169,8 +170,11 @@ v1 只含 user/assistant；工具/系统消息的全量保真属于 P1-B。
 | `turn_finished` | `text` | 本轮最终答复（这一轮的终点） |
 | `task_started` | `session_id`(子) `parent_session_id` `text` | subagent 委派开始（`text`=委派 prompt） |
 | `task_finished` | `session_id`(子) `parent_session_id` `text` | subagent 结束（`text`=结论） |
+| `job_started` | `session_id`(=job id) `text` | 后台 job 开始（P8.7；`text`=完整命令）。这些事件在 **job 自己的分区**里，用 `GET /v1/conversations/{job_id}/events` 拉取 |
+| `job_output` | `session_id`(=job id) `chunk` | job 输出片段（stdout+stderr 交错，服务端已按 ~4KB/750ms 合并，不会每行一条） |
+| `job_finished` | `session_id`(=job id) `text` `elapsed_ms` `exit_code` `err` | job 终态。`text` ∈ `exited`（成功）\| `failed` \| `canceled`；`exit_code` 仅失败时出现（>0 = 命令非零退出，-1 = 启动失败/被信号杀死；成功时省略）；`err` 是配套的人读描述（如 `exit code 2`），仅失败时出现。形状以 golden `internal/server/testdata/job_*.json` 为准 |
 
-> 渲染建议：按 `turn_id` 把一轮的事件聚成一个气泡；`token_delta` 实时拼接成助手文本；subagent 事件按 `parent_session_id` 折叠成子流。
+> 渲染建议：按 `turn_id` 把一轮的事件聚成一个气泡；`token_delta` 实时拼接成助手文本；subagent 事件按 `parent_session_id` 折叠成子流。job 终态三分支的入口卡/查看器顶栏显示：`exited` → 成功；`failed` → 失败（用 `exit_code` 细分：-1 显示"被终止/启动失败"，>0 显示"退出码 N"）；`canceled` → 已取消（用户/模型主动停止，不是失败）。
 
 #### 聚合身份（reducer 必读）
 
@@ -269,7 +273,7 @@ server → turn_finished {text:"已推送"}
 5. **忽略未知 `kind` 和未知字段**（前向兼容）；版本只在 `hello` 协商一次，别期望逐事件带版本。收到不认识的 `kind` 应 no-op，**不要崩**——服务端新增事件不该让旧客户端挂掉。
 6. **审批是阻塞往返**：收到 `approval_request` 即代表 turn 在等你；尽快在 `deadline_ms` 内回 `approval_response`。
 7. **一轮一发**：`turn_finished` 之前不要再 `send_message`。
-8. **断线重连**：WS 重连只给新 `hello`，会错过断线期间的**实时增量**（尤其 `token_delta`）。但**已记录**的事件可用 `GET /events` 补回（不含 `token_delta`）。无逐事件 `seq` 级精确续传（`seq` 是 v2 预留）。
+8. **断线重连**：WS 重连只给新 `hello`。用 `seq` 精确续传（v1.2 §4 起可用，本条旧文"`seq` 是 v2 预留"已过时）：断线前记住收到的最大 `seq`，重连后先 `GET /events?since=<seq>` 补缺口、再接实时流（去重同 §2 恢复流程）。`token_delta` 不持久化，断线期间的打字机增量补不回来——用补回的 `turn_finished.text` 还原最终文本即可。
 
 ---
 

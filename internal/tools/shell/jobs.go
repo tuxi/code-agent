@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 )
 
 // The job_* tools inspect and control background commands started by run_command
@@ -126,8 +127,102 @@ func (t *JobCancelTool) Execute(_ context.Context, _ tools.ExecutionContext, inp
 	return marshal(job.Snapshot())
 }
 
+// JobWaitTool blocks until a background job finishes or a timeout elapses
+// (P8.7 Phase B). One call replaces a whole polling loop of job_status calls:
+// waiting consumes ONE step of the turn's budget regardless of how long the
+// job takes, instead of one step per poll — the direct fix for a slow install
+// exhausting MaxSteps on job_status calls.
+type JobWaitTool struct{ Jobs *jobs.Registry }
+
+// The cap keeps one call comfortably under the 2-minute client-tool lease and
+// gives the loop a cancellation checkpoint at least every 90s; the model can
+// simply call job_wait again for longer jobs.
+const (
+	jobWaitDefaultTimeout = 30 * time.Second
+	jobWaitMaxTimeout     = 90 * time.Second
+	jobWaitTailBytes      = 2000
+)
+
+type jobWaitInput struct {
+	JobID          string `json:"job_id"`
+	TimeoutSeconds int    `json:"timeout_seconds"`
+}
+
+func (t *JobWaitTool) Name() string { return "job_wait" }
+func (t *JobWaitTool) Description() string {
+	return "Block until a background job finishes, up to timeout_seconds (default 30, max 90). Returns the final status and output tail; on timeout returns status \"running\" — call again or keep working. Prefer this over polling job_status in a loop: one job_wait costs one step no matter how long it waits."
+}
+func (t *JobWaitTool) InputSchema() json.RawMessage {
+	return tools.Object(map[string]tools.Property{
+		"job_id":          {Type: "string", Description: "The job to wait for."},
+		"timeout_seconds": {Type: "integer", Description: "Max seconds to wait (default 30, capped at 90)."},
+	}, "job_id").JSON()
+}
+
+func (t *JobWaitTool) Execute(ctx context.Context, _ tools.ExecutionContext, input json.RawMessage) (tools.ToolResult, error) {
+	var in jobWaitInput
+	if len(input) > 0 {
+		if err := json.Unmarshal(input, &in); err != nil {
+			return tools.ToolResult{}, fmt.Errorf("invalid input: %w", err)
+		}
+	}
+	id := strings.TrimSpace(in.JobID)
+	if id == "" {
+		return tools.ToolResult{}, fmt.Errorf("job_id is required")
+	}
+	job, ok := t.Jobs.Get(id)
+	if !ok {
+		return tools.ToolResult{}, fmt.Errorf("unknown job: %s", id)
+	}
+
+	timeout := jobWaitDefaultTimeout
+	if in.TimeoutSeconds > 0 {
+		timeout = time.Duration(in.TimeoutSeconds) * time.Second
+		if timeout > jobWaitMaxTimeout {
+			timeout = jobWaitMaxTimeout
+		}
+	}
+
+	started := time.Now()
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-job.Done():
+		return marshal(jobWaitResult(job, started, true))
+	case <-timer.C:
+		return marshal(jobWaitResult(job, started, false))
+	case <-ctx.Done():
+		return tools.ToolResult{}, ctx.Err()
+	}
+}
+
+// jobWaitResult shapes the job_wait outcome: the snapshot plus how long we
+// waited, and — once terminal — the output tail so the model usually needs no
+// follow-up job_logs call. On timeout a note tells the model its options.
+func jobWaitResult(job *jobs.Job, started time.Time, finished bool) map[string]any {
+	snap := job.Snapshot()
+	out := map[string]any{
+		"job_id":      snap.ID,
+		"status":      snap.Status,
+		"waited_ms":   time.Since(started).Milliseconds(),
+		"duration_ms": snap.DurationMS,
+	}
+	if finished {
+		out["exit_code"] = snap.ExitCode
+		logs := job.Logs()
+		if len(logs) > jobWaitTailBytes {
+			logs = "...<truncated>\n" + logs[len(logs)-jobWaitTailBytes:]
+		}
+		out["output_tail"] = logs
+	} else {
+		out["note"] = "still running — call job_wait again, do other work meanwhile, or job_cancel if no longer needed"
+	}
+	return out
+}
+
 var (
 	_ tools.Tool = (*JobStatusTool)(nil)
 	_ tools.Tool = (*JobLogsTool)(nil)
 	_ tools.Tool = (*JobCancelTool)(nil)
+	_ tools.Tool = (*JobWaitTool)(nil)
 )

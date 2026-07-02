@@ -1,0 +1,10 @@
+{
+  "event_id": "evt_fixed",
+  "kind": "job_finished",
+  "at": "2026-06-24T10:00:00.123Z",
+  "session_id": "job_1",
+  "text": "failed",
+  "elapsed_ms": 93000,
+  "exit_code": 2,
+  "err": "exit code 2"
+}

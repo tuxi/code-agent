@@ -57,6 +57,20 @@ const (
 	EventPlanProposed EventKind = "plan_proposed"
 	EventPlanApproved EventKind = "plan_approved"
 	EventPlanRejected EventKind = "plan_rejected"
+
+	// Background job observability (P8.7 Phase A). A background run_command's
+	// lifecycle as events, persisted under the JOB's own id partition
+	// (SessionID = job id — the same partitioning the subagent uses for its
+	// sub-session transcript), so GET /v1/conversations/{job_id}/events replays a
+	// job's full life without a single job_status poll. JobStarted's Text carries
+	// the command; JobOutput's Chunk carries a coalesced output span; JobFinished's
+	// Text carries the terminal status (exited/failed/canceled), Elapsed the
+	// duration, ExitCode the process exit code (0 stays zero-valued: absent on
+	// the wire — status alone distinguishes success), and Err an exit-code note
+	// when it failed.
+	EventJobStarted  EventKind = "job_started"
+	EventJobOutput   EventKind = "job_output"
+	EventJobFinished EventKind = "job_finished"
 )
 
 // Event is a single point in a turn — a discriminated union where Kind selects
@@ -128,6 +142,11 @@ type Event struct {
 	SavedTokens  int
 	SummaryChars int
 	Ratio        float64
+
+	// ExitCode carries JobFinished's process exit code (P8.7). Zero for a
+	// successful exit — omitted on the wire, where Text=="exited" already means
+	// success; -1 for a start failure or signal kill.
+	ExitCode int
 
 	// Set when a step errored.
 	Err string

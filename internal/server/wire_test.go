@@ -134,6 +134,29 @@ func cases() map[string]wireCase {
 			SessionID: "sess_root", TurnID: "turn_7",
 			Text: "plan_abc123",
 		}},
+		// Job events (P8.7): session_id carries the JOB's id — the partition key a
+		// client uses to fetch the child stream (GET /v1/conversations/{job_id}/events).
+		"job_started": {ev: agent.Event{
+			Kind: agent.EventJobStarted, At: fixedAt,
+			SessionID: "job_1",
+			Text:      "npx skills add okx/onchainos-skills --yes -g",
+		}},
+		"job_output": {ev: agent.Event{
+			Kind: agent.EventJobOutput, At: fixedAt,
+			SessionID: "job_1",
+			Chunk:     "Cloning repository...\n",
+		}},
+		// The failed variant exercises every terminal field: text (status),
+		// elapsed_ms, structured exit_code, and human-readable err. A successful
+		// job has text "exited" and OMITS exit_code (0) and err.
+		"job_finished": {ev: agent.Event{
+			Kind: agent.EventJobFinished, At: fixedAt,
+			SessionID: "job_1",
+			Text:      "failed",
+			Elapsed:   93 * time.Second,
+			ExitCode:  2,
+			Err:       "exit code 2",
+		}},
 	}
 }
 

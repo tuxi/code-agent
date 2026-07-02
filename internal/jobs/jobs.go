@@ -12,6 +12,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os/exec"
 	"sync"
 	"sync/atomic"
@@ -35,6 +36,21 @@ type Snapshot struct {
 	Status     Status `json:"status"`
 	ExitCode   int    `json:"exit_code"`
 	DurationMS int64  `json:"duration_ms"`
+}
+
+// Sink observes job lifecycle transitions and output as they happen (P8.7
+// Phase A). It is the seam that lets the runtime layer turn a job's life into
+// agent events WITHOUT this package importing the agent — the same direction of
+// dependency RequestObserver keeps for telemetry.
+//
+// Contract: callbacks fire from the job's own goroutines, so implementations
+// must be concurrency-safe; Output's chunk is only valid for the duration of
+// the call (copy it if retained); a Started is always eventually paired with
+// exactly one Finished (including start failures and cancellation).
+type Sink interface {
+	JobStarted(id, command string)
+	JobOutput(id string, chunk []byte)
+	JobFinished(id string, snap Snapshot)
 }
 
 // Job is one background command. Its mutable fields are guarded by mu; callers
@@ -77,6 +93,10 @@ func (j *Job) Logs() string { return j.output.String() }
 // Wait blocks until the job finishes. Intended for tests and shutdown.
 func (j *Job) Wait() { <-j.done }
 
+// Done returns a channel closed when the job finishes — the select-friendly
+// form of Wait, so a caller (job_wait) can bound the wait with a timeout.
+func (j *Job) Done() <-chan struct{} { return j.done }
+
 // Registry holds running and finished jobs for the process. One shared instance
 // is wired into run_command (to start jobs) and the job_* tools (to inspect them).
 type Registry struct {
@@ -85,6 +105,11 @@ type Registry struct {
 	order     []string
 	seq       atomic.Uint64
 	maxOutput int
+
+	// Sink, when non-nil, observes every job's lifecycle and output. Set it
+	// once at wiring time, before the first Start — it is read from job
+	// goroutines without a lock.
+	Sink Sink
 }
 
 // NewRegistry returns an empty registry with a default per-job output cap.
@@ -116,14 +141,29 @@ func (r *Registry) Start(dir, command string, argv []string) *Job {
 	r.order = append(r.order, id)
 	r.mu.Unlock()
 
+	if r.Sink != nil {
+		r.Sink.JobStarted(id, command)
+	}
+
+	// The job writes to its capped buffer (backing job_logs) and, when a Sink is
+	// wired, tees each chunk to it live — the buffer stays the durable tail, the
+	// sink gets the stream.
+	var w io.Writer = out
+	if r.Sink != nil {
+		w = &sinkWriter{buf: out, sink: r.Sink, id: id}
+	}
+
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Dir = dir
-	cmd.Stdout = out
-	cmd.Stderr = out
+	cmd.Stdout = w
+	cmd.Stderr = w
 
 	if err := cmd.Start(); err != nil {
-		fmt.Fprintf(out, "failed to start: %v\n", err)
+		fmt.Fprintf(w, "failed to start: %v\n", err)
 		job.finish(Failed, -1)
+		if r.Sink != nil {
+			r.Sink.JobFinished(id, job.Snapshot())
+		}
 		return job
 	}
 
@@ -143,10 +183,29 @@ func (r *Registry) Start(dir, command string, argv []string) *Job {
 		}
 		job.ended = time.Now()
 		job.mu.Unlock()
+		// Notify the sink BEFORE closing done: anyone unblocked by Wait/Done must
+		// find the finished event already emitted (Sink pairing contract).
+		if r.Sink != nil {
+			r.Sink.JobFinished(id, job.Snapshot())
+		}
 		close(job.done)
 	}()
 
 	return job
+}
+
+// sinkWriter tees every write to the capped buffer AND the sink. It preserves
+// the buffer's always-succeed contract: buffer first, then notify.
+type sinkWriter struct {
+	buf  io.Writer
+	sink Sink
+	id   string
+}
+
+func (w *sinkWriter) Write(p []byte) (int, error) {
+	n, err := w.buf.Write(p)
+	w.sink.JobOutput(w.id, p)
+	return n, err
 }
 
 // finish marks a job terminal (used for jobs that never started).

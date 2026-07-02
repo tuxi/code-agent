@@ -17,7 +17,7 @@ func registerForProfile(t *testing.T, profile app.Profile) map[string]bool {
 	}
 	reg := tools.NewRegistry()
 	cfg := app.Config{Profile: profile}
-	if err := RegisterBuiltinTools(reg, cfg, skillReg); err != nil {
+	if err := RegisterBuiltinTools(reg, cfg, skillReg, nil); err != nil {
 		t.Fatalf("RegisterBuiltinTools(%q): %v", profile, err)
 	}
 	got := map[string]bool{}
@@ -37,7 +37,7 @@ func registerWithAllowlist(t *testing.T, allow []string) map[string]bool {
 	}
 	reg := tools.NewRegistry()
 	cfg := app.Config{Agent: app.AgentConfig{BuiltinTools: &allow}}
-	if err := RegisterBuiltinTools(reg, cfg, skillReg); err != nil {
+	if err := RegisterBuiltinTools(reg, cfg, skillReg, nil); err != nil {
 		t.Fatalf("RegisterBuiltinTools: %v", err)
 	}
 	got := map[string]bool{}
@@ -81,7 +81,7 @@ func TestRegisterBuiltinTools_SandboxedExcludesSubprocessTools(t *testing.T) {
 	// Tools that shell out and have no pure-Go replacement yet — must be absent under
 	// the sandboxed (iOS) profile.
 	subprocessTools := []string{
-		"run_command", "job_status", "job_logs", "job_cancel",
+		"run_command", "job_status", "job_logs", "job_cancel", "job_wait",
 		"project_graph",
 	}
 	// Pure-Go tools — must be present under every profile. git_commit / git_diff /

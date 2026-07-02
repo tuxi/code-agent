@@ -62,6 +62,11 @@ type wireEvent struct {
 	SummaryChars int     `json:"summary_chars,omitempty"`
 	Ratio        float64 `json:"ratio,omitempty"`
 
+	// Background jobs (P8.7). job_finished's process exit code; omitted when 0
+	// (text "exited" already means success) — present when failed (>0, or -1 for
+	// a start failure / signal kill).
+	ExitCode int `json:"exit_code,omitempty"`
+
 	Err string `json:"err,omitempty"`
 }
 
@@ -101,6 +106,7 @@ func toWire(e agent.Event) wireEvent {
 		SavedTokens:     e.SavedTokens,
 		SummaryChars:    e.SummaryChars,
 		Ratio:           e.Ratio,
+		ExitCode:        e.ExitCode,
 		Err:             e.Err,
 	}
 	// Duration goes out as milliseconds, never Go's default nanoseconds (§3.2).
