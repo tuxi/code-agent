@@ -170,8 +170,8 @@ v1 只含 user/assistant；工具/系统消息的全量保真属于 P1-B。
 | `turn_finished` | `text` | 本轮最终答复（这一轮的终点） |
 | `task_started` | `session_id`(子) `parent_session_id` `text` | subagent 委派开始（`text`=委派 prompt） |
 | `task_finished` | `session_id`(子) `parent_session_id` `text` | subagent 结束（`text`=结论） |
-| `job_started` | `session_id`(=job id) `text` | 后台 job 开始（P8.7；`text`=完整命令）。这些事件在 **job 自己的分区**里，用 `GET /v1/conversations/{job_id}/events` 拉取 |
-| `job_output` | `session_id`(=job id) `chunk` | job 输出片段（stdout+stderr 交错，服务端已按 ~4KB/750ms 合并，不会每行一条） |
+| `job_started` | `session_id`(=job id) `turn_id`(=发起 turn) `text` | 后台 job 开始（P8.7；`text`=完整命令）。**bracket 事件（started/finished）同时进父会话流**（直播 WS + 父会话 `GET /events` 回放，§8.4-2 定稿）——入口卡靠它发现 job；`job_output` 只在 job 自己的分区（`GET /v1/conversations/{job_id}/events`） |
+| `job_output` | `session_id`(=job id) `chunk` | job 输出片段（stdout+stderr 交错，服务端已按 ~4KB/750ms 合并，不会每行一条）。**仅 job 分区**，父会话流里没有 |
 | `job_finished` | `session_id`(=job id) `text` `elapsed_ms` `exit_code` `err` | job 终态。`text` ∈ `exited`（成功）\| `failed` \| `canceled`；`exit_code` 仅失败时出现（>0 = 命令非零退出，-1 = 启动失败/被信号杀死；成功时省略）；`err` 是配套的人读描述（如 `exit code 2`），仅失败时出现。形状以 golden `internal/server/testdata/job_*.json` 为准 |
 
 > 渲染建议：按 `turn_id` 把一轮的事件聚成一个气泡；`token_delta` 实时拼接成助手文本；subagent 事件按 `parent_session_id` 折叠成子流。job 终态三分支的入口卡/查看器顶栏显示：`exited` → 成功；`failed` → 失败（用 `exit_code` 细分：-1 显示"被终止/启动失败"，>0 显示"退出码 N"）；`canceled` → 已取消（用户/模型主动停止，不是失败）。

@@ -8,7 +8,7 @@ import (
 
 func TestStartAndComplete(t *testing.T) {
 	r := NewRegistry()
-	job := r.Start(".", "echo hi", []string{"echo", "hi"})
+	job := r.Start(".", "echo hi", []string{"echo", "hi"}, Owner{})
 	job.Wait()
 
 	s := job.Snapshot()
@@ -28,7 +28,7 @@ func TestStartAndComplete(t *testing.T) {
 
 func TestFailingJob(t *testing.T) {
 	r := NewRegistry()
-	job := r.Start(".", "false", []string{"false"})
+	job := r.Start(".", "false", []string{"false"}, Owner{})
 	job.Wait()
 
 	s := job.Snapshot()
@@ -42,7 +42,7 @@ func TestFailingJob(t *testing.T) {
 
 func TestCancel(t *testing.T) {
 	r := NewRegistry()
-	job := r.Start(".", "sleep 30", []string{"sleep", "30"})
+	job := r.Start(".", "sleep 30", []string{"sleep", "30"}, Owner{})
 
 	if st := job.Snapshot().Status; st != Running {
 		t.Fatalf("status = %q, want running", st)
@@ -62,7 +62,7 @@ func TestCancel(t *testing.T) {
 
 func TestStartNonexistentBinary(t *testing.T) {
 	r := NewRegistry()
-	job := r.Start(".", "no-such-binary-xyz", []string{"no-such-binary-xyz"})
+	job := r.Start(".", "no-such-binary-xyz", []string{"no-such-binary-xyz"}, Owner{})
 	job.Wait()
 	if st := job.Snapshot().Status; st != Failed {
 		t.Errorf("status = %q, want failed", st)
@@ -71,8 +71,8 @@ func TestStartNonexistentBinary(t *testing.T) {
 
 func TestListInStartOrder(t *testing.T) {
 	r := NewRegistry()
-	r.Start(".", "echo a", []string{"echo", "a"}).Wait()
-	r.Start(".", "echo b", []string{"echo", "b"}).Wait()
+	r.Start(".", "echo a", []string{"echo", "a"}, Owner{}).Wait()
+	r.Start(".", "echo b", []string{"echo", "b"}, Owner{}).Wait()
 
 	list := r.List()
 	if len(list) != 2 {
@@ -99,17 +99,17 @@ type recordingSink struct {
 	finished []Snapshot
 }
 
-func (s *recordingSink) JobStarted(id, command string) {
+func (s *recordingSink) JobStarted(snap Snapshot) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.started = append(s.started, command)
+	s.started = append(s.started, snap.Command)
 }
 func (s *recordingSink) JobOutput(id string, chunk []byte) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.output = append(s.output, chunk...)
 }
-func (s *recordingSink) JobFinished(id string, snap Snapshot) {
+func (s *recordingSink) JobFinished(snap Snapshot) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.finished = append(s.finished, snap)
@@ -126,7 +126,7 @@ func TestSinkObservesLifecycle(t *testing.T) {
 	r := NewRegistry()
 	r.Sink = sink
 
-	job := r.Start(".", "echo tee-marker", []string{"echo", "tee-marker"})
+	job := r.Start(".", "echo tee-marker", []string{"echo", "tee-marker"}, Owner{})
 	job.Wait()
 
 	started, output, finished := sink.state()
@@ -150,7 +150,7 @@ func TestSinkStartFailureStillPairs(t *testing.T) {
 	r := NewRegistry()
 	r.Sink = sink
 
-	r.Start(".", "no-such-binary-xyz", []string{"no-such-binary-xyz"}).Wait()
+	r.Start(".", "no-such-binary-xyz", []string{"no-such-binary-xyz"}, Owner{}).Wait()
 
 	started, _, finished := sink.state()
 	if len(started) != 1 {
@@ -166,7 +166,7 @@ func TestSinkObservesCancel(t *testing.T) {
 	r := NewRegistry()
 	r.Sink = sink
 
-	job := r.Start(".", "sleep 30", []string{"sleep", "30"})
+	job := r.Start(".", "sleep 30", []string{"sleep", "30"}, Owner{})
 	if err := r.Cancel(job.Snapshot().ID); err != nil {
 		t.Fatalf("cancel: %v", err)
 	}

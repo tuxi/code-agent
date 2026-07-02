@@ -188,13 +188,14 @@ func (t *RunCommandTool) Execute(ctx context.Context, ec tools.ExecutionContext,
 		if t.Jobs == nil {
 			t.Jobs = jobs.NewRegistry()
 		}
-		snap := t.Jobs.Start(rootAbs, command, args).Snapshot()
+		owner := jobs.Owner{SessionID: ec.SessionID, TurnID: ec.TurnID}
+		snap := t.Jobs.Start(rootAbs, command, args, owner).Snapshot()
 		return t.jsonResult(backgroundResult{
 			Command:  command,
 			JobID:    snap.ID,
 			Status:   string(snap.Status),
 			Decision: string(class.Decision),
-			Note:     "started in background; poll job_status / job_logs by job_id, or job_cancel to stop it",
+			Note:     "started in background; job_wait blocks until it finishes (preferred over polling job_status), job_logs reads output, job_cancel stops it",
 		})
 	}
 

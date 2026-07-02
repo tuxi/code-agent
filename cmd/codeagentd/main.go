@@ -86,7 +86,7 @@ func run() error {
 	runtime.AttachObserver(provider, telemetryStore, ctx)
 
 	// Build the global tool registry once.
-	toolReg, _, mcpMgr, planRef, err := runtime.BuildRegistry(ctx, cfg, mc, provider, telemetryStore, nil)
+	toolReg, _, mcpMgr, planRef, jobSink, err := runtime.BuildRegistry(ctx, cfg, mc, provider, telemetryStore, nil)
 	if err != nil {
 		return err
 	}
@@ -117,6 +117,11 @@ func run() error {
 	rb := runtime.NewServeRunBuilder(cfg, mc, provider, toolReg, wsReg, planRef)
 	executor := conversation.NewTurnExecutor(repo, eventStore, active, subs, rb)
 	executor.SetTitleGenerator(conversation.NewLLMTitleGenerator(provider, mc.Model))
+	// Job bracket events reach the owning conversation's live subscribers (P8.7
+	// §8.4-2) — persisted copies are already handled inside the sink.
+	if jobSink != nil {
+		jobSink.SetLiveResolver(subs.Emitter)
+	}
 
 	handler := server.NewMux(repo, eventStore, executor, server.MuxOptions{
 		ServerName:    "codeagentd/" + mc.Model,

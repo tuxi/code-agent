@@ -29,13 +29,25 @@ const (
 	Canceled Status = "canceled" // stopped via Cancel
 )
 
-// Snapshot is an immutable, concurrency-safe view of a job's state.
+// Owner identifies the conversation turn that started a job, so its lifecycle
+// events can be forwarded into that conversation's stream (P8.7 §8.4-2: the
+// client's entry card discovers a job from the parent stream's bracket events).
+// Zero value = unowned (tests, headless): no forwarding.
+type Owner struct {
+	SessionID string
+	TurnID    string
+}
+
+// Snapshot is an immutable, concurrency-safe view of a job's state. Owner is
+// runtime routing metadata, not model-facing state — excluded from the JSON the
+// job_* tools return.
 type Snapshot struct {
 	ID         string `json:"job_id"`
 	Command    string `json:"command"`
 	Status     Status `json:"status"`
 	ExitCode   int    `json:"exit_code"`
 	DurationMS int64  `json:"duration_ms"`
+	Owner      Owner  `json:"-"`
 }
 
 // Sink observes job lifecycle transitions and output as they happen (P8.7
@@ -48,9 +60,9 @@ type Snapshot struct {
 // the call (copy it if retained); a Started is always eventually paired with
 // exactly one Finished (including start failures and cancellation).
 type Sink interface {
-	JobStarted(id, command string)
+	JobStarted(snap Snapshot)
 	JobOutput(id string, chunk []byte)
-	JobFinished(id string, snap Snapshot)
+	JobFinished(snap Snapshot)
 }
 
 // Job is one background command. Its mutable fields are guarded by mu; callers
@@ -58,6 +70,7 @@ type Sink interface {
 type Job struct {
 	id      string
 	command string
+	owner   Owner
 
 	mu       sync.Mutex
 	status   Status
@@ -84,6 +97,7 @@ func (j *Job) Snapshot() Snapshot {
 		Status:     j.status,
 		ExitCode:   j.exitCode,
 		DurationMS: dur.Milliseconds(),
+		Owner:      j.owner,
 	}
 }
 
@@ -120,8 +134,9 @@ func NewRegistry() *Registry {
 // Start launches command (already split into argv) in dir and returns
 // immediately with a Job in the Running state. The job's context is detached
 // from any caller context so it survives the tool call that started it; it ends
-// on its own, on Cancel, or on process exit.
-func (r *Registry) Start(dir, command string, argv []string) *Job {
+// on its own, on Cancel, or on process exit. owner routes the job's lifecycle
+// events back to the starting conversation (zero value = no routing).
+func (r *Registry) Start(dir, command string, argv []string, owner Owner) *Job {
 	id := fmt.Sprintf("job_%d", r.seq.Add(1))
 	ctx, cancel := context.WithCancel(context.Background())
 	out := &cappedBuffer{max: r.maxOutput}
@@ -129,6 +144,7 @@ func (r *Registry) Start(dir, command string, argv []string) *Job {
 	job := &Job{
 		id:      id,
 		command: command,
+		owner:   owner,
 		status:  Running,
 		started: time.Now(),
 		output:  out,
@@ -142,7 +158,7 @@ func (r *Registry) Start(dir, command string, argv []string) *Job {
 	r.mu.Unlock()
 
 	if r.Sink != nil {
-		r.Sink.JobStarted(id, command)
+		r.Sink.JobStarted(job.Snapshot())
 	}
 
 	// The job writes to its capped buffer (backing job_logs) and, when a Sink is
@@ -162,7 +178,7 @@ func (r *Registry) Start(dir, command string, argv []string) *Job {
 		fmt.Fprintf(w, "failed to start: %v\n", err)
 		job.finish(Failed, -1)
 		if r.Sink != nil {
-			r.Sink.JobFinished(id, job.Snapshot())
+			r.Sink.JobFinished(job.Snapshot())
 		}
 		return job
 	}
@@ -186,7 +202,7 @@ func (r *Registry) Start(dir, command string, argv []string) *Job {
 		// Notify the sink BEFORE closing done: anyone unblocked by Wait/Done must
 		// find the finished event already emitted (Sink pairing contract).
 		if r.Sink != nil {
-			r.Sink.JobFinished(id, job.Snapshot())
+			r.Sink.JobFinished(job.Snapshot())
 		}
 		close(job.done)
 	}()

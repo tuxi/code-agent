@@ -473,7 +473,7 @@ func runAgent(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider 
 	defer store.Close()
 	runtime.AttachObserver(provider, store, ctx)
 
-	registry, skillReg, mcpMgr, planRef, err := runtime.BuildRegistry(ctx, cfg, mc, provider, store, subagentProgress())
+	registry, skillReg, mcpMgr, planRef, _, err := runtime.BuildRegistry(ctx, cfg, mc, provider, store, subagentProgress())
 	if err != nil {
 		return err
 	}
@@ -534,7 +534,7 @@ func runGoal(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider m
 	defer store.Close()
 	runtime.AttachObserver(provider, store, ctx)
 
-	registry, skillReg, mcpMgr, planRef, err := runtime.BuildRegistry(ctx, cfg, mc, provider, store, subagentProgress())
+	registry, skillReg, mcpMgr, planRef, _, err := runtime.BuildRegistry(ctx, cfg, mc, provider, store, subagentProgress())
 	if err != nil {
 		return err
 	}
@@ -582,7 +582,7 @@ func runTUI(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider mo
 	// renders them as a status line, never the transcript.
 	backend := tui.NewBackend()
 
-	registry, skillReg, mcpMgr, planRef, err := runtime.BuildRegistry(ctx, cfg, mc, provider, store, backend.Emitter)
+	registry, skillReg, mcpMgr, planRef, _, err := runtime.BuildRegistry(ctx, cfg, mc, provider, store, backend.Emitter)
 	if err != nil {
 		return err
 	}

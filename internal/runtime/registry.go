@@ -124,7 +124,7 @@ func RegisterBuiltinTools(registry *tools.Registry, cfg app.Config, skillReg *sk
 // load_skill tool (here) and the system-prompt index (the session builder), so
 // the index the model sees and the bodies it can load stay in sync. The returned
 // Manager owns the MCP subprocesses; the caller must Close it.
-func BuildRegistry(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider model.Provider, store session.Store, progress agent.Emitter) (*tools.Registry, *skills.Registry, *mcp.Manager, *agent.RunnerRef, error) {
+func BuildRegistry(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider model.Provider, store session.Store, progress agent.Emitter) (*tools.Registry, *skills.Registry, *mcp.Manager, *agent.RunnerRef, *JobEventSink, error) {
 	root := cfg.Workspace.Root
 	registry := tools.NewRegistry()
 
@@ -134,19 +134,23 @@ func BuildRegistry(ctx context.Context, cfg app.Config, mc app.ModelConfig, prov
 		fmt.Fprintf(os.Stderr, "[registry]   skipped %q: %s\n", label, reason)
 	}
 	if err != nil {
-		return nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, err
 	}
 
 	// Background jobs get their own event partition (P8.7 Phase A): each job's
 	// lifecycle + output persists under SessionID = job id, replayable via
-	// GET /v1/conversations/{job_id}/events — the same store-only observability
-	// the subagent transcript already has. Store-less builds keep jobs unobserved.
-	var jobSink jobs.Sink
+	// GET /v1/conversations/{job_id}/events; the bracket events are additionally
+	// forwarded into the owning conversation's partition (§8.4-2). The sink is
+	// returned so serve can late-bind its live resolver once the subscription
+	// manager exists. Store-less builds keep jobs unobserved (nil sink).
+	var jobSink *JobEventSink
+	var registerSink jobs.Sink // avoid a typed-nil interface when store is nil
 	if store != nil {
-		jobSink = NewJobEventSink(EventStoreEmitter{Ctx: ctx, Store: store})
+		jobSink = NewJobEventSink(ctx, store)
+		registerSink = jobSink
 	}
-	if err := RegisterBuiltinTools(registry, cfg, skillReg, jobSink); err != nil {
-		return nil, nil, nil, nil, err
+	if err := RegisterBuiltinTools(registry, cfg, skillReg, registerSink); err != nil {
+		return nil, nil, nil, nil, nil, err
 	}
 
 	// Subagent (8.3): freeze the read-only subset from the built-ins ONLY — before
@@ -157,7 +161,7 @@ func BuildRegistry(ctx context.Context, cfg app.Config, mc app.ModelConfig, prov
 	sub := NewSubAgent(cfg, mc, provider, root, registry, skillReg.PromptIndex(), store, progress)
 	if taskTool := task.NewTool(sub); cfg.Agent.ToolAllowed(taskTool.Name()) {
 		if err := registry.Register(taskTool); err != nil {
-			return nil, nil, nil, nil, err
+			return nil, nil, nil, nil, nil, err
 		}
 	}
 
@@ -177,7 +181,7 @@ func BuildRegistry(ctx context.Context, cfg app.Config, mc app.ModelConfig, prov
 		}
 		if err := mgr.Connect(ctx, cfg.MCP.Servers); err != nil {
 			mgr.Close()
-			return nil, nil, nil, nil, err
+			return nil, nil, nil, nil, nil, err
 		}
 		for _, tool := range mgr.Tools() {
 			if !cfg.Agent.ToolAllowed(tool.Name()) {
@@ -185,7 +189,7 @@ func BuildRegistry(ctx context.Context, cfg app.Config, mc app.ModelConfig, prov
 			}
 			if err := registry.Register(tool); err != nil {
 				mgr.Close()
-				return nil, nil, nil, nil, fmt.Errorf("register mcp tool: %w", err)
+				return nil, nil, nil, nil, nil, fmt.Errorf("register mcp tool: %w", err)
 			}
 		}
 
@@ -207,5 +211,5 @@ func BuildRegistry(ctx context.Context, cfg app.Config, mc app.ModelConfig, prov
 	// must be wired via planRef.R = runner after BuildRunner.
 	planRef := WirePlanTools(registry, filepath.Join(root, ".codeagent", "plans"))
 
-	return registry, skillReg, mgr, planRef, nil
+	return registry, skillReg, mgr, planRef, jobSink, nil
 }

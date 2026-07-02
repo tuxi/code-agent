@@ -317,7 +317,7 @@ func Assemble(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider 
 	closers = append(closers, func() { telemetryStore.Close() })
 	runtime.AttachObserver(provider, telemetryStore, ctx)
 
-	toolReg, _, mcpMgr, planRef, err := runtime.BuildRegistry(ctx, cfg, mc, provider, telemetryStore, nil)
+	toolReg, _, mcpMgr, planRef, jobSink, err := runtime.BuildRegistry(ctx, cfg, mc, provider, telemetryStore, nil)
 	if err != nil {
 		release()
 		return nil, nil, nil, err
@@ -356,6 +356,11 @@ func Assemble(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider 
 	rb := runtime.NewServeRunBuilder(cfg, mc, provider, toolReg, wsReg, planRef)
 	executor := conversation.NewTurnExecutor(repo, eventStore, active, subs, rb)
 	executor.SetTitleGenerator(conversation.NewLLMTitleGenerator(provider, mc.Model))
+	// Job bracket events reach the owning conversation's live subscribers (P8.7
+	// §8.4-2) — persisted copies are already handled inside the sink.
+	if jobSink != nil {
+		jobSink.SetLiveResolver(subs.Emitter)
+	}
 
 	handler := server.NewMux(repo, eventStore, executor, server.MuxOptions{
 		ServerName:    "codeagent/" + mc.Model,
