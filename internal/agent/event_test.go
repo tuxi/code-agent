@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"code-agent/internal/assetref"
 	"code-agent/internal/model"
 	"code-agent/internal/tools"
 )
@@ -107,6 +108,31 @@ func TestRunTurnEmitsEventStream(t *testing.T) {
 	last := em.events[len(em.events)-1]
 	if last.Text != "all done" {
 		t.Fatalf("turn_finished text = %q, want %q", last.Text, "all done")
+	}
+}
+
+func TestNormalizeToolAssetsFillsRuntimeContext(t *testing.T) {
+	got := normalizeToolAssets([]assets.Ref{{
+		ID:                    "asset_client_1",
+		Kind:                  "file_location",
+		WorkspaceRelativePath: "Sources/App.swift",
+		Range:                 &assets.Range{StartLine: 12},
+	}}, "/Users/x/project", "turn_7", "call_9")
+	if len(got) != 1 {
+		t.Fatalf("assets = %d, want 1", len(got))
+	}
+	ref := got[0]
+	if ref.SourceTurnID != "turn_7" || ref.SourceCallID != "call_9" {
+		t.Fatalf("source ids = %q/%q, want turn_7/call_9", ref.SourceTurnID, ref.SourceCallID)
+	}
+	if ref.WorkspaceID != "project-local" {
+		t.Fatalf("workspace_id = %q, want project-local", ref.WorkspaceID)
+	}
+	if ref.URI != "workspace://project-local/Sources/App.swift#L12" {
+		t.Fatalf("uri = %q", ref.URI)
+	}
+	if ref.DisplayName != "App.swift:12" {
+		t.Fatalf("display_name = %q", ref.DisplayName)
 	}
 }
 

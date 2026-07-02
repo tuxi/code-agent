@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -184,8 +186,8 @@ type errorAdapter struct {
 	lang string
 }
 
-func (e errorAdapter) Language() string                                 { return e.lang }
-func (e errorAdapter) Available() bool                                  { return true }
+func (e errorAdapter) Language() string { return e.lang }
+func (e errorAdapter) Available() bool  { return true }
 func (e errorAdapter) FindSymbol(context.Context, string, string) ([]Symbol, error) {
 	return nil, fmt.Errorf("simulated failure")
 }
@@ -234,7 +236,7 @@ func TestStubErrorsFiltered(t *testing.T) {
 	tool := &ProjectGraphTool{
 		Adapters: []LanguageAdapter{
 			fakeAdapter{lang: "go", avail: true}, // returns empty, no error
-			errorAdapter{lang: "swift"},           // returns "simulated failure" — a real error
+			errorAdapter{lang: "swift"},          // returns "simulated failure" — a real error
 		},
 		Timeout: time.Second,
 	}
@@ -273,5 +275,42 @@ func TestPartialAdapterFailureStillReturnsResults(t *testing.T) {
 	}
 	if len(syms) != 1 || syms[0].Name != "Foo" {
 		t.Errorf("expected 1 result from the working adapter, got: %+v", syms)
+	}
+}
+
+func TestFindSymbolEmitsSymbolAsset(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "a.go"), []byte("package p\n\ntype Foo struct{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tool := toolWith(fakeAdapter{
+		lang:    "go",
+		avail:   true,
+		symbols: []Symbol{{Name: "Foo", Kind: "struct", File: "a.go", Line: 3}},
+	})
+	res, err := tool.Execute(context.Background(), tools.ExecutionContext{
+		WorkspaceRoot: root,
+		TurnID:        "turn_1",
+		CallID:        "call_graph",
+	}, json.RawMessage(`{"action":"find_symbol","query":"Foo"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Assets) != 1 {
+		t.Fatalf("assets = %d, want 1", len(res.Assets))
+	}
+	ref := res.Assets[0]
+	if ref.Kind != "symbol" || ref.DisplayName != "Foo" || ref.Metadata["symbol_kind"] != "struct" {
+		t.Fatalf("asset = %+v", ref)
+	}
+	if ref.Range == nil || ref.Range.StartLine != 3 || ref.Preview != "type Foo struct{}" {
+		t.Fatalf("range/preview = %+v / %q", ref.Range, ref.Preview)
+	}
+	var out graphOutput
+	if err := json.Unmarshal(res.Output, &out); err != nil {
+		t.Fatalf("output is not graphOutput: %v\n%s", err, res.Output)
+	}
+	if out.Kind != "symbols" || len(out.Items) != 1 || out.Items[0].AssetID != ref.ID {
+		t.Fatalf("output = %+v, asset id = %q", out, ref.ID)
 	}
 }

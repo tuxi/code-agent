@@ -1,0 +1,21 @@
+{
+  "event_id": "evt_fixed",
+  "kind": "turn_finished",
+  "at": "2026-06-24T10:00:00.123Z",
+  "session_id": "sess_root",
+  "turn_id": "turn_7",
+  "text_annotations": [
+    {
+      "asset_id": "asset_turn_7_call_grep_001_7156f5c8",
+      "kind": "file_location",
+      "text": "App.swift:5",
+      "start_byte": 6,
+      "end_byte": 17,
+      "start_utf16": 6,
+      "end_utf16": 17,
+      "source_turn_id": "turn_7",
+      "source_call_id": "call_grep"
+    }
+  ],
+  "text": "Open `App.swift:5` for the important line."
+}

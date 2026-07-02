@@ -52,7 +52,7 @@ func (t *remoteTool) SideEffects() bool { return true }
 //	mcp: invalid arguments  — the model's JSON args are malformed
 //	mcp: protocol error     — the call itself failed (transport, unknown tool, ...)
 //	mcp: tool error         — the tool ran but reported IsError
-func (t *remoteTool) Execute(ctx context.Context, _ tools.ExecutionContext, input json.RawMessage) (tools.ToolResult, error) {
+func (t *remoteTool) Execute(ctx context.Context, ec tools.ExecutionContext, input json.RawMessage) (tools.ToolResult, error) {
 	fmt.Fprintf(t.log, "[mcp] call %s args=%s\n", t.label, rawForLog(input))
 
 	params := &mcpsdk.CallToolParams{Name: t.remoteName}
@@ -71,7 +71,14 @@ func (t *remoteTool) Execute(ctx context.Context, _ tools.ExecutionContext, inpu
 		return tools.ToolResult{}, fmt.Errorf("mcp: protocol error: %s: %w", t.label, err)
 	}
 
-	text := flattenContent(res.Content)
+	rendered := renderContentAssets(res.Content, contentAssetContext{
+		Server:        t.server,
+		Tool:          t.remoteName,
+		WorkspaceRoot: ec.WorkspaceRoot,
+		TurnID:        ec.TurnID,
+		CallID:        ec.CallID,
+	})
+	text := rendered.Text
 	fmt.Fprintf(t.log, "[mcp] result %s isError=%t bytes=%d\n", t.label, res.IsError, len(text))
 
 	if res.IsError {
@@ -79,7 +86,7 @@ func (t *remoteTool) Execute(ctx context.Context, _ tools.ExecutionContext, inpu
 		// self-correct, so surface it through the loop's existing failure path.
 		return tools.ToolResult{}, fmt.Errorf("mcp: tool error: %s", text)
 	}
-	return tools.ToolResult{Content: text}, nil
+	return tools.ToolResult{Content: text, Output: rendered.Output, Assets: rendered.Assets}, nil
 }
 
 func rawForLog(b []byte) string {

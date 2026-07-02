@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 
 	"code-agent/internal/agent"
+	"code-agent/internal/assetref"
 	"code-agent/internal/tools"
 )
 
@@ -32,16 +33,19 @@ type wireEvent struct {
 	Seq int64 `json:"seq,omitempty"`
 
 	// Tool / skill events.
-	CallID       string          `json:"call_id,omitempty"`
-	Step         int             `json:"step,omitempty"`
-	ToolName     string          `json:"tool_name,omitempty"`
-	ToolArgs     json.RawMessage `json:"tool_args,omitempty"`
-	Observation  string          `json:"observation,omitempty"`
-	Chunk        string          `json:"chunk,omitempty"`
-	Failure      string          `json:"failure,omitempty"`
-	SkillVersion string          `json:"skill_version,omitempty"`
-	SkillSource  string          `json:"skill_source,omitempty"`
-	Executor     string          `json:"executor,omitempty"`
+	CallID          string                  `json:"call_id,omitempty"`
+	Step            int                     `json:"step,omitempty"`
+	ToolName        string                  `json:"tool_name,omitempty"`
+	ToolArgs        json.RawMessage         `json:"tool_args,omitempty"`
+	Observation     string                  `json:"observation,omitempty"`
+	Output          json.RawMessage         `json:"output,omitempty"`
+	Assets          []assets.Ref            `json:"assets,omitempty"`
+	TextAnnotations []assets.TextAnnotation `json:"text_annotations,omitempty"`
+	Chunk           string                  `json:"chunk,omitempty"`
+	Failure         string                  `json:"failure,omitempty"`
+	SkillVersion    string                  `json:"skill_version,omitempty"`
+	SkillSource     string                  `json:"skill_source,omitempty"`
+	Executor        string                  `json:"executor,omitempty"`
 
 	// Todo checklist.
 	Todos []tools.Todo `json:"todos,omitempty"`
@@ -70,31 +74,34 @@ const rfc3339Millis = "2006-01-02T15:04:05.000Z07:00"
 // identity), which keeps this function deterministic for golden tests.
 func toWire(e agent.Event) wireEvent {
 	w := wireEvent{
-		Kind:         string(e.Kind),
-		At:           e.At.UTC().Format(rfc3339Millis),
-		SessionID:    e.SessionID,
-		TurnID:       e.TurnID,
-		InvocationID: e.InvocationID,
-		Seq:          e.Seq,
-		CallID:       e.CallID,
-		Step:         e.Step,
-		ToolName:     e.ToolName,
-		ToolArgs:     toWireArgs(e.ToolArgs),
-		Observation:  e.Observation,
-		Chunk:        e.Chunk,
-		Failure:      e.Failure,
-		SkillVersion: e.Version,
-		SkillSource:  e.SkillSource,
-		Executor:     e.Executor,
-		Todos:        e.Todos,
-		Text:         e.Text,
-		PromptTokens: e.PromptTokens,
-		BeforeTokens: e.BeforeTokens,
-		AfterTokens:  e.AfterTokens,
-		SavedTokens:  e.SavedTokens,
-		SummaryChars: e.SummaryChars,
-		Ratio:        e.Ratio,
-		Err:          e.Err,
+		Kind:            string(e.Kind),
+		At:              e.At.UTC().Format(rfc3339Millis),
+		SessionID:       e.SessionID,
+		TurnID:          e.TurnID,
+		InvocationID:    e.InvocationID,
+		Seq:             e.Seq,
+		CallID:          e.CallID,
+		Step:            e.Step,
+		ToolName:        e.ToolName,
+		ToolArgs:        toWireArgs(e.ToolArgs),
+		Observation:     e.Observation,
+		Output:          e.Output,
+		Assets:          e.Assets,
+		TextAnnotations: e.TextAnnotations,
+		Chunk:           e.Chunk,
+		Failure:         e.Failure,
+		SkillVersion:    e.Version,
+		SkillSource:     e.SkillSource,
+		Executor:        e.Executor,
+		Todos:           e.Todos,
+		Text:            e.Text,
+		PromptTokens:    e.PromptTokens,
+		BeforeTokens:    e.BeforeTokens,
+		AfterTokens:     e.AfterTokens,
+		SavedTokens:     e.SavedTokens,
+		SummaryChars:    e.SummaryChars,
+		Ratio:           e.Ratio,
+		Err:             e.Err,
 	}
 	// Duration goes out as milliseconds, never Go's default nanoseconds (§3.2).
 	if e.Elapsed > 0 {

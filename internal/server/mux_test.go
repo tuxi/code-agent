@@ -6,12 +6,15 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"code-agent/internal/agent"
+	"code-agent/internal/assetref"
 	"code-agent/internal/conversation"
 	"code-agent/internal/session"
 )
@@ -254,6 +257,12 @@ func TestMuxCreateThenList(t *testing.T) {
 	if ref.WorkspacePath != "/Users/x/proj" {
 		t.Errorf("WorkspacePath = %q", ref.WorkspacePath)
 	}
+	if ref.Workspace == nil {
+		t.Fatal("create did not return workspace anchor")
+	}
+	if ref.Workspace.ID != "proj-local" || ref.Workspace.RootPath != "/Users/x/proj" || ref.Workspace.Name != "proj" {
+		t.Fatalf("workspace anchor = %+v", ref.Workspace)
+	}
 
 	// List should include the created conversation.
 	resp2, err := http.Get(srv.URL + "/v1/conversations")
@@ -269,6 +278,9 @@ func TestMuxCreateThenList(t *testing.T) {
 	for _, r := range refs {
 		if r.ID == ref.ID {
 			found = true
+			if r.Workspace == nil || r.Workspace.ID != "proj-local" {
+				t.Fatalf("listed workspace anchor = %+v", r.Workspace)
+			}
 		}
 	}
 	if !found {
@@ -331,7 +343,22 @@ func readMuxWithHistory() (http.Handler, string) {
 		storedEvent(agent.Event{Kind: agent.EventTurnStarted, SessionID: id, TurnID: "t1", At: at, Text: "分析项目"}),
 		storedEvent(agent.Event{Kind: agent.EventToolStarted, SessionID: id, TurnID: "t1", At: at.Add(time.Second), Step: 1, ToolName: "grep", ToolArgs: `{"q":"x"}`}),
 		storedEvent(agent.Event{Kind: agent.EventModelFinished, SessionID: id, TurnID: "t1", At: at.Add(2 * time.Second), PromptTokens: 100, Elapsed: 731 * time.Millisecond}),
-		storedEvent(agent.Event{Kind: agent.EventTurnFinished, SessionID: id, TurnID: "t1", At: at.Add(3 * time.Second), Text: "项目结构如下"}),
+		storedEvent(agent.Event{
+			Kind:      agent.EventTurnFinished,
+			SessionID: id,
+			TurnID:    "t1",
+			At:        at.Add(3 * time.Second),
+			Text:      "项目结构见 App.swift:5",
+			TextAnnotations: []assets.TextAnnotation{{
+				AssetID:    "asset_t1_call_1_001_file",
+				Kind:       "file_location",
+				Text:       "App.swift:5",
+				StartByte:  len("项目结构见 "),
+				EndByte:    len("项目结构见 App.swift:5"),
+				StartUTF16: len([]rune("项目结构见 ")),
+				EndUTF16:   len([]rune("项目结构见 App.swift:5")),
+			}},
+		}),
 	}
 	events := &fakeEventStore{recs: map[string][]session.EventRecord{id: recs}}
 
@@ -369,6 +396,231 @@ func TestMuxGetEventsReEncodesToWire(t *testing.T) {
 	}
 	if frames[2]["elapsed_ms"].(float64) != 731 {
 		t.Errorf("elapsed_ms = %v, want 731", frames[2]["elapsed_ms"])
+	}
+	anns, ok := frames[3]["text_annotations"].([]any)
+	if !ok || len(anns) != 1 {
+		t.Fatalf("text_annotations = %#v, want one", frames[3]["text_annotations"])
+	}
+	if ann, _ := anns[0].(map[string]any); ann["asset_id"] != "asset_t1_call_1_001_file" {
+		t.Fatalf("annotation = %#v", anns[0])
+	}
+}
+
+func TestMuxGetEventsReplaysToolAssets(t *testing.T) {
+	at := time.Date(2026, 6, 24, 10, 0, 0, 0, time.UTC)
+	id := "sess_assets"
+	output := json.RawMessage(`{"kind":"search_results","items":[{"asset_id":"asset_t1_call_1_001_abc","kind":"file_location","path":"Sources/App.swift","line":42}]}`)
+	ref := assets.Ref{
+		ID:                    "asset_t1_call_1_001_abc",
+		Kind:                  "file_location",
+		URI:                   "workspace://test-local/Sources/App.swift#L42",
+		DisplayName:           "App.swift:42",
+		WorkspaceID:           "test-local",
+		WorkspaceRelativePath: "Sources/App.swift",
+		Range:                 &assets.Range{StartLine: 42},
+		SourceTurnID:          "t1",
+		SourceCallID:          "call_1",
+	}
+	events := &fakeEventStore{recs: map[string][]session.EventRecord{id: {
+		storedEvent(agent.Event{
+			Kind:        agent.EventToolFinished,
+			SessionID:   id,
+			TurnID:      "t1",
+			At:          at,
+			Step:        1,
+			ToolName:    "grep",
+			CallID:      "call_1",
+			Observation: "Sources/App.swift:42: let value = 1",
+			Output:      output,
+			Assets:      []assets.Ref{ref},
+		}),
+	}}}
+	repo := newFakeConversationRepo()
+	repo.sessions[id] = &session.Session{ID: id, WorkspacePath: "/tmp/test"}
+	srv := httptest.NewServer(newTestMux(repo, events))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/v1/conversations/" + id + "/events")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var frames []map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&frames); err != nil {
+		t.Fatal(err)
+	}
+	if len(frames) != 1 {
+		t.Fatalf("want 1 event frame, got %d", len(frames))
+	}
+	frame := frames[0]
+	if frame["kind"] != "tool_finished" {
+		t.Fatalf("kind = %v, want tool_finished", frame["kind"])
+	}
+	if out, ok := frame["output"].(map[string]any); !ok || out["kind"] != "search_results" {
+		t.Fatalf("output = %#v, want search_results", frame["output"])
+	}
+	gotAssets, ok := frame["assets"].([]any)
+	if !ok || len(gotAssets) != 1 {
+		t.Fatalf("assets = %#v, want one asset", frame["assets"])
+	}
+	gotAsset, ok := gotAssets[0].(map[string]any)
+	if !ok || gotAsset["id"] != ref.ID || gotAsset["uri"] != ref.URI {
+		t.Fatalf("asset = %#v, want id/uri preserved", gotAssets[0])
+	}
+}
+
+func TestMuxAssetPreviewAndContent(t *testing.T) {
+	root := t.TempDir()
+	srcDir := filepath.Join(root, "Sources")
+	if err := os.MkdirAll(srcDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := strings.Join([]string{
+		"import Foundation",
+		"",
+		"struct App {",
+		"    let name = \"AgentKit\"",
+		"    let value = 42",
+		"}",
+	}, "\n")
+	if err := os.WriteFile(filepath.Join(srcDir, "App.swift"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	id := "sess_asset_api"
+	assetID := "asset_t1_call_1_001_file"
+	ref := assets.Ref{
+		ID:                    assetID,
+		Kind:                  "file_location",
+		URI:                   "workspace://project-local/Sources/App.swift#L5",
+		DisplayName:           "App.swift:5",
+		WorkspaceID:           "project-local",
+		WorkspaceRelativePath: "Sources/App.swift",
+		Range:                 &assets.Range{StartLine: 5},
+		MIMEType:              "text/x-swift",
+		SourceTurnID:          "t1",
+		SourceCallID:          "call_1",
+	}
+	events := &fakeEventStore{recs: map[string][]session.EventRecord{id: {
+		storedEvent(agent.Event{
+			Kind:      agent.EventToolFinished,
+			SessionID: id,
+			TurnID:    "t1",
+			CallID:    "call_1",
+			ToolName:  "grep",
+			Assets:    []assets.Ref{ref},
+		}),
+	}}}
+	repo := newFakeConversationRepo()
+	repo.sessions[id] = &session.Session{ID: id, WorkspacePath: root}
+	srv := httptest.NewServer(newTestMux(repo, events))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/v1/conversations/" + id + "/assets/" + assetID + "/preview")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("preview status = %d, want 200", resp.StatusCode)
+	}
+	var preview AssetPreviewResponse
+	if err := json.NewDecoder(resp.Body).Decode(&preview); err != nil {
+		t.Fatal(err)
+	}
+	if preview.Source != "file_window" || !strings.Contains(preview.Content, "5:     let value = 42") {
+		t.Fatalf("preview = %+v", preview)
+	}
+
+	resp2, err := http.Get(srv.URL + "/v1/conversations/" + id + "/assets/" + assetID + "/content")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp2.Body.Close()
+	if resp2.StatusCode != http.StatusOK {
+		t.Fatalf("content status = %d, want 200", resp2.StatusCode)
+	}
+	var body AssetContentResponse
+	if err := json.NewDecoder(resp2.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Content != content || body.MIMEType != "text/x-swift" {
+		t.Fatalf("content response = %+v", body)
+	}
+}
+
+func TestMuxAssetPreviewFallsBackToMetadata(t *testing.T) {
+	id := "sess_asset_meta"
+	assetID := "asset_t1_call_1_001_mcp"
+	ref := assets.Ref{
+		ID:       assetID,
+		Kind:     "image",
+		URI:      "mcp://fs/read_file/call_1/001",
+		Preview:  "[non-text content: image (image/png, 5 bytes) omitted]",
+		MIMEType: "image/png",
+		Metadata: map[string]string{
+			"source":   "mcp",
+			"mcp_type": "image",
+		},
+		SourceTurnID: "t1",
+		SourceCallID: "call_1",
+	}
+	events := &fakeEventStore{recs: map[string][]session.EventRecord{id: {
+		storedEvent(agent.Event{Kind: agent.EventToolFinished, SessionID: id, TurnID: "t1", Assets: []assets.Ref{ref}}),
+	}}}
+	repo := newFakeConversationRepo()
+	repo.sessions[id] = &session.Session{ID: id, WorkspacePath: t.TempDir()}
+	srv := httptest.NewServer(newTestMux(repo, events))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/v1/conversations/" + id + "/assets/" + assetID + "/preview")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("preview status = %d, want 200", resp.StatusCode)
+	}
+	var preview AssetPreviewResponse
+	if err := json.NewDecoder(resp.Body).Decode(&preview); err != nil {
+		t.Fatal(err)
+	}
+	if preview.Source != "asset_preview" || preview.Content != ref.Preview || preview.Asset.Metadata["mcp_type"] != "image" {
+		t.Fatalf("preview = %+v", preview)
+	}
+}
+
+func TestMuxAssetContentRejectsPathEscape(t *testing.T) {
+	root := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "secret.txt")
+	if err := os.WriteFile(outside, []byte("secret"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	id := "sess_asset_escape"
+	assetID := "asset_t1_call_1_001_escape"
+	ref := assets.Ref{
+		ID:           assetID,
+		Kind:         "file",
+		AbsolutePath: outside,
+		MIMEType:     "text/plain",
+		SourceTurnID: "t1",
+		SourceCallID: "call_1",
+	}
+	events := &fakeEventStore{recs: map[string][]session.EventRecord{id: {
+		storedEvent(agent.Event{Kind: agent.EventToolFinished, SessionID: id, TurnID: "t1", Assets: []assets.Ref{ref}}),
+	}}}
+	repo := newFakeConversationRepo()
+	repo.sessions[id] = &session.Session{ID: id, WorkspacePath: root}
+	srv := httptest.NewServer(newTestMux(repo, events))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/v1/conversations/" + id + "/assets/" + assetID + "/content")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("content status = %d, want 403", resp.StatusCode)
 	}
 }
 
@@ -434,7 +686,7 @@ func TestMuxGetMessagesDerivesFromEvents(t *testing.T) {
 	if msgs[0].Role != "user" || msgs[0].Content != "分析项目" {
 		t.Errorf("msg[0] = %+v", msgs[0])
 	}
-	if msgs[1].Role != "assistant" || msgs[1].Content != "项目结构如下" {
+	if msgs[1].Role != "assistant" || msgs[1].Content != "项目结构见 App.swift:5" {
 		t.Errorf("msg[1] = %+v", msgs[1])
 	}
 }

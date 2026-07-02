@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"code-agent/internal/assetref"
 	"context"
 	"encoding/json"
 	"time"
@@ -11,6 +12,8 @@ import (
 type ToolCallResult struct {
 	Subtype string // "result" (v1.1); "progress"|"error"|"cancel" (v1.2+)
 	Content string
+	Output  json.RawMessage
+	Assets  []assets.Ref
 	IsError bool
 }
 

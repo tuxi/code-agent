@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"code-agent/internal/agent"
+	"code-agent/internal/assetref"
 	"code-agent/internal/tools"
 )
 
@@ -45,10 +46,49 @@ func cases() map[string]wireCase {
 			ToolName: "run_command", Observation: `{"command":"go test ./...","stdout":"ok  ./internal/agent","exit_code":0,"duration_ms":234}`,
 			Elapsed: 1200 * time.Millisecond,
 		}},
+		"tool_finished_assets": {ev: agent.Event{
+			Kind: agent.EventToolFinished, At: fixedAt,
+			SessionID: "sess_root", TurnID: "turn_7", CallID: "call_grep", Step: 4,
+			ToolName:    "grep",
+			Observation: `Sources/App.swift:49: public var streamingText: String = ""`,
+			Output:      json.RawMessage(`{"kind":"search_results","query":"streamingText","items":[{"asset_id":"asset_turn_7_call_grep_001_7156f5c8","kind":"file_location","path":"Sources/App.swift","line":49,"column":1,"preview":"public var streamingText: String = \"\""}]}`),
+			Assets: []assets.Ref{{
+				ID:                    "asset_turn_7_call_grep_001_7156f5c8",
+				Kind:                  "file_location",
+				URI:                   "workspace://app-local/Sources/App.swift#L49C1",
+				DisplayName:           "App.swift:49",
+				WorkspaceID:           "app-local",
+				WorkspaceRelativePath: "Sources/App.swift",
+				AbsolutePath:          "/work/App/Sources/App.swift",
+				Range:                 &assets.Range{StartLine: 49, StartColumn: 1},
+				Preview:               `public var streamingText: String = ""`,
+				MIMEType:              "text/x-swift",
+				Metadata:              map[string]string{"language": "swift"},
+				SourceTurnID:          "turn_7",
+				SourceCallID:          "call_grep",
+			}},
+			Elapsed: 1200 * time.Millisecond,
+		}},
 		"tool_stdout": {ev: agent.Event{
 			Kind: agent.EventToolStdout, At: fixedAt,
 			SessionID: "sess_root", TurnID: "turn_7", CallID: "call_abc",
 			Chunk: "Downloading packages...\n",
+		}},
+		"turn_finished_annotations": {ev: agent.Event{
+			Kind: agent.EventTurnFinished, At: fixedAt,
+			SessionID: "sess_root", TurnID: "turn_7",
+			Text: "Open `App.swift:5` for the important line.",
+			TextAnnotations: []assets.TextAnnotation{{
+				AssetID:      "asset_turn_7_call_grep_001_7156f5c8",
+				Kind:         "file_location",
+				Text:         "App.swift:5",
+				StartByte:    6,
+				EndByte:      17,
+				StartUTF16:   6,
+				EndUTF16:     17,
+				SourceTurnID: "turn_7",
+				SourceCallID: "call_grep",
+			}},
 		}},
 		"tool_stderr": {ev: agent.Event{
 			Kind: agent.EventToolStderr, At: fixedAt,

@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"code-agent/internal/assetref"
 	"code-agent/internal/model"
 	"code-agent/internal/session"
 	"code-agent/internal/tools"
@@ -194,6 +195,40 @@ func nextCallID() string {
 	return fmt.Sprintf("call_%d", toolCallSeq.Add(1))
 }
 
+func normalizeToolAssets(refs []assets.Ref, workspaceRoot, turnID, callID string) []assets.Ref {
+	if len(refs) == 0 {
+		return refs
+	}
+	out := make([]assets.Ref, len(refs))
+	copy(out, refs)
+	workspaceID := ""
+	if workspaceRoot != "" {
+		workspaceID = assets.WorkspaceID(workspaceRoot)
+	}
+	for i := range out {
+		if out[i].SourceTurnID == "" {
+			out[i].SourceTurnID = turnID
+		}
+		if out[i].SourceCallID == "" {
+			out[i].SourceCallID = callID
+		}
+		if out[i].WorkspaceID == "" && workspaceID != "" {
+			out[i].WorkspaceID = workspaceID
+		}
+		if out[i].URI == "" && out[i].WorkspaceID != "" && out[i].WorkspaceRelativePath != "" {
+			out[i].URI = assets.WorkspaceURI(out[i].WorkspaceID, out[i].WorkspaceRelativePath, out[i].Range)
+		}
+		if out[i].DisplayName == "" && out[i].WorkspaceRelativePath != "" {
+			line := 0
+			if out[i].Range != nil {
+				line = out[i].Range.StartLine
+			}
+			out[i].DisplayName = assets.DisplayName(out[i].WorkspaceRelativePath, line)
+		}
+	}
+	return out
+}
+
 // RunTurn runs one turn of the agent against a persistent session: it appends
 // the user's input to the session history, then drives the uniform loop —
 // call the model (with tool schemas); if it returns no tool calls, that text is
@@ -277,6 +312,7 @@ func (r *Runner) drive(ctx context.Context, sess *session.Session) (TurnResult, 
 	// when Run returns and the next user turn starts a fresh counter). A
 	// search-happy model reformulating the same query is cut off past the cap.
 	webSearches := 0
+	var turnAssets []assets.Ref
 
 	for i := 0; i < r.MaxSteps; i++ {
 		// A canceled context (Ctrl-C) must stop the turn at the step boundary
@@ -436,7 +472,11 @@ func (r *Runner) drive(ctx context.Context, sess *session.Session) (TurnResult, 
 			sess.Messages = append(sess.Messages, resp.AssistantMessage())
 			sess.UpdatedAt = time.Now()
 			turn.Final = resp.Content
-			r.emit(Event{Kind: EventTurnFinished, Text: turn.Final})
+			r.emit(Event{
+				Kind:            EventTurnFinished,
+				Text:            turn.Final,
+				TextAnnotations: annotateTextWithAssets(turn.Final, turnAssets),
+			})
 			return turn, nil
 		}
 
@@ -505,6 +545,8 @@ func (r *Runner) drive(ctx context.Context, sess *session.Session) (TurnResult, 
 			}
 
 			var observation string
+			var output json.RawMessage
+			var assetRefs []assets.Ref
 			var execErr error
 			toolStart := time.Now()
 			switch {
@@ -528,10 +570,16 @@ func (r *Runner) drive(ctx context.Context, sess *session.Session) (TurnResult, 
 					execErr = fmt.Errorf("%s", result.Content)
 				} else {
 					observation = result.Content
+					output = result.Output
+					assetRefs = result.Assets
 				}
 			default:
-				observation, execErr = r.executeTool(ctx, tool, call.ID, input)
+				var toolResult tools.ToolResult
+				toolResult, execErr = r.executeTool(ctx, tool, call.ID, input)
 				if execErr == nil {
+					observation = toolResult.Content
+					output = toolResult.Output
+					assetRefs = toolResult.Assets
 					// Post-tool hook (8.5): react to the change (format/lint). It runs
 					// the configured command but does not alter the result in v1.
 					r.postHook(ctx, call.Function.Name, input, observation)
@@ -592,6 +640,8 @@ func (r *Runner) drive(ctx context.Context, sess *session.Session) (TurnResult, 
 			step.Observation = observation
 			step.FinishedAt = time.Now()
 			turn.Steps = append(turn.Steps, step)
+			assetRefs = normalizeToolAssets(assetRefs, r.WorkspaceRoot, r.emitTurnID, call.ID)
+			turnAssets = append(turnAssets, assetRefs...)
 
 			r.emit(Event{
 				Kind:        EventToolFinished,
@@ -599,6 +649,8 @@ func (r *Runner) drive(ctx context.Context, sess *session.Session) (TurnResult, 
 				Step:        step.Index,
 				ToolName:    call.Function.Name,
 				Observation: observation,
+				Output:      output,
+				Assets:      assetRefs,
 				Elapsed:     time.Since(toolStart),
 				Err:         step.Error,
 			})
@@ -631,7 +683,11 @@ func (r *Runner) drive(ctx context.Context, sess *session.Session) (TurnResult, 
 	turn.Final = final
 	turn.TokensUsed += finalTokens
 	turn.HitStepLimit = true
-	r.emit(Event{Kind: EventTurnFinished, Text: turn.Final})
+	r.emit(Event{
+		Kind:            EventTurnFinished,
+		Text:            turn.Final,
+		TextAnnotations: annotateTextWithAssets(turn.Final, turnAssets),
+	})
 	return turn, nil
 }
 
@@ -821,7 +877,7 @@ func (r *Runner) complete(ctx context.Context, req model.Request, streamed *stri
 	return r.Model.Complete(ctx, req)
 }
 
-func (r *Runner) executeTool(ctx context.Context, tool tools.Tool, callID string, input json.RawMessage) (string, error) {
+func (r *Runner) executeTool(ctx context.Context, tool tools.Tool, callID string, input json.RawMessage) (tools.ToolResult, error) {
 	ec := tools.ExecutionContext{
 		WorkspaceRoot: r.WorkspaceRoot,
 		SessionID:     r.emitSessionID,
@@ -837,9 +893,9 @@ func (r *Runner) executeTool(ctx context.Context, tool tools.Tool, callID string
 	}
 	result, err := tool.Execute(ctx, ec, input)
 	if err != nil {
-		return "", err
+		return tools.ToolResult{}, err
 	}
-	return result.Content, nil
+	return result, nil
 }
 
 // executorFor determines which side executes a tool call. Empty string (or

@@ -80,6 +80,8 @@ func (r Router) Route(ctx context.Context, data []byte) {
 				r.ToolResults.Deliver(m.ToolResult.ToolUseID, agent.ToolCallResult{
 					Subtype: m.ToolResult.Subtype,
 					Content: m.ToolResult.Content,
+					Output:  m.ToolResult.Output,
+					Assets:  m.ToolResult.Assets,
 					IsError: m.ToolResult.IsError,
 				})
 			}

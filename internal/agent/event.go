@@ -1,8 +1,10 @@
 package agent
 
 import (
+	"encoding/json"
 	"time"
 
+	"code-agent/internal/assetref"
 	"code-agent/internal/tools"
 )
 
@@ -93,15 +95,18 @@ type Event struct {
 	// ToolFinished — so a UI keys one tool card on it and updates in place
 	// (running → completed) instead of appending a new card per event. Unlike
 	// event_id (a per-send transport token) it is durable and replay-stable.
-	CallID      string
-	Step        int
-	ToolName    string
-	ToolArgs    string
-	Observation string
-	Chunk       string // stdout/stderr chunk (ToolStdout / ToolStderr)
-	Failure     string // EventObserved: the classified FailureType (e.g. "compile")
-	Version     string // EventSkillLoaded: the loaded skill's version (name is in ToolName)
-	SkillSource string // EventSkillLoaded: "global" or "project" — where the skill came from
+	CallID          string
+	Step            int
+	ToolName        string
+	ToolArgs        string
+	Observation     string
+	Output          json.RawMessage         // EventToolFinished: structured tool-specific output side-channel
+	Assets          []assets.Ref            // EventToolFinished: normalized clickable assets side-channel
+	TextAnnotations []assets.TextAnnotation // EventTurnFinished: assistant-text ranges linked to assets
+	Chunk           string                  // stdout/stderr chunk (ToolStdout / ToolStderr)
+	Failure         string                  // EventObserved: the classified FailureType (e.g. "compile")
+	Version         string                  // EventSkillLoaded: the loaded skill's version (name is in ToolName)
+	SkillSource     string                  // EventSkillLoaded: "global" or "project" — where the skill came from
 
 	// Executor declares which side executes this tool call. Empty or "server"
 	// means the server executes it locally. "client" means the client must

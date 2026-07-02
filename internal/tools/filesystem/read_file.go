@@ -2,6 +2,7 @@ package filesystem
 
 import (
 	"bufio"
+	"code-agent/internal/assetref"
 	"code-agent/internal/tools"
 	"code-agent/internal/workspace"
 	"context"
@@ -45,6 +46,20 @@ type readFileInput struct {
 	Path   string     `json:"path"`
 	Offset lineNumber `json:"offset,omitempty"`
 	Limit  lineNumber `json:"limit,omitempty"`
+}
+
+type readLine struct {
+	no   int
+	text string
+}
+
+type readFileOutput struct {
+	Kind         string        `json:"kind"`
+	Path         string        `json:"path"`
+	AbsolutePath string        `json:"absolute_path,omitempty"`
+	LineCount    int           `json:"line_count"`
+	DisplayRange *assets.Range `json:"display_range,omitempty"`
+	AssetID      string        `json:"asset_id"`
 }
 
 func NewReadFileTool() *ReadFileTool {
@@ -110,6 +125,11 @@ func (r *ReadFileTool) Execute(ctx context.Context, ec tools.ExecutionContext, i
 	if !workspace.IsSubPath(rootAbs, targetAbs) {
 		return tools.ToolResult{}, fmt.Errorf("path escapes workspace: %s", in.Path)
 	}
+	rel, err := filepath.Rel(rootAbs, targetAbs)
+	if err != nil {
+		rel = filepath.Clean(in.Path)
+	}
+	rel = filepath.ToSlash(rel)
 
 	info, err := os.Stat(targetAbs)
 	if err != nil {
@@ -140,11 +160,7 @@ func (r *ReadFileTool) Execute(ctx context.Context, ec tools.ExecutionContext, i
 	}
 	defer f.Close()
 
-	type line struct {
-		no   int
-		text string
-	}
-	var collected []line
+	var collected []readLine
 	var bytesOut int64
 	truncated := false
 
@@ -170,14 +186,19 @@ func (r *ReadFileTool) Execute(ctx context.Context, ec tools.ExecutionContext, i
 			truncated = true
 			break
 		}
-		collected = append(collected, line{lineNo, text})
+		collected = append(collected, readLine{lineNo, text})
 	}
 	if err := scanner.Err(); err != nil {
 		return tools.ToolResult{}, err
 	}
 
+	displayRange := displayRangeFor(collected)
+	output, assetRefs, err := r.assetResult(rootAbs, ec, rel, targetAbs, len(collected), displayRange, collected)
+	if err != nil {
+		return tools.ToolResult{}, err
+	}
 	if len(collected) == 0 {
-		return tools.ToolResult{Content: ""}, nil // offset past EOF, or empty file
+		return tools.ToolResult{Content: "", Output: output, Assets: assetRefs}, nil // offset past EOF, or empty file
 	}
 
 	// Right-align the line numbers to the width of the largest one shown.
@@ -190,5 +211,50 @@ func (r *ReadFileTool) Execute(ctx context.Context, ec tools.ExecutionContext, i
 	if truncated {
 		out += "\n... (output truncated; read fewer lines with limit, or continue with a higher offset)"
 	}
-	return tools.ToolResult{Content: out}, nil
+	return tools.ToolResult{Content: out, Output: output, Assets: assetRefs}, nil
+}
+
+func displayRangeFor(lines []readLine) *assets.Range {
+	if len(lines) == 0 {
+		return nil
+	}
+	return &assets.Range{
+		StartLine: lines[0].no,
+		EndLine:   lines[len(lines)-1].no,
+	}
+}
+
+func (r *ReadFileTool) assetResult(rootAbs string, ec tools.ExecutionContext, rel, abs string, lineCount int, displayRange *assets.Range, collected []readLine) (json.RawMessage, []assets.Ref, error) {
+	workspaceID := assets.WorkspaceID(rootAbs)
+	id := assets.StableID(ec.TurnID, ec.CallID, 1, "read_file", rel, fmt.Sprint(displayRange))
+	preview := ""
+	if len(collected) > 0 {
+		preview = strings.TrimSpace(collected[0].text)
+	}
+	output, err := tools.JSONOutput(readFileOutput{
+		Kind:         "file",
+		Path:         rel,
+		AbsolutePath: abs,
+		LineCount:    lineCount,
+		DisplayRange: displayRange,
+		AssetID:      id,
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	ref := assets.Ref{
+		ID:                    id,
+		Kind:                  "file",
+		URI:                   assets.WorkspaceURI(workspaceID, rel, displayRange),
+		DisplayName:           assets.DisplayName(rel, 0),
+		WorkspaceID:           workspaceID,
+		WorkspaceRelativePath: rel,
+		AbsolutePath:          abs,
+		Range:                 displayRange,
+		Preview:               preview,
+		MIMEType:              assets.MIMEType(rel),
+		SourceTurnID:          ec.TurnID,
+		SourceCallID:          ec.CallID,
+	}
+	return output, []assets.Ref{ref}, nil
 }

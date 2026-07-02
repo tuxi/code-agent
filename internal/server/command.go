@@ -1,6 +1,11 @@
 package server
 
-import "code-agent/internal/agent"
+import (
+	"encoding/json"
+
+	"code-agent/internal/agent"
+	"code-agent/internal/assetref"
+)
 
 // Command-plane messages (client -> server): they trigger an action on a session
 // and expect no direct reply — the effect shows up on the event stream. The
@@ -53,8 +58,10 @@ type AgentInput struct {
 // AgentInput of kind "tool_result". It maps 1:1 to the execution graph edge
 // identified by tool_use_id. See §3 of the v1.1 spec.
 type ToolResult struct {
-	ToolUseID string `json:"tool_use_id"`
-	Subtype   string `json:"subtype"` // "result" (v1.1); "progress"|"error"|"cancel" (v1.2+)
-	Content   string `json:"content,omitempty"`
-	IsError   bool   `json:"is_error,omitempty"`
+	ToolUseID string          `json:"tool_use_id"`
+	Subtype   string          `json:"subtype"` // "result" (v1.1); "progress"|"error"|"cancel" (v1.2+)
+	Content   string          `json:"content,omitempty"`
+	Output    json.RawMessage `json:"output,omitempty"`
+	Assets    []assets.Ref    `json:"assets,omitempty"`
+	IsError   bool            `json:"is_error,omitempty"`
 }

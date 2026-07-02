@@ -1,0 +1,41 @@
+{
+  "kind": "tool_finished",
+  "at": "2026-07-01T15:40:52.596Z",
+  "session_id": "20260701-154050-dc4fbff4",
+  "turn_id": "turn_1",
+  "seq": 10225,
+  "call_id": "call_read_001",
+  "step": 1,
+  "tool_name": "read_file",
+  "observation": "1\tpublic struct ConversationState {\n2\t    public var streamingText: String = \"\"\n3\t}",
+  "output": {
+    "kind": "file",
+    "path": "Sources/AgentKit/Features/Conversation/Models/ConversationState.swift",
+    "absolute_path": "/Users/xiaoyuan/Documents/work/git/AgentKit/Sources/AgentKit/Features/Conversation/Models/ConversationState.swift",
+    "line_count": 3,
+    "display_range": {
+      "start_line": 1,
+      "end_line": 3
+    },
+    "asset_id": "asset_turn_1_call_read_001_001_0026d4b0"
+  },
+  "assets": [
+    {
+      "id": "asset_turn_1_call_read_001_001_0026d4b0",
+      "kind": "file",
+      "uri": "workspace://agentkit-local/Sources/AgentKit/Features/Conversation/Models/ConversationState.swift",
+      "display_name": "ConversationState.swift",
+      "workspace_id": "agentkit-local",
+      "workspace_relative_path": "Sources/AgentKit/Features/Conversation/Models/ConversationState.swift",
+      "absolute_path": "/Users/xiaoyuan/Documents/work/git/AgentKit/Sources/AgentKit/Features/Conversation/Models/ConversationState.swift",
+      "range": {
+        "start_line": 1,
+        "end_line": 3
+      },
+      "preview": "public struct ConversationState {",
+      "mime_type": "text/x-swift",
+      "source_turn_id": "turn_1",
+      "source_call_id": "call_read_001"
+    }
+  ]
+}

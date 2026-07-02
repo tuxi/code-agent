@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"code-agent/internal/assetref"
 	"context"
 	"encoding/json"
 )
@@ -36,7 +37,9 @@ type ExecutionContext struct {
 }
 
 type ToolResult struct {
-	Content string `json:"content"`
+	Content string          `json:"content"`
+	Output  json.RawMessage `json:"output,omitempty"`
+	Assets  []assets.Ref    `json:"assets,omitempty"`
 }
 
 // ClientProxyTool is a Tool stub registered from a client's register_tools

@@ -1,0 +1,45 @@
+{
+  "kind": "tool_finished",
+  "at": "2026-07-01T15:42:49.269Z",
+  "session_id": "20260701-154050-dc4fbff4",
+  "turn_id": "turn_2",
+  "seq": 10254,
+  "call_id": "call_02_KDxhpJr0r5j1SR2QLyfP0490",
+  "step": 5,
+  "tool_name": "grep",
+  "observation": "[observation] ok\n---\nSources/AgentKit/Features/Conversation/Models/ConversationState.swift:49: public var streamingText: String = \"\"",
+  "output": {
+    "kind": "search_results",
+    "query": "streamingText",
+    "items": [
+      {
+        "asset_id": "asset_turn_2_call_02_KDxhpJr0r5j1SR2QLyfP0490_001_7156f5c8",
+        "kind": "file_location",
+        "path": "Sources/AgentKit/Features/Conversation/Models/ConversationState.swift",
+        "absolute_path": "/Users/xiaoyuan/Documents/work/git/AgentKit/Sources/AgentKit/Features/Conversation/Models/ConversationState.swift",
+        "line": 49,
+        "column": 1,
+        "preview": "public var streamingText: String = \"\""
+      }
+    ]
+  },
+  "assets": [
+    {
+      "id": "asset_turn_2_call_02_KDxhpJr0r5j1SR2QLyfP0490_001_7156f5c8",
+      "kind": "file_location",
+      "uri": "workspace://agentkit-local/Sources/AgentKit/Features/Conversation/Models/ConversationState.swift#L49",
+      "display_name": "ConversationState.swift:49",
+      "workspace_id": "agentkit-local",
+      "workspace_relative_path": "Sources/AgentKit/Features/Conversation/Models/ConversationState.swift",
+      "absolute_path": "/Users/xiaoyuan/Documents/work/git/AgentKit/Sources/AgentKit/Features/Conversation/Models/ConversationState.swift",
+      "range": {
+        "start_line": 49,
+        "start_column": 1
+      },
+      "preview": "public var streamingText: String = \"\"",
+      "mime_type": "text/x-swift",
+      "source_turn_id": "turn_2",
+      "source_call_id": "call_02_KDxhpJr0r5j1SR2QLyfP0490"
+    }
+  ]
+}

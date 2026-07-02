@@ -4,6 +4,23 @@
   "tool_result": {
     "tool_use_id": "call_abc123",
     "subtype": "result",
-    "content": "修剪完成"
+    "content": "修剪完成",
+    "output": {
+      "kind": "file",
+      "asset_id": "asset_turn_1_call_abc123_001_9ad5b4c1"
+    },
+    "assets": [
+      {
+        "id": "asset_turn_1_call_abc123_001_9ad5b4c1",
+        "kind": "file",
+        "uri": "workspace://app-local/out.mp4",
+        "display_name": "out.mp4",
+        "workspace_id": "app-local",
+        "workspace_relative_path": "out.mp4",
+        "mime_type": "video/mp4",
+        "source_turn_id": "turn_1",
+        "source_call_id": "call_abc123"
+      }
+    ]
   }
 }

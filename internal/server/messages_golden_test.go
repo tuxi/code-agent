@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"code-agent/internal/agent"
+	"code-agent/internal/assetref"
 )
 
 // TestMessageContractGolden locks the inbound command/control message shapes —
@@ -39,7 +40,24 @@ func TestMessageContractGolden(t *testing.T) {
 		},
 		"agent_input_tool_result": AgentInput{
 			Type: "agent_input", Kind: "tool_result",
-			ToolResult: &ToolResult{ToolUseID: "call_abc123", Subtype: "result", Content: "修剪完成", IsError: false},
+			ToolResult: &ToolResult{
+				ToolUseID: "call_abc123",
+				Subtype:   "result",
+				Content:   "修剪完成",
+				Output:    json.RawMessage(`{"kind":"file","asset_id":"asset_turn_1_call_abc123_001_9ad5b4c1"}`),
+				Assets: []assets.Ref{{
+					ID:                    "asset_turn_1_call_abc123_001_9ad5b4c1",
+					Kind:                  "file",
+					URI:                   "workspace://app-local/out.mp4",
+					DisplayName:           "out.mp4",
+					WorkspaceID:           "app-local",
+					WorkspaceRelativePath: "out.mp4",
+					MIMEType:              "video/mp4",
+					SourceTurnID:          "turn_1",
+					SourceCallID:          "call_abc123",
+				}},
+				IsError: false,
+			},
 		},
 		"agent_input_command": AgentInput{
 			Type: "agent_input", Kind: "command", Text: "cancel",

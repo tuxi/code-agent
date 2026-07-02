@@ -2,6 +2,7 @@ package search
 
 import (
 	"bufio"
+	"code-agent/internal/assetref"
 	"code-agent/internal/tools"
 	"code-agent/internal/workspace"
 	"context"
@@ -22,6 +23,26 @@ type GrepTool struct {
 type grepInput struct {
 	Query string `json:"query"`
 	Path  string `json:"path"`
+}
+
+type grepMatch struct {
+	Path         string `json:"path"`
+	AbsolutePath string `json:"absolute_path,omitempty"`
+	Line         int    `json:"line"`
+	Column       int    `json:"column,omitempty"`
+	Preview      string `json:"preview"`
+}
+
+type grepOutput struct {
+	Kind  string           `json:"kind"`
+	Query string           `json:"query"`
+	Items []grepOutputItem `json:"items"`
+}
+
+type grepOutputItem struct {
+	AssetID string `json:"asset_id"`
+	Kind    string `json:"kind"`
+	grepMatch
 }
 
 func NewGrepTool() *GrepTool {
@@ -83,7 +104,7 @@ func (g *GrepTool) Execute(ctx context.Context, ec tools.ExecutionContext, input
 		return tools.ToolResult{}, err
 	}
 
-	var matches []string
+	var matches []grepMatch
 	if info.IsDir() {
 		err = filepath.WalkDir(targetAbs, func(path string, d fs.DirEntry, err error) error {
 			if err != nil {
@@ -118,7 +139,7 @@ func (g *GrepTool) Execute(ctx context.Context, ec tools.ExecutionContext, input
 			return nil
 		})
 	} else {
-		var fileMatches []string
+		var fileMatches []grepMatch
 		fileMatches, err = g.searchFile(rootAbs, targetAbs, in.Query)
 		if err == nil {
 			matches = append(matches, fileMatches...)
@@ -137,12 +158,14 @@ func (g *GrepTool) Execute(ctx context.Context, ec tools.ExecutionContext, input
 			Content: "No matches.",
 		}, nil
 	}
-	return tools.ToolResult{
-		Content: strings.Join(matches, "\n"),
-	}, nil
+	content, output, refs, err := g.result(rootAbs, ec, in.Query, matches)
+	if err != nil {
+		return tools.ToolResult{}, err
+	}
+	return tools.ToolResult{Content: content, Output: output, Assets: refs}, nil
 }
 
-func (g *GrepTool) searchFile(rootAbs, path, query string) ([]string, error) {
+func (g *GrepTool) searchFile(rootAbs, path, query string) ([]grepMatch, error) {
 
 	info, err := os.Stat(path)
 	if err != nil {
@@ -163,16 +186,61 @@ func (g *GrepTool) searchFile(rootAbs, path, query string) ([]string, error) {
 		rel = path
 	}
 	rel = filepath.ToSlash(rel)
-	var matches []string
+	var matches []grepMatch
+	abs, _ := filepath.Abs(path)
 	scanner := bufio.NewScanner(strings.NewReader(string(data)))
 	lineNo := 0
+	lowerQuery := strings.ToLower(query)
 	for scanner.Scan() {
 		lineNo++
 		line := scanner.Text()
-		if strings.Contains(strings.ToLower(line), strings.ToLower(query)) {
-			matches = append(matches, fmt.Sprintf("%s:%d: %s", rel, lineNo, strings.TrimSpace(line)))
+		lowerLine := strings.ToLower(line)
+		if idx := strings.Index(lowerLine, lowerQuery); idx >= 0 {
+			matches = append(matches, grepMatch{
+				Path:         rel,
+				AbsolutePath: abs,
+				Line:         lineNo,
+				Column:       idx + 1,
+				Preview:      strings.TrimSpace(line),
+			})
 		}
 	}
 	return matches, nil
 
+}
+
+func (g *GrepTool) result(rootAbs string, ec tools.ExecutionContext, query string, matches []grepMatch) (string, json.RawMessage, []assets.Ref, error) {
+	workspaceID := assets.WorkspaceID(rootAbs)
+	lines := make([]string, 0, len(matches))
+	items := make([]grepOutputItem, 0, len(matches))
+	refs := make([]assets.Ref, 0, len(matches))
+	for i, m := range matches {
+		lines = append(lines, fmt.Sprintf("%s:%d: %s", m.Path, m.Line, m.Preview))
+		rng := &assets.Range{StartLine: m.Line, StartColumn: m.Column}
+		id := assets.StableID(ec.TurnID, ec.CallID, i+1, "grep", m.Path, fmt.Sprint(m.Line), fmt.Sprint(m.Column), m.Preview)
+		items = append(items, grepOutputItem{
+			AssetID:   id,
+			Kind:      "file_location",
+			grepMatch: m,
+		})
+		refs = append(refs, assets.Ref{
+			ID:                    id,
+			Kind:                  "file_location",
+			URI:                   assets.WorkspaceURI(workspaceID, m.Path, rng),
+			DisplayName:           assets.DisplayName(m.Path, m.Line),
+			WorkspaceID:           workspaceID,
+			WorkspaceRelativePath: m.Path,
+			AbsolutePath:          m.AbsolutePath,
+			Range:                 rng,
+			Preview:               m.Preview,
+			MIMEType:              assets.MIMEType(m.Path),
+			SourceTurnID:          ec.TurnID,
+			SourceCallID:          ec.CallID,
+		})
+	}
+	output, err := tools.JSONOutput(grepOutput{Kind: "search_results", Query: query, Items: items})
+	if err != nil {
+		return "", nil, nil, err
+	}
+	return strings.Join(lines, "\n"), output, refs, nil
 }

@@ -65,6 +65,35 @@ func TestExecuteSuccess(t *testing.T) {
 	}
 }
 
+func TestExecutePreservesNonTextAssets(t *testing.T) {
+	c := &fakeCaller{res: &mcpsdk.CallToolResult{
+		Content: []mcpsdk.Content{
+			&mcpsdk.TextContent{Text: "before"},
+			&mcpsdk.ImageContent{MIMEType: "image/png", Data: []byte("12345")},
+		},
+	}}
+	got, err := newTestTool(c).Execute(context.Background(), tools.ExecutionContext{
+		WorkspaceRoot: "/Users/x/project",
+		TurnID:        "turn_1",
+		CallID:        "call_2",
+	}, json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(got.Content, "[non-text content: image (image/png, 5 bytes) omitted]") {
+		t.Fatalf("content = %q, want image placeholder", got.Content)
+	}
+	if len(got.Assets) != 1 {
+		t.Fatalf("assets = %d, want 1", len(got.Assets))
+	}
+	if got.Assets[0].Kind != "image" || got.Assets[0].MIMEType != "image/png" || got.Assets[0].WorkspaceID != "project-local" {
+		t.Fatalf("asset = %+v", got.Assets[0])
+	}
+	if len(got.Output) == 0 || !strings.Contains(string(got.Output), `"kind":"mcp_content"`) {
+		t.Fatalf("output = %s, want mcp_content", got.Output)
+	}
+}
+
 func TestExecuteEmptyInputSendsNoArguments(t *testing.T) {
 	c := &fakeCaller{res: textResult("ok", false)}
 	if _, err := newTestTool(c).Execute(context.Background(), tools.ExecutionContext{}, nil); err != nil {

@@ -1,0 +1,48 @@
+{
+  "event_id": "evt_fixed",
+  "kind": "tool_finished",
+  "at": "2026-06-24T10:00:00.123Z",
+  "session_id": "sess_root",
+  "turn_id": "turn_7",
+  "call_id": "call_grep",
+  "step": 4,
+  "tool_name": "grep",
+  "observation": "Sources/App.swift:49: public var streamingText: String = \"\"",
+  "output": {
+    "kind": "search_results",
+    "query": "streamingText",
+    "items": [
+      {
+        "asset_id": "asset_turn_7_call_grep_001_7156f5c8",
+        "kind": "file_location",
+        "path": "Sources/App.swift",
+        "line": 49,
+        "column": 1,
+        "preview": "public var streamingText: String = \"\""
+      }
+    ]
+  },
+  "assets": [
+    {
+      "id": "asset_turn_7_call_grep_001_7156f5c8",
+      "kind": "file_location",
+      "uri": "workspace://app-local/Sources/App.swift#L49C1",
+      "display_name": "App.swift:49",
+      "workspace_id": "app-local",
+      "workspace_relative_path": "Sources/App.swift",
+      "absolute_path": "/work/App/Sources/App.swift",
+      "range": {
+        "start_line": 49,
+        "start_column": 1
+      },
+      "preview": "public var streamingText: String = \"\"",
+      "mime_type": "text/x-swift",
+      "metadata": {
+        "language": "swift"
+      },
+      "source_turn_id": "turn_7",
+      "source_call_id": "call_grep"
+    }
+  ],
+  "elapsed_ms": 1200
+}

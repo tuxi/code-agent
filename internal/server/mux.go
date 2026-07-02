@@ -6,9 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"path/filepath"
 	"strconv"
 
 	"code-agent/internal/agent"
+	"code-agent/internal/assetref"
 	"code-agent/internal/conversation"
 	"code-agent/internal/repos"
 	"code-agent/internal/session"
@@ -54,6 +56,17 @@ type WorkspaceRefDTO struct {
 	ExtID string `json:"ext_id,omitempty"`
 }
 
+// WorkspaceDTO is the UI-facing workspace anchor. It scopes relative paths and
+// asset ids without replacing the portable WorkspaceRefDTO used for iOS rebinds.
+type WorkspaceDTO struct {
+	ID          string `json:"id"`
+	Name        string `json:"name,omitempty"`
+	RootPath    string `json:"root_path"`
+	RuntimeCWD  string `json:"runtime_cwd,omitempty"`
+	DisplayPath string `json:"display_path,omitempty"`
+	Kind        string `json:"kind"`
+}
+
 // CloneRepoRequest is the POST /v1/repos/clone body. See docs/ios_github_clone_spec.md.
 type CloneRepoRequest struct {
 	URL   string `json:"url"`             // https GitHub URL or "owner/repo" shorthand
@@ -81,11 +94,12 @@ type cloneErrorResponse struct {
 // list interrupted sessions and render a "continue" entry — a paused status with
 // paused_at (unix seconds) marks a turn the host may resume.
 type ConversationRef struct {
-	ID            string `json:"id"`
-	WorkspacePath string `json:"workspace_path"`
-	Name          string `json:"name,omitempty"`
-	TurnStatus    string `json:"turn_status,omitempty"`
-	PausedAt      int64  `json:"paused_at,omitempty"`
+	ID            string        `json:"id"`
+	WorkspacePath string        `json:"workspace_path"`
+	Workspace     *WorkspaceDTO `json:"workspace,omitempty"`
+	Name          string        `json:"name,omitempty"`
+	TurnStatus    string        `json:"turn_status,omitempty"`
+	PausedAt      int64         `json:"paused_at,omitempty"`
 }
 
 // ConversationDetail is GET /v1/conversations/{id}. Counts and timestamps are
@@ -95,6 +109,7 @@ type ConversationRef struct {
 type ConversationDetail struct {
 	ID            string           `json:"id"`
 	WorkspacePath string           `json:"workspace_path"`
+	Workspace     *WorkspaceDTO    `json:"workspace,omitempty"`
 	WorkspaceRef  *WorkspaceRefDTO `json:"workspace_ref,omitempty"`
 	NeedsRebind   bool             `json:"needs_rebind,omitempty"`
 	Name          string           `json:"name,omitempty"`
@@ -138,6 +153,8 @@ type MuxOptions struct {
 //	GET  /v1/conversations/{id}              detail (derived from events + repo)
 //	GET  /v1/conversations/{id}/messages     conversational backbone (derived)
 //	GET  /v1/conversations/{id}/events       recorded events, re-encoded to wire v1
+//	GET  /v1/conversations/{id}/assets/{asset_id}/preview  derived asset preview
+//	GET  /v1/conversations/{id}/assets/{asset_id}/content  workspace text content
 //	DELETE /v1/conversations/{id}            delete session + events
 //	PATCH /v1/conversations/{id}              rename — body: {"name":"..."}
 //	GET  /v1/conversations/{id}/stream       upgrade via TurnExecutor/TransportSession
@@ -167,6 +184,7 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 			refs = append(refs, ConversationRef{
 				ID:            m.ID,
 				WorkspacePath: m.WorkspacePath,
+				Workspace:     workspaceDTO(m.WorkspacePath),
 				Name:          effectiveName(m),
 				TurnStatus:    m.TurnStatus,
 				PausedAt:      m.PausedAt,
@@ -187,6 +205,7 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 		writeJSON(w, http.StatusCreated, ConversationRef{
 			ID:            sess.ID,
 			WorkspacePath: sess.WorkspacePath,
+			Workspace:     workspaceDTO(sess.WorkspacePath),
 		})
 	})
 
@@ -199,6 +218,7 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 		detail := ConversationDetail{ID: id}
 		if s, err := repo.Load(r.Context(), id); err == nil {
 			detail.WorkspacePath = s.WorkspacePath
+			detail.Workspace = workspaceDTO(s.WorkspacePath)
 			detail.Name = s.Name
 			if s.Workspace.Root != "" {
 				detail.WorkspaceRef = &WorkspaceRefDTO{
@@ -276,6 +296,24 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 		writeJSON(w, http.StatusOK, frames)
 	})
 
+	mux.HandleFunc("GET /v1/conversations/{id}/assets/{asset_id}/preview", func(w http.ResponseWriter, r *http.Request) {
+		resp, err := previewConversationAsset(r.Context(), eventStore, repo, r.PathValue("id"), r.PathValue("asset_id"))
+		if err != nil {
+			writeAssetError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, resp)
+	})
+
+	mux.HandleFunc("GET /v1/conversations/{id}/assets/{asset_id}/content", func(w http.ResponseWriter, r *http.Request) {
+		resp, err := contentConversationAsset(r.Context(), eventStore, repo, r.PathValue("id"), r.PathValue("asset_id"))
+		if err != nil {
+			writeAssetError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, resp)
+	})
+
 	// ---- WebSocket: TransportSession backed by TurnExecutor ----
 	// Declared before the DELETE handler so it can call ws.RemoveApprover.
 
@@ -326,6 +364,7 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 		writeJSON(w, http.StatusOK, ConversationRef{
 			ID:            sess.ID,
 			WorkspacePath: sess.WorkspacePath,
+			Workspace:     workspaceDTO(sess.WorkspacePath),
 			Name:          sess.Name,
 		})
 	})
@@ -462,6 +501,25 @@ func effectiveName(m session.Meta) string {
 		return m.Name
 	}
 	return m.Title
+}
+
+func workspaceDTO(path string) *WorkspaceDTO {
+	if path == "" {
+		return nil
+	}
+	clean := filepath.Clean(path)
+	name := filepath.Base(clean)
+	if name == "." || name == string(filepath.Separator) {
+		name = clean
+	}
+	return &WorkspaceDTO{
+		ID:          assets.WorkspaceID(clean),
+		Name:        name,
+		RootPath:    clean,
+		RuntimeCWD:  clean,
+		DisplayPath: name,
+		Kind:        "local",
+	}
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -42,6 +43,41 @@ func TestFlattenNonTextPlaceholders(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Errorf("flattened output missing %q\ngot:\n%s", want, got)
 		}
+	}
+}
+
+func TestRenderNonTextAssets(t *testing.T) {
+	got := renderContentAssets([]mcpsdk.Content{
+		&mcpsdk.ImageContent{MIMEType: "image/png", Data: []byte("12345")},
+		&mcpsdk.ResourceLink{URI: "file:///tmp/report.html"},
+	}, contentAssetContext{
+		Server:        "fs",
+		Tool:          "read_file",
+		WorkspaceRoot: "/Users/x/project",
+		TurnID:        "turn_1",
+		CallID:        "call_2",
+	})
+	if len(got.Assets) != 2 {
+		t.Fatalf("assets = %d, want 2", len(got.Assets))
+	}
+	if got.Assets[0].Kind != "image" || got.Assets[0].MIMEType != "image/png" || got.Assets[0].Metadata["bytes"] != "5" {
+		t.Fatalf("image asset = %+v", got.Assets[0])
+	}
+	if got.Assets[1].Kind != "url" || got.Assets[1].URI != "file:///tmp/report.html" {
+		t.Fatalf("resource asset = %+v", got.Assets[1])
+	}
+	var out struct {
+		Kind  string `json:"kind"`
+		Items []struct {
+			AssetID     string `json:"asset_id"`
+			ContentKind string `json:"content_kind"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(got.Output, &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.Kind != "mcp_content" || len(out.Items) != 2 || out.Items[0].AssetID != got.Assets[0].ID {
+		t.Fatalf("output = %+v, assets = %+v", out, got.Assets)
 	}
 }
 

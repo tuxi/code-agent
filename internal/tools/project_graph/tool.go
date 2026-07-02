@@ -1,10 +1,13 @@
 package projectgraph
 
 import (
+	"bufio"
+	"code-agent/internal/assetref"
 	"code-agent/internal/tools"
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -44,6 +47,28 @@ type projectGraphInput struct {
 	From     string `json:"from"`     // rename_check
 	To       string `json:"to"`       // rename_check
 	Language string `json:"language"` // optional: restrict to one backend
+}
+
+type graphOutput struct {
+	Kind     string            `json:"kind"`
+	Action   string            `json:"action"`
+	Query    string            `json:"query,omitempty"`
+	Symbol   string            `json:"symbol,omitempty"`
+	Language string            `json:"language,omitempty"`
+	Items    []graphOutputItem `json:"items"`
+}
+
+type graphOutputItem struct {
+	AssetID      string `json:"asset_id"`
+	Kind         string `json:"kind"`
+	Name         string `json:"name,omitempty"`
+	SymbolKind   string `json:"symbol_kind,omitempty"`
+	Language     string `json:"language,omitempty"`
+	Path         string `json:"path"`
+	AbsolutePath string `json:"absolute_path,omitempty"`
+	Line         int    `json:"line"`
+	Column       int    `json:"column,omitempty"`
+	Preview      string `json:"preview,omitempty"`
 }
 
 func (t *ProjectGraphTool) Name() string { return "project_graph" }
@@ -90,9 +115,9 @@ func (t *ProjectGraphTool) Execute(ctx context.Context, ec tools.ExecutionContex
 
 	switch strings.TrimSpace(in.Action) {
 	case "find_symbol":
-		return t.findSymbol(ctx, rootAbs, in)
+		return t.findSymbol(ctx, rootAbs, ec, in)
 	case "find_references":
-		return t.findReferences(ctx, rootAbs, in)
+		return t.findReferences(ctx, rootAbs, ec, in)
 	case "rename_check":
 		return t.renameCheck(ctx, rootAbs, in)
 	case "":
@@ -102,7 +127,7 @@ func (t *ProjectGraphTool) Execute(ctx context.Context, ec tools.ExecutionContex
 	}
 }
 
-func (t *ProjectGraphTool) findSymbol(ctx context.Context, root string, in projectGraphInput) (tools.ToolResult, error) {
+func (t *ProjectGraphTool) findSymbol(ctx context.Context, root string, ec tools.ExecutionContext, in projectGraphInput) (tools.ToolResult, error) {
 	query := strings.TrimSpace(in.Query)
 	if query == "" {
 		return tools.ToolResult{}, fmt.Errorf("query is required for find_symbol")
@@ -129,10 +154,10 @@ func (t *ProjectGraphTool) findSymbol(ctx context.Context, root string, in proje
 	if len(symbols) == 0 && len(realErrs) > 0 {
 		return tools.ToolResult{}, fmt.Errorf("find_symbol returned no results, but some backends failed: %s. Specify 'language' to restrict to a single backend.", strings.Join(realErrs, "; "))
 	}
-	return jsonResult(symbols)
+	return t.symbolResult(root, ec, in, symbols)
 }
 
-func (t *ProjectGraphTool) findReferences(ctx context.Context, root string, in projectGraphInput) (tools.ToolResult, error) {
+func (t *ProjectGraphTool) findReferences(ctx context.Context, root string, ec tools.ExecutionContext, in projectGraphInput) (tools.ToolResult, error) {
 	symbol := strings.TrimSpace(in.Symbol)
 	if symbol == "" {
 		return tools.ToolResult{}, fmt.Errorf("symbol is required for find_references")
@@ -162,7 +187,7 @@ func (t *ProjectGraphTool) findReferences(ctx context.Context, root string, in p
 	if len(refs) == 0 && len(realErrs) > 0 {
 		return tools.ToolResult{}, fmt.Errorf("find_references returned no results, but some backends failed: %s. Use grep for text-level search, or specify 'language' to restrict to a single backend.", strings.Join(realErrs, "; "))
 	}
-	return jsonResult(refs)
+	return t.referenceResult(root, ec, in, refs)
 }
 
 // filterRealErrors excludes "not implemented yet" errors from stub adapters.
@@ -283,6 +308,172 @@ func jsonResult(v any) (tools.ToolResult, error) {
 		return tools.ToolResult{}, err
 	}
 	return tools.ToolResult{Content: string(data)}, nil
+}
+
+func (t *ProjectGraphTool) symbolResult(root string, ec tools.ExecutionContext, in projectGraphInput, symbols []Symbol) (tools.ToolResult, error) {
+	content, err := jsonContent(symbols)
+	if err != nil {
+		return tools.ToolResult{}, err
+	}
+	workspaceID := assets.WorkspaceID(root)
+	items := make([]graphOutputItem, 0, len(symbols))
+	refs := make([]assets.Ref, 0, len(symbols))
+	for i, s := range symbols {
+		rel := filepath.ToSlash(s.File)
+		abs := filepath.Join(root, filepath.FromSlash(rel))
+		preview := previewLine(abs, s.Line)
+		lang := languageForPath(rel, in.Language)
+		rng := &assets.Range{StartLine: s.Line, StartColumn: 1}
+		id := assets.StableID(ec.TurnID, ec.CallID, i+1, "project_graph", "symbol", s.Name, s.Kind, rel, fmt.Sprint(s.Line))
+		items = append(items, graphOutputItem{
+			AssetID:      id,
+			Kind:         "symbol",
+			Name:         s.Name,
+			SymbolKind:   s.Kind,
+			Language:     lang,
+			Path:         rel,
+			AbsolutePath: abs,
+			Line:         s.Line,
+			Column:       1,
+			Preview:      preview,
+		})
+		refs = append(refs, assets.Ref{
+			ID:                    id,
+			Kind:                  "symbol",
+			URI:                   assets.WorkspaceURI(workspaceID, rel, rng),
+			DisplayName:           s.Name,
+			WorkspaceID:           workspaceID,
+			WorkspaceRelativePath: rel,
+			AbsolutePath:          abs,
+			Range:                 rng,
+			Preview:               preview,
+			MIMEType:              assets.MIMEType(rel),
+			Metadata: map[string]string{
+				"symbol_kind": s.Kind,
+				"language":    lang,
+			},
+			SourceTurnID: ec.TurnID,
+			SourceCallID: ec.CallID,
+		})
+	}
+	output, err := tools.JSONOutput(graphOutput{
+		Kind:     "symbols",
+		Action:   "find_symbol",
+		Query:    strings.TrimSpace(in.Query),
+		Language: strings.TrimSpace(in.Language),
+		Items:    items,
+	})
+	if err != nil {
+		return tools.ToolResult{}, err
+	}
+	return tools.ToolResult{Content: content, Output: output, Assets: refs}, nil
+}
+
+func (t *ProjectGraphTool) referenceResult(root string, ec tools.ExecutionContext, in projectGraphInput, refs []Reference) (tools.ToolResult, error) {
+	content, err := jsonContent(refs)
+	if err != nil {
+		return tools.ToolResult{}, err
+	}
+	workspaceID := assets.WorkspaceID(root)
+	items := make([]graphOutputItem, 0, len(refs))
+	assetRefs := make([]assets.Ref, 0, len(refs))
+	for i, ref := range refs {
+		rel := filepath.ToSlash(ref.File)
+		abs := filepath.Join(root, filepath.FromSlash(rel))
+		preview := strings.TrimSpace(ref.Context)
+		if preview == "" {
+			preview = previewLine(abs, ref.Line)
+		}
+		lang := languageForPath(rel, in.Language)
+		rng := &assets.Range{StartLine: ref.Line, StartColumn: 1}
+		id := assets.StableID(ec.TurnID, ec.CallID, i+1, "project_graph", "reference", strings.TrimSpace(in.Symbol), rel, fmt.Sprint(ref.Line), preview)
+		items = append(items, graphOutputItem{
+			AssetID:      id,
+			Kind:         "file_location",
+			Name:         strings.TrimSpace(in.Symbol),
+			Language:     lang,
+			Path:         rel,
+			AbsolutePath: abs,
+			Line:         ref.Line,
+			Column:       1,
+			Preview:      preview,
+		})
+		assetRefs = append(assetRefs, assets.Ref{
+			ID:                    id,
+			Kind:                  "file_location",
+			URI:                   assets.WorkspaceURI(workspaceID, rel, rng),
+			DisplayName:           assets.DisplayName(rel, ref.Line),
+			WorkspaceID:           workspaceID,
+			WorkspaceRelativePath: rel,
+			AbsolutePath:          abs,
+			Range:                 rng,
+			Preview:               preview,
+			MIMEType:              assets.MIMEType(rel),
+			Metadata: map[string]string{
+				"language": lang,
+			},
+			SourceTurnID: ec.TurnID,
+			SourceCallID: ec.CallID,
+		})
+	}
+	output, err := tools.JSONOutput(graphOutput{
+		Kind:     "references",
+		Action:   "find_references",
+		Symbol:   strings.TrimSpace(in.Symbol),
+		Language: strings.TrimSpace(in.Language),
+		Items:    items,
+	})
+	if err != nil {
+		return tools.ToolResult{}, err
+	}
+	return tools.ToolResult{Content: content, Output: output, Assets: assetRefs}, nil
+}
+
+func jsonContent(v any) (string, error) {
+	data, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
+func previewLine(path string, line int) string {
+	if line <= 0 {
+		return ""
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	lineNo := 0
+	for scanner.Scan() {
+		lineNo++
+		if lineNo == line {
+			return strings.TrimSpace(scanner.Text())
+		}
+	}
+	return ""
+}
+
+func languageForPath(path, explicit string) string {
+	if explicit = strings.TrimSpace(explicit); explicit != "" {
+		return strings.ToLower(explicit)
+	}
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".go":
+		return "go"
+	case ".swift":
+		return "swift"
+	case ".rs":
+		return "rust"
+	case ".py":
+		return "python"
+	default:
+		return ""
+	}
 }
 
 var _ tools.Tool = (*ProjectGraphTool)(nil)

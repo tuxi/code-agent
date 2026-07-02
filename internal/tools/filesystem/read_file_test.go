@@ -163,3 +163,32 @@ func TestReadNilContextTolerated(t *testing.T) {
 		t.Errorf("a nil context should be tolerated, got %v", err)
 	}
 }
+
+func TestReadFileEmitsFileAsset(t *testing.T) {
+	root := tempWith(t, sample)
+	res, err := NewReadFileTool().Execute(context.Background(), tools.ExecutionContext{
+		WorkspaceRoot: root,
+		TurnID:        "turn_1",
+		CallID:        "call_read",
+	}, json.RawMessage(`{"path":"f.txt","offset":2,"limit":2}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Assets) != 1 {
+		t.Fatalf("assets = %d, want 1", len(res.Assets))
+	}
+	ref := res.Assets[0]
+	if ref.Kind != "file" || ref.WorkspaceRelativePath != "f.txt" {
+		t.Fatalf("asset = %+v", ref)
+	}
+	if ref.Range == nil || ref.Range.StartLine != 2 || ref.Range.EndLine != 3 {
+		t.Fatalf("range = %+v, want 2..3", ref.Range)
+	}
+	var out readFileOutput
+	if err := json.Unmarshal(res.Output, &out); err != nil {
+		t.Fatalf("output is not readFileOutput: %v\n%s", err, res.Output)
+	}
+	if out.Kind != "file" || out.AssetID != ref.ID || out.DisplayRange.StartLine != 2 || out.LineCount != 2 {
+		t.Fatalf("output = %+v, asset id = %q", out, ref.ID)
+	}
+}
