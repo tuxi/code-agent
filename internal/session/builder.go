@@ -98,10 +98,11 @@ func (b *Builder) Build() (*Session, error) {
 		systemContent += "\n\n" + idx
 	}
 
+	// Deliberately NO current date here: the system message is persisted with the
+	// session, so a baked-in date goes stale the moment a session spans midnight
+	// (or is resumed days later). The agent loop appends today's date ephemerally
+	// on every model call instead (agent.withCurrentDate).
 	now := time.Now()
-	// Inject the current date so the model anchors time-sensitive reasoning and
-	// search queries to today rather than its training-era default.
-	systemContent += "\n\nThe current date is " + now.Format("2006-01-02 (Monday)") + "."
 	return &Session{
 		ID: newSessionID(),
 		Messages: []model.Message{

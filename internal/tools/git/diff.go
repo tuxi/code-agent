@@ -2,6 +2,7 @@ package git
 
 import (
 	"code-agent/internal/tools"
+	"code-agent/internal/truncate"
 	"code-agent/internal/workspace"
 	"context"
 	"encoding/json"
@@ -111,9 +112,7 @@ func (t *DiffTool) Execute(ctx context.Context, ec tools.ExecutionContext, input
 	if len(content) == 0 {
 		return tools.ToolResult{Content: "No git diff."}, nil
 	}
-	if len(content) > t.MaxBytes {
-		content = content[:t.MaxBytes] + "\n...<truncated>"
-	}
+	content = truncate.Head(content, t.MaxBytes)
 	return tools.ToolResult{Content: content}, nil
 }
 

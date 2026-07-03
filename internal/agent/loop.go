@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -624,7 +625,7 @@ func (r *Runner) drive(ctx context.Context, sess *session.Session) (TurnResult, 
 			// stays neutral and tool-agnostic.
 			if r.Observer != nil {
 				obs := r.Observer.Observe(call.Function.Name, observation)
-				observation = obs.Render(TruncateObservation(observation, 9800))
+				observation = obs.Render(TruncateObservation(observation, maxObservationBytes))
 				r.emit(Event{
 					Kind:        EventObserved,
 					CallID:      call.ID,
@@ -634,7 +635,7 @@ func (r *Runner) drive(ctx context.Context, sess *session.Session) (TurnResult, 
 					Failure:     string(obs.FailureType),
 				})
 			} else {
-				observation = TruncateObservation(observation, 9800)
+				observation = TruncateObservation(observation, maxObservationBytes)
 			}
 
 			step.Observation = observation
@@ -747,6 +748,29 @@ func appendEphemeralUser(msgs []model.Message, content string) []model.Message {
 	out := make([]model.Message, len(msgs), len(msgs)+1)
 	copy(out, msgs)
 	return append(out, model.Message{Role: model.RoleUser, Content: content})
+}
+
+// staleDateLine matches the date line an older session.Builder baked into the
+// persisted system message. Sessions created by that version carry a date frozen
+// at creation time; withCurrentDate strips it so the model sees exactly one date,
+// and it is today's.
+var staleDateLine = regexp.MustCompile(`\n\nThe current date is \d{4}-\d{2}-\d{2} \([A-Za-z]+\)\.`)
+
+// withCurrentDate returns msgs with today's date appended to the system message.
+// Ephemeral like the nudges — applied per request, never persisted — so the date
+// stays correct across midnight and on resumed sessions, instead of freezing at
+// whatever day the session was created. Without it the model does not know the
+// date at all and silently falls back to its training-era present (e.g. searching
+// "news today" as a year-old date).
+func withCurrentDate(msgs []model.Message, now time.Time) []model.Message {
+	if len(msgs) == 0 || msgs[0].Role != model.RoleSystem {
+		return msgs
+	}
+	out := make([]model.Message, len(msgs))
+	copy(out, msgs)
+	content := staleDateLine.ReplaceAllString(out[0].Content, "")
+	out[0].Content = content + "\n\nThe current date is " + now.Format("2006-01-02 (Monday)") + "."
+	return out
 }
 
 const (
@@ -864,6 +888,10 @@ func errString(err error) string {
 // stream read error, discarding its own accumulation, so this is the only copy
 // that survives a failed turn.
 func (r *Runner) complete(ctx context.Context, req model.Request, streamed *strings.Builder) (model.Response, error) {
+	// Every model call goes through here, so this is the one place the current
+	// date is injected — the main loop, the step-limit answer, and subagents all
+	// get it without each call site remembering to.
+	req.Messages = withCurrentDate(req.Messages, time.Now())
 	if r.Stream {
 		if sp, ok := r.Model.(model.StreamingProvider); ok {
 			return sp.CompleteStream(ctx, req, func(delta string) {

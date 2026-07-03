@@ -17,6 +17,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 )
 
 // Status is a job's lifecycle state.
@@ -279,10 +280,10 @@ func (r *Registry) List() []Snapshot {
 // cappedBuffer is a thread-safe io.Writer that retains only the most recent max
 // bytes — the tail is what matters for a long-running command's logs.
 type cappedBuffer struct {
-	mu        sync.Mutex
-	buf       []byte
-	max       int
-	truncated bool
+	mu      sync.Mutex
+	buf     []byte
+	max     int
+	dropped int // total bytes discarded from the front
 }
 
 func (c *cappedBuffer) Write(p []byte) (int, error) {
@@ -290,8 +291,8 @@ func (c *cappedBuffer) Write(p []byte) (int, error) {
 	defer c.mu.Unlock()
 	c.buf = append(c.buf, p...)
 	if c.max > 0 && len(c.buf) > c.max {
+		c.dropped += len(c.buf) - c.max
 		c.buf = append([]byte(nil), c.buf[len(c.buf)-c.max:]...)
-		c.truncated = true
 	}
 	return len(p), nil
 }
@@ -299,8 +300,14 @@ func (c *cappedBuffer) Write(p []byte) (int, error) {
 func (c *cappedBuffer) String() string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.truncated {
-		return "...<truncated>\n" + string(c.buf)
+	if c.dropped == 0 {
+		return string(c.buf)
 	}
-	return string(c.buf)
+	// The byte-level trim in Write can land inside a multi-byte rune; skip
+	// forward to the next rune start so the returned string is valid UTF-8.
+	start := 0
+	for start < len(c.buf) && start < utf8.UTFMax && !utf8.RuneStart(c.buf[start]) {
+		start++
+	}
+	return fmt.Sprintf("...<truncated: %d bytes omitted>\n", c.dropped+start) + string(c.buf[start:])
 }

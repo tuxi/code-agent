@@ -5,6 +5,7 @@ import (
 	"code-agent/internal/jobs"
 	"code-agent/internal/sandbox"
 	"code-agent/internal/tools"
+	"code-agent/internal/truncate"
 	"code-agent/internal/workspace"
 	"context"
 	"encoding/json"
@@ -217,8 +218,8 @@ func (t *RunCommandTool) Execute(ctx context.Context, ec tools.ExecutionContext,
 
 	res := commandResult{
 		Command:    command,
-		Stdout:     truncate(stdout.String(), t.MaxOutputBytes),
-		Stderr:     truncate(stderr.String(), t.MaxOutputBytes),
+		Stdout:     truncate.Head(stdout.String(), t.MaxOutputBytes),
+		Stderr:     truncate.Head(stderr.String(), t.MaxOutputBytes),
 		ExitCode:   0,
 		DurationMS: duration.Milliseconds(),
 		Decision:   string(class.Decision),
@@ -280,13 +281,6 @@ func parseCommand(input json.RawMessage) (string, error) {
 		}
 	}
 	return strings.TrimSpace(in.Command), nil
-}
-
-func truncate(s string, max int) string {
-	if max <= 0 || len(s) <= max {
-		return s
-	}
-	return s[:max] + "\n...<truncated>"
 }
 
 // streamWriter writes to both an internal buffer (for the final result) and an

@@ -18,6 +18,7 @@ import (
 
 	"code-agent/internal/app"
 	"code-agent/internal/tools"
+	"code-agent/internal/truncate"
 	"code-agent/internal/web/cache"
 
 	"golang.org/x/net/html"
@@ -255,10 +256,8 @@ func (t *Tool) fetchViaFallback(ctx context.Context, urlStr string) (*fetchOutpu
 	if err != nil {
 		return nil, err
 	}
-	const maxFallback = 200_000 // chars — guard against a huge page blowing context
-	if len(content) > maxFallback {
-		content = content[:maxFallback]
-	}
+	const maxFallback = 200_000 // bytes — guard against a huge page blowing context
+	content = truncate.Head(content, maxFallback)
 	return &fetchOutput{
 		Title:      urlStr,
 		Summary:    "Direct fetch failed; content retrieved via server-side extractor (Tavily).",
@@ -315,10 +314,12 @@ func (t *Tool) parseJSON(body []byte, urlStr string) (*fetchOutput, error) {
 		}
 	}
 
-	// Truncate large JSON payloads to avoid context blowout.
+	// Truncate large JSON payloads to avoid context blowout. Line-safe head cut
+	// with an explicit marker: the model sees that (and how much) is missing
+	// instead of a silently amputated document.
 	const maxJSON = 50000
 	if len(pretty) > maxJSON {
-		pretty = pretty[:maxJSON]
+		pretty = []byte(truncate.Head(string(pretty), maxJSON))
 	}
 
 	markdown := "```json\n" + string(pretty) + "\n```\n"

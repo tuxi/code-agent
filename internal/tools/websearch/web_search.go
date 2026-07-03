@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"code-agent/internal/app"
 	"code-agent/internal/tools"
@@ -103,15 +104,69 @@ func (t *Tool) Execute(ctx context.Context, _ tools.ExecutionContext, input json
 		return tools.ToolResult{}, err
 	}
 
-	b, err := json.MarshalIndent(struct {
-		Query   string   `json:"query"`
-		Results []Result `json:"results"`
-	}{Query: in.Query, Results: results}, "", "  ")
+	b, err := marshalBudgeted(in.Query, results)
 	if err != nil {
-		return tools.ToolResult{}, fmt.Errorf("marshal results: %w", err)
+		return tools.ToolResult{}, err
 	}
 
 	return tools.ToolResult{Content: string(b)}, nil
+}
+
+// Output-budget constants. The tool keeps its own JSON under the agent loop's
+// per-observation cap so the generic truncation never fires on it: a byte-level
+// cut through the middle of a results array leaves half a URL or half a snippet
+// for the model to complete by guessing. Here excess is shed structurally —
+// whole results dropped, long snippets clipped at a rune boundary — so the
+// model always receives valid, complete JSON, with the omissions declared.
+const (
+	// maxSnippetBytes bounds one result's snippet; providers occasionally return
+	// article-length content.
+	maxSnippetBytes = 2000
+	// maxOutputBytes bounds the marshaled JSON. Must stay comfortably below the
+	// agent loop's observation cap (30000).
+	maxOutputBytes = 20000
+)
+
+type searchOutput struct {
+	Query   string   `json:"query"`
+	Results []Result `json:"results"`
+	// ResultsOmitted tells the model explicitly that trailing results were
+	// dropped for budget, so a short list reads as "capped", not "that's all
+	// there is".
+	ResultsOmitted int `json:"results_omitted,omitempty"`
+}
+
+// marshalBudgeted renders results as JSON within maxOutputBytes, dropping whole
+// trailing results (never cutting one) until it fits.
+func marshalBudgeted(query string, results []Result) ([]byte, error) {
+	for i := range results {
+		results[i].Snippet = clipRunes(results[i].Snippet, maxSnippetBytes)
+	}
+	out := searchOutput{Query: query, Results: results}
+	for {
+		b, err := json.MarshalIndent(out, "", "  ")
+		if err != nil {
+			return nil, fmt.Errorf("marshal results: %w", err)
+		}
+		if len(b) <= maxOutputBytes || len(out.Results) <= 1 {
+			return b, nil
+		}
+		out.Results = out.Results[:len(out.Results)-1]
+		out.ResultsOmitted++
+	}
+}
+
+// clipRunes caps s at max bytes without splitting a UTF-8 rune, marking the cut
+// with an ellipsis.
+func clipRunes(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	cut := max
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "…"
 }
 
 func (t *Tool) search(ctx context.Context, query string, topK int) ([]Result, error) {

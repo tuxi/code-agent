@@ -3,6 +3,7 @@ package shell
 import (
 	"code-agent/internal/jobs"
 	"code-agent/internal/tools"
+	"code-agent/internal/truncate"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -209,11 +210,7 @@ func jobWaitResult(job *jobs.Job, started time.Time, finished bool) map[string]a
 	}
 	if finished {
 		out["exit_code"] = snap.ExitCode
-		logs := job.Logs()
-		if len(logs) > jobWaitTailBytes {
-			logs = "...<truncated>\n" + logs[len(logs)-jobWaitTailBytes:]
-		}
-		out["output_tail"] = logs
+		out["output_tail"] = truncate.Tail(job.Logs(), jobWaitTailBytes)
 	} else {
 		out["note"] = "still running — call job_wait again, do other work meanwhile, or job_cancel if no longer needed"
 	}
