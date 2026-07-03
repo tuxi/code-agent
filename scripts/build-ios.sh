@@ -107,6 +107,6 @@ find "${OUT}" -maxdepth 2 -name "*.framework" | sed 's/^/      /'
 
 echo
 echo "==> done: ${OUT}"
-echo "    Swift:     import ${FRAMEWORK_NAME}        // symbols prefixed Mobile* (Go package name)"
-echo "    SPM:       .binaryTarget(name: \"${FRAMEWORK_NAME}\", path: \"${OUT}\")"
-echo "    resources: .copy(\"${SKILLS_OUT}\")              // skills → copy into Application Support/skills (global/user-level)"
+echo "    Next:  scripts/release-ios.sh <version>   # → zip + GitHub Release"
+echo "    Swift: import ${FRAMEWORK_NAME}            // symbols prefixed Mobile* (Go package name)"
+echo "    resources: ${SKILLS_OUT}                  // skills → copy into Application Support/skills (global/user-level)"
