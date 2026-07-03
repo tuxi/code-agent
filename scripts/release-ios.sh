@@ -25,7 +25,7 @@ cd "$(dirname "$0")/.."
 FRAMEWORK_NAME="CodeAgentRuntime"
 ZIP_NAME="${FRAMEWORK_NAME}.xcframework.zip"
 SRC_DIR="build/${FRAMEWORK_NAME}.xcframework"
-REPO="tuxi/code-agent"
+REPO="tuxi/code-agent-releases"
 # -------------------------------------------------------------------------------
 
 VERSION="${1:-}"
