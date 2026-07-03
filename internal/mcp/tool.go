@@ -35,6 +35,14 @@ type remoteTool struct {
 	log        io.Writer       // raw I/O trace; never nil (set by the Manager)
 }
 
+// displayLabeled is implemented by our MCP-backed tools to expose the readable
+// dotted label (mcp.<server>.<tool>) for the startup summary, so every registered
+// MCP tool — remote tools and synthesized resource tools alike — is listed by
+// name, not just remoteTool.
+type displayLabeled interface{ displayLabel() string }
+
+func (t *remoteTool) displayLabel() string { return t.label }
+
 func (t *remoteTool) Name() string                 { return t.wireName }
 func (t *remoteTool) Description() string          { return t.desc }
 func (t *remoteTool) InputSchema() json.RawMessage { return t.schema }

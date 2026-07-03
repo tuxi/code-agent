@@ -167,6 +167,27 @@ func repl(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider mode
 	fmt.Printf("CodeAgent — model: %s (%s)\n", mc.Name, mc.Model)
 	fmt.Println("Type a request, or /help for commands. /exit to quit.")
 
+	// runTurn drives one turn through the executor and prints the result. Shared by
+	// normal input and MCP prompt invocation (/mcp__server__prompt), which produces
+	// the turn text from the server's prompt template rather than the typed line.
+	runTurn := func(text string) {
+		turnCtx, turnCancel := signal.NotifyContext(ctx, os.Interrupt)
+		res, err := executor.ExecuteWithSession(turnCtx, sess, text)
+		turnCancel()
+		switch {
+		case errors.Is(err, context.Canceled):
+			fmt.Println("\nTurn interrupted")
+		case err != nil:
+			fmt.Println("error:", err)
+		default:
+			fmt.Println("\n" + res.Final)
+			if res.PromptTokens > 0 {
+				// 展示Token 预算，这样能看出离压缩还有多远
+				fmt.Printf("[context: %d / %d]\n", sess.PromptTokens, sess.CompactThreshold)
+			}
+		}
+	}
+
 	for {
 		// The prompt reflects plan mode, so it is always clear which mode you're in.
 		if runner.PlanState == agent.PlanStatusPlanning {
@@ -194,12 +215,27 @@ func repl(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider mode
 		_ = rl.SaveHistory(line) // real input lines only; sub-prompts bypass this
 
 		if strings.HasPrefix(line, "/") {
-			// /goal runs turns and needs ctx (for its Ctrl-C signal context), which
-			// handleCommand does not carry, so it is dispatched here in the loop.
-			if strings.Fields(line)[0] == "/goal" {
+			cmd := strings.Fields(line)[0]
+			switch {
+			case cmd == "/goal":
+				// /goal runs turns and needs ctx (for its Ctrl-C signal context),
+				// which handleCommand does not carry, so it is dispatched here.
 				if gerr := handleGoal(ctx, line, cfg, mc, runner, sess, store, ask); gerr != nil {
 					fmt.Println("error:", gerr)
 				}
+				continue
+			case cmd == "/prompts":
+				fmt.Println(mcpMgr.PromptHelp())
+				continue
+			case strings.HasPrefix(cmd, "/mcp__"):
+				// An MCP prompt (user-invoked template): render the server's messages
+				// to text and run it as a turn, exactly like typed input.
+				text, perr := mcpMgr.RenderPrompt(ctx, strings.TrimPrefix(cmd, "/"), strings.Fields(line)[1:])
+				if perr != nil {
+					fmt.Println("error:", perr)
+					continue
+				}
+				runTurn(text)
 				continue
 			}
 			newSess, quit, cerr := handleCommand(line, cfg, &mc, runner, sess, store, ask)
@@ -216,25 +252,8 @@ func repl(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider mode
 		}
 
 		// Each turn gets its own signal context: Ctrl-C during a long model call
-		// cancels this turn (not the process), and the REPL stays alive. The
-		// executor drives RunTurn and autosaves afterwards — even on interrupt
-		// (WithoutCancel), reporting any save failure via OnSaveError above.
-		turnCtx, turnCancel := signal.NotifyContext(ctx, os.Interrupt)
-		res, err := executor.ExecuteWithSession(turnCtx, sess, line)
-		turnCancel()
-		if errors.Is(err, context.Canceled) {
-			fmt.Println("\nTurn interrupted")
-			continue
-		}
-		if err != nil {
-			fmt.Println("error:", err)
-			continue
-		}
-		fmt.Println("\n" + res.Final)
-		if res.PromptTokens > 0 {
-			// 展示Token 预算，这样能看出离压缩还有多远
-			fmt.Printf("[context: %d / %d]\n", sess.PromptTokens, sess.CompactThreshold)
-		}
+		// cancels this turn (not the process), and the REPL stays alive (see runTurn).
+		runTurn(line)
 	}
 }
 
@@ -257,6 +276,7 @@ func handleCommand(line string, cfg app.Config, mc *app.ModelConfig, runner *age
   /plan         toggle plan mode (read-only: research + plan, no edits)
   /auto [on|off] auto-approve in-workspace edits (commands still confirmed); no arg shows state
   /goal [obj|resume|clear]  pursue an objective until a separate judge confirms done (/auto on for hands-off)
+  /prompts      list MCP prompts; invoke one as /mcp__<server>__<prompt> [args]
   /session      show the current session id
   /sessions     list saved sessions
   /stats        aggregate compaction + provider telemetry

@@ -9,11 +9,14 @@
 // ParseJSON / LoadFile. The tool wire name (mcp__<server>__<tool>) also matches
 // Claude, so the whole surface is drop-in compatible.
 //
-// v1 scope: stdio, streamable-http, and sse transports; tools/list + tools/call;
-// text content (other content kinds become a one-line placeholder); every remote
-// tool is treated as side-effecting (so each call is confirmed). Resources,
-// prompts, sampling, OAuth, tool search, and exposing our own tools as a server
-// are deliberately out of scope for now.
+// Scope: stdio, streamable-http, and sse transports; tools/list + tools/call
+// (every remote tool treated as side-effecting, so each call is confirmed); the
+// resources primitive exposed as two read-only synthesized tools per server (see
+// resources.go); and the prompts primitive discovered and invocable as slash
+// commands (see prompts.go — the CLI wires them; TUI/wire are follow-ups). Text
+// content is inlined; other content kinds become a one-line placeholder.
+// Sampling, OAuth, tool search, and exposing our own tools as a server are
+// deliberately out of scope for now.
 package mcp
 
 import (

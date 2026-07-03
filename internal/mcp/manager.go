@@ -31,6 +31,7 @@ type Manager struct {
 	trace    io.Writer // per-call raw I/O trace; io.Discard unless debugging
 	sessions []*mcpsdk.ClientSession
 	tools    []tools.Tool
+	prompts  []*promptEntry // discovered MCP prompts (user-invoked; see prompts.go)
 	report   []ServerStatus
 }
 
@@ -101,6 +102,23 @@ func (m *Manager) connectOne(ctx context.Context, s ServerConfig) (*mcpsdk.Clien
 	if err != nil {
 		_ = session.Close()
 		return nil, 0, startupError(cctx, err, s)
+	}
+	// Resources primitive (R1): if the server declares the resources capability,
+	// expose its list/read operations as two read-only tools so the model can pull
+	// passive context. Gated on the declared capability so servers without
+	// resources don't get dead tools. (Prompts remain out of scope.)
+	if init := session.InitializeResult(); init != nil && init.Capabilities != nil && init.Capabilities.Resources != nil {
+		discovered = append(discovered, newResourceTools(session, s.Name, m.trace)...)
+	}
+	// Prompts primitive (P1): if the server declares it, discover its prompts so
+	// the user can invoke them as slash commands. Lenient — a prompts/list failure
+	// only skips this server's prompts, it does not drop the (working) tools.
+	if init := session.InitializeResult(); init != nil && init.Capabilities != nil && init.Capabilities.Prompts != nil {
+		if ps, err := discoverPrompts(cctx, session, s.Name, m.trace); err != nil {
+			fmt.Fprintf(m.trace, "[mcp] %s: prompts/list failed, skipping prompts: %v\n", s.Name, err)
+		} else {
+			m.prompts = append(m.prompts, ps...)
+		}
 	}
 	m.tools = append(m.tools, discovered...)
 	return session, len(discovered), nil
@@ -252,8 +270,8 @@ func (m *Manager) Summary() string {
 	}
 	names := make([]string, 0, len(m.tools))
 	for _, t := range m.tools {
-		if rt, ok := t.(*remoteTool); ok {
-			names = append(names, rt.label)
+		if dl, ok := t.(displayLabeled); ok {
+			names = append(names, dl.displayLabel())
 		}
 	}
 	sort.Strings(names)
