@@ -155,6 +155,8 @@ type MuxOptions struct {
 //	GET  /v1/conversations/{id}/events       recorded events, re-encoded to wire v1
 //	GET  /v1/conversations/{id}/assets/{asset_id}/preview  derived asset preview
 //	GET  /v1/conversations/{id}/assets/{asset_id}/content  workspace text content
+//	GET  /v1/conversations/{id}/assets/{asset_id}/blob     workspace binary content
+//	GET  /v1/conversations/{id}/assets/{asset_id}/thumbnail media thumbnail placeholder
 //	DELETE /v1/conversations/{id}            delete session + events
 //	PATCH /v1/conversations/{id}              rename — body: {"name":"..."}
 //	GET  /v1/conversations/{id}/stream       upgrade via TurnExecutor/TransportSession
@@ -312,6 +314,17 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 			return
 		}
 		writeJSON(w, http.StatusOK, resp)
+	})
+
+	mux.HandleFunc("GET /v1/conversations/{id}/assets/{asset_id}/blob", func(w http.ResponseWriter, r *http.Request) {
+		if err := serveConversationAssetBlob(r.Context(), w, r, eventStore, repo, r.PathValue("id"), r.PathValue("asset_id")); err != nil {
+			writeAssetError(w, err)
+			return
+		}
+	})
+
+	mux.HandleFunc("GET /v1/conversations/{id}/assets/{asset_id}/thumbnail", func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "asset thumbnails are not implemented", http.StatusNotImplemented)
 	})
 
 	// ---- WebSocket: TransportSession backed by TurnExecutor ----

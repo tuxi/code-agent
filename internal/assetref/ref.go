@@ -116,6 +116,22 @@ func MIMEType(path string) string {
 	return "text/plain"
 }
 
+func KindForMIME(mimeType string) string {
+	m := strings.ToLower(strings.TrimSpace(strings.Split(mimeType, ";")[0]))
+	switch {
+	case strings.HasPrefix(m, "image/"):
+		return "image"
+	case strings.HasPrefix(m, "video/"):
+		return "video"
+	case strings.HasPrefix(m, "audio/"):
+		return "audio"
+	case m == "application/pdf":
+		return "pdf"
+	default:
+		return "file"
+	}
+}
+
 var unsafeID = regexp.MustCompile(`[^a-zA-Z0-9_=-]+`)
 
 func safeID(s string) string {

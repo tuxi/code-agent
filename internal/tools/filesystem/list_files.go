@@ -152,10 +152,10 @@ func (l *ListFilesTool) Execute(ctx context.Context, ec tools.ExecutionContext, 
 		entry := listFilesEntry{
 			rel:     rel,
 			abs:     abs,
-			kind:    "file",
 			display: rel,
 			mime:    assets.MIMEType(rel),
 		}
+		entry.kind = assets.KindForMIME(entry.mime)
 		if d.IsDir() {
 			entry.kind = "directory"
 			entry.display = rel + "/"
