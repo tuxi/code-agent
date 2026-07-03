@@ -5,6 +5,7 @@ import (
 	"code-agent/internal/agent"
 	"code-agent/internal/app"
 	"code-agent/internal/approve"
+	"code-agent/internal/mcp"
 	"code-agent/internal/model"
 	"code-agent/internal/plugins"
 	"code-agent/internal/runtime"
@@ -44,6 +45,14 @@ func run() error {
 
 	cfg, err := app.LoadConfig("config.yaml")
 	if err != nil {
+		return err
+	}
+	// MCP servers come from Claude-compatible `.mcp.json` files, layered by scope:
+	// project (<root>/.mcp.json) over user (~/.codeagent/mcp.json). Set
+	// CODEAGENT_MCP_INHERIT_CLAUDE=1 to also inherit user-scope servers from an
+	// existing ~/.claude.json. Missing files => no MCP.
+	inheritClaude := os.Getenv("CODEAGENT_MCP_INHERIT_CLAUDE") == "1"
+	if cfg.MCP, err = mcp.ResolveDesktop(cfg.Workspace.Root, inheritClaude); err != nil {
 		return err
 	}
 	// User-level skills on the desktop are under ~/.codeagent/skills/. The embedded
@@ -485,8 +494,9 @@ func runAgent(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider 
 	// The AutoApprover wraps the human approver; --auto seeds it on, otherwise it is
 	// a transparent pass-through (identical to before). Auto-grants are audited by
 	// the loop (correlated EventAutoApproved), so the approver itself takes no emitter.
+	rules := approve.NewRuleStore(root, cfg.Permissions.Allow, cfg.Permissions.Deny)
 	approver := approve.NewAutoApprover(root, ui.ConfirmApprover{}, autoMode)
-	runner := runtime.BuildRunner(cfg, mc, provider, registry, skillReg, approver, runtime.WithEventStore(buildEmitter(), store, ctx))
+	runner := runtime.BuildRunner(cfg, mc, provider, registry, skillReg, approver, runtime.WithEventStore(buildEmitter(), store, ctx), rules)
 	planRef.R = runner
 
 	sess, err := session.NewBuilder(root).
@@ -546,8 +556,9 @@ func runGoal(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider m
 		fmt.Fprintln(os.Stderr, "note: auto mode OFF — non-interactive, so confirm-tier tools (mutating commands, edits) will be denied; pass --auto for hands-off.")
 	}
 
+	rules := approve.NewRuleStore(root, cfg.Permissions.Allow, cfg.Permissions.Deny)
 	approver := approve.NewAutoApprover(root, ui.ConfirmApprover{}, autoMode)
-	runner := runtime.BuildRunner(cfg, mc, provider, registry, skillReg, approver, runtime.WithEventStore(buildEmitter(), store, ctx))
+	runner := runtime.BuildRunner(cfg, mc, provider, registry, skillReg, approver, runtime.WithEventStore(buildEmitter(), store, ctx), rules)
 	planRef.R = runner
 
 	sess, err := session.NewBuilder(root).
@@ -604,8 +615,11 @@ func runTUI(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider mo
 
 	// Wrap the card-backed approver with the AutoApprover so the TUI gets the same
 	// hands-off auto mode as repl/run: --auto seeds it on; /auto flips it per session.
+	// The permission store is shared into the loop's allowlist; the TUI card's
+	// interactive "always allow" grant into it is a later step.
+	rules := approve.NewRuleStore(root, cfg.Permissions.Allow, cfg.Permissions.Deny)
 	approver := approve.NewAutoApprover(root, backend.Approver, autoMode)
-	runner := runtime.BuildRunner(cfg, mc, provider, registry, skillReg, approver, runtime.WithEventStore(backend.Emitter, store, ctx))
+	runner := runtime.BuildRunner(cfg, mc, provider, registry, skillReg, approver, runtime.WithEventStore(backend.Emitter, store, ctx), rules)
 	planRef.R = runner
 	runner.Stream = true // 8.6: stream the model's text live (TUI only)
 	runner.PlanApprover = backend.PlanApprover
@@ -653,7 +667,7 @@ func runTUI(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider mo
 		}, nil
 	}
 	goalOps := buildGoalOps(cfg, mc, runner, store)
-	return tui.Run(ctx, backend, runner, sess, store, header, resume, modelSwap, cfg.ModelNames(), approver, goalOps)
+	return tui.Run(ctx, backend, runner, sess, store, header, resume, modelSwap, cfg.ModelNames(), approver, rules, goalOps)
 }
 
 // runPlugin handles `codeagent plugin <subcommand> [args...]`.

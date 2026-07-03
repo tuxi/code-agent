@@ -59,7 +59,7 @@ type model struct {
 
 	pending     *approvalReq     // set while a side-effecting tool awaits y/n
 	planPending *planApprovalReq // set while a plan awaits approval (a/r)
-	approveIdx  int              // 0 = approve (y), 1 = deny (n) — ↑/↓ switches
+	approveIdx  int              // 0 = allow once, 1 = always allow, 2 = deny — ↑/↓ switches
 	showPreview bool             // 'v' toggles the diff preview below the approval card
 	busy        bool             // a turn is running; submit is locked
 	thinking    bool             // a model call is in flight; show the spinner
@@ -393,24 +393,40 @@ func (m model) handlePlanApprovalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// handleApprovalKey drives the approval card: ↑/↓ switches between approve and
-// deny, Enter confirms, Esc denies. Direct y/n keys still work.
+// handleApprovalKey drives the approval card: ↑/↓ moves between allow-once,
+// always-allow, and deny; Enter confirms the selection; Esc denies. Direct keys
+// still work: y/o = allow once, a = always allow, n = deny. "Always allow"
+// persists a rule (for an MCP tool, the whole server) via the granter so future
+// matching calls skip the prompt; with no granter wired it falls back to once.
 func (m model) handleApprovalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	answer := func(approved, always bool) (tea.Model, tea.Cmd) {
+		if approved && always && m.src.granter != nil {
+			// Best-effort: a failed persist still allows this call.
+			_, _ = m.src.granter.AllowAlways(m.pending.tool)
+		}
+		m.pending.reply <- approved
+		m.pending, m.approveIdx, m.showPreview = nil, 0, false
+		return m, nil // listeners stay alive (approvalMsg already re-issued waitForApproval)
+	}
 	switch msg.String() {
 	case "up", "k", "ctrl+p":
-		m.approveIdx = 0
+		if m.approveIdx > 0 {
+			m.approveIdx--
+		}
 	case "down", "j", "ctrl+n":
-		m.approveIdx = 1
+		if m.approveIdx < 2 {
+			m.approveIdx++
+		}
 	case "v", "V":
 		m.showPreview = !m.showPreview
-	case "enter", "y", "Y":
-		m.pending.reply <- true
-		m.pending, m.approveIdx, m.showPreview = nil, 0, false
-		return m, nil // listeners stay alive independently (approvalMsg already re-issued waitForApproval)
+	case "enter":
+		return answer(m.approveIdx != 2, m.approveIdx == 1)
+	case "y", "Y", "o", "O":
+		return answer(true, false)
+	case "a", "A":
+		return answer(true, true)
 	case "n", "N", "esc":
-		m.pending.reply <- false
-		m.pending, m.approveIdx, m.showPreview = nil, 0, false
-		return m, nil
+		return answer(false, false)
 	case "ctrl+c":
 		m.pending.reply <- false
 		m.pending, m.approveIdx, m.showPreview = nil, 0, false

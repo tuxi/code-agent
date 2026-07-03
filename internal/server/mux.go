@@ -143,6 +143,10 @@ type MuxOptions struct {
 	// repo-clone endpoint clones into a subdirectory of it. Empty disables that
 	// endpoint (it returns 400).
 	WorkspaceRoot string
+	// Granter persists a client's "always allow" verdict into the shared permission
+	// store (the same one the loop's allowlist reads). Nil disables persistence, so
+	// an "always" over the wire is treated as a one-time allow.
+	Granter PermissionGranter
 }
 
 // NewMux builds the HTTP surface of `codeagent serve`:
@@ -343,6 +347,7 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 		ServerName:   opts.ServerName,
 		Capabilities: opts.Capabilities,
 		Accept:       opts.Accept,
+		Granter:      opts.Granter,
 	}
 	mux.Handle("GET /v1/conversations/{id}/stream", ws)
 	mux.Handle("GET /v2/conversations/{id}/stream", ws)

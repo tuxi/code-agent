@@ -1,0 +1,20 @@
+{
+  "mcpServers": {
+    "fs": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "."],
+      "env": { "SOME_FLAG": "1" }
+    },
+    "github": {
+      "type": "http",
+      "url": "https://api.githubcopilot.com/mcp/",
+      "headers": { "Authorization": "Bearer ${GITHUB_PAT}" }
+    },
+    "internal-sse": {
+      "type": "sse",
+      "url": "${MCP_BASE_URL:-https://mcp.example.com}/sse",
+      "headers": { "X-API-Key": "${MCP_API_KEY}" }
+    }
+  }
+}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"sort"
@@ -73,13 +74,12 @@ func (m *Manager) Connect(ctx context.Context, servers []ServerConfig) error {
 }
 
 func (m *Manager) connectOne(ctx context.Context, s ServerConfig) (*mcpsdk.ClientSession, int, error) {
-	if s.Command == "" {
-		return nil, 0, fmt.Errorf("empty command")
-	}
-	cmd := exec.Command(s.Command, s.Args...)
-	cmd.Env = os.Environ()
-	for k, v := range s.Env {
-		cmd.Env = append(cmd.Env, k+"="+v)
+	// Build the transport for this server's type. For stdio we also get the
+	// *exec.Cmd back so a failed handshake can reap the child; remote transports
+	// return a nil cmd (nothing local to reap).
+	transport, cmd, err := newTransport(s)
+	if err != nil {
+		return nil, 0, err
 	}
 
 	// Bound the handshake and discovery. cctx governs only these startup calls;
@@ -89,26 +89,90 @@ func (m *Manager) connectOne(ctx context.Context, s ServerConfig) (*mcpsdk.Clien
 	defer cancel()
 
 	client := mcpsdk.NewClient(&mcpsdk.Implementation{Name: "code-agent", Version: "0.1.0"}, nil)
-	session, err := client.Connect(cctx, &mcpsdk.CommandTransport{Command: cmd}, nil)
+	session, err := client.Connect(cctx, transport, nil)
 	if err != nil {
-		killProcess(cmd) // best-effort: reap a child the SDK may have left running
-		return nil, 0, startupError(cctx, err, s.Command)
+		if cmd != nil {
+			killProcess(cmd) // best-effort: reap a child the SDK may have left running
+		}
+		return nil, 0, startupError(cctx, err, s)
 	}
 
 	discovered, err := m.discover(cctx, session, s.Name)
 	if err != nil {
 		_ = session.Close()
-		return nil, 0, startupError(cctx, err, s.Command)
+		return nil, 0, startupError(cctx, err, s)
 	}
 	m.tools = append(m.tools, discovered...)
 	return session, len(discovered), nil
 }
 
-// startupError turns a deadline into an actionable message; other errors pass
-// through unchanged.
-func startupError(cctx context.Context, err error, command string) error {
+// newTransport builds the SDK transport for a server based on its (already
+// normalized) type. stdio spawns a subprocess and returns its *exec.Cmd; http
+// and sse dial a remote endpoint, injecting any configured headers via a custom
+// HTTP client, and return a nil cmd.
+func newTransport(s ServerConfig) (mcpsdk.Transport, *exec.Cmd, error) {
+	switch s.Type {
+	case TransportHTTP:
+		return &mcpsdk.StreamableClientTransport{
+			Endpoint:   s.URL,
+			HTTPClient: httpClientWithHeaders(s.Headers),
+		}, nil, nil
+	case TransportSSE:
+		return &mcpsdk.SSEClientTransport{
+			Endpoint:   s.URL,
+			HTTPClient: httpClientWithHeaders(s.Headers),
+		}, nil, nil
+	case TransportStdio, "":
+		if s.Command == "" {
+			return nil, nil, fmt.Errorf("empty command")
+		}
+		cmd := exec.Command(s.Command, s.Args...)
+		cmd.Env = os.Environ()
+		for k, v := range s.Env {
+			cmd.Env = append(cmd.Env, k+"="+v)
+		}
+		return &mcpsdk.CommandTransport{Command: cmd}, cmd, nil
+	default:
+		return nil, nil, fmt.Errorf("unsupported transport type %q", s.Type)
+	}
+}
+
+// httpClientWithHeaders returns an *http.Client that injects the given headers
+// on every request (how remote MCP servers receive Bearer tokens / API keys,
+// since the SDK's HTTP transports expose no headers field). Returns nil when no
+// headers are configured, so the SDK uses its default client.
+func httpClientWithHeaders(headers map[string]string) *http.Client {
+	if len(headers) == 0 {
+		return nil
+	}
+	return &http.Client{Transport: &headerRoundTripper{base: http.DefaultTransport, headers: headers}}
+}
+
+// headerRoundTripper adds a fixed set of headers to each outgoing request. It
+// clones the request before mutating it, as the RoundTripper contract requires.
+type headerRoundTripper struct {
+	base    http.RoundTripper
+	headers map[string]string
+}
+
+func (h *headerRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	req = req.Clone(req.Context())
+	for k, v := range h.headers {
+		req.Header.Set(k, v)
+	}
+	return h.base.RoundTrip(req)
+}
+
+// startupError turns a deadline into an actionable message tailored to the
+// server's transport; other errors pass through unchanged.
+func startupError(cctx context.Context, err error, s ServerConfig) error {
 	if cctx.Err() == context.DeadlineExceeded {
-		return fmt.Errorf("timed out after %s (is %q installed and speaking MCP over stdio?)", connectTimeout, command)
+		switch s.Type {
+		case TransportHTTP, TransportSSE:
+			return fmt.Errorf("timed out after %s (is %q reachable and serving MCP over %s?)", connectTimeout, s.URL, s.Type)
+		default:
+			return fmt.Errorf("timed out after %s (is %q installed and speaking MCP over stdio?)", connectTimeout, s.Command)
+		}
 	}
 	return err
 }

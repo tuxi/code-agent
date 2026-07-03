@@ -74,6 +74,31 @@ func TestApprovalDeny(t *testing.T) {
 	}
 }
 
+// fakeGranter records the AllowAlways call for the card's "always allow" choice.
+type fakeGranter struct{ tool string }
+
+func (g *fakeGranter) AllowAlways(tool string) (string, error) {
+	g.tool = tool
+	return tool, nil
+}
+
+func TestApprovalAlwaysGrants(t *testing.T) {
+	m := newTestModel()
+	g := &fakeGranter{}
+	m.src.granter = g
+	reply := make(chan bool, 1)
+	m.pending = &approvalReq{tool: "mcp__github__list_issues", reply: reply}
+
+	// 'a' = always allow: approves this call AND persists a rule via the granter.
+	m = asModel(t, must(m.handleApprovalKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})))
+	if !<-reply {
+		t.Fatal("'a' should approve the tool")
+	}
+	if g.tool != "mcp__github__list_issues" {
+		t.Fatalf("'a' should persist an always-allow rule, granter saw %q", g.tool)
+	}
+}
+
 func TestSubmitLocksBusyAndDeliversInput(t *testing.T) {
 	m := newTestModel()
 	m.composer.SetValue("  fix the test  ")

@@ -17,6 +17,7 @@ import (
 
 	"code-agent/internal/app"
 	"code-agent/internal/conversation"
+	"code-agent/internal/mcp"
 	"code-agent/internal/runtime"
 	"code-agent/internal/server"
 )
@@ -51,6 +52,14 @@ func run() error {
 
 	cfg, err := app.LoadConfig("config.yaml")
 	if err != nil {
+		return err
+	}
+	// MCP servers come from Claude-compatible `.mcp.json` files, layered by scope:
+	// project (<root>/.mcp.json) over user (~/.codeagent/mcp.json). Set
+	// CODEAGENT_MCP_INHERIT_CLAUDE=1 to also inherit user-scope servers from an
+	// existing ~/.claude.json. Missing files => no MCP.
+	inheritClaude := os.Getenv("CODEAGENT_MCP_INHERIT_CLAUDE") == "1"
+	if cfg.MCP, err = mcp.ResolveDesktop(cfg.Workspace.Root, inheritClaude); err != nil {
 		return err
 	}
 	if cfg.GlobalSkillsDir == "" {
@@ -127,6 +136,7 @@ func run() error {
 		ServerName:    "codeagentd/" + mc.Model,
 		Capabilities:  defaultCapabilities,
 		WorkspaceRoot: root,
+		Granter:       rb.Rules(),
 	})
 
 	srv := &http.Server{Addr: addr, Handler: handler}

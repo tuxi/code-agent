@@ -21,6 +21,7 @@ import (
 
 	"code-agent/internal/app"
 	"code-agent/internal/conversation"
+	"code-agent/internal/mcp"
 	"code-agent/internal/model"
 	"code-agent/internal/runtime"
 	"code-agent/internal/server"
@@ -50,6 +51,14 @@ type Options struct {
 	// ConfigYAML is the raw config document. Empty => built-in defaults
 	// (see app.LoadConfigBytes).
 	ConfigYAML string
+
+	// MCPJSON is the raw Claude-compatible `.mcp.json` document configuring
+	// external MCP servers ({"mcpServers": {...}}). The desktop backend reads this
+	// from the workspace-root file; embedded hosts (iOS/macOS) have no fixed path,
+	// so they inject it here, the same way ConfigYAML carries the main config.
+	// Empty => no MCP servers. On a sandboxed (iOS) host, stdio servers are still
+	// skipped — only http/sse servers connect (they need no subprocess).
+	MCPJSON string
 
 	// ModelName selects which configured model to use. Empty => default_model.
 	ModelName string
@@ -204,6 +213,11 @@ func (h *Handle) Reconfigure(secretsJSON, modelName string) error {
 func StartServer(ctx context.Context, opt Options) (*Handle, error) {
 	cfg, err := app.LoadConfigBytes([]byte(opt.ConfigYAML))
 	if err != nil {
+		return nil, err
+	}
+	// MCP servers are injected as a Claude-compatible `.mcp.json` document rather
+	// than embedded in the YAML config. Empty => no MCP.
+	if cfg.MCP, err = mcp.ParseJSON([]byte(opt.MCPJSON)); err != nil {
 		return nil, err
 	}
 	if opt.WorkspaceDir != "" {
@@ -366,6 +380,7 @@ func Assemble(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider 
 		ServerName:    "codeagent/" + mc.Model,
 		Capabilities:  defaultCapabilities,
 		WorkspaceRoot: root,
+		Granter:       rb.Rules(),
 	})
 	rt := &Runtime{Executor: executor, Builder: rb, Repo: repo}
 	return handler, rt, closers, nil

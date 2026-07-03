@@ -4,16 +4,35 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
+	"os"
 	"sync"
 	"time"
 
 	"code-agent/internal/agent"
+	"code-agent/internal/approve"
 )
+
+// PermissionGranter persists an "always allow" grant for a tool at a scope. It is
+// the narrow slice of *approve.RuleStore the RemoteApprover needs, injected so a
+// wire client's "always" verdict adds a rule to the same store the loop's
+// allowlist reads from. Nil disables persistence (an "always" is treated as a
+// one-time allow).
+type PermissionGranter interface {
+	GrantTool(toolName string, scope approve.Scope) (rule string, err error)
+}
+
+// outcome is a client's three-way verdict delivered to a blocked Approve call.
+type outcome struct {
+	approved bool
+	always   bool // persist a rule (tool approval only)
+	scope    approve.Scope
+}
 
 // pendingReq holds a single in-flight approval or plan-approval request. It keeps
 // the request data so it can be re-sent when a client reconnects after a disconnect.
 type pendingReq struct {
-	ch       chan bool       // wakes the blocked Approve/ApprovePlan goroutine
+	ch       chan outcome    // wakes the blocked Approve/ApprovePlan goroutine
 	toolName string          // tool approval only
 	input    json.RawMessage // tool arguments (tool approval only)
 	plan     *agent.Plan     // plan approval only (nil for tool approval)
@@ -36,6 +55,7 @@ type pendingReq struct {
 // reserved for session teardown (DELETE /v1/conversations/{id}).
 type RemoteApprover struct {
 	timeout time.Duration
+	granter PermissionGranter // nil disables "always allow" persistence
 
 	mu      sync.Mutex
 	sink    FrameSink // nil when no client connected; mutable via UpdateSink/ClearSink
@@ -47,8 +67,10 @@ var _ agent.Approver = (*RemoteApprover)(nil)
 
 // NewRemoteApprover asks over sink. A non-positive timeout means "wait until
 // resolved or closed" (rely on Close at session teardown rather than a deadline).
-func NewRemoteApprover(sink FrameSink, timeout time.Duration) *RemoteApprover {
-	return &RemoteApprover{sink: sink, timeout: timeout, pending: make(map[string]*pendingReq)}
+// granter (may be nil) persists a client's "always allow" grant into the shared
+// permission store.
+func NewRemoteApprover(sink FrameSink, timeout time.Duration, granter PermissionGranter) *RemoteApprover {
+	return &RemoteApprover{sink: sink, timeout: timeout, granter: granter, pending: make(map[string]*pendingReq)}
 }
 
 // Approve sends an approval_request and blocks until the verdict arrives, the
@@ -58,7 +80,7 @@ func NewRemoteApprover(sink FrameSink, timeout time.Duration) *RemoteApprover {
 func (a *RemoteApprover) Approve(toolName string, input json.RawMessage) bool {
 	id := newApprovalID()
 	req := &pendingReq{
-		ch:       make(chan bool, 1),
+		ch:       make(chan outcome, 1),
 		toolName: toolName,
 		input:    input,
 	}
@@ -98,25 +120,52 @@ func (a *RemoteApprover) Approve(toolName string, input json.RawMessage) bool {
 		deadline = t.C
 	}
 	select {
-	case approved := <-req.ch:
-		return approved
+	case res := <-req.ch:
+		// "Always allow": persist a rule (best-effort) so future matching calls
+		// skip the prompt. The grant lands in the shared store the loop's allowlist
+		// reads, so it takes effect on the very next call.
+		if res.always && a.granter != nil {
+			if rule, err := a.granter.GrantTool(toolName, res.scope); err != nil {
+				fmt.Fprintf(os.Stderr, "[permissions] could not persist always-allow for %s: %v\n", toolName, err)
+			} else {
+				fmt.Fprintf(os.Stderr, "[permissions] always allowing %q (%s)\n", rule, scopeLabel(res.scope))
+			}
+		}
+		return res.approved
 	case <-deadline:
 		return false // no answer in time: deny
 	}
 }
 
-// Resolve delivers a client's verdict to the blocked Approve call with the
-// matching id. Unknown or already-resolved ids are ignored.
+// Resolve delivers a plain approve/deny verdict (plan approvals, and legacy
+// clients that send only `approved`). Unknown or already-resolved ids are ignored.
 func (a *RemoteApprover) Resolve(id string, approved bool) {
+	a.deliver(id, outcome{approved: approved})
+}
+
+// ResolveTool delivers a tool approval's three-way verdict, including whether to
+// persist an "always allow" rule and at what scope.
+func (a *RemoteApprover) ResolveTool(id string, approved, always bool, scope approve.Scope) {
+	a.deliver(id, outcome{approved: approved, always: always, scope: scope})
+}
+
+func (a *RemoteApprover) deliver(id string, res outcome) {
 	a.mu.Lock()
 	req, ok := a.pending[id]
 	a.mu.Unlock()
 	if ok {
 		select {
-		case req.ch <- approved:
+		case req.ch <- res:
 		default:
 		}
 	}
+}
+
+func scopeLabel(s approve.Scope) string {
+	if s == approve.ScopeUser {
+		return "user"
+	}
+	return "project-local"
 }
 
 // ApprovePlan implements agent.PlanApprover by sending a plan_approval_request
@@ -125,7 +174,7 @@ func (a *RemoteApprover) Resolve(id string, approved bool) {
 func (a *RemoteApprover) ApprovePlan(plan agent.Plan) agent.PlanDecision {
 	id := newApprovalID()
 	req := &pendingReq{
-		ch:   make(chan bool, 1),
+		ch:   make(chan outcome, 1),
 		plan: &plan,
 	}
 
@@ -168,8 +217,8 @@ func (a *RemoteApprover) ApprovePlan(plan agent.Plan) agent.PlanDecision {
 		deadline = t.C
 	}
 	select {
-	case approved := <-req.ch:
-		if approved {
+	case res := <-req.ch:
+		if res.approved {
 			return agent.PlanApproved
 		}
 		return agent.PlanRejected
@@ -254,7 +303,7 @@ func (a *RemoteApprover) Close() {
 	a.mu.Unlock()
 	for _, req := range pending {
 		select {
-		case req.ch <- false:
+		case req.ch <- outcome{approved: false}:
 		default:
 		}
 	}

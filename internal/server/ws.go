@@ -76,6 +76,10 @@ type WSHandler struct {
 	// (same-origin only).
 	Accept *websocket.AcceptOptions
 
+	// Granter persists a client's "always allow" verdict; passed to each
+	// session-scoped RemoteApprover. Nil disables persistence.
+	Granter PermissionGranter
+
 	// Session-scoped approvers that survive connection changes. Keyed by session ID.
 	mu        sync.Mutex
 	approvers map[string]*RemoteApprover
@@ -166,7 +170,7 @@ func (h *WSHandler) ensureApprover(sessionID string, sink FrameSink) *RemoteAppr
 	}
 	ra, ok := h.approvers[sessionID]
 	if !ok {
-		ra = NewRemoteApprover(sink, h.approvalTimeout())
+		ra = NewRemoteApprover(sink, h.approvalTimeout(), h.Granter)
 		h.approvers[sessionID] = ra
 	} else {
 		ra.UpdateSink(sink)

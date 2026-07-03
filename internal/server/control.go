@@ -1,6 +1,10 @@
 package server
 
-import "encoding/json"
+import (
+	"encoding/json"
+
+	"code-agent/internal/approve"
+)
 
 // Control-plane messages (docs/protocols/agent-wire-v1.md §4). Unlike events
 // (server->client, fire-and-forget), these are request/response and flow in both
@@ -25,10 +29,35 @@ type ApprovalRequest struct {
 }
 
 // ApprovalResponse is the client's verdict, correlated to a request by ID.
+//
+// Decision is the richer, Claude-style three-way verdict a client may send:
+// "once" (allow this call), "always" (allow + persist a permission rule so future
+// matching calls skip the prompt), or "deny". Scope selects where an "always"
+// grant is persisted: "local" (project-local, the default) or "user". Approved is
+// the legacy two-state field: a client that only sends Approved still works, and
+// Decision, when present, takes precedence (see outcome).
 type ApprovalResponse struct {
 	Type     string `json:"type"` // always "approval_response"
 	ID       string `json:"id"`
 	Approved bool   `json:"approved"`
+	Decision string `json:"decision,omitempty"` // "once" | "always" | "deny"
+	Scope    string `json:"scope,omitempty"`    // "local" | "user" (for "always")
+}
+
+// outcome resolves the response into (approved, always, scope). Decision wins
+// when set; otherwise it falls back to the legacy Approved boolean.
+func (m ApprovalResponse) outcome() (approved, always bool, scope approve.Scope) {
+	scope = approve.ParseScope(m.Scope)
+	switch m.Decision {
+	case "always":
+		return true, true, scope
+	case "once":
+		return true, false, scope
+	case "deny":
+		return false, false, scope
+	default:
+		return m.Approved, false, scope
+	}
 }
 
 // PlanApprovalRequest is sent server->client mid-turn when propose_plan is called.

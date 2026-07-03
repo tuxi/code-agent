@@ -107,14 +107,20 @@ agent-core (Layer 1)          agent-server (Layer 2)         frontends (Layer 3)
 { "type": "approval_request", "id": "appr_7", "session_id": "sess_root", "turn_id": "turn_42",
   "tool_name": "run_command", "tool_args": { "command": "git push" } }
 
-// client → server
+// client → server（两态，向后兼容）
 { "type": "approval_response", "id": "appr_7", "approved": true }
+
+// client → server（三态，Claude 风格；推荐新客户端使用）
+{ "type": "approval_response", "id": "appr_7", "decision": "always", "scope": "local" }
 ```
 
 - `id` 关联请求与响应。
+- `decision` **可选，三态**：`"once"`（本次放行）/ `"always"`（放行并**持久化一条权限规则**，后续同类调用不再弹窗）/ `"deny"`（拒绝）。存在时**优先于** `approved`；不带 `decision` 的老客户端继续用 `approved` 布尔即可。
+- `scope` **可选**：`"always"` 时规则落盘的作用域，`"local"`（项目本地，默认，写 `<root>/.codeagent/settings.local.json`）或 `"user"`（写 `~/.codeagent/settings.json`）。对 MCP 工具，`always` 授予**整个 server**（`mcp__<server>__*`），一次确认覆盖该 server 其余工具。规则进共享权限 store，**下一次调用立即生效**。
 - `deadline_ms` **可选**：仅当服务端显式配置了审批超时才下发（如 `"deadline_ms": 120000`），超时未回复 → 拒绝。**默认不配置超时、不下发该字段 = 无期限等待**——审批一直挂起，用户隔夜回来仍可批准。
 - **断线不拒绝**：审批器是会话级的，跨连接存活；客户端重连后服务端用**同一 `id` 重发**未决的 `approval_request`，客户端按 `id` 去重。拒绝的 fail-safe 只在显式拒绝、超时（若配置）或会话删除（`DELETE /v1/conversations/{id}`）时发生，对齐 core 里"nil Approver 一律拒"的规则。
 - auto 模式**不发** `approval_request`，改为发 `auto_approved` 事件（纯观测）。
+- **客户端对接文档**：[agent-wire-v1-approval-three-way.md](agent-wire-v1-approval-three-way.md) —— 含 iOS/macOS/Web 迁移清单、UI 建议、MCP 工具识别、断线去重等工程细节。
 
 #### 计划审批（v1.1）
 

@@ -460,13 +460,16 @@ func renderJSONPreview(raw map[string]any, width int) []string {
 // approvalSelector shows y/n with the active choice highlighted — the ↑/↓
 // movable cursor the approveIdx field drives.
 func approvalSelector(idx int) string {
-	y, n := " ", " "
-	if idx == 0 {
-		y, n = styleApproveHl.Render("▶ [y]"), styleApproveDim.Render("  [n]")
-	} else {
-		y, n = styleApproveDim.Render("  [y]"), styleApproveHl.Render("▶ [n]")
+	labels := []string{"[y] allow once", "[a] always allow", "[n] deny"}
+	parts := make([]string, len(labels))
+	for i, label := range labels {
+		if i == idx {
+			parts[i] = styleApproveHl.Render("▶ " + label)
+		} else {
+			parts[i] = styleApproveDim.Render("  " + label)
+		}
 	}
-	return fmt.Sprintf("%s approve  %s deny  %s  %s", y, n, styleMeta.Render("[v]"), styleMeta.Render("preview  (↑/↓ select · enter confirm · esc cancel)"))
+	return strings.Join(parts, "  ") + "  " + styleMeta.Render("[v] preview  (↑/↓ select · enter confirm · esc cancel)")
 }
 
 // renderPlanApprovalCard renders a plan for user approval in the live region.

@@ -36,10 +36,11 @@ type replRunBuilder struct {
 	skillReg *skills.Registry
 	approver agent.Approver
 	emitter  agent.Emitter
+	rules    *approve.RuleStore
 }
 
 func (b *replRunBuilder) Build(ctx conversation.RuntimeContext) conversation.TurnRunner {
-	runner := runtime.BuildRunner(b.cfg, b.mc, b.provider, b.registry, b.skillReg, b.approver, b.emitter)
+	runner := runtime.BuildRunner(b.cfg, b.mc, b.provider, b.registry, b.skillReg, b.approver, b.emitter, b.rules)
 	runner.ClientWaiter = ctx.ClientWaiter
 	return runner
 }
@@ -110,11 +111,16 @@ func repl(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider mode
 		return rl.Readline()
 	}
 
+	// Permission rules (config + settings files + interactive "always allow")
+	// live in one store, shared between the terminal approver (which grants into
+	// it) and the loop's allowlist (which reads from it).
+	rules := approve.NewRuleStore(root, cfg.Permissions.Allow, cfg.Permissions.Deny)
+
 	// The AutoApprover wraps the terminal approver and starts disabled unless --auto
 	// seeded it on; /auto on|off flips it per session. Auto-grants are audited by the
 	// loop (correlated EventAutoApproved), so the approver takes no emitter.
-	approver := approve.NewAutoApprover(root, ui.ConfirmApprover{Prompt: ask}, auto)
-	runner := runtime.BuildRunner(cfg, mc, provider, registry, skillReg, approver, runtime.WithEventStore(buildEmitter(), store, ctx))
+	approver := approve.NewAutoApprover(root, ui.ConfirmApprover{Prompt: ask, Granter: rules}, auto)
+	runner := runtime.BuildRunner(cfg, mc, provider, registry, skillReg, approver, runtime.WithEventStore(buildEmitter(), store, ctx), rules)
 	planRef.R = runner // wire plan tools to the runner (late binding)
 	runner.PlanApprover = &replPlanApprover{ask: ask}
 	if auto {
@@ -151,6 +157,7 @@ func repl(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider mode
 		registry: registry, skillReg: skillReg,
 		approver: approver,
 		emitter:  runtime.WithEventStore(buildEmitter(), store, ctx),
+		rules:    rules,
 	}
 	executor := conversation.NewTurnExecutor(repo, eventStore, active, subs, rb)
 	executor.OnSaveError = func(err error) {
@@ -315,9 +322,10 @@ func handleCommand(line string, cfg app.Config, mc *app.ModelConfig, runner *age
 		return sess, false, nil
 
 	case "/auto":
-		// Auto mode is the AutoApprover wrapping the terminal approver. If some other
+		// Auto mode is the AutoApprover wrapping the terminal approver (possibly
+		// itself wrapped by a permission Allowlist). Unwrap to find it; if some other
 		// approver is wired (it shouldn't be in the REPL), say so rather than panic.
-		auto, ok := runner.Approver.(*approve.AutoApprover)
+		auto, ok := approve.AutoApproverFrom(runner.Approver)
 		if !ok {
 			return sess, false, fmt.Errorf("auto mode is not available in this session")
 		}
