@@ -80,6 +80,10 @@ type WSHandler struct {
 	// session-scoped RemoteApprover. Nil disables persistence.
 	Granter PermissionGranter
 
+	// Prompts renders an MCP prompt for the invoke_prompt control message. Nil
+	// disables prompt invocation over the wire.
+	Prompts PromptService
+
 	// Session-scoped approvers that survive connection changes. Keyed by session ID.
 	mu        sync.Mutex
 	approvers map[string]*RemoteApprover
@@ -138,7 +142,7 @@ func (h *WSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Inbound command/control routing is transport-agnostic (see Router); this read
 	// loop owns only the WS read and disconnect detection.
-	router := Router{Commands: sess, Approvals: approver, ToolResults: waiter}
+	router := Router{Commands: sess, Approvals: approver, ToolResults: waiter, Prompts: h.Prompts}
 	go func() {
 		defer cancel()
 		for {

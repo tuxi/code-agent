@@ -7,7 +7,21 @@ import (
 
 	"code-agent/internal/agent"
 	"code-agent/internal/approve"
+	"code-agent/internal/mcp"
 )
+
+// fakePromptSvc renders a canned prompt and records the request.
+type fakePromptSvc struct {
+	command string
+	args    []string
+	text    string
+}
+
+func (f *fakePromptSvc) Prompts() []mcp.PromptSpec { return nil }
+func (f *fakePromptSvc) RenderPrompt(_ context.Context, command string, args []string) (string, error) {
+	f.command, f.args = command, args
+	return f.text, nil
+}
 
 type fakeCommands struct {
 	text     chan string
@@ -137,6 +151,25 @@ func TestRouterApprovalDecisionAlways(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("approval_response(always) did not reach the resolver")
+	}
+}
+
+// invoke_prompt renders server-side and runs the rendered text as a turn.
+func TestRouterInvokePrompt(t *testing.T) {
+	cmds := newFakeCommands()
+	svc := &fakePromptSvc{text: "rendered body"}
+	r := Router{Commands: cmds, Prompts: svc}
+	r.Route(context.Background(), []byte(`{"type":"invoke_prompt","command":"mcp__gh__pr_review","args":["456"]}`))
+	select {
+	case got := <-cmds.text:
+		if got != "rendered body" {
+			t.Fatalf("invoke_prompt should SendMessage the rendered text, got %q", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("invoke_prompt did not render + run a turn")
+	}
+	if svc.command != "mcp__gh__pr_review" || len(svc.args) != 1 || svc.args[0] != "456" {
+		t.Fatalf("render got command=%q args=%v", svc.command, svc.args)
 	}
 }
 

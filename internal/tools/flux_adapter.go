@@ -19,14 +19,14 @@ func NewFluxWorkflowAdapter(wt *flux.WorkflowTool) *FluxWorkflowAdapter {
 	return &FluxWorkflowAdapter{wt: wt}
 }
 
-func (a *FluxWorkflowAdapter) Name() string             { return a.wt.Name() }
-func (a *FluxWorkflowAdapter) Description() string      { return a.wt.Description() }
+func (a *FluxWorkflowAdapter) Name() string        { return a.wt.Name() }
+func (a *FluxWorkflowAdapter) Description() string { return a.wt.Description() }
 
 func (a *FluxWorkflowAdapter) InputSchema() json.RawMessage {
 	ds := a.wt.InputSchema()
 	// Convert flux DataSchema → JSON Schema
 	schema := map[string]any{
-		"type": "object",
+		"type":       "object",
 		"properties": map[string]any{},
 	}
 	props := schema["properties"].(map[string]any)

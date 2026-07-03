@@ -554,9 +554,9 @@ func TestOllamaComplete_QwenXMLFallback(t *testing.T) {
 
 	p := NewOllamaProvider(srv.URL)
 	resp, err := p.Complete(context.Background(), Request{
-		Model:       "qwen3-coder",
-		Messages:    []Message{{Role: RoleUser, Content: "plan a workflow"}},
-		Tools:       []ToolDefinition{{Type: "function", Function: ToolFunction{Name: "plan_workflow"}}},
+		Model:    "qwen3-coder",
+		Messages: []Message{{Role: RoleUser, Content: "plan a workflow"}},
+		Tools:    []ToolDefinition{{Type: "function", Function: ToolFunction{Name: "plan_workflow"}}},
 	})
 	if err != nil {
 		t.Fatalf("Complete: %v", err)

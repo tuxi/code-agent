@@ -69,9 +69,9 @@ func TestParseJSONDefaultsAndUnknownFields(t *testing.T) {
 func TestParseJSONValidation(t *testing.T) {
 	cases := map[string]string{
 		"stdio without command": `{"mcpServers":{"s":{"type":"stdio"}}}`,
-		"http without url":       `{"mcpServers":{"s":{"type":"http"}}}`,
-		"sse without url":        `{"mcpServers":{"s":{"type":"sse"}}}`,
-		"unsupported type":       `{"mcpServers":{"s":{"type":"ws","url":"wss://x"}}}`,
+		"http without url":      `{"mcpServers":{"s":{"type":"http"}}}`,
+		"sse without url":       `{"mcpServers":{"s":{"type":"sse"}}}`,
+		"unsupported type":      `{"mcpServers":{"s":{"type":"ws","url":"wss://x"}}}`,
 	}
 	for name, data := range cases {
 		if _, err := ParseJSON([]byte(data)); err == nil {
@@ -110,6 +110,29 @@ func TestParseJSONEnvDefaultAndMissing(t *testing.T) {
 
 // Higher-precedence (later) layers override lower ones by name, wholesale, and
 // the result is sorted by name. Project scope wins over user scope.
+// RemoteServers keeps only http/sse (no subprocess) — what a sandboxed iOS host
+// can connect to; stdio servers are dropped.
+func TestRemoteServersFiltersStdio(t *testing.T) {
+	in := []ServerConfig{
+		{Name: "local", Type: TransportStdio, Command: "bin"},
+		{Name: "api", Type: TransportHTTP, URL: "https://x"},
+		{Name: "events", Type: TransportSSE, URL: "https://y"},
+	}
+	got := RemoteServers(in)
+	if len(got) != 2 {
+		t.Fatalf("expected 2 remote servers (http, sse), got %d: %+v", len(got), got)
+	}
+	for _, s := range got {
+		if s.Type == TransportStdio {
+			t.Fatalf("stdio server should be dropped: %+v", s)
+		}
+	}
+	// A stdio-only set on a sandboxed host yields nothing to connect.
+	if n := len(RemoteServers([]ServerConfig{{Name: "a", Type: TransportStdio, Command: "b"}})); n != 0 {
+		t.Fatalf("stdio-only should filter to empty, got %d", n)
+	}
+}
+
 func TestMergePrecedence(t *testing.T) {
 	user := Config{Servers: []ServerConfig{
 		{Name: "shared", Type: TransportStdio, Command: "user-cmd"},

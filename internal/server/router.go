@@ -48,6 +48,7 @@ type Router struct {
 	Commands    CommandTarget
 	Approvals   ApprovalResolver
 	ToolResults ToolResultResolver // v1.1: delivers client tool results to the blocked waiter
+	Prompts     PromptService      // renders an MCP prompt server-side for invoke_prompt (nil disables)
 }
 
 // Route dispatches one raw inbound message.
@@ -106,6 +107,22 @@ func (r Router) Route(ctx context.Context, data []byte) {
 		case "system":
 			// v1.1 stub: parsed but not acted on.
 			// patch_context、update_memory、override_plan semantics are deferred.
+		}
+	case MsgTypeInvokePrompt:
+		var m InvokePrompt
+		if json.Unmarshal(data, &m) == nil && r.Prompts != nil && r.Commands != nil {
+			// Render server-side (only the server holds the MCP session), then run
+			// the rendered text as a turn. Detached like send_message so it survives
+			// this connection closing, and off the read loop since both the render
+			// RPC and the turn block.
+			turnCtx := context.WithoutCancel(ctx)
+			go func() {
+				text, err := r.Prompts.RenderPrompt(turnCtx, m.Command, m.Args)
+				if err != nil {
+					return // bad command / missing arg: client validates against GET /v1/prompts
+				}
+				_, _ = r.Commands.SendMessage(turnCtx, text)
+			}()
 		}
 	case MsgTypeCancelTurn:
 		if r.Commands != nil {

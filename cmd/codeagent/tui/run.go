@@ -44,6 +44,17 @@ type PermissionGranter interface {
 	AllowAlways(toolName string) (rule string, err error)
 }
 
+// PromptOps is the cmd layer's MCP-prompts capability, injected like GoalOps so
+// the tui package need not import the mcp package. Help lists the available
+// prompts (for /prompts); Render invokes a prompt by its command name
+// (mcp__<server>__<prompt>, without the leading "/") with positional args and
+// returns the server's rendered text to run as a turn. A nil PromptOps disables
+// MCP prompts in the TUI.
+type PromptOps interface {
+	Help() string
+	Render(command string, args []string) (string, error)
+}
+
 // GoalOps is the cmd layer's /goal capability injected into the run loop (it owns
 // admission and engine/checker construction, so the tui package stays decoupled).
 // None of its methods print — the model renders the returned strings. A nil GoalOps
@@ -85,8 +96,9 @@ type sessionSource struct {
 	modelSwap    ModelSwapFunc        // switches the model between turns
 	modelSwapped chan modelSwappedMsg // the TUI awaits this after posting a model name
 
-	auto    AutoMode          // /auto toggle (nil if not wired)
-	granter PermissionGranter // "always allow" from the approval card (nil if not wired)
+	auto      AutoMode          // /auto toggle (nil if not wired)
+	granter   PermissionGranter // "always allow" from the approval card (nil if not wired)
+	promptOps PromptOps         // MCP prompt list/invoke (nil if not wired)
 }
 
 // Run starts the workspace. The runner must already be wired to b.Emitter and
@@ -94,7 +106,7 @@ type sessionSource struct {
 // b.inputs, runs the turn, persists, and signals done — and handles
 // session/model swaps between turns. The BubbleTea program owns the terminal.
 // Run blocks until the user quits.
-func Run(ctx context.Context, b *Backend, runner *agent.Runner, sess *session.Session, store Store, header HeaderInfo, resume ResumeFunc, modelSwap ModelSwapFunc, modelNames []string, auto AutoMode, granter PermissionGranter, goalOps GoalOps) error {
+func Run(ctx context.Context, b *Backend, runner *agent.Runner, sess *session.Session, store Store, header HeaderInfo, resume ResumeFunc, modelSwap ModelSwapFunc, modelNames []string, auto AutoMode, granter PermissionGranter, promptOps PromptOps, goalOps GoalOps) error {
 	// Cancelling on quit stops an in-flight turn rather than orphaning it.
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -217,6 +229,7 @@ func Run(ctx context.Context, b *Backend, runner *agent.Runner, sess *session.Se
 		modelSwapped: b.modelSwapResult,
 		auto:         auto,
 		granter:      granter,
+		promptOps:    promptOps,
 	}
 	// Inline mode (no alt-screen, no mouse capture): finalized output goes to the
 	// terminal's own scrollback, so native select/copy, scroll, and Ctrl+R search

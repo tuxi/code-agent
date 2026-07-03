@@ -176,6 +176,14 @@ type approvalReq struct {
 
 type approvalMsg approvalReq
 
+// promptRenderedMsg carries the result of rendering an MCP prompt template
+// (/mcp__server__prompt) off the UI goroutine back to Update, which then runs the
+// text as a turn (or reports the error).
+type promptRenderedMsg struct {
+	text string
+	err  error
+}
+
 // tuiApprover is the agent.Approver for the TUI: Approve runs on the runner
 // goroutine, posts a request, and blocks until the UI sends a decision back.
 type tuiApprover struct{ ch chan approvalReq }

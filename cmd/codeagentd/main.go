@@ -137,6 +137,7 @@ func run() error {
 		Capabilities:  defaultCapabilities,
 		WorkspaceRoot: root,
 		Granter:       rb.Rules(),
+		Prompts:       mcpMgr,
 	})
 
 	srv := &http.Server{Addr: addr, Handler: handler}

@@ -146,7 +146,25 @@ agent-core (Layer 1)          agent-server (Layer 2)         frontends (Layer 3)
 { "type": "approval_response", "id": "appr_7", "approved": true }  // 见 §4.1
 { "type": "plan_approval_response", "id": "plan_appr_1", "approved": true }  // 计划审批响应
 { "type": "cancel_turn" }                                    // 取消在飞的 turn
+{ "type": "invoke_prompt", "command": "mcp__gh__pr_review", "args": ["456"] }  // 调用 MCP prompt，见 §4.3
 ```
+
+### 4.3 MCP prompts（用户触发的模板）
+
+MCP server 暴露的 **prompts** 是**用户显式调用**的参数化模板(区别于 tools=模型调、resources=模型拉)。只有服务端持有 MCP 会话,所以客户端**不能自己渲染**——它列出可用 prompt,让用户填参数,再发 `invoke_prompt`,由服务端渲染成 turn 文本并当作一次普通 turn 执行(输出走正常事件流,无直接回复)。
+
+```
+GET /v1/prompts   →   { "prompts": [
+  { "command": "mcp__gh__pr_review", "server": "gh", "name": "pr_review",
+    "description": "Review a PR",
+    "args": [ { "name": "pr", "required": true }, { "name": "depth" } ] }
+] }
+```
+
+- **发现**:`GET /v1/prompts`(服务级,MCP servers 全局共享,不需要会话 id)返回全部可调用 prompt 及其声明的参数。
+- **调用**:`{ "type": "invoke_prompt", "command": "<command>", "args": [...] }`。`command` 取自列表;`args` **按位置**映射到 prompt 声明的参数顺序。服务端渲染后自动跑一个 turn。
+- **参数校验**:缺必填参数/未知 command → 服务端渲染失败、**静默不跑**(不报错帧)。客户端应拿 `GET /v1/prompts` 的 `args` 在本地校验必填项后再发。
+- **对 MCP 工具的 resources**:另有只读工具 `mcp__<server>__list_resources` / `read_resource`(模型可直接调,无需审批),不走这条路径。
 
 实现要点（`internal/server`）：
 

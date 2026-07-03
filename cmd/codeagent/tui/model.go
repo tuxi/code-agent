@@ -249,6 +249,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, tea.Batch(cmds...)
 
+	case promptRenderedMsg:
+		// The MCP prompt template rendered: on error, unlock and report; otherwise
+		// feed the rendered text into the turn path (busy stays set through the turn).
+		if msg.err != nil {
+			m.busy = false
+			return m, tea.Println("error: " + msg.err.Error())
+		}
+		b := m.b
+		return m, func() tea.Msg { b.inputs <- msg.text; return nil }
+
 	case goalCtlResultMsg:
 		return m, tea.Println(string(msg))
 
@@ -374,6 +384,25 @@ func (m model) submit() (tea.Model, tea.Cmd) {
 	m.busy = true
 	m.lastErr = nil
 	m.lastEsc = time.Time{}
+
+	// An MCP prompt (/mcp__server__prompt): render the server's template to text
+	// off the UI goroutine (it is a network call), then run that text as a turn via
+	// the promptRenderedMsg handler. Everything else runs the typed line directly.
+	if strings.HasPrefix(input, "/mcp__") {
+		if m.src.promptOps == nil {
+			m.busy = false
+			return m, tea.Println("MCP prompts are not available")
+		}
+		fields := strings.Fields(input)
+		command := strings.TrimPrefix(fields[0], "/")
+		args := fields[1:]
+		po := m.src.promptOps
+		return m, func() tea.Msg {
+			text, err := po.Render(command, args)
+			return promptRenderedMsg{text: text, err: err}
+		}
+	}
+
 	b := m.b
 	return m, func() tea.Msg { b.inputs <- input; return nil }
 }
@@ -494,6 +523,14 @@ func (m model) sessions() string {
 		return "no saved sessions"
 	}
 	return formatSessionList(m.src.list())
+}
+
+// promptHelp lists the available MCP prompts for the /prompts command.
+func (m model) promptHelp() string {
+	if m.src.promptOps == nil {
+		return "(no MCP prompts available)"
+	}
+	return m.src.promptOps.Help()
 }
 
 // toggleAuto flips auto-approval (the shared AutoApprover). SetEnabled is an

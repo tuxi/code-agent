@@ -168,37 +168,40 @@ func BuildRegistry(ctx context.Context, cfg app.Config, mc app.ModelConfig, prov
 
 	// MCP tools are registered AFTER the built-ins, so they appear after them in
 	// the advertised list (the Registry preserves registration order). A server
-	// that fails to start is skipped inside Connect; a name collision surfaces
-	// here as a registration error.
-	// MCP servers rely on subprocesses (MCP launches each server over stdio), so on a
-	// sandboxed host they are skipped. The Manager is still created so the caller's
-	// Close is a safe no-op. Flux (plan_workflow) is registered under every profile —
-	// the tool itself needs no subprocess; only its internal shell sub-tool is skipped
-	// when sandboxed.
+	// that fails to start is skipped inside Connect; a name collision surfaces here
+	// as a registration error.
+	//
+	// Only stdio servers spawn a subprocess, so on a sandboxed host (iOS, where the
+	// OS forbids fork/exec) we drop those and connect only http/sse servers, which
+	// need no local process — that is the only MCP available on iOS. On a full
+	// desktop host all servers connect.
 	mgr := mcp.NewManager(McpTraceWriter())
-	if cfg.Profile.AllowsSubprocess() {
-		if n := len(cfg.MCP.Servers); n > 0 {
-			fmt.Fprintf(os.Stderr, "[mcp] connecting to %d server(s)…\n", n)
+	servers := cfg.MCP.Servers
+	if !cfg.Profile.AllowsSubprocess() {
+		servers = mcp.RemoteServers(servers)
+	}
+	if n := len(servers); n > 0 {
+		fmt.Fprintf(os.Stderr, "[mcp] connecting to %d server(s)…\n", n)
+	}
+	if err := mgr.Connect(ctx, servers); err != nil {
+		mgr.Close()
+		return nil, nil, nil, nil, nil, err
+	}
+	for _, tool := range mgr.Tools() {
+		if !cfg.Agent.ToolAllowed(tool.Name()) {
+			continue
 		}
-		if err := mgr.Connect(ctx, cfg.MCP.Servers); err != nil {
+		if err := registry.Register(tool); err != nil {
 			mgr.Close()
-			return nil, nil, nil, nil, nil, err
+			return nil, nil, nil, nil, nil, fmt.Errorf("register mcp tool: %w", err)
 		}
-		for _, tool := range mgr.Tools() {
-			if !cfg.Agent.ToolAllowed(tool.Name()) {
-				continue
-			}
-			if err := registry.Register(tool); err != nil {
-				mgr.Close()
-				return nil, nil, nil, nil, nil, fmt.Errorf("register mcp tool: %w", err)
-			}
-		}
+	}
 
-		// Flux v3: Tool embedding — register plan_workflow as a native tool.
-		// Uses the same process and LLM creds as code-agent (mc, resolved from config.yaml).
-		if cfg.Agent.ToolAllowed("plan_workflow") {
-			RegisterFluxTool(registry, mc, nil, false) // mc → reuse resolved LLM creds; nil → in-memory stores
-		}
+	// Flux v3 (plan_workflow) stays gated on subprocess support: its internal
+	// registry needs a shell, so on a sandboxed host the DAG planner can't validate
+	// any real plan (see the note below). This is separate from MCP transport.
+	if cfg.Profile.AllowsSubprocess() && cfg.Agent.ToolAllowed("plan_workflow") {
+		RegisterFluxTool(registry, mc, nil, false) // mc → reuse resolved LLM creds; nil → in-memory stores
 	}
 
 	// Flux (plan_workflow) is intentionally NOT registered on sandboxed hosts (iOS).

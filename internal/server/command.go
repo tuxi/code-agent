@@ -18,7 +18,19 @@ const (
 	MsgTypePlanApprovalResponse = "plan_approval_response"
 	MsgTypeAgentInput           = "agent_input"    // v1.1 unified inbound envelope
 	MsgTypeRegisterTools        = "register_tools" // v1.1 client tool registration
+	MsgTypeInvokePrompt         = "invoke_prompt"  // invoke an MCP prompt (server renders → runs a turn)
 )
+
+// InvokePrompt asks the server to render an MCP prompt template and run the
+// result as a turn. Command is the prompt's command name (mcp__<server>__<prompt>,
+// as listed by GET /v1/prompts); Args are positional, mapped onto the prompt's
+// declared argument order. The rendered turn's output flows on the normal event
+// stream — there is no direct reply.
+type InvokePrompt struct {
+	Type    string   `json:"type"` // always "invoke_prompt"
+	Command string   `json:"command"`
+	Args    []string `json:"args,omitempty"`
+}
 
 // SendMessage drives one turn. Text is the user input.
 type SendMessage struct {

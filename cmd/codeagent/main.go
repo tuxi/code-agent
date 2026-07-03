@@ -574,6 +574,19 @@ func runGoal(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider m
 	return pursueHeadless(ctx, cfg, mc, runner, store, sess, objective)
 }
 
+// mcpPromptOps adapts the MCP Manager to the TUI's PromptOps capability (Help +
+// Render), closing over the run context so the tui package stays decoupled from
+// mcp — the same injection pattern as GoalOps / AutoMode.
+type mcpPromptOps struct {
+	ctx context.Context
+	mgr *mcp.Manager
+}
+
+func (o mcpPromptOps) Help() string { return o.mgr.PromptHelp() }
+func (o mcpPromptOps) Render(command string, args []string) (string, error) {
+	return o.mgr.RenderPrompt(o.ctx, command, args)
+}
+
 // runTUI launches the Phase 7 BubbleTea workspace (M1). It builds the same runner
 // as `run`/`repl` (buildRunner) but with channel-backed Emitter/Approver, so the
 // loop runs on a background goroutine while the program owns the terminal. The
@@ -667,7 +680,7 @@ func runTUI(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider mo
 		}, nil
 	}
 	goalOps := buildGoalOps(cfg, mc, runner, store)
-	return tui.Run(ctx, backend, runner, sess, store, header, resume, modelSwap, cfg.ModelNames(), approver, rules, goalOps)
+	return tui.Run(ctx, backend, runner, sess, store, header, resume, modelSwap, cfg.ModelNames(), approver, rules, mcpPromptOps{ctx: ctx, mgr: mcpMgr}, goalOps)
 }
 
 // runPlugin handles `codeagent plugin <subcommand> [args...]`.

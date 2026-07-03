@@ -40,6 +40,8 @@ var commandRegistry = []command{
 		run: func(m *model, args string) tea.Cmd { return m.toggleAuto(args) }},
 	{name: "/goal", desc: "pursue an objective (no arg: status · resume · clear)", ready: true,
 		run: func(m *model, args string) tea.Cmd { return m.goalDispatch(args) }},
+	{name: "/prompts", desc: "list MCP prompts (invoke as /mcp__server__prompt)", ready: true,
+		run: func(m *model, _ string) tea.Cmd { return tea.Println(m.promptHelp()) }},
 	{name: "/exit", aliases: []string{"/quit"}, desc: "quit", ready: true,
 		run: func(m *model, _ string) tea.Cmd { return tea.Quit }},
 }

@@ -81,10 +81,10 @@ type ollamaChatRequest struct {
 // The only difference from Message is that tool-call arguments are
 // json.RawMessage — they must be a JSON object, not a JSON-encoded string.
 type ollamaMessage struct {
-	Role       Role            `json:"role"`
-	Content    string          `json:"content"`
+	Role       Role             `json:"role"`
+	Content    string           `json:"content"`
 	ToolCalls  []ollamaToolCall `json:"tool_calls,omitempty"`
-	ToolCallID string          `json:"tool_call_id,omitempty"`
+	ToolCallID string           `json:"tool_call_id,omitempty"`
 }
 
 // toOllamaMessages converts canonical Messages to the shape Ollama's native

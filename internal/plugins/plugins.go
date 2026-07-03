@@ -39,9 +39,9 @@ type Metadata struct {
 type Plugin struct {
 	Name        string   `json:"name"`
 	Description string   `json:"description"`
-	Source      string   `json:"source"`  // relative path to the marketplace root
-	Strict      bool     `json:"strict"`  // false = skills can be individually used
-	Skills      []string `json:"skills"`  // relative paths to skill directories
+	Source      string   `json:"source"` // relative path to the marketplace root
+	Strict      bool     `json:"strict"` // false = skills can be individually used
+	Skills      []string `json:"skills"` // relative paths to skill directories
 }
 
 // InstalledPlugin records that a plugin was installed from a marketplace.

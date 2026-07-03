@@ -381,6 +381,7 @@ func Assemble(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider 
 		Capabilities:  defaultCapabilities,
 		WorkspaceRoot: root,
 		Granter:       rb.Rules(),
+		Prompts:       mcpMgr,
 	})
 	rt := &Runtime{Executor: executor, Builder: rb, Repo: repo}
 	return handler, rt, closers, nil

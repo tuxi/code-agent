@@ -52,7 +52,7 @@ type swiftAdapter struct {
 	indexStorePath      string // cached path to the Swift index store
 	indexStorePathReady bool   // true after first attempt to resolve index store
 	indexStoreAvailable bool   // true if the index store helper works
-	helperChecked        bool   // true after first attempt to use the helper
+	helperChecked       bool   // true after first attempt to use the helper
 }
 
 func (a *swiftAdapter) Language() string { return "swift" }
@@ -552,11 +552,11 @@ func normalizeSwiftKind(uti string) string {
 }
 
 var swiftKindMap = map[string]string{
-	"source.lang.swift.decl.struct":                "struct",
-	"source.lang.swift.decl.class":                 "class",
-	"source.lang.swift.decl.enum":                  "enum",
-	"source.lang.swift.decl.protocol":              "protocol",
-	"source.lang.swift.decl.extension":             "extension",
+	"source.lang.swift.decl.struct":                   "struct",
+	"source.lang.swift.decl.class":                    "class",
+	"source.lang.swift.decl.enum":                     "enum",
+	"source.lang.swift.decl.protocol":                 "protocol",
+	"source.lang.swift.decl.extension":                "extension",
 	"source.lang.swift.decl.function.method.instance": "method",
 	"source.lang.swift.decl.function.method.static":   "static method",
 	"source.lang.swift.decl.function.method.class":    "class method",

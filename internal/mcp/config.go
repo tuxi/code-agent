@@ -157,6 +157,21 @@ func ResolveDesktop(root string, inheritClaude bool) (Config, error) {
 	return Merge(layers...), nil
 }
 
+// RemoteServers returns only the servers that connect without spawning a
+// subprocess — http and sse. It is used to keep MCP working on sandboxed hosts
+// (iOS), where the OS forbids fork/exec so a stdio server (a local binary) simply
+// cannot run, but a remote http/sse server needs no local process and connects
+// fine. On a full desktop host all servers are used, so this filter is not applied.
+func RemoteServers(servers []ServerConfig) []ServerConfig {
+	out := make([]ServerConfig, 0, len(servers))
+	for _, s := range servers {
+		if s.Type == TransportHTTP || s.Type == TransportSSE {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
 // Merge combines scope layers, lowest precedence first, returning servers sorted
 // by name. On a name collision the higher-precedence (later) layer's entry wins
 // wholesale, matching Claude's cross-scope semantics.

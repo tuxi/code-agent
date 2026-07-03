@@ -12,6 +12,7 @@ import (
 	"code-agent/internal/agent"
 	"code-agent/internal/assetref"
 	"code-agent/internal/conversation"
+	"code-agent/internal/mcp"
 	"code-agent/internal/repos"
 	"code-agent/internal/session"
 
@@ -147,6 +148,9 @@ type MuxOptions struct {
 	// store (the same one the loop's allowlist reads). Nil disables persistence, so
 	// an "always" over the wire is treated as a one-time allow.
 	Granter PermissionGranter
+	// Prompts serves GET /v1/prompts and renders invoke_prompt. Nil disables MCP
+	// prompts on the wire (the endpoint returns an empty list; invoke is a no-op).
+	Prompts PromptService
 }
 
 // NewMux builds the HTTP surface of `codeagent serve`:
@@ -348,9 +352,20 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 		Capabilities: opts.Capabilities,
 		Accept:       opts.Accept,
 		Granter:      opts.Granter,
+		Prompts:      opts.Prompts,
 	}
 	mux.Handle("GET /v1/conversations/{id}/stream", ws)
 	mux.Handle("GET /v2/conversations/{id}/stream", ws)
+
+	// GET /v1/prompts — list the MCP prompts a client can invoke via invoke_prompt.
+	// Server-wide (MCP servers are global), so it needs no conversation id.
+	mux.HandleFunc("GET /v1/prompts", func(w http.ResponseWriter, _ *http.Request) {
+		var specs []mcp.PromptSpec
+		if opts.Prompts != nil {
+			specs = opts.Prompts.Prompts()
+		}
+		writeJSON(w, http.StatusOK, toPromptsResponse(specs))
+	})
 
 	mux.HandleFunc("PATCH /v1/conversations/{id}", func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")

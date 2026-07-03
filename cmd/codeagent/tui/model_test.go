@@ -13,6 +13,20 @@ func newTestModel() model {
 	return newModel(NewBackend(), HeaderInfo{}, sessionSource{})
 }
 
+// fakePromptOps records the Render call for the MCP prompt submit path.
+type fakePromptOps struct {
+	command string
+	args    []string
+	text    string
+	err     error
+}
+
+func (f *fakePromptOps) Help() string { return "PROMPT HELP" }
+func (f *fakePromptOps) Render(command string, args []string) (string, error) {
+	f.command, f.args = command, args
+	return f.text, f.err
+}
+
 func asModel(t *testing.T, tm tea.Model) model {
 	t.Helper()
 	m, ok := tm.(model)
@@ -80,6 +94,54 @@ type fakeGranter struct{ tool string }
 func (g *fakeGranter) AllowAlways(tool string) (string, error) {
 	g.tool = tool
 	return tool, nil
+}
+
+// Submitting /mcp__server__prompt renders via PromptOps (off-UI), then feeds the
+// rendered text into the turn path.
+func TestSubmitMCPPromptRendersAndRuns(t *testing.T) {
+	m := newTestModel()
+	f := &fakePromptOps{text: "rendered prompt body"}
+	m.src.promptOps = f
+	m.composer.SetValue("/mcp__gh__pr_review 456 deep")
+
+	tm, cmd := m.submit()
+	m = asModel(t, tm)
+	if !m.busy || cmd == nil {
+		t.Fatalf("submit should lock busy and return a render cmd (busy=%v cmd=%v)", m.busy, cmd != nil)
+	}
+	// The render cmd calls PromptOps.Render with the parsed command + positional args.
+	rendered, ok := cmd().(promptRenderedMsg)
+	if !ok {
+		t.Fatalf("render cmd should yield promptRenderedMsg")
+	}
+	if f.command != "mcp__gh__pr_review" || len(f.args) != 2 || f.args[0] != "456" || f.args[1] != "deep" {
+		t.Fatalf("Render got command=%q args=%v", f.command, f.args)
+	}
+	if rendered.text != "rendered prompt body" {
+		t.Fatalf("rendered text = %q", rendered.text)
+	}
+	// Update feeds the rendered text into b.inputs (buffered, cap 1).
+	_, cmd2 := m.Update(rendered)
+	if cmd2 == nil {
+		t.Fatal("promptRenderedMsg should return a cmd feeding inputs")
+	}
+	cmd2()
+	if got := <-m.b.inputs; got != "rendered prompt body" {
+		t.Fatalf("inputs got %q", got)
+	}
+}
+
+// A render error unlocks busy and reports; no MCP wired shows a notice.
+func TestSubmitMCPPromptErrorAndUnavailable(t *testing.T) {
+	m := newTestModel() // promptOps nil
+	m.composer.SetValue("/mcp__x__y")
+	tm, _ := m.submit()
+	if asModel(t, tm).busy {
+		t.Fatal("no promptOps: submit must not leave the composer busy")
+	}
+	if m.promptHelp() != "(no MCP prompts available)" {
+		t.Fatalf("nil promptOps help = %q", m.promptHelp())
+	}
 }
 
 func TestApprovalAlwaysGrants(t *testing.T) {
