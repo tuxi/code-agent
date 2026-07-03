@@ -3,6 +3,7 @@ package runtime
 import (
 	"code-agent/internal/agent"
 	"code-agent/internal/app"
+	"code-agent/internal/approve"
 	"code-agent/internal/hooks"
 	"code-agent/internal/model"
 	"code-agent/internal/observation"
@@ -29,13 +30,22 @@ func BuildCompactor(mc app.ModelConfig, provider model.Provider) session.Compact
 // tool) and the Emitter (how the event stream is rendered) — everything else
 // (tools, observation, reflection, the skills nudge, compaction, the step cap) is
 // identical, so it lives here and callers cannot drift apart.
-func BuildRunner(cfg app.Config, mc app.ModelConfig, provider model.Provider, registry *tools.Registry, skillReg *skills.Registry, approver agent.Approver, emitter agent.Emitter) *agent.Runner {
+func BuildRunner(cfg app.Config, mc app.ModelConfig, provider model.Provider, registry *tools.Registry, skillReg *skills.Registry, approver agent.Approver, emitter agent.Emitter, rules *approve.RuleStore) *agent.Runner {
 	// Assign the hook runner only when non-nil, so an absent config stays a nil
 	// interface (not a typed-nil that would defeat the loop's nil-safe check).
 	var hook agent.ToolHook
 	if hr := hooks.New(cfg.Hooks, cfg.Workspace.Root); hr != nil {
 		hook = hr
 	}
+
+	// Pre-approve/deny tool calls matching the shared permission RuleStore
+	// (Claude-style allow/deny globs, plus any "Always allow" grant made this
+	// session), outermost in the approver chain so a matched rule short-circuits
+	// before auto mode or the human prompt. The store is created once per
+	// process/session by the caller and shared with the frontend approver (which
+	// Grants into it), so a nil store just leaves the approver unchanged.
+	approver = approve.Allowlisted(rules, approver)
+
 	return &agent.Runner{
 		Model:         provider,
 		ModelName:     mc.Model,

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"code-agent/internal/agent"
+	"code-agent/internal/approve"
 )
 
 type fakeCommands struct {
@@ -28,12 +29,22 @@ func (f *fakeCommands) RegisterTools([]agent.ClientToolDef) {}
 type fakeResolver struct {
 	id       string
 	approved bool
+	always   bool
+	scope    approve.Scope
 	called   chan struct{}
 }
 
 func (f *fakeResolver) Resolve(id string, approved bool) {
 	f.id = id
 	f.approved = approved
+	f.called <- struct{}{}
+}
+
+func (f *fakeResolver) ResolveTool(id string, approved, always bool, scope approve.Scope) {
+	f.id = id
+	f.approved = approved
+	f.always = always
+	f.scope = scope
 	f.called <- struct{}{}
 }
 
@@ -110,6 +121,22 @@ func TestRouterApprovalResponse(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("approval_response did not reach the resolver")
+	}
+}
+
+// A three-way "always" verdict with a scope must reach ResolveTool decoded.
+func TestRouterApprovalDecisionAlways(t *testing.T) {
+	res := &fakeResolver{called: make(chan struct{}, 1)}
+	r := Router{Approvals: res}
+	r.Route(context.Background(), []byte(`{"type":"approval_response","id":"appr_x","decision":"always","scope":"user"}`))
+	select {
+	case <-res.called:
+		if res.id != "appr_x" || !res.approved || !res.always || res.scope != approve.ScopeUser {
+			t.Errorf("got id=%q approved=%v always=%v scope=%v, want appr_x/true/true/user",
+				res.id, res.approved, res.always, res.scope)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("approval_response(always) did not reach the resolver")
 	}
 }
 

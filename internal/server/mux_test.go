@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -587,6 +588,112 @@ func TestMuxAssetPreviewFallsBackToMetadata(t *testing.T) {
 	}
 	if preview.Source != "asset_preview" || preview.Content != ref.Preview || preview.Asset.Metadata["mcp_type"] != "image" {
 		t.Fatalf("preview = %+v", preview)
+	}
+}
+
+func TestMuxAssetPreviewAndBlobForBinaryFile(t *testing.T) {
+	root := t.TempDir()
+	data := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 1, 2, 3, 4}
+	if err := os.WriteFile(filepath.Join(root, "cat_sunset.png"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	id := "sess_asset_blob"
+	assetID := "asset_t1_call_1_001_image"
+	ref := assets.Ref{
+		ID:                    assetID,
+		Kind:                  "image",
+		URI:                   "workspace://ai-local/cat_sunset.png",
+		DisplayName:           "cat_sunset.png",
+		WorkspaceID:           "ai-local",
+		WorkspaceRelativePath: "cat_sunset.png",
+		MIMEType:              "image/png",
+		SourceTurnID:          "t1",
+		SourceCallID:          "call_1",
+	}
+	events := &fakeEventStore{recs: map[string][]session.EventRecord{id: {
+		storedEvent(agent.Event{Kind: agent.EventToolFinished, SessionID: id, TurnID: "t1", Assets: []assets.Ref{ref}}),
+	}}}
+	repo := newFakeConversationRepo()
+	repo.sessions[id] = &session.Session{ID: id, WorkspacePath: root}
+	srv := httptest.NewServer(newTestMux(repo, events))
+	defer srv.Close()
+
+	previewResp, err := http.Get(srv.URL + "/v1/conversations/" + id + "/assets/" + assetID + "/preview")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer previewResp.Body.Close()
+	if previewResp.StatusCode != http.StatusOK {
+		t.Fatalf("preview status = %d, want 200", previewResp.StatusCode)
+	}
+	var preview AssetPreviewResponse
+	if err := json.NewDecoder(previewResp.Body).Decode(&preview); err != nil {
+		t.Fatal(err)
+	}
+	if preview.Source != "metadata" || preview.MIMEType != "image/png" || preview.SizeBytes != int64(len(data)) {
+		t.Fatalf("preview = %+v", preview)
+	}
+	if preview.Metadata["media_url"] != "/v1/conversations/"+id+"/assets/"+assetID+"/blob" {
+		t.Fatalf("preview metadata = %+v", preview.Metadata)
+	}
+
+	req, err := http.NewRequest(http.MethodGet, srv.URL+"/v1/conversations/"+id+"/assets/"+assetID+"/blob", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Range", "bytes=0-3")
+	blobResp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer blobResp.Body.Close()
+	if blobResp.StatusCode != http.StatusPartialContent {
+		t.Fatalf("blob status = %d, want 206", blobResp.StatusCode)
+	}
+	if got := blobResp.Header.Get("Content-Type"); got != "image/png" {
+		t.Fatalf("Content-Type = %q, want image/png", got)
+	}
+	if got := blobResp.Header.Get("Accept-Ranges"); got != "bytes" {
+		t.Fatalf("Accept-Ranges = %q, want bytes", got)
+	}
+	if got := blobResp.Header.Get("Content-Range"); got != "bytes 0-3/12" {
+		t.Fatalf("Content-Range = %q, want bytes 0-3/12", got)
+	}
+	body, err := io.ReadAll(blobResp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != string(data[:4]) {
+		t.Fatalf("blob body = %v, want %v", body, data[:4])
+	}
+}
+
+func TestMuxAssetBlobRejectsMetadataOnlyAsset(t *testing.T) {
+	id := "sess_asset_blob_meta"
+	assetID := "asset_t1_call_1_001_mcp"
+	ref := assets.Ref{
+		ID:       assetID,
+		Kind:     "image",
+		URI:      "mcp://fs/read_file/call_1/001",
+		MIMEType: "image/png",
+		Metadata: map[string]string{"source": "mcp"},
+	}
+	events := &fakeEventStore{recs: map[string][]session.EventRecord{id: {
+		storedEvent(agent.Event{Kind: agent.EventToolFinished, SessionID: id, TurnID: "t1", Assets: []assets.Ref{ref}}),
+	}}}
+	repo := newFakeConversationRepo()
+	repo.sessions[id] = &session.Session{ID: id, WorkspacePath: t.TempDir()}
+	srv := httptest.NewServer(newTestMux(repo, events))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/v1/conversations/" + id + "/assets/" + assetID + "/blob")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnsupportedMediaType {
+		t.Fatalf("blob status = %d, want 415", resp.StatusCode)
 	}
 }
 

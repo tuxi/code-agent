@@ -487,7 +487,7 @@ func reportGoal(g *goal.Goal, err error) {
 // → no prompt, no-op: a user who wants auto to persist across goals just runs
 // /auto on once and is never asked again.
 func offerAuto(runner *agent.Runner, ask lineReader) func() {
-	a, ok := runner.Approver.(*approve.AutoApprover)
+	a, ok := approve.AutoApproverFrom(runner.Approver)
 	if !ok || a.Enabled() {
 		return func() {}
 	}
@@ -507,7 +507,7 @@ func isYes(s string) bool {
 
 // autoState describes the worker's approval posture for the pursuit banner.
 func autoState(runner *agent.Runner) string {
-	if a, ok := runner.Approver.(*approve.AutoApprover); ok && a.Enabled() {
+	if a, ok := approve.AutoApproverFrom(runner.Approver); ok && a.Enabled() {
 		return "ON — hands-off"
 	}
 	return "OFF — will stop at y/N per side-effecting tool; /auto on for hands-off"

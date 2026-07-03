@@ -111,17 +111,34 @@ provider:
 # display symbol for cost reporting (the price fields are in this unit). Optional (default "$").
 currency: "$"
 
-# External MCP servers. Each is launched over stdio (v1 supports stdio only) and
-# its tools are registered alongside the built-ins, named `mcp__<server>__<tool>`
-# and shown in logs as `mcp.<server>.<tool>`. Every remote tool is treated as
-# side-effecting, so each call is confirmed. Optional; omit the block to disable.
-# Set CODEAGENT_MCP_DEBUG=1 to trace raw tool I/O.
-mcp:
-  servers:
-    - name: fs
-      command: npx
-      args: ["-y", "@modelcontextprotocol/server-filesystem", "."]
-      # env: { KEY: value }   # optional, appended to the server's environment
+# External MCP servers are NOT configured here. They live in Claude-compatible
+# `.mcp.json` files (same format as Claude Code), layered by scope:
+#   local    <root>/.mcp.local.json    (private to this machine + project, gitignored)
+#   project  <root>/.mcp.json          (checked into VCS, shared with the team)
+#   user     ~/.codeagent/mcp.json     (private, all your projects)
+# Precedence on same-name servers: local > project > user (whole entry wins, no
+# field merge). Set CODEAGENT_MCP_INHERIT_CLAUDE=1
+# to also inherit user-scope servers from an existing ~/.claude.json. Their tools
+# register alongside the built-ins as `mcp__<server>__<tool>` (shown in logs as
+# `mcp.<server>.<tool>`), and every remote tool is treated as side-effecting, so
+# each call is confirmed. See .mcp.json.example; CODEAGENT_MCP_DEBUG=1 traces I/O.
+
+# Permission rules (Claude Code style): pre-approve or deny tool calls by name
+# pattern, so you don't confirm every call from a trusted MCP server one by one.
+# Patterns match the tool's model-facing name; '*' is a wildcard; deny wins over
+# allow. Gates only calls that need approval (all MCP tools + side-effecting
+# built-ins). Omit the block to confirm every call as before.
+# These are the STATIC rules; picking "always allow" at a terminal approval prompt
+# appends a rule to <root>/.codeagent/settings.local.json (machine-local, already
+# gitignored), and it takes effect immediately + on restart. For an MCP tool the
+# grant covers the whole server (mcp__<server>__*), so you confirm once, not once
+# per tool.
+# permissions:
+#   allow:
+#     - "mcp__github__*"        # every tool from the github MCP server
+#     - "mcp__db__query"        # one specific tool
+#   deny:
+#     - "mcp__github__delete_*" # ...but never the destructive ones
 
 # Web browsing tools: web_search and web_fetch.
 # Both are optional — omit the block and the tools still register but

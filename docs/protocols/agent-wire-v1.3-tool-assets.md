@@ -122,7 +122,9 @@ Initial `kind` values:
 | `terminal` | Terminal/log output. |
 | `markdown` | Markdown document/snippet. |
 | `image` | Image asset. |
-| `audio` | Audio asset metadata. |
+| `video` | Video asset. |
+| `audio` | Audio asset. |
+| `pdf` | PDF document asset. |
 
 In Phase 1, `output.items[].path` is workspace-relative unless the specific
 `output.kind` documents otherwise. `assets[]` order should match
@@ -275,6 +277,8 @@ against the conversation workspace anchor.
 ```http
 GET /v1/conversations/{conversation_id}/assets/{asset_id}/preview
 GET /v1/conversations/{conversation_id}/assets/{asset_id}/content
+GET /v1/conversations/{conversation_id}/assets/{asset_id}/blob
+GET /v1/conversations/{conversation_id}/assets/{asset_id}/thumbnail?max_px=512
 ```
 
 `preview` returns JSON with the asset, small text content when available, and
@@ -282,9 +286,26 @@ metadata for non-file or non-text assets. For `file_location`, preview may retur
 a line window around `range.start_line`. For MCP-derived image/audio/resource
 assets, preview returns placeholder/metadata only in Phase 1.
 
+For local non-text workspace assets, `preview` returns metadata instead of bytes.
+The response includes `mime_type`, `size_bytes`, and `metadata.media_url`
+pointing at the `blob` endpoint. `metadata.thumbnail_url` may also be present;
+clients should treat it as optional.
+
 `content` returns JSON text content for workspace-scoped text files. It rejects
 paths outside the workspace, directories, and non-text assets. Content is capped
 and reports `truncated = true` when the file exceeds the Phase 1 limit.
+
+`blob` returns the raw workspace file bytes for local assets. It is intended for
+images, video, audio, PDFs, and other binary files. The server resolves the asset
+through the persisted event log, enforces that the path stays inside the
+conversation workspace, rejects directories, sets `Content-Type`, `Last-Modified`
+and `ETag`, and streams with HTTP range support (`Accept-Ranges: bytes`,
+`206 Partial Content`, and `Content-Range` for valid `Range` requests). Metadata-
+only assets such as MCP resources without local bytes return `415 Unsupported
+Media Type` until a binary fetch/store layer exists.
+
+`thumbnail` is reserved for lightweight media previews. Phase 1 may return
+`501 Not Implemented`; clients should fall back to `blob`.
 
 These endpoints are intentionally not `openAsset`: clients still own platform UI
 behavior such as macOS Inspector or iOS sheet presentation.

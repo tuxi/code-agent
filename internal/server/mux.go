@@ -143,6 +143,10 @@ type MuxOptions struct {
 	// repo-clone endpoint clones into a subdirectory of it. Empty disables that
 	// endpoint (it returns 400).
 	WorkspaceRoot string
+	// Granter persists a client's "always allow" verdict into the shared permission
+	// store (the same one the loop's allowlist reads). Nil disables persistence, so
+	// an "always" over the wire is treated as a one-time allow.
+	Granter PermissionGranter
 }
 
 // NewMux builds the HTTP surface of `codeagent serve`:
@@ -155,6 +159,8 @@ type MuxOptions struct {
 //	GET  /v1/conversations/{id}/events       recorded events, re-encoded to wire v1
 //	GET  /v1/conversations/{id}/assets/{asset_id}/preview  derived asset preview
 //	GET  /v1/conversations/{id}/assets/{asset_id}/content  workspace text content
+//	GET  /v1/conversations/{id}/assets/{asset_id}/blob     workspace binary content
+//	GET  /v1/conversations/{id}/assets/{asset_id}/thumbnail media thumbnail placeholder
 //	DELETE /v1/conversations/{id}            delete session + events
 //	PATCH /v1/conversations/{id}              rename — body: {"name":"..."}
 //	GET  /v1/conversations/{id}/stream       upgrade via TurnExecutor/TransportSession
@@ -314,6 +320,17 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 		writeJSON(w, http.StatusOK, resp)
 	})
 
+	mux.HandleFunc("GET /v1/conversations/{id}/assets/{asset_id}/blob", func(w http.ResponseWriter, r *http.Request) {
+		if err := serveConversationAssetBlob(r.Context(), w, r, eventStore, repo, r.PathValue("id"), r.PathValue("asset_id")); err != nil {
+			writeAssetError(w, err)
+			return
+		}
+	})
+
+	mux.HandleFunc("GET /v1/conversations/{id}/assets/{asset_id}/thumbnail", func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "asset thumbnails are not implemented", http.StatusNotImplemented)
+	})
+
 	// ---- WebSocket: TransportSession backed by TurnExecutor ----
 	// Declared before the DELETE handler so it can call ws.RemoveApprover.
 
@@ -330,6 +347,7 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 		ServerName:   opts.ServerName,
 		Capabilities: opts.Capabilities,
 		Accept:       opts.Accept,
+		Granter:      opts.Granter,
 	}
 	mux.Handle("GET /v1/conversations/{id}/stream", ws)
 	mux.Handle("GET /v2/conversations/{id}/stream", ws)

@@ -48,11 +48,23 @@ type Config struct {
 	Web WebConfig `yaml:"web"`
 
 	// MCP configures external Model Context Protocol servers whose tools are
-	// registered alongside the built-in ones. Empty (the default) disables it.
-	MCP mcp.Config `yaml:"mcp"`
+	// registered alongside the built-in ones. It is code-level only (yaml:"-"):
+	// MCP servers are configured in a separate Claude-compatible `.mcp.json`
+	// document, not in this YAML, so a config authored for Claude Code is consumed
+	// verbatim. Desktop entry points populate this from the project-root
+	// `.mcp.json` (see mcp.LoadProject); embedded hosts (iOS/macOS) inject it
+	// in-memory (see embed.Options.MCPJSON). Empty (the default) disables it.
+	MCP mcp.Config `yaml:"-"`
 
 	// Hooks are user-configured pre/post-tool shell commands (8.5). Empty disables.
 	Hooks []hooks.Hook `yaml:"hooks"`
+
+	// Permissions pre-approves (or denies) tool calls by name pattern, mirroring
+	// Claude Code's permission model — so a user need not confirm every call from a
+	// trusted MCP server one at a time. Empty (the default) changes nothing: every
+	// side-effecting call still goes through the normal approver. See
+	// PermissionsConfig and approve.Allowlisted.
+	Permissions PermissionsConfig `yaml:"permissions"`
 
 	// StoreFactory, if set, creates the session store for a workspace root.
 	// When nil (default), the built-in SQLite store is used (backward compatible).
@@ -184,6 +196,20 @@ func (c AgentConfig) ToolAllowed(name string) bool {
 
 type WorkspaceConfig struct {
 	Root string `yaml:"root"`
+}
+
+// PermissionsConfig holds tool-name glob patterns that pre-approve or deny tool
+// calls without a prompt, in Claude Code's `permissions` style. Patterns match a
+// tool's model-facing name (e.g. "mcp__github__*", "mcp__db__query", or a
+// built-in like "run_command"); '*' is a wildcard. Deny takes precedence over
+// allow. A call matching neither list falls through to the normal approver.
+//
+// This gates only calls that reach the approver — all MCP tools plus
+// side-effecting built-ins. Read-only built-ins are never gated, so listing one
+// under Deny has no effect.
+type PermissionsConfig struct {
+	Allow []string `yaml:"allow"` // auto-approve without a prompt
+	Deny  []string `yaml:"deny"`  // refuse without a prompt (wins over allow)
 }
 
 // WebConfig configures the built-in web_search and web_fetch tools. When empty,
@@ -361,21 +387,10 @@ func LoadConfigBytes(data []byte) (Config, error) {
 		cfg.Web.Fetch.CacheTTLSeconds = 600 // 10 minutes
 	}
 
-	// MCP servers: names must be present and unique (they namespace the tools),
-	// and a command is required to launch the stdio server. Fail at load with a
-	// clear message rather than letting a duplicate name collide at registration.
-	seenMCP := make(map[string]bool, len(cfg.MCP.Servers))
-	for i, s := range cfg.MCP.Servers {
-		switch {
-		case s.Name == "":
-			return Config{}, fmt.Errorf("mcp.servers[%d]: name is required", i)
-		case s.Command == "":
-			return Config{}, fmt.Errorf("mcp server %q: command is required", s.Name)
-		case seenMCP[s.Name]:
-			return Config{}, fmt.Errorf("mcp server %q: duplicate name", s.Name)
-		}
-		seenMCP[s.Name] = true
-	}
+	// MCP servers are not part of this YAML: they are loaded separately from a
+	// Claude-compatible `.mcp.json` (see mcp.LoadProject / ParseJSON), which does
+	// its own normalization and validation. cfg.MCP is populated by the caller
+	// after this returns.
 
 	return cfg, nil
 }

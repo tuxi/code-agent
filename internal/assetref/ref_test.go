@@ -17,3 +17,19 @@ func TestStableIDIsDeterministic(t *testing.T) {
 		t.Fatalf("StableID not deterministic: %q vs %q", a, b)
 	}
 }
+
+func TestKindForMIME(t *testing.T) {
+	cases := map[string]string{
+		"image/png":        "image",
+		"video/mp4":        "video",
+		"audio/mpeg":       "audio",
+		"application/pdf":  "pdf",
+		"text/markdown":    "file",
+		"application/json": "file",
+	}
+	for mimeType, want := range cases {
+		if got := KindForMIME(mimeType); got != want {
+			t.Fatalf("KindForMIME(%q) = %q, want %q", mimeType, got, want)
+		}
+	}
+}

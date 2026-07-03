@@ -45,6 +45,7 @@ tests/**/coverage/
 config.yaml
 config/config.yaml
 .codeagent/
+.mcp.local.json
 data/
 src/bin
 src/tmp

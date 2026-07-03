@@ -5,6 +5,7 @@ import (
 
 	"code-agent/internal/agent"
 	"code-agent/internal/app"
+	"code-agent/internal/approve"
 	"code-agent/internal/conversation"
 	"code-agent/internal/model"
 	"code-agent/internal/skills"
@@ -25,6 +26,11 @@ type ServeRunBuilder struct {
 	WSReg   *WorkspaceRegistry
 	PlanRef *agent.RunnerRef // late-bound per-turn in Build()
 
+	// rules is the process-wide permission store, created once so a grant persists
+	// across turns. Interactive "Always allow" over the wire is not wired yet, but
+	// rules loaded from config + settings files are enforced here.
+	rules *approve.RuleStore
+
 	mu       sync.RWMutex
 	mc       app.ModelConfig
 	provider model.Provider
@@ -34,9 +40,15 @@ type ServeRunBuilder struct {
 func NewServeRunBuilder(cfg app.Config, mc app.ModelConfig, provider model.Provider, toolReg *tools.Registry, wsReg *WorkspaceRegistry, planRef *agent.RunnerRef) *ServeRunBuilder {
 	return &ServeRunBuilder{
 		Cfg: cfg, ToolReg: toolReg, WSReg: wsReg, PlanRef: planRef,
-		mc: mc, provider: provider,
+		rules: approve.NewRuleStore(cfg.Workspace.Root, cfg.Permissions.Allow, cfg.Permissions.Deny),
+		mc:    mc, provider: provider,
 	}
 }
+
+// Rules exposes the process-wide permission store so the server layer can share
+// it with the RemoteApprover (which grants a client's "always allow" into it) —
+// the same instance the per-turn allowlist reads, so a grant takes effect at once.
+func (b *ServeRunBuilder) Rules() *approve.RuleStore { return b.rules }
 
 // Reconfigure hot-swaps the model config and provider used by future turns
 // (v1.2 §3.3). It does not touch the listener or any in-flight turn.
@@ -61,7 +73,7 @@ func (b *ServeRunBuilder) Build(ctx conversation.RuntimeContext) conversation.Tu
 		skillReg = inst.SkillReg
 	}
 
-	runner := BuildRunner(b.Cfg, mc, provider, b.ToolReg, skillReg, ctx.Approver, ctx.Publisher)
+	runner := BuildRunner(b.Cfg, mc, provider, b.ToolReg, skillReg, ctx.Approver, ctx.Publisher, b.rules)
 	if workspacePath != "" {
 		runner.WorkspaceRoot = workspacePath
 	}

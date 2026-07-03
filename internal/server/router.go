@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 
 	"code-agent/internal/agent"
+	"code-agent/internal/approve"
 )
 
 // CommandTarget is the command plane: the actions a client triggers on a session.
@@ -18,9 +19,12 @@ type CommandTarget interface {
 }
 
 // ApprovalResolver is the control plane: deliver a client's approval verdict to
-// the blocked Approve call. *RemoteApprover satisfies it.
+// the blocked Approve call. *RemoteApprover satisfies it. Resolve carries a plain
+// approve/deny (plan approvals, legacy tool responses); ResolveTool carries a tool
+// approval's three-way verdict plus the scope for an "always allow" grant.
 type ApprovalResolver interface {
 	Resolve(id string, approved bool)
+	ResolveTool(id string, approved, always bool, scope approve.Scope)
 }
 
 // ToolResultResolver delivers a client-tool-execution result to the blocked
@@ -110,7 +114,8 @@ func (r Router) Route(ctx context.Context, data []byte) {
 	case MsgTypeApprovalResponse:
 		var m ApprovalResponse
 		if json.Unmarshal(data, &m) == nil && r.Approvals != nil {
-			r.Approvals.Resolve(m.ID, m.Approved)
+			approved, always, scope := m.outcome()
+			r.Approvals.ResolveTool(m.ID, approved, always, scope)
 		}
 	case MsgTypePlanApprovalResponse:
 		var m PlanApprovalResponse

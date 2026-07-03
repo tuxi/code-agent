@@ -22,13 +22,14 @@ const (
 )
 
 type AssetPreviewResponse struct {
-	Asset     assets.Ref `json:"asset"`
-	Kind      string     `json:"kind"`
-	Content   string     `json:"content,omitempty"`
-	MIMEType  string     `json:"mime_type,omitempty"`
-	SizeBytes int64      `json:"size_bytes,omitempty"`
-	Truncated bool       `json:"truncated,omitempty"`
-	Source    string     `json:"source,omitempty"`
+	Asset     assets.Ref     `json:"asset"`
+	Kind      string         `json:"kind"`
+	Content   string         `json:"content,omitempty"`
+	MIMEType  string         `json:"mime_type,omitempty"`
+	SizeBytes int64          `json:"size_bytes,omitempty"`
+	Truncated bool           `json:"truncated,omitempty"`
+	Source    string         `json:"source,omitempty"`
+	Metadata  map[string]any `json:"metadata,omitempty"`
 }
 
 type AssetContentResponse struct {
@@ -122,6 +123,7 @@ func previewConversationAsset(ctx context.Context, eventStore conversation.Conve
 		resp.MIMEType = assets.MIMEType(path)
 	}
 	if !isTextAsset(resp.MIMEType) {
+		resp.Metadata = assetMediaMetadata(conversationID, assetID)
 		if ref.Preview != "" {
 			resp.Content = ref.Preview
 			resp.Source = "asset_preview"
@@ -183,6 +185,53 @@ func contentConversationAsset(ctx context.Context, eventStore conversation.Conve
 		SizeBytes: stat.Size(),
 		Truncated: truncated,
 	}, nil
+}
+
+func serveConversationAssetBlob(ctx context.Context, w http.ResponseWriter, r *http.Request, eventStore conversation.ConversationEventStore, repo conversation.ConversationRepository, conversationID, assetID string) error {
+	ref, sess, err := findConversationAsset(ctx, eventStore, repo, conversationID, assetID)
+	if err != nil {
+		return err
+	}
+	path, err := resolveAssetPath(ref, sess.WorkspacePath)
+	if err != nil {
+		if ae, ok := err.(assetHTTPError); ok && ae.message == "asset has no file path" {
+			return assetHTTPError{status: http.StatusUnsupportedMediaType, message: "asset has no local blob"}
+		}
+		return err
+	}
+	stat, err := os.Stat(path)
+	if err != nil {
+		return assetHTTPError{status: http.StatusGone, message: "asset file not found"}
+	}
+	if stat.IsDir() {
+		return assetHTTPError{status: http.StatusBadRequest, message: "asset is a directory"}
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return assetHTTPError{status: http.StatusInternalServerError, message: err.Error()}
+	}
+	defer f.Close()
+
+	mimeType := ref.MIMEType
+	if mimeType == "" {
+		mimeType = assets.MIMEType(path)
+	}
+	w.Header().Set("Accept-Ranges", "bytes")
+	w.Header().Set("Content-Type", mimeType)
+	w.Header().Set("ETag", assetBlobETag(stat))
+	http.ServeContent(w, r, filepath.Base(path), stat.ModTime(), f)
+	return nil
+}
+
+func assetMediaMetadata(conversationID, assetID string) map[string]any {
+	return map[string]any{
+		"media_url":     "/v1/conversations/" + conversationID + "/assets/" + assetID + "/blob",
+		"thumbnail_url": "/v1/conversations/" + conversationID + "/assets/" + assetID + "/thumbnail?max_px=512",
+	}
+}
+
+func assetBlobETag(stat os.FileInfo) string {
+	return fmt.Sprintf(`"%x-%x"`, stat.Size(), stat.ModTime().UnixNano())
 }
 
 func resolveAssetPath(ref assets.Ref, workspaceRoot string) (string, error) {
