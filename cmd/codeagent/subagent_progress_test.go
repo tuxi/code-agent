@@ -9,6 +9,7 @@ import (
 
 	"code-agent/internal/agent"
 	"code-agent/internal/runtime"
+	"code-agent/internal/tools"
 )
 
 func TestTaskProgressShowsStepsAndErases(t *testing.T) {
@@ -64,7 +65,7 @@ func TestSubAgentRunDrivesProgress(t *testing.T) {
 	rec := &recordingEmitter{}
 	sa := testSubAgent(answerProvider{content: "done"}, t.TempDir())
 	sa.Progress = rec
-	if _, err := sa.Run(context.Background(), "", "go"); err != nil {
+	if _, err := sa.Run(context.Background(), tools.ExecutionContext{}, "go"); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	// The progress sink must see the bookends even with no store wired.

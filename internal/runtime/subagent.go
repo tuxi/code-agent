@@ -60,13 +60,20 @@ type SubAgent struct {
 	SkillsIndex string
 	Store       session.Store // observability: persists the sub-session transcript
 	Progress    agent.Emitter // observability: live, condensed heartbeat (nil = none)
+
+	// Forwarder pushes the task_started/task_finished brackets into the CALLING
+	// conversation's stream (P8.7 §8.4-2) — persisted under the parent's
+	// partition and fanned to its live subscribers — so a client's entry card
+	// can discover the delegation and open the child-stream viewer. Nil-safe
+	// (nil = child-partition-only observability, the pre-§8.4-2 behavior).
+	Forwarder *JobEventSink
 }
 
 // NewSubAgent builds the subagent backing the `task` tool. It picks the subagent
 // model (agent.subagent_model, falling back to the parent) and freezes the
 // read-only tool subset from the parent registry as it stands now — so tools added
 // to the parent later (task itself, MCP tools) are never in the subagent's set.
-func NewSubAgent(cfg app.Config, mc app.ModelConfig, parent model.Provider, root string, full *tools.Registry, skillsIndex string, store session.Store, progress agent.Emitter) *SubAgent {
+func NewSubAgent(cfg app.Config, mc app.ModelConfig, parent model.Provider, root string, full *tools.Registry, skillsIndex string, store session.Store, progress agent.Emitter, forwarder *JobEventSink) *SubAgent {
 	provider, subMC := ResolveSubAgentModel(cfg, mc, parent)
 	return &SubAgent{
 		Root:        root,
@@ -77,14 +84,18 @@ func NewSubAgent(cfg app.Config, mc app.ModelConfig, parent model.Provider, root
 		SkillsIndex: skillsIndex,
 		Store:       store,
 		Progress:    progress,
+		Forwarder:   forwarder,
 	}
 }
 
-// Run executes one isolated, read-only turn and returns only its conclusion. The
-// sub-runner has NO Emitter (default quiet): the subagent's own tool events enter
-// no timeline — the parent already shows the `task` call via its own tool events,
-// and keeping the noise out is the whole point of delegation.
-func (s *SubAgent) Run(ctx context.Context, workspaceRoot string, taskPrompt string) (string, error) {
+// Run executes one isolated, read-only turn and returns only its conclusion.
+// The subagent's INNER tool events enter no parent timeline — the parent shows
+// the `task` call via its own tool events, and keeping the noise out is the
+// whole point of delegation. Only the task_started/task_finished brackets cross
+// over (via Forwarder), carrying the child session id so a client can attach to
+// the sub-stream. ec identifies the calling turn (owner) and the workspace.
+func (s *SubAgent) Run(ctx context.Context, ec tools.ExecutionContext, taskPrompt string) (string, error) {
+	workspaceRoot := ec.WorkspaceRoot
 	sess, err := session.NewBuilder(workspaceRoot).
 		WithBudget(s.MC.ContextWindow, s.Cfg.CompactThreshold(s.MC)).
 		WithSystemPrompt(prompt.SubAgentSystemPrompt).
@@ -111,10 +122,17 @@ func (s *SubAgent) Run(ctx context.Context, workspaceRoot string, taskPrompt str
 		sinks = append(sinks, s.Progress)
 	}
 	var emitter agent.Emitter
+	started := agent.Event{
+		Kind: agent.EventTaskStarted, SessionID: sess.ID, TurnID: ec.TurnID,
+		At: time.Now(), Text: taskPrompt,
+	}
 	if len(sinks) > 0 {
 		emitter = sinks
-		emitter.Emit(agent.Event{Kind: agent.EventTaskStarted, SessionID: sess.ID, At: time.Now(), Text: taskPrompt})
+		emitter.Emit(started)
 	}
+	// Parent-stream copy (§8.4-2): the entry card discovers the delegation from
+	// the calling conversation's own stream — live and on replay. Nil-safe.
+	s.Forwarder.ForwardBracket(started, ec.SessionID)
 
 	sub := &agent.Runner{
 		Model:         s.Provider,
@@ -144,9 +162,14 @@ func (s *SubAgent) Run(ctx context.Context, workspaceRoot string, taskPrompt str
 		conclusion = fmt.Sprintf("[subagent did not converge within %d steps — partial findings only]\n\n%s",
 			SubAgentMaxSteps, res.Final)
 	}
-	if emitter != nil {
-		emitter.Emit(agent.Event{Kind: agent.EventTaskFinished, SessionID: sess.ID, At: time.Now(), Text: conclusion})
+	finished := agent.Event{
+		Kind: agent.EventTaskFinished, SessionID: sess.ID, TurnID: ec.TurnID,
+		At: time.Now(), Text: conclusion,
 	}
+	if emitter != nil {
+		emitter.Emit(finished)
+	}
+	s.Forwarder.ForwardBracket(finished, ec.SessionID)
 	return conclusion, nil
 }
 

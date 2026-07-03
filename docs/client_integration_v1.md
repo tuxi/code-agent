@@ -82,7 +82,10 @@ v1 只返回 `id`（model / 消息数 / 时间等 metadata 属于 P1-B）。
 ```
 - 与 WS 唯一差异：历史事件**不带 `event_id`**（它在 WS 发送时才盖戳，未持久化）。客户端按可选处理。
 - **不含 `token_delta`**（流式增量不持久化）。回放时用 `turn_finished.text` 还原助手最终文本即可。
-- 历史 subagent 事件**不带 `parent_session_id`**（同样未持久化）——嵌套关系在 v1 回放里降级。
+- 历史 subagent 事件**不带 `parent_session_id`**（同样未持久化）。但自 p8.7 §8.4-2 起，
+  `task_started`/`task_finished` **在父会话的回放里出现**（双写进父分区，payload 的
+  `session_id` 是子会话 id）——嵌套关系可从"这条 bracket 出现在父会话的 `GET /events` 结果里"
+  推出，不再依赖 `parent_session_id`。
 
 #### `GET /v1/conversations/{id}/messages`
 对话主干，由 `turn_started`(user) / `turn_finished`(assistant) 还原：
@@ -168,8 +171,8 @@ v1 只含 user/assistant；工具/系统消息的全量保真属于 P1-B。
 | `todo_updated` | `todos` | 任务清单变化（见 §3.6） |
 | `compacted` | `before_tokens` `after_tokens` `saved_tokens` `summary_chars` `ratio` | 上下文压缩 |
 | `turn_finished` | `text` | 本轮最终答复（这一轮的终点） |
-| `task_started` | `session_id`(子) `parent_session_id` `text` | subagent 委派开始（`text`=委派 prompt） |
-| `task_finished` | `session_id`(子) `parent_session_id` `text` | subagent 结束（`text`=结论） |
+| `task_started` | `session_id`(子) `turn_id`(=发起 turn) `parent_session_id` `text` | subagent 委派开始（`text`=委派 prompt）。**bracket 双写进父流**（直播 + 父会话 `GET /events` 回放），与 job bracket 同一机制（p8.7 §8.4-2）——入口卡按 `session_id` 开子流查看器 |
+| `task_finished` | `session_id`(子) `turn_id` `parent_session_id` `text` | subagent 结束（`text`=结论），同上双写 |
 | `job_started` | `session_id`(=job id) `turn_id`(=发起 turn) `text` | 后台 job 开始（P8.7；`text`=完整命令）。**bracket 事件（started/finished）同时进父会话流**（直播 WS + 父会话 `GET /events` 回放，§8.4-2 定稿）——入口卡靠它发现 job；`job_output` 只在 job 自己的分区（`GET /v1/conversations/{job_id}/events`） |
 | `job_output` | `session_id`(=job id) `chunk` | job 输出片段（stdout+stderr 交错，服务端已按 ~4KB/750ms 合并，不会每行一条）。**仅 job 分区**，父会话流里没有 |
 | `job_finished` | `session_id`(=job id) `text` `elapsed_ms` `exit_code` `err` | job 终态。`text` ∈ `exited`（成功）\| `failed` \| `canceled`；`exit_code` 仅失败时出现（>0 = 命令非零退出，-1 = 启动失败/被信号杀死；成功时省略）；`err` 是配套的人读描述（如 `exit code 2`），仅失败时出现。形状以 golden `internal/server/testdata/job_*.json` 为准 |

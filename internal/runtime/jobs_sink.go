@@ -107,23 +107,35 @@ func (s *JobEventSink) JobFinished(snap jobs.Snapshot) {
 	s.publish(ev, snap.Owner)
 }
 
-// publish is the bracket-event path: child partition always; parent partition +
-// parent live stream when the job has an owner.
+// publish is the job bracket-event path: child partition always; parent
+// partition + parent live stream when the job has an owner.
 func (s *JobEventSink) publish(ev agent.Event, owner jobs.Owner) {
 	s.record(ev.SessionID, ev)
-	if owner.SessionID == "" {
+	s.ForwardBracket(ev, owner.SessionID)
+}
+
+// ForwardBracket is the parent-stream half of a child-stream bracket (§8.4-2):
+// it persists ev under the owning conversation's partition and fans it out to
+// that conversation's live subscribers, with the PARENT-partition seq stamped
+// on the live frame so the client's per-conversation cursor (max seq) keeps
+// working. The payload keeps ev's own SessionID (the child-stream id).
+//
+// Used internally for job brackets and by the subagent (subagent.go) for
+// task_started/task_finished — whose child-partition copies are written by its
+// own sinks. Nil-receiver- and empty-owner-safe, so callers forward
+// unconditionally.
+func (s *JobEventSink) ForwardBracket(ev agent.Event, ownerSessionID string) {
+	if s == nil || ownerSessionID == "" {
 		return
 	}
-	if seq := s.record(owner.SessionID, ev); seq > 0 {
-		// The live frame carries the PARENT-partition seq: the client's per-
-		// conversation cursor (max seq) must keep working on these frames.
+	if seq := s.record(ownerSessionID, ev); seq > 0 {
 		ev.Seq = seq
 	}
 	s.mu.Lock()
 	live := s.live
 	s.mu.Unlock()
 	if live != nil {
-		if em := live(owner.SessionID); em != nil {
+		if em := live(ownerSessionID); em != nil {
 			em.Emit(ev)
 		}
 	}

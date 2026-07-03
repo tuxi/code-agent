@@ -290,3 +290,51 @@ func TestJobEventsReplayableByJobID(t *testing.T) {
 		t.Fatalf("parent kinds = %v, want brackets only", got)
 	}
 }
+
+func TestForwardBracketNilSafe(t *testing.T) {
+	// Nil receiver and empty owner must both be no-ops — the subagent calls
+	// ForwardBracket unconditionally.
+	var nilSink *JobEventSink
+	nilSink.ForwardBracket(agent.Event{Kind: agent.EventTaskStarted}, "sess_x")
+
+	store := &fakeEventStore{}
+	sink := NewJobEventSink(context.Background(), store)
+	sink.ForwardBracket(agent.Event{Kind: agent.EventTaskStarted, SessionID: "sess_child"}, "")
+	store.mu.Lock()
+	n := len(store.rows)
+	store.mu.Unlock()
+	if n != 0 {
+		t.Errorf("empty owner must not write rows, got %d", n)
+	}
+}
+
+func TestForwardBracketTaskEvents(t *testing.T) {
+	store := &fakeEventStore{}
+	live := &recordingEmitter{}
+	sink := NewJobEventSink(context.Background(), store)
+	sink.SetLiveResolver(func(string) agent.Emitter { return live })
+
+	ev := agent.Event{
+		Kind: agent.EventTaskStarted, SessionID: "sess_child", TurnID: "turn_5",
+		Text: "investigate the auth module",
+	}
+	sink.ForwardBracket(ev, "sess_parent")
+
+	parent, _ := store.SessionEvents(context.Background(), "sess_parent")
+	if len(parent) != 1 || parent[0].Kind != "task_started" {
+		t.Fatalf("parent rows = %v", kindsOf(parent))
+	}
+	var stored agent.Event
+	if err := json.Unmarshal(parent[0].Payload, &stored); err != nil {
+		t.Fatal(err)
+	}
+	// The payload keeps the CHILD session id (the client's sub-stream key) and
+	// must never carry seq (row-only, per the sequencingEmitter contract).
+	if stored.SessionID != "sess_child" || stored.Seq != 0 {
+		t.Errorf("stored payload session_id=%q seq=%d, want sess_child/0", stored.SessionID, stored.Seq)
+	}
+	evs := live.snapshot()
+	if len(evs) != 1 || evs[0].Seq != parent[0].Seq {
+		t.Fatalf("live = %+v, want one frame with parent-partition seq %d", evs, parent[0].Seq)
+	}
+}

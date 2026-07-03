@@ -67,7 +67,7 @@ func testSubAgent(provider model.Provider, root string) *runtime.SubAgent {
 
 func TestSubAgentRunReturnsConclusion(t *testing.T) {
 	sa := testSubAgent(answerProvider{content: "root cause: nil deref at loop.go:42"}, t.TempDir())
-	out, err := sa.Run(context.Background(), "", "why does X fail?")
+	out, err := sa.Run(context.Background(), tools.ExecutionContext{}, "why does X fail?")
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -87,7 +87,7 @@ func TestSubAgentPersistsTranscript(t *testing.T) {
 		Store:    store,
 	}
 	ctx := context.Background()
-	if _, err := sa.Run(ctx, sa.Root, "investigate the step limit"); err != nil {
+	if _, err := sa.Run(ctx, tools.ExecutionContext{WorkspaceRoot: sa.Root}, "investigate the step limit"); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 
@@ -122,14 +122,14 @@ func TestSubAgentPersistsTranscript(t *testing.T) {
 func TestSubAgentNilStoreStaysQuiet(t *testing.T) {
 	// No store wired (e.g. a bare construction) must not panic and must emit nothing.
 	sa := testSubAgent(answerProvider{content: "x"}, t.TempDir())
-	if _, err := sa.Run(context.Background(), "", "go"); err != nil {
+	if _, err := sa.Run(context.Background(), tools.ExecutionContext{}, "go"); err != nil {
 		t.Fatalf("Run with nil store: %v", err)
 	}
 }
 
 func TestSubAgentRunFlagsNonConvergence(t *testing.T) {
 	sa := testSubAgent(loopingProvider{}, t.TempDir())
-	out, err := sa.Run(context.Background(), "", "dig forever")
+	out, err := sa.Run(context.Background(), tools.ExecutionContext{}, "dig forever")
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -147,7 +147,7 @@ func TestSubAgentNonConvergenceNeverLeaksGarbage(t *testing.T) {
 	_ = reg.Register(namedTool{"nope"})
 	sa := testSubAgent(leakyProvider{}, t.TempDir())
 	sa.ReadOnly = reg
-	out, err := sa.Run(context.Background(), "", "a task too broad to finish")
+	out, err := sa.Run(context.Background(), tools.ExecutionContext{}, "a task too broad to finish")
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -164,7 +164,7 @@ func TestNewSubAgentReadOnlySetIsFailClosed(t *testing.T) {
 	for _, name := range []string{"read_file", "grep", "edit_file", "run_command", "git_commit"} {
 		_ = full.Register(namedTool{name})
 	}
-	sa := runtime.NewSubAgent(app.Config{}, app.ModelConfig{Name: "m"}, answerProvider{}, t.TempDir(), full, "", nil, nil)
+	sa := runtime.NewSubAgent(app.Config{}, app.ModelConfig{Name: "m"}, answerProvider{}, t.TempDir(), full, "", nil, nil, nil)
 
 	for _, want := range []string{"read_file", "grep"} {
 		if _, ok := sa.ReadOnly.Get(want); !ok {
@@ -203,5 +203,43 @@ func TestResolveSubAgentModelFallsBackOnUnknown(t *testing.T) {
 	_, gotMC := runtime.ResolveSubAgentModel(cfg, mc, parent)
 	if gotMC.Name != "main" {
 		t.Fatalf("an unknown subagent_model should fall back to the parent, got %q", gotMC.Name)
+	}
+}
+
+// TestSubAgentForwardsBracketsToParent locks the §8.4-2 subagent half: with a
+// Forwarder wired, task_started/task_finished land in the CALLING
+// conversation's partition (entry-card discovery, live and on replay), while
+// the payload keeps the child session id (the client's sub-stream key).
+func TestSubAgentForwardsBracketsToParent(t *testing.T) {
+	store := testStore(t)
+	sa := testSubAgent(answerProvider{content: "done"}, t.TempDir())
+	sa.Store = store
+	sa.Forwarder = runtime.NewJobEventSink(context.Background(), store)
+
+	ec := tools.ExecutionContext{WorkspaceRoot: sa.Root, SessionID: "sess_parent", TurnID: "turn_5"}
+	if _, err := sa.Run(context.Background(), ec, "trace the auth flow"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	recs, err := store.SessionEvents(context.Background(), "sess_parent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var kinds []string
+	for _, r := range recs {
+		kinds = append(kinds, r.Kind)
+	}
+	if strings.Join(kinds, ",") != "task_started,task_finished" {
+		t.Fatalf("parent partition kinds = %v, want the two task brackets", kinds)
+	}
+	var started agent.Event
+	if err := json.Unmarshal(recs[0].Payload, &started); err != nil {
+		t.Fatal(err)
+	}
+	if started.SessionID == "" || started.SessionID == "sess_parent" {
+		t.Errorf("payload session_id = %q, want the CHILD session id", started.SessionID)
+	}
+	if started.TurnID != "turn_5" {
+		t.Errorf("payload turn_id = %q, want the calling turn", started.TurnID)
 	}
 }

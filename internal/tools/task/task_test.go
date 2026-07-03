@@ -16,7 +16,7 @@ type fakeAgent struct {
 	called    bool
 }
 
-func (f *fakeAgent) Run(_ context.Context, _ string, prompt string) (string, error) {
+func (f *fakeAgent) Run(_ context.Context, _ tools.ExecutionContext, prompt string) (string, error) {
 	f.called = true
 	f.gotPrompt = prompt
 	return f.result, f.err

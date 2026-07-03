@@ -20,9 +20,12 @@ import (
 
 // SubAgent runs a delegated subtask in an isolated context and returns only its
 // final conclusion. The prompt is the ONLY channel into the subagent — it sees
-// nothing of the parent conversation.
+// nothing of the parent conversation. The ExecutionContext carries the calling
+// turn's identity (session/turn), which the runtime uses to forward the
+// delegation's bracket events into the parent's stream (P8.7 §8.4-2) — routing
+// metadata, never subagent input.
 type SubAgent interface {
-	Run(ctx context.Context, workspaceRoot string, prompt string) (string, error)
+	Run(ctx context.Context, ec tools.ExecutionContext, prompt string) (string, error)
 }
 
 // Tool is the model-facing `task` tool. It is read-only (it does not implement a
@@ -75,7 +78,7 @@ func (t *Tool) Execute(ctx context.Context, ec tools.ExecutionContext, raw json.
 		return tools.ToolResult{}, fmt.Errorf("task requires a non-empty prompt")
 	}
 
-	conclusion, err := t.agent.Run(ctx, ec.WorkspaceRoot, in.Prompt)
+	conclusion, err := t.agent.Run(ctx, ec, in.Prompt)
 	if err != nil {
 		return tools.ToolResult{}, err
 	}
