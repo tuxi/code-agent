@@ -107,11 +107,26 @@ func (s *JobEventSink) JobFinished(snap jobs.Snapshot) {
 	s.publish(ev, snap.Owner)
 }
 
-// publish is the job bracket-event path: child partition always; parent
-// partition + parent live stream when the job has an owner.
+// publish is the job bracket-event path: the child stream always (persist +
+// the job's own live stream, Phase C); the parent partition + parent live
+// stream too when the job has an owner (§8.4-2).
 func (s *JobEventSink) publish(ev agent.Event, owner jobs.Owner) {
-	s.record(ev.SessionID, ev)
+	s.emitChild(ev)
 	s.ForwardBracket(ev, owner.SessionID)
+}
+
+// emitChild persists ev under the child (job) partition AND fans it to the
+// job's OWN live stream (Phase C: GET /v1/jobs/{id}/stream attaches to the bus
+// keyed on the job id), with the child-partition seq stamped on the live frame
+// so the client's per-job cursor works. ev.Seq MUST be 0 on entry — record
+// marshals the payload, which must never carry seq (it lives in the row). ev is
+// taken by value, so the local seq stamp never leaks back to the caller (which
+// may still forward the same event to the parent with a different seq).
+func (s *JobEventSink) emitChild(ev agent.Event) {
+	if seq := s.record(ev.SessionID, ev); seq > 0 {
+		ev.Seq = seq
+	}
+	s.fanLive(ev.SessionID, ev)
 }
 
 // ForwardBracket is the parent-stream half of a child-stream bracket (§8.4-2):
@@ -131,11 +146,18 @@ func (s *JobEventSink) ForwardBracket(ev agent.Event, ownerSessionID string) {
 	if seq := s.record(ownerSessionID, ev); seq > 0 {
 		ev.Seq = seq
 	}
+	s.fanLive(ownerSessionID, ev)
+}
+
+// fanLive resolves id's live bus (nil until SetLiveResolver, e.g. CLI builds)
+// and emits ev. Emitting into a resolver that finds no bus (no subscribers) is
+// a no-op — persistence already happened via record.
+func (s *JobEventSink) fanLive(id string, ev agent.Event) {
 	s.mu.Lock()
 	live := s.live
 	s.mu.Unlock()
 	if live != nil {
-		if em := live(ownerSessionID); em != nil {
+		if em := live(id); em != nil {
 			em.Emit(ev)
 		}
 	}
@@ -186,13 +208,14 @@ func (s *JobEventSink) takeLocked(id string, p *pendingOutput) []byte {
 	return buf
 }
 
-// emitOutput persists a coalesced output span — child partition only (§8.4-2:
-// the parent stream gets brackets, never the output firehose).
+// emitOutput persists a coalesced output span and fans it to the job's own
+// live stream — child only. The parent stream gets brackets, never the output
+// firehose (§8.4-2), so this goes through emitChild, not ForwardBracket.
 func (s *JobEventSink) emitOutput(id string, buf []byte) {
 	if len(buf) == 0 {
 		return
 	}
-	s.record(id, agent.Event{
+	s.emitChild(agent.Event{
 		Kind: agent.EventJobOutput, At: time.Now(), SessionID: id, Chunk: string(buf),
 	})
 }

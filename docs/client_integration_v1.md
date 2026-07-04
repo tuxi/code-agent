@@ -106,6 +106,22 @@ v1 只含 user/assistant；工具/系统消息的全量保真属于 P1-B。
 ### `GET /v1/conversations/{id}/stream`
 升级为 WebSocket（见 §3）。`{id}` 不存在 → `404`（不升级）。
 
+### 子流（后台 job）：`GET /v1/jobs/{id}/events` + `GET /v1/jobs/{id}/stream`（P8.7 Phase C）
+
+后台 job 有自己的事件流（`job_started`/`job_output`/`job_finished`），可独立打开一个"子流查看器"。
+两个端点与会话版**帧格式完全一致**（同一个 `WireFrame` 解码器）：
+
+- **`GET /v1/jobs/{id}/events[?since=<seq>]`** —— job 的历史（backlog），`since` 增量续传，和
+  会话 `/events` 同形。`{id}` 从无事件 → `404`。
+- **`GET /v1/jobs/{id}/stream`** —— job 的**实时** WS 流：`hello` 之后推 job 的实时事件
+  （含 `job_output` 全量）。**只读**——不接受 `send_message`/审批等任何入站帧（job 是被观察对象，
+  不是可驱动的会话）。`{id}` 未知 → `404`（不升级）。
+- **恢复流程同会话**："先 `GET /v1/jobs/{id}/events` 补历史、再连 `/stream` 接实时"，用 `seq`
+  去重（§2 恢复流程）。job 的 `seq` 是**它自己分区**的游标，与父会话的 `seq` 是两套空间。
+- job **永远不出现在 `GET /v1/conversations` 列表**里（列表来自会话表，job 只在事件流里）。
+- 说明：subagent（`task`）子会话**同步执行**、拿到 `task_finished` 时已结束，没有"实时可接"的流；
+  用 `GET /v1/conversations/{child_session_id}/events` 回放即可，无需 `/stream`。
+
 ### 推荐的恢复流程（History + Live）
 
 ```

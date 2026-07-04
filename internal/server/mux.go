@@ -357,6 +357,54 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 	mux.Handle("GET /v1/conversations/{id}/stream", ws)
 	mux.Handle("GET /v2/conversations/{id}/stream", ws)
 
+	// ---- P8.7 Phase C: background job child streams (read-only) ----
+	//
+	// A job is not a conversation: it has no turns, no messages, no command
+	// plane, and never appears in GET /v1/conversations (that list reads the
+	// sessions table; jobs only write session_events). These two endpoints mirror
+	// the conversation events + stream shapes so the client reuses its WireFrame
+	// decoder — backlog over /events (with ?since=), live over /stream.
+	mux.HandleFunc("GET /v1/jobs/{id}/events", func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+		recs, ok := loadEventsSince(r.Context(), eventStore, repo, id, parseSince(r), w)
+		if !ok {
+			return
+		}
+		frames := make([]json.RawMessage, 0, len(recs))
+		for _, rec := range recs {
+			ev, ok := decodeStoredEvent(rec)
+			if !ok {
+				continue
+			}
+			ev.Seq = rec.Seq
+			if frame, err := Encode(ev, "", ""); err == nil {
+				frames = append(frames, frame)
+			}
+		}
+		writeJSON(w, http.StatusOK, frames)
+	})
+
+	jobStream := &JobStreamHandler{
+		ServerName:   opts.ServerName,
+		Capabilities: opts.Capabilities,
+		Accept:       opts.Accept,
+		Resolve: func(r *http.Request) (Subscriber, error) {
+			id := r.PathValue("id")
+			// A job is "known" once it has emitted at least job_started (persisted
+			// inside Registry.Start, before the tool even returns the id) — so any
+			// id a client could hold already has events. Empty => unknown => 404.
+			recs, err := eventStore.ReplaySince(r.Context(), id, 0)
+			if err != nil {
+				return nil, err
+			}
+			if len(recs) == 0 {
+				return nil, fmt.Errorf("job %q not found", id)
+			}
+			return conversation.NewChildStreamSubscriber(id, executor), nil
+		},
+	}
+	mux.Handle("GET /v1/jobs/{id}/stream", jobStream)
+
 	// GET /v1/prompts — list the MCP prompts a client can invoke via invoke_prompt.
 	// Server-wide (MCP servers are global), so it needs no conversation id.
 	mux.HandleFunc("GET /v1/prompts", func(w http.ResponseWriter, _ *http.Request) {

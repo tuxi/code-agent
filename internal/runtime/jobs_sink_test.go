@@ -84,13 +84,20 @@ var testOwner = jobs.Owner{SessionID: "sess_parent", TurnID: "turn_3"}
 
 func TestJobEventSinkDualPartition(t *testing.T) {
 	store := &fakeEventStore{}
-	live := &recordingEmitter{}
+	// Route live fanout by id into two recorders: the job's own stream (Phase C)
+	// and the parent conversation's stream (§8.4-2).
+	childLive, parentLive := &recordingEmitter{}, &recordingEmitter{}
 	sink := NewJobEventSink(context.Background(), store)
-	sink.SetLiveResolver(func(sessionID string) agent.Emitter {
-		if sessionID != "sess_parent" {
-			t.Errorf("live resolved for %q, want sess_parent", sessionID)
+	sink.SetLiveResolver(func(id string) agent.Emitter {
+		switch id {
+		case "job_1":
+			return childLive
+		case "sess_parent":
+			return parentLive
+		default:
+			t.Errorf("live resolved for unexpected id %q", id)
+			return nil
 		}
-		return live
 	})
 
 	sink.JobStarted(jobs.Snapshot{ID: "job_1", Command: "npm install", Owner: testOwner})
@@ -121,30 +128,56 @@ func TestJobEventSinkDualPartition(t *testing.T) {
 		t.Errorf("parent payload session_id=%q turn_id=%q, want job_1/turn_3", ev.SessionID, ev.TurnID)
 	}
 
-	// Live copies: brackets only, stamped with the PARENT-partition seq so the
-	// client's per-conversation cursor keeps working.
-	evs := live.snapshot()
-	if len(evs) != 2 {
-		t.Fatalf("live events = %d, want 2 (brackets only)", len(evs))
+	// Child live stream (Phase C): the FULL stream, each frame stamped with the
+	// child-partition seq so the per-job cursor works.
+	cevs := childLive.snapshot()
+	if got := len(cevs); got != 3 {
+		t.Fatalf("child live events = %d, want 3 (full stream)", got)
+	}
+	for i, rec := range child {
+		if cevs[i].Seq != rec.Seq {
+			t.Errorf("child live[%d].Seq = %d, want child-partition seq %d", i, cevs[i].Seq, rec.Seq)
+		}
+	}
+
+	// Parent live stream: brackets only, stamped with the PARENT-partition seq.
+	pevs := parentLive.snapshot()
+	if len(pevs) != 2 {
+		t.Fatalf("parent live events = %d, want 2 (brackets only)", len(pevs))
 	}
 	for i, want := range wantParent {
-		if string(evs[i].Kind) != want {
-			t.Errorf("live[%d] = %s, want %s", i, evs[i].Kind, want)
+		if string(pevs[i].Kind) != want {
+			t.Errorf("parent live[%d] = %s, want %s", i, pevs[i].Kind, want)
 		}
-		if evs[i].Seq != parent[i].Seq {
-			t.Errorf("live[%d].Seq = %d, want parent-partition seq %d", i, evs[i].Seq, parent[i].Seq)
+		if pevs[i].Seq != parent[i].Seq {
+			t.Errorf("parent live[%d].Seq = %d, want parent-partition seq %d", i, pevs[i].Seq, parent[i].Seq)
 		}
 	}
-	if evs[1].Text != "exited" || evs[1].Elapsed != 1500*time.Millisecond {
-		t.Errorf("live finished = %+v", evs[1])
+	if pevs[1].Text != "exited" || pevs[1].Elapsed != 1500*time.Millisecond {
+		t.Errorf("parent live finished = %+v", pevs[1])
+	}
+
+	// Stored payloads must never carry seq (it lives in the row).
+	for _, rec := range append(append([]session.EventRecord{}, child...), parent...) {
+		var e agent.Event
+		_ = json.Unmarshal(rec.Payload, &e)
+		if e.Seq != 0 {
+			t.Errorf("stored payload for %s carries seq %d, want 0", rec.Kind, e.Seq)
+		}
 	}
 }
 
 func TestJobEventSinkUnowned(t *testing.T) {
 	store := &fakeEventStore{}
-	called := false
+	var childLive int
 	sink := NewJobEventSink(context.Background(), store)
-	sink.SetLiveResolver(func(string) agent.Emitter { called = true; return nil })
+	sink.SetLiveResolver(func(id string) agent.Emitter {
+		if id == "sess_parent" {
+			t.Error("parent live must not fire for an unowned job")
+		}
+		childLive++ // the job's OWN stream still fans live (Phase C)
+		return nil
+	})
 
 	sink.JobStarted(jobs.Snapshot{ID: "job_9", Command: "make"})
 	sink.JobFinished(jobs.Snapshot{ID: "job_9", Status: jobs.Exited})
@@ -159,8 +192,8 @@ func TestJobEventSinkUnowned(t *testing.T) {
 	if total != 2 {
 		t.Errorf("total rows = %d, want 2 (no parent copies for an unowned job)", total)
 	}
-	if called {
-		t.Error("live resolver must not fire for an unowned job")
+	if childLive != 2 {
+		t.Errorf("child live fanout fired %d times, want 2 (its own stream)", childLive)
 	}
 }
 

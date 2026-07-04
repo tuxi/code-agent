@@ -835,3 +835,58 @@ func TestMuxReadUnknownConversation404(t *testing.T) {
 		}
 	}
 }
+
+// TestMuxJobEventsEndpoint verifies the P8.7 Phase C job backlog endpoint:
+// a job id (which has events but NO sessions row) replays its own stream as
+// wire frames, and an unknown id 404s.
+func TestMuxJobEventsEndpoint(t *testing.T) {
+	jobID := "job_1"
+	events := &fakeEventStore{}
+	at := time.Date(2026, 6, 24, 10, 0, 0, 0, time.UTC)
+	_, _ = events.Append(context.Background(), storedEvent(agent.Event{
+		Kind: agent.EventJobStarted, SessionID: jobID, At: at, Text: "npm install",
+	}))
+	_, _ = events.Append(context.Background(), storedEvent(agent.Event{
+		Kind: agent.EventJobOutput, SessionID: jobID, At: at.Add(time.Second), Chunk: "cloning...\n",
+	}))
+	_, _ = events.Append(context.Background(), storedEvent(agent.Event{
+		Kind: agent.EventJobFinished, SessionID: jobID, At: at.Add(2 * time.Second), Text: "exited",
+	}))
+
+	// A job has NO sessions row — the repo doesn't know it.
+	repo := newFakeConversationRepo()
+	srv := httptest.NewServer(newTestMux(repo, events))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/v1/jobs/" + jobID + "/events")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	var frames []map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&frames); err != nil {
+		t.Fatal(err)
+	}
+	if len(frames) != 3 {
+		t.Fatalf("want 3 frames, got %d", len(frames))
+	}
+	if frames[0]["kind"] != "job_started" || frames[0]["session_id"] != jobID {
+		t.Errorf("frame[0] = %v", frames[0])
+	}
+	if frames[0]["seq"].(float64) != 1 || frames[2]["seq"].(float64) != 3 {
+		t.Errorf("seqs = %v..%v, want 1..3", frames[0]["seq"], frames[2]["seq"])
+	}
+
+	// Unknown job id → 404 (no events, no sessions row).
+	resp2, err := http.Get(srv.URL + "/v1/jobs/job_nope/events")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp2.Body.Close()
+	if resp2.StatusCode != http.StatusNotFound {
+		t.Errorf("unknown job status = %d, want 404", resp2.StatusCode)
+	}
+}
