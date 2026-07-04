@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -26,6 +27,11 @@ type Runner struct {
 	// A search-happy model that keeps reformulating instead of answering gets a
 	// "stop searching" result past the cap; the counter resets each turn.
 	MaxWebSearches int
+
+	// MaxParallelTools caps how many independent, read-only tool calls in one
+	// batch run concurrently (P8.8). <= 1 (the default) restores the strictly
+	// sequential loop. Side-effecting calls are always serialized regardless.
+	MaxParallelTools int
 
 	// Approver gates side-effecting tool calls. If nil, side-effecting tools are
 	// denied (see approve()). Read-only tools never consult it.
@@ -115,6 +121,10 @@ type Runner struct {
 	emitSessionID    string
 	emitTurnID       string
 	emitInvocationID string // set at the start of each model call; stamped on all events
+
+	// emitMu serializes r.emit so concurrent tool workers (P8.8) can't race the
+	// downstream emitter.
+	emitMu sync.Mutex
 }
 
 // invocationSeq backs per-turn invocation ids; monotonically increases within a
@@ -151,7 +161,13 @@ func (r *Runner) emit(e Event) {
 	e.SessionID = r.emitSessionID
 	e.TurnID = r.emitTurnID
 	e.InvocationID = r.emitInvocationID
+	// Serialize emits: with parallel tool execution (P8.8) a concurrent worker's
+	// tool may stream stdout/stderr chunks through r.emit while the main
+	// goroutine emits batch events. The lock keeps the downstream emitter (which
+	// need not be concurrency-safe, e.g. a console renderer) from racing.
+	r.emitMu.Lock()
 	r.Emitter.Emit(e)
+	r.emitMu.Unlock()
 }
 
 // TurnResult is the outcome of a single turn: the final answer the model
@@ -486,186 +502,13 @@ func (r *Runner) drive(ctx context.Context, sess *session.Session) (TurnResult, 
 		sess.Messages = append(sess.Messages, resp.AssistantMessage())
 		sess.UpdatedAt = time.Now()
 
-		// Execute EVERY requested tool call. Each one must get a tool result
-		// with a matching tool_call_id, or the next request will be rejected.
-		//
-		// If the context is cancelled mid-batch (Ctrl-C, or an iOS Suspend), we do
-		// NOT bail with a dangling assistant message: the tool_calls message above
-		// references every call in resp.ToolCalls, so leaving some without a result
-		// would persist an inconsistent history the provider rejects on resume
-		// ("insufficient tool messages following tool_calls"). Instead we append a
-		// synthetic interrupted-result for this call and every one after it, keeping
-		// the batch balanced, then return. On resume the model sees they did not run
-		// and re-issues what it still needs (v1.2 §2.2).
-		var cancelErr error
-		for idx, call := range resp.ToolCalls {
-			if err := ctx.Err(); err != nil {
-				cancelErr = err
-				for _, rem := range resp.ToolCalls[idx:] {
-					sess.Messages = append(sess.Messages, model.Message{
-						Role:       model.RoleTool,
-						ToolCallID: rem.ID,
-						Content:    toolInterruptedObservation,
-					})
-				}
-				sess.UpdatedAt = time.Now()
-				break
-			}
-			input := json.RawMessage(call.Function.Arguments)
-
-			step := Step{
-				Index:     len(turn.Steps) + 1,
-				ToolName:  call.Function.Name,
-				ToolInput: input,
-				StartedAt: time.Now(),
-			}
-			tool, known := activeTools.Get(call.Function.Name)
-			valid := advertised[call.Function.Name] && known
-			executor := r.executorFor(tool, known)
-			r.emit(Event{
-				Kind:     EventToolStarted,
-				CallID:   call.ID,
-				Step:     step.Index,
-				ToolName: call.Function.Name,
-				ToolArgs: call.Function.Arguments,
-				Executor: executor,
-			})
-
-			// Pre-tool hook (8.5): a configured command may block the call. Only
-			// consulted for a real tool, so an unknown call still reports plainly.
-			var blockReason string
-			if valid && executor != "client" {
-				blockReason = r.preHookBlock(ctx, call.Function.Name, input)
-			}
-
-			// Per-turn web_search budget: count every search call, then refuse
-			// further ones past the cap so a search-happy model stops reformulating
-			// and answers with what it has.
-			if call.Function.Name == webSearchToolName {
-				webSearches++
-			}
-
-			var observation string
-			var output json.RawMessage
-			var assetRefs []assets.Ref
-			var execErr error
-			toolStart := time.Now()
-			switch {
-			case !valid:
-				execErr = fmt.Errorf("unknown tool: %s", call.Function.Name)
-			case call.Function.Name == webSearchToolName && webSearches > r.maxWebSearches():
-				observation = fmt.Sprintf(
-					"Search budget reached: %d web searches already this turn (limit %d). "+
-						"Stop searching — reformulating the query will not surface new results. "+
-						"Answer with the results you already have, or web_fetch a specific URL.",
-					webSearches-1, r.maxWebSearches())
-			case blockReason != "":
-				observation = "The tool call was blocked by a configured hook. " + blockReason
-			case tools.HasSideEffectsFor(tool, input) && !r.approve(call.Function.Name, input):
-				observation = "The user declined to run this tool. No changes were made."
-			case executor == "client":
-				result, waitErr := r.ClientWaiter.Wait(ctx, call.ID, r.clientToolTimeout())
-				if waitErr != nil {
-					execErr = waitErr
-				} else if result.IsError {
-					execErr = fmt.Errorf("%s", result.Content)
-				} else {
-					observation = result.Content
-					output = result.Output
-					assetRefs = result.Assets
-				}
-			default:
-				var toolResult tools.ToolResult
-				toolResult, execErr = r.executeTool(ctx, tool, call.ID, input)
-				if execErr == nil {
-					observation = toolResult.Content
-					output = toolResult.Output
-					assetRefs = toolResult.Assets
-					// Post-tool hook (8.5): react to the change (format/lint). It runs
-					// the configured command but does not alter the result in v1.
-					r.postHook(ctx, call.Function.Name, input, observation)
-				}
-			}
-			if execErr != nil {
-				if errors.Is(execErr, context.Canceled) {
-					// The tool was interrupted by a suspend/cancel, not a genuine
-					// failure. Record the neutral interrupted marker (no error) so the
-					// persisted history stays resumable and the client sees no spurious
-					// "context canceled" — the next loop-top ctx check fills the rest of
-					// the batch and returns.
-					observation = toolInterruptedObservation
-					execErr = nil
-				} else {
-					step.Error = execErr.Error()
-					observation = "Tool error: " + execErr.Error()
-				}
-			}
-
-			// Skill telemetry (P6): if the tool loaded a skill, emit a versioned
-			// event. Interface-driven, so the loop stays tool-agnostic.
-			if known && execErr == nil {
-				if sa, ok := tool.(tools.SkillAnnouncer); ok {
-					if name, ver, src, loaded := sa.AnnounceSkill(input); loaded {
-						r.emit(Event{Kind: EventSkillLoaded, ToolName: name, Version: ver, SkillSource: src})
-					}
-				}
-				// Todo checklist (8.4): same interface-driven pattern — the loop emits
-				// the updated list without knowing the tool by name.
-				if ta, ok := tool.(tools.TodoAnnouncer); ok {
-					if todos, ok := ta.AnnounceTodos(input); ok {
-						r.emit(Event{Kind: EventTodoUpdated, Todos: todos})
-					}
-				}
-			}
-
-			// Enrich the raw result into a structured Observation (P4.1). Observe
-			// runs on the *full* output so salient lines survive truncation; the
-			// body is then truncated and a failure/summary block prepended, so the
-			// model sees the signal first. No-op when no Observer is set — the loop
-			// stays neutral and tool-agnostic.
-			if r.Observer != nil {
-				obs := r.Observer.Observe(call.Function.Name, observation)
-				observation = obs.Render(TruncateObservation(observation, maxObservationBytes))
-				r.emit(Event{
-					Kind:        EventObserved,
-					CallID:      call.ID,
-					Step:        step.Index,
-					ToolName:    call.Function.Name,
-					Observation: obs.Summary,
-					Failure:     string(obs.FailureType),
-				})
-			} else {
-				observation = TruncateObservation(observation, maxObservationBytes)
-			}
-
-			step.Observation = observation
-			step.FinishedAt = time.Now()
-			turn.Steps = append(turn.Steps, step)
-			assetRefs = normalizeToolAssets(assetRefs, r.WorkspaceRoot, r.emitTurnID, call.ID)
-			turnAssets = append(turnAssets, assetRefs...)
-
-			r.emit(Event{
-				Kind:        EventToolFinished,
-				CallID:      call.ID,
-				Step:        step.Index,
-				ToolName:    call.Function.Name,
-				Observation: observation,
-				Output:      output,
-				Assets:      assetRefs,
-				Elapsed:     time.Since(toolStart),
-				Err:         step.Error,
-			})
-
-			sess.Messages = append(sess.Messages, model.Message{
-				Role:       model.RoleTool,
-				ToolCallID: call.ID,
-				Content:    observation,
-			})
-			sess.UpdatedAt = time.Now()
-		}
-		// The batch was cut short by cancellation; history is now balanced (every
-		// call has a result), so returning leaves a resumable session.
-		if cancelErr != nil {
+		// Execute the tool-call batch. Independent read-only calls run
+		// concurrently (P8.8, bounded by MaxParallelTools); side-effecting calls
+		// are serialized barriers; results commit in model order. With
+		// MaxParallelTools <= 1 this is exactly the old sequential loop. A non-nil
+		// return means the batch was cut short by cancellation — history is left
+		// balanced (every call has a result) so the session stays resumable.
+		if cancelErr := r.executeToolBatch(ctx, sess, &turn, resp.ToolCalls, activeTools, advertised, &webSearches, &turnAssets); cancelErr != nil {
 			return turn, cancelErr
 		}
 

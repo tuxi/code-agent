@@ -166,6 +166,12 @@ type AgentConfig struct {
 	// routinely exceeds two minutes.
 	ClientToolTimeoutSeconds int `yaml:"client_tool_timeout_seconds"`
 
+	// MaxParallelTools caps how many independent, read-only tool calls in one
+	// batch execute concurrently (P8.8). 0/1 keeps the strictly sequential loop
+	// (the default). Raising it lets the model fan out — e.g. 5 `task` subagents
+	// in one turn run at once. Side-effecting calls are always serialized.
+	MaxParallelTools int `yaml:"max_parallel_tools"`
+
 	// BuiltinTools, when non-nil, is a deny-by-default allowlist of built-in tool
 	// names to register: only the named tools are exposed to the model; everything
 	// else (shell, filesystem, git, project_graph, plan_workflow, task, MCP, …) is
