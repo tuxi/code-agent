@@ -57,6 +57,7 @@ func BuildRunner(cfg app.Config, mc app.ModelConfig, provider model.Provider, re
 		Observer:         observation.DefaultObserver{},
 		Reflector:        agent.DefaultReflector{},
 		RemindSkills:     skillReg.Len() > 0,
+		RemindParallel:   cfg.Agent.MaxParallelTools > 1,
 		PlanTools:        tools.Subset(registry, PlanModeToolNames...),
 		Hook:             hook,
 		Compactor:        BuildCompactor(mc, provider),

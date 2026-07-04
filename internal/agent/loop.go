@@ -70,6 +70,13 @@ type Runner struct {
 	// on a model's agency. Set by the CLI when the project has skills.
 	RemindSkills bool
 
+	// RemindParallel, when true, injects a first-call reminder teaching the model
+	// WHEN to fan out independent work into concurrent tool/`task` calls vs. keep
+	// dependent work serial (P8.8 §7). Set only when MaxParallelTools > 1 — with
+	// parallelism off, fanning out just burns tokens with no speedup, so the
+	// guidance is withheld.
+	RemindParallel bool
+
 	// PlanApprover handles plan-level approval (plan → approve → execute).
 	// When nil, propose_plan auto-approves (test/headless path). Set by the
 	// REPL, TUI, or server to gate plan execution behind a human decision.
@@ -378,6 +385,12 @@ func (r *Runner) drive(ctx context.Context, sess *session.Session) (TurnResult, 
 		if i == 0 && r.RemindSkills {
 			msgs = appendEphemeralUser(msgs, skillsReminder)
 		}
+		// Parallelism guidance (P8.8 §7): on the first call, teach the model to
+		// fan out independent-heavy work and keep dependent/trivial work serial.
+		// Only when parallel execution is actually enabled.
+		if i == 0 && r.RemindParallel {
+			msgs = appendEphemeralUser(msgs, parallelReminder)
+		}
 		// Plan mode (read-only): steer the model to produce a plan, not changes. The
 		// read-only toolset already prevents edits; this shapes the output.
 		// Plan mode: when in Planning state, inject the planning guidance prompt.
@@ -559,6 +572,19 @@ func (r *Runner) maxWebSearches() int {
 const skillsReminder = "[reminder] Before you act: check the Skills list in the system prompt. " +
 	"If this task matches a skill you have not already loaded, call load_skill(name) and follow " +
 	"it first — that is reading project guidance, not extra investigation."
+
+// parallelReminder is the first-call orchestration nudge (P8.8 §7), injected
+// only when parallel execution is enabled. It is the harder half of the
+// parallelism work: the mechanism is worthless if the model does not know WHEN
+// to fan out. Kept short — it is re-injected each turn.
+const parallelReminder = "[reminder] Independent tool calls run in parallel. When the work splits into " +
+	"INDEPENDENT subtasks that are each heavy (each would otherwise mean reading many files you " +
+	"won't reuse, or take real time), issue their calls TOGETHER in one message — delegate several " +
+	"`task` subagents at once, or read several files / run several searches at once. They run " +
+	"concurrently. But do NOT fan out when: (a) the work is trivial (one small read — just do it), " +
+	"or (b) a step DEPENDS on a previous step's result — for a dependent chain, do one call, use its " +
+	"result, then the next. Parallelism is for breadth, not for depth. Fanning out dependent or " +
+	"trivial work only multiplies cost."
 
 // planningPrompt is injected as an ephemeral user message when the model enters the
 // Planning state (via enter_plan_mode or /plan). The restricted toolset already
