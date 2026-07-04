@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"net"
 	"net/http"
 	"net/url"
@@ -28,6 +29,92 @@ import (
 // server-side extractor on this — doing so would hand an internal URL to a third
 // party.
 var errBlockedAddress = errors.New("blocked non-public address")
+
+// Retry and backoff tuning for direct fetches.
+const (
+	maxFetchAttempts = 3 // 1 initial + 2 retries
+	fetchBaseBackoff = 500 * time.Millisecond
+	fetchMaxBackoff  = 5 * time.Second
+)
+
+// fetchBackoff returns a full-jitter delay before the n-th retry (1-indexed).
+func fetchBackoff(n int) time.Duration {
+	d := fetchBaseBackoff
+	for i := 1; i < n; i++ {
+		d *= 2
+		if d > fetchMaxBackoff {
+			return fetchMaxBackoff
+		}
+	}
+	// Full jitter: uniform pick in [d/2, d].
+	half := d / 2
+	return half + time.Duration(rand.N(int(half+1)))
+}
+
+// isRetryableNetError reports whether a transport-level error from http.Client.Do
+// is worth retrying. SSRF blocks and caller cancellations are never retryable.
+func isRetryableNetError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, errBlockedAddress) {
+		return false
+	}
+	if errors.Is(err, context.Canceled) {
+		return false
+	}
+	// Catch connection-refused / connection-reset BEFORE the net.Error check
+	// because *url.Error implements net.Error but reports Temporary()=false for
+	// ECONNREFUSED on macOS (and some Linux kernels). A refused connection is
+	// transient — the server may recover between retries.
+	if errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.ECONNREFUSED) {
+		return true
+	}
+	if errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		return netErr.Timeout() || netErr.Temporary()
+	}
+	return false
+}
+
+// isRetryableStatus reports whether an HTTP status code is worth retrying.
+func isRetryableStatus(code int) bool {
+	switch code {
+	case http.StatusRequestTimeout, // 408
+		http.StatusTooManyRequests,     // 429
+		http.StatusInternalServerError, // 500
+		http.StatusBadGateway,          // 502
+		http.StatusServiceUnavailable,  // 503
+		http.StatusGatewayTimeout:      // 504
+		return true
+	}
+	return false
+}
+
+// sleepWithBackoff blocks for a jittered exponential-backoff delay, or until ctx
+// is cancelled.
+func sleepWithBackoff(ctx context.Context, attempt int) error {
+	d := fetchBaseBackoff
+	for i := 1; i < attempt; i++ {
+		d *= 2
+		if d > fetchMaxBackoff {
+			d = fetchMaxBackoff
+			break
+		}
+	}
+	half := d / 2
+	jittered := half + time.Duration(rand.N(int(half+1)))
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(jittered):
+		return nil
+	}
+}
 
 // contentFallback retrieves a URL's content through a server-side service when a
 // direct fetch can't reach the host (e.g. the URL is blocked from this network).
@@ -197,30 +284,67 @@ func (t *Tool) fetch(ctx context.Context, urlStr string) (*fetchOutput, error) {
 		return t.parseHTML(entry.Body, urlStr)
 	}
 
-	// 2. Fetch with timeout.
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, urlStr, nil)
-	if err != nil {
-		return nil, fmt.Errorf("fetch: invalid URL: %w", err)
-	}
-	req.Header.Set("User-Agent", "CodeAgent/1.0")
-	req.Header.Set("Accept", "text/html,application/xhtml+xml;q=0.9,*/*;q=0.8")
+	// 2. Fetch with retries. Transient network errors and retryable HTTP status
+	// codes (408, 429, 5xx) get up to maxFetchAttempts total attempts with
+	// jittered exponential backoff. A server-side fallback (Tavily /extract) is
+	// tried once on the first retryable failure — but never on an SSRF block,
+	// which would leak the internal URL to a third party.
+	var lastErr error
+	fallbackTried := false
 
-	resp, err := t.client.Do(req)
-	if err != nil {
-		// Direct fetch failed at the transport layer (unreachable / blocked /
-		// timeout). Try the server-side fallback — but never on an SSRF block,
-		// which would leak the internal URL to a third party.
-		if t.fallback != nil && !errors.Is(err, errBlockedAddress) {
+	for attempt := 0; attempt < maxFetchAttempts; attempt++ {
+		if attempt > 0 {
+			if err := sleepWithBackoff(ctx, attempt); err != nil {
+				return nil, err
+			}
+		}
+
+		out, retryable, err := t.doFetch(ctx, urlStr)
+		if err == nil {
+			return out, nil
+		}
+		lastErr = err
+
+		// On the first retryable failure, try the server-side fallback. The
+		// retryable gate already excludes SSRF blocks (isRetryableNetError
+		// returns false for errBlockedAddress), so a blocked address never
+		// leaks to a third party.
+		if !fallbackTried && t.fallback != nil && retryable {
+			fallbackTried = true
 			if out, ferr := t.fetchViaFallback(ctx, urlStr); ferr == nil {
 				return out, nil
 			}
 		}
-		return nil, fmt.Errorf("fetch: request failed: %w", err)
+
+		if !retryable {
+			return nil, lastErr
+		}
+	}
+
+	return nil, fmt.Errorf("fetch: request failed after %d attempts: %w", maxFetchAttempts, lastErr)
+}
+
+// doFetch performs a single HTTP GET and processes the response. The bool return
+// indicates whether an error is transient — worth retrying or falling back.
+func (t *Tool) doFetch(ctx context.Context, urlStr string) (*fetchOutput, bool, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, urlStr, nil)
+	if err != nil {
+		return nil, false, fmt.Errorf("fetch: invalid URL: %w", err)
+	}
+	// Use a common browser User-Agent — many sites return 403 or a CAPTCHA for
+	// obviously non-browser UAs like "CodeAgent/1.0".
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8")
+	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
+
+	resp, err := t.client.Do(req)
+	if err != nil {
+		return nil, isRetryableNetError(err), fmt.Errorf("fetch: request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("fetch: HTTP %d", resp.StatusCode)
+		return nil, isRetryableStatus(resp.StatusCode), fmt.Errorf("fetch: HTTP %d", resp.StatusCode)
 	}
 
 	ct := resp.Header.Get("Content-Type")
@@ -228,14 +352,14 @@ func (t *Tool) fetch(ctx context.Context, urlStr string) (*fetchOutput, error) {
 		strings.HasPrefix(strings.ToLower(ct), "application/xhtml")
 	isJSON := strings.HasPrefix(strings.ToLower(ct), "application/json")
 	if ct != "" && !isHTML && !isJSON {
-		return nil, fmt.Errorf("fetch: unsupported content type: %s", ct)
+		return nil, false, fmt.Errorf("fetch: unsupported content type: %s", ct)
 	}
 
 	// Read body with a cap to avoid OOM on huge pages.
 	const maxBody = 5 * 1024 * 1024 // 5 MiB
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBody))
 	if err != nil {
-		return nil, fmt.Errorf("fetch: read body: %w", err)
+		return nil, isRetryableNetError(err), fmt.Errorf("fetch: read body: %w", err)
 	}
 
 	// Cache before parsing.
@@ -243,9 +367,11 @@ func (t *Tool) fetch(ctx context.Context, urlStr string) (*fetchOutput, error) {
 
 	// JSON path: pretty-print as a markdown code block.
 	if isJSON {
-		return t.parseJSON(body, urlStr)
+		out, err := t.parseJSON(body, urlStr)
+		return out, false, err
 	}
-	return t.parseHTML(body, urlStr)
+	out, err := t.parseHTML(body, urlStr)
+	return out, false, err
 }
 
 // fetchViaFallback retrieves urlStr through the configured server-side extractor
