@@ -114,9 +114,11 @@ func cases() map[string]wireCase {
 			BeforeTokens: 90000, AfterTokens: 30000, SavedTokens: 60000,
 			SummaryChars: 1200, Ratio: 0.33,
 		}},
+		// call_id = the originating `task` tool call, so a client correlates the
+		// bracket (and its childStream entry card) with that tool card (P8.7).
 		"task_started": {ev: agent.Event{
 			Kind: agent.EventTaskStarted, At: fixedAt,
-			SessionID: "sess_child", TurnID: "turn_7",
+			SessionID: "sess_child", TurnID: "turn_7", CallID: "call_task_1",
 			Text: "investigate the auth module",
 		}, parent: "sess_root"},
 		"plan_proposed": {ev: agent.Event{
@@ -135,11 +137,13 @@ func cases() map[string]wireCase {
 			Text: "plan_abc123",
 		}},
 		// Job events (P8.7): session_id carries the JOB's id — the partition key a
-		// client uses to fetch the child stream (GET /v1/conversations/{job_id}/events).
+		// client uses to fetch the child stream (GET /v1/jobs/{job_id}/events).
+		// call_id = the originating run_command(background) call, for the same
+		// tool-card ↔ entry-card correlation as task brackets.
 		"job_started": {ev: agent.Event{
 			Kind: agent.EventJobStarted, At: fixedAt,
-			SessionID: "job_1",
-			Text:      "npx skills add okx/onchainos-skills --yes -g",
+			SessionID: "job_1", CallID: "call_run_1",
+			Text: "npx skills add okx/onchainos-skills --yes -g",
 		}},
 		"job_output": {ev: agent.Event{
 			Kind: agent.EventJobOutput, At: fixedAt,
@@ -151,11 +155,11 @@ func cases() map[string]wireCase {
 		// job has text "exited" and OMITS exit_code (0) and err.
 		"job_finished": {ev: agent.Event{
 			Kind: agent.EventJobFinished, At: fixedAt,
-			SessionID: "job_1",
-			Text:      "failed",
-			Elapsed:   93 * time.Second,
-			ExitCode:  2,
-			Err:       "exit code 2",
+			SessionID: "job_1", CallID: "call_run_1",
+			Text:     "failed",
+			Elapsed:  93 * time.Second,
+			ExitCode: 2,
+			Err:      "exit code 2",
 		}},
 	}
 }

@@ -187,11 +187,11 @@ v1 只含 user/assistant；工具/系统消息的全量保真属于 P1-B。
 | `todo_updated` | `todos` | 任务清单变化（见 §3.6） |
 | `compacted` | `before_tokens` `after_tokens` `saved_tokens` `summary_chars` `ratio` | 上下文压缩 |
 | `turn_finished` | `text` | 本轮最终答复（这一轮的终点） |
-| `task_started` | `session_id`(子) `turn_id`(=发起 turn) `parent_session_id` `text` | subagent 委派开始（`text`=委派 prompt）。**bracket 双写进父流**（直播 + 父会话 `GET /events` 回放），与 job bracket 同一机制（p8.7 §8.4-2）——入口卡按 `session_id` 开子流查看器 |
-| `task_finished` | `session_id`(子) `turn_id` `parent_session_id` `text` | subagent 结束（`text`=结论），同上双写 |
-| `job_started` | `session_id`(=job id) `turn_id`(=发起 turn) `text` | 后台 job 开始（P8.7；`text`=完整命令）。**bracket 事件（started/finished）同时进父会话流**（直播 WS + 父会话 `GET /events` 回放，§8.4-2 定稿）——入口卡靠它发现 job；`job_output` 只在 job 自己的分区（`GET /v1/conversations/{job_id}/events`） |
+| `task_started` | `session_id`(子) `turn_id`(=发起 turn) `call_id`(=发起的 `task` 调用) `parent_session_id` `text` | subagent 委派开始（`text`=委派 prompt）。**bracket 双写进父流**（直播 + 父会话 `GET /events` 回放），与 job bracket 同一机制（p8.7 §8.4-2）——入口卡按 `session_id` 开子流查看器。用 **`call_id`** 与同一委派的 `task` 工具卡关联去重（比按 prompt 字符串相等更稳） |
+| `task_finished` | `session_id`(子) `turn_id` `call_id` `parent_session_id` `text` | subagent 结束（`text`=结论），同上双写，`call_id` 同 `task_started` |
+| `job_started` | `session_id`(=job id) `turn_id`(=发起 turn) `call_id`(=发起的 `run_command` 调用) `text` | 后台 job 开始（P8.7；`text`=完整命令）。**bracket 事件（started/finished）同时进父会话流**（直播 WS + 父会话 `GET /events` 回放，§8.4-2 定稿）——入口卡靠它发现 job，用 `call_id` 与 `run_command` 工具卡关联；`job_output` 只在 job 自己的分区（`GET /v1/jobs/{id}/events`） |
 | `job_output` | `session_id`(=job id) `chunk` | job 输出片段（stdout+stderr 交错，服务端已按 ~4KB/750ms 合并，不会每行一条）。**仅 job 分区**，父会话流里没有 |
-| `job_finished` | `session_id`(=job id) `text` `elapsed_ms` `exit_code` `err` | job 终态。`text` ∈ `exited`（成功）\| `failed` \| `canceled`；`exit_code` 仅失败时出现（>0 = 命令非零退出，-1 = 启动失败/被信号杀死；成功时省略）；`err` 是配套的人读描述（如 `exit code 2`），仅失败时出现。形状以 golden `internal/server/testdata/job_*.json` 为准 |
+| `job_finished` | `session_id`(=job id) `call_id` `text` `elapsed_ms` `exit_code` `err` | job 终态（`call_id` 同 `job_started`）。`text` ∈ `exited`（成功）\| `failed` \| `canceled`；`exit_code` 仅失败时出现（>0 = 命令非零退出，-1 = 启动失败/被信号杀死；成功时省略）；`err` 是配套的人读描述（如 `exit code 2`），仅失败时出现。形状以 golden `internal/server/testdata/job_*.json` 为准 |
 
 > 渲染建议：按 `turn_id` 把一轮的事件聚成一个气泡；`token_delta` 实时拼接成助手文本；subagent 事件按 `parent_session_id` 折叠成子流。job 终态三分支的入口卡/查看器顶栏显示：`exited` → 成功；`failed` → 失败（用 `exit_code` 细分：-1 显示"被终止/启动失败"，>0 显示"退出码 N"）；`canceled` → 已取消（用户/模型主动停止，不是失败）。
 

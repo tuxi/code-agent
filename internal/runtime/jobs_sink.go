@@ -67,7 +67,7 @@ func (s *JobEventSink) SetLiveResolver(f func(sessionID string) agent.Emitter) {
 func (s *JobEventSink) JobStarted(snap jobs.Snapshot) {
 	s.publish(agent.Event{
 		Kind: agent.EventJobStarted, At: time.Now(),
-		SessionID: snap.ID, TurnID: snap.Owner.TurnID,
+		SessionID: snap.ID, TurnID: snap.Owner.TurnID, CallID: snap.Owner.CallID,
 		Text: snap.Command,
 	}, snap.Owner)
 }
@@ -96,7 +96,7 @@ func (s *JobEventSink) JobFinished(snap jobs.Snapshot) {
 	s.flush(snap.ID)
 	ev := agent.Event{
 		Kind: agent.EventJobFinished, At: time.Now(),
-		SessionID: snap.ID, TurnID: snap.Owner.TurnID,
+		SessionID: snap.ID, TurnID: snap.Owner.TurnID, CallID: snap.Owner.CallID,
 		Text:     string(snap.Status),
 		Elapsed:  time.Duration(snap.DurationMS) * time.Millisecond,
 		ExitCode: snap.ExitCode,

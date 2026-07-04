@@ -189,7 +189,7 @@ func (t *RunCommandTool) Execute(ctx context.Context, ec tools.ExecutionContext,
 		if t.Jobs == nil {
 			t.Jobs = jobs.NewRegistry()
 		}
-		owner := jobs.Owner{SessionID: ec.SessionID, TurnID: ec.TurnID}
+		owner := jobs.Owner{SessionID: ec.SessionID, TurnID: ec.TurnID, CallID: ec.CallID}
 		snap := t.Jobs.Start(rootAbs, command, args, owner).Snapshot()
 		return t.jsonResult(backgroundResult{
 			Command:  command,

@@ -3,5 +3,6 @@
   "kind": "job_started",
   "at": "2026-06-24T10:00:00.123Z",
   "session_id": "job_1",
+  "call_id": "call_run_1",
   "text": "npx skills add okx/onchainos-skills --yes -g"
 }

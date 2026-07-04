@@ -80,7 +80,7 @@ func (r *recordingEmitter) snapshot() []agent.Event {
 	return append([]agent.Event(nil), r.events...)
 }
 
-var testOwner = jobs.Owner{SessionID: "sess_parent", TurnID: "turn_3"}
+var testOwner = jobs.Owner{SessionID: "sess_parent", TurnID: "turn_3", CallID: "call_run_7"}
 
 func TestJobEventSinkDualPartition(t *testing.T) {
 	store := &fakeEventStore{}
@@ -126,6 +126,11 @@ func TestJobEventSinkDualPartition(t *testing.T) {
 	}
 	if ev.SessionID != "job_1" || ev.TurnID != "turn_3" {
 		t.Errorf("parent payload session_id=%q turn_id=%q, want job_1/turn_3", ev.SessionID, ev.TurnID)
+	}
+	// call_id = the run_command(background) call, so the client correlates the
+	// job entry card with that tool card.
+	if ev.CallID != "call_run_7" {
+		t.Errorf("parent payload call_id=%q, want call_run_7", ev.CallID)
 	}
 
 	// Child live stream (Phase C): the FULL stream, each frame stamped with the

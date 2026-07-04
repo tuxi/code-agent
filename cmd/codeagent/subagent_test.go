@@ -216,7 +216,7 @@ func TestSubAgentForwardsBracketsToParent(t *testing.T) {
 	sa.Store = store
 	sa.Forwarder = runtime.NewJobEventSink(context.Background(), store)
 
-	ec := tools.ExecutionContext{WorkspaceRoot: sa.Root, SessionID: "sess_parent", TurnID: "turn_5"}
+	ec := tools.ExecutionContext{WorkspaceRoot: sa.Root, SessionID: "sess_parent", TurnID: "turn_5", CallID: "call_task_9"}
 	if _, err := sa.Run(context.Background(), ec, "trace the auth flow"); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -241,5 +241,9 @@ func TestSubAgentForwardsBracketsToParent(t *testing.T) {
 	}
 	if started.TurnID != "turn_5" {
 		t.Errorf("payload turn_id = %q, want the calling turn", started.TurnID)
+	}
+	// call_id lets the client correlate the bracket with the `task` tool card.
+	if started.CallID != "call_task_9" {
+		t.Errorf("payload call_id = %q, want the originating task call", started.CallID)
 	}
 }

@@ -124,7 +124,7 @@ func (s *SubAgent) Run(ctx context.Context, ec tools.ExecutionContext, taskPromp
 	var emitter agent.Emitter
 	started := agent.Event{
 		Kind: agent.EventTaskStarted, SessionID: sess.ID, TurnID: ec.TurnID,
-		At: time.Now(), Text: taskPrompt,
+		CallID: ec.CallID, At: time.Now(), Text: taskPrompt,
 	}
 	if len(sinks) > 0 {
 		emitter = sinks
@@ -164,7 +164,7 @@ func (s *SubAgent) Run(ctx context.Context, ec tools.ExecutionContext, taskPromp
 	}
 	finished := agent.Event{
 		Kind: agent.EventTaskFinished, SessionID: sess.ID, TurnID: ec.TurnID,
-		At: time.Now(), Text: conclusion,
+		CallID: ec.CallID, At: time.Now(), Text: conclusion,
 	}
 	if emitter != nil {
 		emitter.Emit(finished)

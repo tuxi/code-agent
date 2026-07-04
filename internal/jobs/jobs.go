@@ -30,13 +30,15 @@ const (
 	Canceled Status = "canceled" // stopped via Cancel
 )
 
-// Owner identifies the conversation turn that started a job, so its lifecycle
-// events can be forwarded into that conversation's stream (P8.7 §8.4-2: the
-// client's entry card discovers a job from the parent stream's bracket events).
-// Zero value = unowned (tests, headless): no forwarding.
+// Owner identifies the conversation turn — and the specific run_command tool
+// call — that started a job, so its lifecycle events can be forwarded into that
+// conversation's stream (P8.7 §8.4-2: the client's entry card discovers a job
+// from the parent stream's bracket events) and correlated back to the starting
+// tool card (CallID). Zero value = unowned (tests, headless): no forwarding.
 type Owner struct {
 	SessionID string
 	TurnID    string
+	CallID    string
 }
 
 // Snapshot is an immutable, concurrency-safe view of a job's state. Owner is
