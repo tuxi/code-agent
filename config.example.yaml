@@ -79,6 +79,12 @@ models:
   #     context_window: 32768
 agent:
   max_steps: 32
+  # P8.8: how many INDEPENDENT read-only tool calls in one batch run at once.
+  # Omitted/0/1 = the strictly-sequential loop (the default). Raise it to let the
+  # model fan out — e.g. several `task` subagents or reads in one turn run
+  # concurrently; side-effecting calls are always serialized. Also enables the
+  # fan-out orchestration reminder. Uncomment to try the map scenario:
+  # max_parallel_tools: 8
   # compact when the prompt reaches this fraction of the model's context_window.
   # Optional (default 0.5); values outside (0,1) fall back to the default.
   compact_ratio: 0.5
