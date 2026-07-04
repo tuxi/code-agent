@@ -29,6 +29,44 @@ func TestToolMergesByStep(t *testing.T) {
 	}
 }
 
+// TestConcurrentToolsRenderAsSeparateCards is the P8.8 parallel case: several
+// tool calls are in flight at once (all started before any finishes) and they
+// finish OUT OF ORDER. Because cards are keyed on Step (a state machine, like
+// the WS reducer keys on call_id), each resolves independently — no "single
+// current tool" assumption.
+func TestConcurrentToolsRenderAsSeparateCards(t *testing.T) {
+	var tl Timeline
+	// Three tools start concurrently (a parallel batch): three pending cards.
+	tl.Apply(agent.Event{Kind: agent.EventToolStarted, Step: 1, ToolName: "task"})
+	tl.Apply(agent.Event{Kind: agent.EventToolStarted, Step: 2, ToolName: "task"})
+	tl.Apply(agent.Event{Kind: agent.EventToolStarted, Step: 3, ToolName: "task"})
+	if len(tl.Items) != 3 {
+		t.Fatalf("want 3 concurrent pending cards, got %d", len(tl.Items))
+	}
+	for _, it := range tl.Items {
+		if it.Status != StatusPending {
+			t.Fatalf("card %d should be pending while in flight, got %v", it.Step, it.Status)
+		}
+	}
+	// They finish out of order (2, then 3, then 1) — each updates its own card.
+	tl.Apply(agent.Event{Kind: agent.EventToolFinished, Step: 2, ToolName: "task", Observation: "b"})
+	tl.Apply(agent.Event{Kind: agent.EventToolFinished, Step: 3, ToolName: "task", Observation: "c"})
+	tl.Apply(agent.Event{Kind: agent.EventToolFinished, Step: 1, ToolName: "task", Observation: "a"})
+
+	if len(tl.Items) != 3 {
+		t.Fatalf("still want 3 cards after finishes, got %d", len(tl.Items))
+	}
+	byStep := map[int]Item{}
+	for _, it := range tl.Items {
+		byStep[it.Step] = it
+	}
+	for step, want := range map[int]string{1: "a", 2: "b", 3: "c"} {
+		if byStep[step].Status != StatusOK || byStep[step].Text != want {
+			t.Errorf("step %d = %+v, want OK/%q", step, byStep[step], want)
+		}
+	}
+}
+
 func TestObservedFailureSetsStatus(t *testing.T) {
 	var tl Timeline
 	tool(&tl, 1, "run_command", "test", "FAIL: 2 failing")

@@ -44,11 +44,15 @@ func (consoleEmitter) Emit(e agent.Event) {
 	case agent.EventObserved:
 		// A concise, scannable classification line printed just before the full
 		// [result]. Only failures are shown — a successful command needs no line.
+		// The step tags it: under parallel execution (P8.8) several tools are in
+		// flight, so results are no longer adjacent to their start line.
 		if e.Failure != "" && e.Failure != "none" {
-			fmt.Printf("[observed] %s  %s\n", e.Failure, e.Observation)
+			fmt.Printf("[%d observed] %s  %s\n", e.Step, e.Failure, e.Observation)
 		}
 	case agent.EventToolFinished:
-		fmt.Printf("[result]\n%s\n", e.Observation)
+		// Tag the result with its step so it correlates to the "[step] tool=…"
+		// start line even when other tools' output is interleaved (P8.8).
+		fmt.Printf("[%d result]\n%s\n", e.Step, e.Observation)
 	case agent.EventSkillLoaded:
 		// Show which skill (and version) drove a behavior change, so a transcript
 		// is debuggable ("why did it test-then-fix? — it loaded verify-change").

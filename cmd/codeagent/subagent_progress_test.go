@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 
 	"code-agent/internal/agent"
@@ -37,6 +38,67 @@ func TestTaskProgressShowsStepsAndErases(t *testing.T) {
 	if !strings.HasSuffix(out, "\r\x1b[K") {
 		t.Fatalf("a finished task should erase its heartbeat line, got: %q", out)
 	}
+}
+
+// TestTaskProgressConcurrentSubagents drives the heartbeat from many goroutines
+// at once — the parallel-`task` case (P8.8). It must not race (run with -race)
+// and must collapse to an aggregate line while >1 subagent is active, then erase
+// once all finish.
+func TestTaskProgressConcurrentSubagents(t *testing.T) {
+	p := newTaskProgress(&syncBuf{})
+	const n = 8
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			sid := fmt.Sprintf("sub_%d", i)
+			p.Emit(agent.Event{Kind: agent.EventTaskStarted, SessionID: sid})
+			p.Emit(agent.Event{Kind: agent.EventModelStarted, SessionID: sid})
+			p.Emit(agent.Event{Kind: agent.EventToolStarted, SessionID: sid, ToolName: "grep"})
+			p.Emit(agent.Event{Kind: agent.EventTaskFinished, SessionID: sid})
+		}(i)
+	}
+	wg.Wait()
+
+	// All finished → no subagents tracked, and the line is erased.
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if len(p.subs) != 0 {
+		t.Errorf("subs = %d, want 0 after all finished", len(p.subs))
+	}
+	if p.shown {
+		t.Error("heartbeat line should be erased once every subagent finished")
+	}
+}
+
+// TestTaskProgressAggregateLine: with several subagents active, the heartbeat
+// shows the collapsed "N subagents running" form rather than one subagent's line.
+func TestTaskProgressAggregateLine(t *testing.T) {
+	var buf bytes.Buffer
+	p := newTaskProgress(&buf)
+	p.Emit(agent.Event{Kind: agent.EventTaskStarted, SessionID: "a"})
+	p.Emit(agent.Event{Kind: agent.EventModelStarted, SessionID: "a"})
+	p.Emit(agent.Event{Kind: agent.EventTaskStarted, SessionID: "b"})
+	p.Emit(agent.Event{Kind: agent.EventModelStarted, SessionID: "b"})
+
+	out := buf.String()
+	if !strings.Contains(out, "2 subagents running") {
+		t.Fatalf("want the aggregate line for 2 active subagents, got: %q", out)
+	}
+}
+
+// syncBuf is a mutex-guarded io.Writer so the test's own writes don't race
+// (the heartbeat serializes its writes under p.mu, but the test asserts state,
+// not output, here).
+type syncBuf struct {
+	mu sync.Mutex
+}
+
+func (s *syncBuf) Write(b []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(b), nil
 }
 
 func TestTaskProgressIgnoresUnrelatedEvents(t *testing.T) {
