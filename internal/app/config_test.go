@@ -136,6 +136,74 @@ agent:
 	}
 }
 
+func TestWebSearchKeyResolution(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "config.yaml")
+	yaml := `
+default_model: deepseek
+models:
+  deepseek:
+    provider: openai
+    base_url: https://api.deepseek.com
+    model: deepseek-v4-pro
+    api_key_env: DEEPSEEK_API_KEY
+web:
+  search:
+    provider: tavily
+    tavily_api_key_env: TAVILY_API_KEY
+    brave_api_key_env: BRAVE_API_KEY
+`
+	if err := os.WriteFile(p, []byte(yaml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Env key is set → resolved during normalization.
+	t.Setenv("TAVILY_API_KEY", "tvly-env-key")
+	t.Setenv("BRAVE_API_KEY", "brave-env-key")
+
+	cfg, err := LoadConfig(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got := cfg.Web.Search.TavilyAPIKey(); got != "tvly-env-key" {
+		t.Errorf("TavilyAPIKey = %q, want tvly-env-key (from env)", got)
+	}
+	if got := cfg.Web.Search.BraveAPIKey(); got != "brave-env-key" {
+		t.Errorf("BraveAPIKey = %q, want brave-env-key (from env)", got)
+	}
+
+	// Direct key takes precedence over env.
+	cfg.Web.Search.TavilyKey = "tvly-keychain"
+	if got := cfg.Web.Search.TavilyAPIKey(); got != "tvly-keychain" {
+		t.Errorf("TavilyAPIKey = %q, want tvly-keychain (direct key overrides env)", got)
+	}
+
+	// Unset env var and no direct key → empty.
+	cfg.Web.Search.TavilyKey = ""
+	t.Setenv("TAVILY_API_KEY", "")
+	if got := cfg.Web.Search.TavilyAPIKey(); got != "" {
+		t.Errorf("TavilyAPIKey = %q, want empty (no key set)", got)
+	}
+}
+
+func TestWebSearchKeyDefaults(t *testing.T) {
+	// Empty config → web search gets defaults but no keys (no env, no injection).
+	cfg, err := LoadConfigBytes(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Web.Search.Provider != "tavily" {
+		t.Errorf("provider = %q, want tavily (default)", cfg.Web.Search.Provider)
+	}
+	if cfg.Web.Search.TopK != 5 {
+		t.Errorf("top_k = %d, want 5", cfg.Web.Search.TopK)
+	}
+	if cfg.Web.Search.TavilyAPIKey() != "" {
+		t.Errorf("TavilyAPIKey = %q, want empty (no env, no injection)", cfg.Web.Search.TavilyAPIKey())
+	}
+}
+
 func TestLoadConfigFallsBackToDeepseek(t *testing.T) {
 	// No file, no models configured -> built-in deepseek default.
 	cfg, err := LoadConfig("")

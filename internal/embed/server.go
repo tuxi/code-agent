@@ -404,6 +404,10 @@ func parseSecretsJSON(secretsJSON string) (map[string]string, error) {
 // injectSecrets overrides resolved API keys from the host-supplied secrets map.
 // A secret may be keyed by a model's api_key_env name or by its friendly name;
 // the model-name match takes precedence. Empty values are ignored.
+//
+// Web search provider keys (Tavily, Brave) are also injected here: a secret whose
+// key matches the configured tavily_api_key_env or brave_api_key_env is set on the
+// WebSearchConfig, following the same pattern as model keys.
 func injectSecrets(cfg *app.Config, secrets map[string]string) {
 	if len(secrets) == 0 {
 		return
@@ -416,6 +420,20 @@ func injectSecrets(cfg *app.Config, secrets map[string]string) {
 			mc.APIKey = v
 		}
 		cfg.Models[name] = mc
+	}
+
+	// Web search provider keys: match by the env-var name declared in config
+	// (e.g. TAVILY_API_KEY). This lets the iOS app pull search keys from the
+	// Keychain the same way it does model keys — no env vars needed.
+	if cfg.Web.Search.TavilyAPIKeyEnv != "" {
+		if v := secrets[cfg.Web.Search.TavilyAPIKeyEnv]; v != "" {
+			cfg.Web.Search.TavilyKey = v
+		}
+	}
+	if cfg.Web.Search.BraveAPIKeyEnv != "" {
+		if v := secrets[cfg.Web.Search.BraveAPIKeyEnv]; v != "" {
+			cfg.Web.Search.BraveKey = v
+		}
 	}
 }
 

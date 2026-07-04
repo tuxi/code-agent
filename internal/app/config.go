@@ -235,6 +235,11 @@ type WebSearchConfig struct {
 	TavilyAPIKeyEnv  string `yaml:"tavily_api_key_env"` // env var holding Tavily API key
 	TopK             int    `yaml:"top_k"`              // max results, default 5
 	TimeoutSeconds   int    `yaml:"timeout_seconds"`    // HTTP timeout, default 10
+
+	// Resolved at load time or injected by a host (e.g. iOS Keychain), not read
+	// from YAML. Same pattern as ModelConfig.APIKey.
+	BraveKey  string `yaml:"-"`
+	TavilyKey string `yaml:"-"`
 }
 
 // SearXNGInstances returns the list of SearXNG instances from config.
@@ -252,7 +257,12 @@ func (c WebSearchConfig) SearXNGInstances() []string {
 }
 
 // BraveAPIKey returns the resolved Brave API key, if configured.
+// A directly-set key (injected by a host from a keychain, or set during config
+// normalization) takes precedence over the environment variable.
 func (c WebSearchConfig) BraveAPIKey() string {
+	if c.BraveKey != "" {
+		return c.BraveKey
+	}
 	if c.BraveAPIKeyEnv == "" {
 		return ""
 	}
@@ -260,7 +270,12 @@ func (c WebSearchConfig) BraveAPIKey() string {
 }
 
 // TavilyAPIKey returns the resolved Tavily API key, if configured.
+// A directly-set key (injected by a host from a keychain, or set during config
+// normalization) takes precedence over the environment variable.
 func (c WebSearchConfig) TavilyAPIKey() string {
+	if c.TavilyKey != "" {
+		return c.TavilyKey
+	}
 	if c.TavilyAPIKeyEnv == "" {
 		return ""
 	}
@@ -391,6 +406,17 @@ func LoadConfigBytes(data []byte) (Config, error) {
 	}
 	if cfg.Web.Fetch.CacheTTLSeconds <= 0 {
 		cfg.Web.Fetch.CacheTTLSeconds = 600 // 10 minutes
+	}
+
+	// Resolve web search provider keys from the environment — same injection-priority
+	// pattern as model keys: a directly-set key (injected by an embedded host from a
+	// keychain) wins over the env lookup. On a normal CLI run both are empty here
+	// (yaml:"-"), so env resolution is the only path.
+	if cfg.Web.Search.TavilyKey == "" && cfg.Web.Search.TavilyAPIKeyEnv != "" {
+		cfg.Web.Search.TavilyKey = os.Getenv(cfg.Web.Search.TavilyAPIKeyEnv)
+	}
+	if cfg.Web.Search.BraveKey == "" && cfg.Web.Search.BraveAPIKeyEnv != "" {
+		cfg.Web.Search.BraveKey = os.Getenv(cfg.Web.Search.BraveAPIKeyEnv)
 	}
 
 	// MCP servers are not part of this YAML: they are loaded separately from a
