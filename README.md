@@ -5,7 +5,7 @@
 <p align="center">
   <strong>An AI-native coding agent runtime — the model decides, the runtime enforces.</strong>
   <br />
-  <em>Tool-calling loop · Thin runtime · Progressive disclosure · Observable & traceable</em>
+  <em>CLI · TUI · macOS GUI · iOS · Server — one runtime, every surface</em>
 </p>
 
 <p align="center">
@@ -18,6 +18,7 @@
   <img src="https://img.shields.io/badge/SQLite-003B57?style=flat&logo=sqlite&logoColor=white" alt="SQLite" />
   <img src="https://img.shields.io/badge/OpenAI-412991?style=flat&logo=openai&logoColor=white" alt="OpenAI Compatible" />
   <img src="https://img.shields.io/badge/Ollama-000000?style=flat&logo=ollama&logoColor=white" alt="Ollama" />
+  <img src="https://img.shields.io/badge/Swift-FA7343?style=flat&logo=swift&logoColor=white" alt="Swift" />
 </p>
 
 ---
@@ -31,7 +32,7 @@
 | **Policy-gated execution** | Every command classified as allow / confirm / block. Quoted arguments are data, not syntax. No shell interpreter smuggling. |
 | **Context engineering** | `CODEAGENT.md` project memory at session start. SQLite persistence with LLM-driven compaction. Token-aware budget per model. |
 | **Progressive disclosure via Skills** | `load_skill` tool pulls guidance on demand. Only the L1 index lives in the system prompt. Model loads what it needs, never auto-injected. |
-| **Multi-interface** | TUI workspace (BubbleTea), interactive REPL, one-shot `run`/`ask`/`goal`, and a runtime server with WebSocket agent-wire protocol. |
+| **Multi-surface** | TUI workspace, interactive REPL, one-shot `run`/`ask`/`goal`, runtime server with WebSocket agent-wire protocol, and [AgentKit](https://github.com/tuxi/AgentKit) — a native SwiftUI GUI for macOS and iOS that embeds CodeAgent as an on-device runtime. |
 
 ## Quick Start
 
