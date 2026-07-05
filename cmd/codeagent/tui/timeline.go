@@ -64,9 +64,15 @@ type Item struct {
 	Failure string // failure label when Status == StatusFail
 	Version string // skill version (ItemSkill)
 
-	// Compaction (ItemCompaction).
+	// Compaction (ItemCompaction). Pending marks the pre-measurement event (the
+	// reclaimed size is only known at the next model call); Pruned marks a tier-0
+	// deterministic prune (P12.c); Ineffective marks a measured compaction that
+	// stayed over the threshold (P12.b) and renders as a warning.
 	Before, After, Saved, SummaryChars int
 	Ratio                              float64
+	Pending                            bool
+	Pruned                             bool
+	Ineffective                        bool
 
 	Children []Item // members of a collapsed run; empty for a single item
 }
@@ -156,8 +162,14 @@ func (t *Timeline) Apply(ev agent.Event) {
 		}
 	case agent.EventSkillLoaded:
 		t.add(Item{Kind: ItemSkill, Name: ev.ToolName, Version: ev.Version, Status: StatusOK}, ev.At)
-	case agent.EventReflected:
+	case agent.EventReflected, agent.EventPreMutation:
 		t.add(Item{Kind: ItemReflection, Text: ev.Text}, ev.At)
+	case agent.EventVerified:
+		txt := ev.Text
+		if txt == "" {
+			txt = "verification passed"
+		}
+		t.add(Item{Kind: ItemReflection, Text: "verify: " + txt}, ev.At)
 	case agent.EventCompacted:
 		t.add(Item{
 			Kind:         ItemCompaction,
@@ -166,6 +178,16 @@ func (t *Timeline) Apply(ev agent.Event) {
 			Saved:        ev.SavedTokens,
 			SummaryChars: ev.SummaryChars,
 			Ratio:        ev.Ratio,
+			// AfterTokens == 0 is the loop's "not yet measured" convention.
+			Pending:     ev.AfterTokens == 0,
+			Ineffective: ev.Ineffective,
+		}, ev.At)
+	case agent.EventContextPruned:
+		t.add(Item{
+			Kind:   ItemCompaction,
+			Pruned: true,
+			Before: ev.BeforeTokens,
+			Saved:  ev.SavedTokens,
 		}, ev.At)
 	case agent.EventTurnFinished:
 		if ev.Text != "" {

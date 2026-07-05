@@ -171,8 +171,22 @@ func entrySystem(e Item, width int) []string {
 }
 
 func compactionLine(e Item) string {
-	return fmt.Sprintf("⤳ context compacted — %d→%d tokens (saved %d, summary %d chars)",
-		e.Before, e.After, e.Saved, e.SummaryChars)
+	switch {
+	case e.Pruned:
+		return fmt.Sprintf("⤳ context pruned — ~%d tokens of old tool output/reasoning dropped (no LLM call)", e.Saved)
+	case e.Pending:
+		// The reclaimed size is a measurement, not an assumption — it arrives with
+		// the next model call. Rendering the zero values here read as "compacted
+		// to 0 tokens (saved 0)", which is exactly wrong.
+		return fmt.Sprintf("⤳ context compacted — %d tokens → summary %d chars (new size measured on next call)",
+			e.Before, e.SummaryChars)
+	case e.Ineffective:
+		return fmt.Sprintf("⤳ compaction ineffective — %d→%d tokens, still over the compact threshold; cooling down (context likely exceeds the model window)",
+			e.Before, e.After)
+	default:
+		return fmt.Sprintf("⤳ context compacted — %d→%d tokens (saved %d, summary %d chars)",
+			e.Before, e.After, e.Saved, e.SummaryChars)
+	}
 }
 
 // renderPalette renders the slash-command menu lines (shown in the live region

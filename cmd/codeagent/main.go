@@ -666,7 +666,8 @@ func runTUI(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider mo
 		runner.Model = newProvider
 		runner.ModelName = newMC.Model
 		runner.Temperature = newMC.Temperature
-		runner.Compactor = runtime.BuildCompactor(newMC, newProvider)
+		runner.Compactor = runtime.BuildCompactor(cfg, newMC, newProvider)
+		runner.CompactKeepTokens = cfg.CompactKeepTokens(newMC)
 		// Re-budget the session to the new model's window — same semantics as /use
 		// in the REPL.
 		sess.ContextWindow = newMC.ContextWindow

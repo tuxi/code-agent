@@ -22,20 +22,34 @@ func (f *fakeProvider) Complete(_ context.Context, req model.Request) (model.Res
 	return model.Response{Content: f.reply}, nil
 }
 
+// pad grows a label to exactly 40 chars so every message costs ~10 approximate
+// tokens (chars/4) — token-budget tests then pick tails by predictable math.
+func pad(s string) string {
+	return s + strings.Repeat("x", 40-len(s))
+}
+
+// call builds a tool call whose arguments are padded to 40 chars, so an
+// assistant tool_calls message costs ~10 approximate tokens per call.
+func call(id string) model.ToolCall {
+	return model.ToolCall{ID: id, Function: model.FunctionCall{Name: "t", Arguments: pad(id + "-args")}}
+}
+
 // conversation is a realistic history: two tool-calling exchanges (one with a
-// single call, one with parallel calls) each followed by a final answer.
+// single call, one with parallel calls) each followed by a final answer. Every
+// message is padded to ~10 approximate tokens (the parallel tool_calls message
+// is ~20) for the token-budget tests.
 func conversation() []model.Message {
 	return []model.Message{
-		{Role: model.RoleSystem, Content: "sys"},
-		{Role: model.RoleUser, Content: "u1"},
-		{Role: model.RoleAssistant, ToolCalls: []model.ToolCall{{ID: "a"}}},
-		{Role: model.RoleTool, ToolCallID: "a", Content: "ra"},
-		{Role: model.RoleAssistant, Content: "f1"},
-		{Role: model.RoleUser, Content: "u2"},
-		{Role: model.RoleAssistant, ToolCalls: []model.ToolCall{{ID: "b"}, {ID: "c"}}},
-		{Role: model.RoleTool, ToolCallID: "b", Content: "rb"},
-		{Role: model.RoleTool, ToolCallID: "c", Content: "rc"},
-		{Role: model.RoleAssistant, Content: "f2"},
+		{Role: model.RoleSystem, Content: pad("sys")},
+		{Role: model.RoleUser, Content: pad("u1")},
+		{Role: model.RoleAssistant, ToolCalls: []model.ToolCall{call("a")}},
+		{Role: model.RoleTool, ToolCallID: "a", Content: pad("ra")},
+		{Role: model.RoleAssistant, Content: pad("f1")},
+		{Role: model.RoleUser, Content: pad("u2")},
+		{Role: model.RoleAssistant, ToolCalls: []model.ToolCall{call("b"), call("c")}},
+		{Role: model.RoleTool, ToolCallID: "b", Content: pad("rb")},
+		{Role: model.RoleTool, ToolCallID: "c", Content: pad("rc")},
+		{Role: model.RoleAssistant, Content: pad("f2")},
 	}
 }
 
@@ -114,12 +128,15 @@ func TestSlidingWindowNoOpWhenSmall(t *testing.T) {
 }
 
 // The LLM compactor must rebuild history as system → summary → recent, store the
-// digest on the session, and keep the recent window's tool groups intact.
+// digest on the session, and keep the recent window's tool groups intact. The
+// 25-token budget covers f2 and rc; rc is a tool result, so the cut must widen
+// back over rb to the owning assistant(b,c) — proving both the token
+// accumulation and the group-safety walk.
 func TestLLMCompactorBuildsSummaryLayout(t *testing.T) {
 	fp := &fakeProvider{reply: "DIGEST-1"}
 	sess := &Session{Messages: conversation()}
 
-	c := &LLMCompactor{Provider: fp, ModelName: "m", KeepRecentMessages: 3}
+	c := &LLMCompactor{Provider: fp, ModelName: "m", KeepRecentTokens: 25}
 	if err := c.Compact(context.Background(), sess); err != nil {
 		t.Fatal(err)
 	}
@@ -145,20 +162,21 @@ func TestLLMCompactorBuildsSummaryLayout(t *testing.T) {
 func TestLLMCompactorFoldsPriorSummary(t *testing.T) {
 	// Post-first-compaction layout: system, summary, then a fresh exchange.
 	msgs := []model.Message{
-		{Role: model.RoleSystem, Content: "sys"},
+		{Role: model.RoleSystem, Content: pad("sys")},
 		summaryMessage("DIGEST-1"),
-		{Role: model.RoleUser, Content: "u2"},
-		{Role: model.RoleAssistant, ToolCalls: []model.ToolCall{{ID: "b"}, {ID: "c"}}},
-		{Role: model.RoleTool, ToolCallID: "b", Content: "rb"},
-		{Role: model.RoleTool, ToolCallID: "c", Content: "rc"},
-		{Role: model.RoleAssistant, Content: "f2"},
-		{Role: model.RoleUser, Content: "u3"},
-		{Role: model.RoleAssistant, Content: "f3"},
+		{Role: model.RoleUser, Content: pad("u2")},
+		{Role: model.RoleAssistant, ToolCalls: []model.ToolCall{call("b"), call("c")}},
+		{Role: model.RoleTool, ToolCallID: "b", Content: pad("rb")},
+		{Role: model.RoleTool, ToolCallID: "c", Content: pad("rc")},
+		{Role: model.RoleAssistant, Content: pad("f2")},
+		{Role: model.RoleUser, Content: pad("u3")},
+		{Role: model.RoleAssistant, Content: pad("f3")},
 	}
 	fp := &fakeProvider{reply: "DIGEST-2"}
 	sess := &Session{Summary: "DIGEST-1", Messages: msgs}
 
-	c := &LLMCompactor{Provider: fp, ModelName: "m", KeepRecentMessages: 2}
+	// 25 tokens keep u3+f3 (10 each) and stop before f2.
+	c := &LLMCompactor{Provider: fp, ModelName: "m", KeepRecentTokens: 25}
 	if err := c.Compact(context.Background(), sess); err != nil {
 		t.Fatal(err)
 	}
@@ -175,7 +193,7 @@ func TestLLMCompactorFoldsPriorSummary(t *testing.T) {
 	if sess.Messages[1].Role != model.RoleUser || !strings.Contains(sess.Messages[1].Content, "DIGEST-2") {
 		t.Fatalf("expected a single refreshed summary at index 1, got %+v", sess.Messages[1])
 	}
-	if got := sess.Messages[len(sess.Messages)-1].Content; got != "f3" {
+	if got := sess.Messages[len(sess.Messages)-1].Content; got != pad("f3") {
 		t.Fatalf("most recent message should be kept verbatim, got %q", got)
 	}
 	assertValidSequence(t, sess.Messages)
@@ -186,7 +204,7 @@ func TestLLMCompactorNoOpWhenSmall(t *testing.T) {
 	fp := &fakeProvider{reply: "unused"}
 	sess := &Session{Messages: conversation()}
 
-	c := &LLMCompactor{Provider: fp, ModelName: "m", KeepRecentMessages: 50}
+	c := &LLMCompactor{Provider: fp, ModelName: "m", KeepRecentTokens: 10000}
 	if err := c.Compact(context.Background(), sess); err != nil {
 		t.Fatal(err)
 	}
@@ -196,4 +214,28 @@ func TestLLMCompactorNoOpWhenSmall(t *testing.T) {
 	if sess.Summary != "" {
 		t.Fatalf("summary should stay empty, got %q", sess.Summary)
 	}
+}
+
+// Convergence floor: a budget smaller than any single message still folds
+// everything but the last message — the tail shrinks to its minimum instead of
+// silently refusing to compact (the message-count design's failure mode).
+func TestLLMCompactorTinyBudgetKeepsOnlyLastMessage(t *testing.T) {
+	fp := &fakeProvider{reply: "DIGEST"}
+	sess := &Session{Messages: conversation()}
+
+	c := &LLMCompactor{Provider: fp, ModelName: "m", KeepRecentTokens: 1}
+	if err := c.Compact(context.Background(), sess); err != nil {
+		t.Fatal(err)
+	}
+	if fp.calls != 1 {
+		t.Fatalf("expected one summarize call, got %d", fp.calls)
+	}
+	// system → summary → the single most recent message.
+	if len(sess.Messages) != 3 {
+		t.Fatalf("expected 3 messages (system, summary, last), got %d", len(sess.Messages))
+	}
+	if got := sess.Messages[2].Content; got != pad("f2") {
+		t.Fatalf("last message must survive verbatim, got %q", got)
+	}
+	assertValidSequence(t, sess.Messages)
 }

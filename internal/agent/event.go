@@ -28,9 +28,16 @@ const (
 	EventObserved      EventKind = "observed"      // a tool result was classified (P4.1)
 	EventAutoApproved  EventKind = "auto_approved" // auto mode granted a side-effecting call without a human prompt (audit; p9.1 §12.3)
 	EventReflected     EventKind = "reflected"     // a finalize self-check fired (P4.3)
+	EventPreMutation   EventKind = "pre_mutation"  // a pre-mutation root-cause self-check fired (P4.3-R Move 3)
+	EventVerified      EventKind = "verified"      // a deterministic finalize verify ran (P4.3-R Move 2)
 	EventSkillLoaded   EventKind = "skill_loaded"  // a skill body was loaded (P6)
 	EventTodoUpdated   EventKind = "todo_updated"  // the model's task checklist changed (8.4)
 	EventCompacted     EventKind = "compacted"
+	// EventContextPruned: tier-0 deterministic pruning ran (P12.c) — old tool
+	// results truncated / think-blocks stripped outside the protected tail, with
+	// no LLM call. SavedTokens carries the approximate reclaimed size; the true
+	// size is measured by the next model call, like compaction.
+	EventContextPruned EventKind = "context_pruned"
 	EventTurnFinished  EventKind = "turn_finished"
 
 	// Lifecycle (v1.2). Emitted around suspend/resume so a client can drive the
@@ -135,13 +142,17 @@ type Event struct {
 	PromptTokens int           // ModelFinished
 	Elapsed      time.Duration // ModelFinished: how long the model call took (P3.8 uses this)
 
-	// Compaction (Compacted). AfterTokens == 0 means "just compacted, size not yet
-	// measured"; > 0 means the next model call measured the reclaimed size.
+	// Compaction (Compacted / ContextPruned). AfterTokens == 0 means "just
+	// compacted, size not yet measured"; > 0 means the next model call measured
+	// the reclaimed size. Ineffective marks a measured compaction that failed to
+	// land back under the threshold (P12.b) — the session is cooling down and a
+	// renderer should surface it as a warning, not silence.
 	BeforeTokens int
 	AfterTokens  int
 	SavedTokens  int
 	SummaryChars int
 	Ratio        float64
+	Ineffective  bool
 
 	// ExitCode carries JobFinished's process exit code (P8.7). Zero for a
 	// successful exit — omitted on the wire, where Text=="exited" already means

@@ -3,6 +3,7 @@ package agent
 import (
 	"code-agent/internal/assetref"
 	"code-agent/internal/model"
+	"code-agent/internal/reflection"
 	"code-agent/internal/session"
 	"code-agent/internal/tools"
 	"context"
@@ -77,6 +78,22 @@ type Runner struct {
 	// guidance is withheld.
 	RemindParallel bool
 
+	// VerifyCommand is the project's real build/test command. When set, the
+	// finalize self-check runs it once (P4.3-R Move 2, option 2a) for a turn that
+	// changed verifiable code without verifying it: a pass confirms the change, a
+	// fail re-prompts with the real failure. Empty disables the runtime verify —
+	// the runtime then never asserts "unverified" (the retired mechanical guess).
+	VerifyCommand string
+
+	// RemindHypothesis, when true, fires a one-shot pre-mutation self-check
+	// (P4.3-R Move 3): when the model is about to edit code AFTER a failure
+	// surfaced this turn — the paper-over hot zone — the turn's premature edit is
+	// dropped (not persisted, not executed) and re-prompted with an ephemeral
+	// nudge to state a root-cause hypothesis first. Mirror image of the finalize
+	// self-check, fired at the start line instead of the finish line. Nil-safe:
+	// when false, edits proceed exactly as before.
+	RemindHypothesis bool
+
 	// PlanApprover handles plan-level approval (plan → approve → execute).
 	// When nil, propose_plan auto-approves (test/headless path). Set by the
 	// REPL, TUI, or server to gate plan execution behind a human decision.
@@ -103,6 +120,13 @@ type Runner struct {
 	lastThinking string
 
 	Compactor session.Compactor
+
+	// CompactKeepTokens mirrors the compactor's verbatim-tail budget for tier-0
+	// pruning (P12.c): messages outside this approximate-token protection window
+	// get their old tool outputs truncated and think-blocks stripped before an
+	// LLM summarize is even considered. 0 disables pruning. Wired from
+	// cfg.CompactKeepTokens(mc), the same source as the compactor's budget.
+	CompactKeepTokens int
 
 	// Checkpointer, if set, persists the session mid-turn at each consistent loop
 	// boundary (v1.2 §2). Best-effort: a checkpoint error never fails the turn — the
@@ -332,6 +356,16 @@ func (r *Runner) drive(ctx context.Context, sess *session.Session) (TurnResult, 
 	reflected := false
 	pendingReflection := ""
 
+	// Pre-mutation self-check (P4.3-R Move 3) per-turn state: at most one
+	// hypothesis nudge before an edit that follows a failure, and the ephemeral
+	// nudge to apply on the next request once it fires.
+	hypothesized := false
+	pendingHypothesis := ""
+
+	// Finalize verify (P4.3-R Move 2) per-turn state: run the real verify command
+	// at most once, so a failing verify that re-prompts cannot loop.
+	verified := false
+
 	// Per-turn web_search budget. Counts continuously across this turn (it resets
 	// when Run returns and the next user turn starts a fresh counter). A
 	// search-happy model reformulating the same query is cut off past the cap.
@@ -377,6 +411,12 @@ func (r *Runner) drive(ctx context.Context, sess *session.Session) (TurnResult, 
 		if pendingReflection != "" {
 			msgs = appendEphemeralUser(msgs, pendingReflection)
 			pendingReflection = ""
+		}
+		// Pre-mutation self-check nudge (P4.3-R Move 3): same ephemeral mechanism,
+		// fired before an edit that follows a failure rather than at the finish line.
+		if pendingHypothesis != "" {
+			msgs = appendEphemeralUser(msgs, pendingHypothesis)
+			pendingHypothesis = ""
 		}
 		// Skills reminder (P6): on the first model call of a turn, remind the model
 		// to load a matching skill. Ephemeral, and the model still decides — this
@@ -459,7 +499,10 @@ func (r *Runner) drive(ctx context.Context, sess *session.Session) (TurnResult, 
 		turn.TokensUsed += resp.Usage.PromptTokens + resp.Usage.CompletionTokens
 		sess.PromptTokens = resp.Usage.PromptTokens
 		// This call's prompt size is the true post-compaction size if a compaction
-		// just ran, so finalize its observability stat here.
+		// just ran, so finalize its observability stat here. A measurement still at
+		// or above the threshold means the compaction was ineffective — the session
+		// cools down (see NeedCompaction) and the event says so out loud, because
+		// the silent alternative is an endless compact-measure-compact loop.
 		if stat := sess.FinalizeCompaction(resp.Usage.PromptTokens); stat != nil {
 			r.emit(Event{
 				Kind:         EventCompacted,
@@ -468,6 +511,7 @@ func (r *Runner) drive(ctx context.Context, sess *session.Session) (TurnResult, 
 				SavedTokens:  stat.SavedTokens,
 				Ratio:        stat.CompressionRatio,
 				SummaryChars: stat.SummaryChars,
+				Ineffective:  sess.CompactThreshold > 0 && stat.AfterTokens >= sess.CompactThreshold,
 			})
 		}
 
@@ -484,14 +528,39 @@ func (r *Runner) drive(ctx context.Context, sess *session.Session) (TurnResult, 
 
 		// No tool calls => the model wants to finish.
 		if !resp.HasToolCalls() {
-			// Reflection (P4.3): before accepting "done", run one grounded
-			// self-check. If the turn's work looks unfinished — a test edited to go
-			// green, a change left unverified — re-prompt with an ephemeral nudge
-			// and do NOT persist this premature finish (persisting it would leave a
-			// retracted answer, and two assistant turns in a row, in history).
+			// Reflection (P4.3 / P4.3-R): before accepting "done", run one grounded
+			// self-check. Do NOT persist this premature finish (persisting it would
+			// leave a retracted answer, and two assistant turns in a row, in history).
 			// One-shot per turn; the model decides whether to actually do more.
 			if r.Reflector != nil && !reflected {
 				rc := r.Reflector.Reflect(turn.Steps)
+
+				// Move 2 (2a): the turn changed verifiable code without verifying it
+				// and a real verify command is configured — run it once,
+				// deterministically, and feed back the TRUTH instead of guessing. A
+				// pass confirms the change; a failure re-prompts with the real error so
+				// the model fixes the actual cause. With no VerifyCommand this block is
+				// skipped entirely: the runtime never asserts "unverified" (2b silence).
+				if rc.UnverifiedMutation && r.VerifyCommand != "" && !verified {
+					verified = true
+					passed, summary := r.runFinalizeVerify(ctx)
+					r.emit(Event{Kind: EventVerified, Text: summary})
+					if !passed {
+						reflected = true // don't also stack the fact nudge this pass
+						pendingReflection = "[reflection] The verification `" + r.VerifyCommand +
+							"` was run against your change to " + strings.Join(rc.CodeFilesMutated, ", ") +
+							" and it FAILED:\n" + summary +
+							"\nThis is the real result, not a guess. Fix the cause, then finish."
+						r.emit(Event{Kind: EventReflected, Text: pendingReflection})
+						continue
+					}
+					// Passed: the change is genuinely verified. Fall through — a
+					// TestEditedAfterFailure fact-question may still apply.
+				}
+
+				// Fact-only self-check (TestEditedAfterFailure): surfaces a fact and
+				// asks; the runtime does not judge. The retired UnverifiedMutation guess
+				// no longer produces a nudge here (Move 2 handles it above).
 				if nudge := rc.Nudge(); nudge != "" {
 					reflected = true
 					pendingReflection = nudge
@@ -508,6 +577,20 @@ func (r *Runner) drive(ctx context.Context, sess *session.Session) (TurnResult, 
 				TextAnnotations: annotateTextWithAssets(turn.Final, turnAssets),
 			})
 			return turn, nil
+		}
+
+		// Pre-mutation self-check (P4.3-R Move 3): the model is about to edit code
+		// and a failure has already surfaced this turn — the paper-over hot zone.
+		// Before the edit lands, drop this response (do NOT persist or execute it —
+		// same discipline as the finalize self-check) and re-prompt with a one-shot
+		// ephemeral nudge to state a root-cause hypothesis first. The model decides
+		// whether it was fixing the cause or papering over the symptom.
+		if r.RemindHypothesis && !hypothesized && aboutToMutate(resp.ToolCalls) &&
+			reflection.SawFailure(stepViews(turn.Steps)) {
+			hypothesized = true
+			pendingHypothesis = hypothesisReminder
+			r.emit(Event{Kind: EventPreMutation, Text: hypothesisReminder})
+			continue
 		}
 
 		// Tool-call path: the assistant turn must precede its tool results in
@@ -585,6 +668,71 @@ const parallelReminder = "[reminder] Independent tool calls run in parallel. Whe
 	"or (b) a step DEPENDS on a previous step's result — for a dependent chain, do one call, use its " +
 	"result, then the next. Parallelism is for breadth, not for depth. Fanning out dependent or " +
 	"trivial work only multiplies cost."
+
+// hypothesisReminder is the pre-mutation self-check nudge (P4.3-R Move 3),
+// injected once when the model is about to edit code after a failure surfaced
+// this turn. It reinforces the system prompt's "state your hypothesis BEFORE the
+// deep dive" directive at the exact moment it matters — the edit that risks
+// papering over a symptom.
+const hypothesisReminder = "[reflection] A build or test failed this turn and you are about to edit code. " +
+	"Before you do, state your root-cause hypothesis in one or two sentences: what is actually wrong, and why " +
+	"this edit fixes the CAUSE — not just makes the failure disappear. If you are about to change a test or a " +
+	"value so the failure goes away, stop and fix the source instead. If you are confident in the cause, say it, " +
+	"then make your edit."
+
+// aboutToMutate reports whether a response's tool calls include a project-file
+// mutation — the trigger boundary for the pre-mutation self-check (Move 3).
+func aboutToMutate(calls []model.ToolCall) bool {
+	for _, c := range calls {
+		if reflection.IsMutatingTool(c.Function.Name) {
+			return true
+		}
+	}
+	return false
+}
+
+// runFinalizeVerify runs the configured VerifyCommand once at the finalize
+// boundary (P4.3-R Move 2, option 2a — the port of Claude Code's Stop hook) and
+// classifies the outcome via the Observer. It is a runtime action, not a
+// fabricated model turn: the real result is fed back to the model only on
+// failure. Guards keep it safe — it declines (reporting a pass, i.e. "no
+// objection") when run_command is unavailable or the command would mutate the
+// workspace, so it never auto-runs a side-effecting command outside approval.
+func (r *Runner) runFinalizeVerify(ctx context.Context) (passed bool, summary string) {
+	tool, ok := r.Tools.Get("run_command")
+	if !ok {
+		return true, ""
+	}
+	input, err := json.Marshal(map[string]string{"command": r.VerifyCommand})
+	if err != nil {
+		return true, ""
+	}
+	if tools.HasSideEffectsFor(tool, input) {
+		return true, "" // never auto-run a mutating command
+	}
+	result, execErr := r.executeTool(ctx, tool, nextCallID(), input)
+	if execErr != nil {
+		return false, "verify command errored: " + execErr.Error()
+	}
+	// Classify via the same rendered "[observation]" marker the loop uses, so a
+	// clean run (FailureNone → "ok") is a pass and only an explicit failure=…
+	// counts as a failure. With no Observer, an unclassifiable result is a pass
+	// (no objection).
+	observed := result.Content
+	summary = ""
+	if r.Observer != nil {
+		obs := r.Observer.Observe("run_command", result.Content)
+		observed = obs.Render(result.Content)
+		summary = obs.Summary
+	}
+	if reflection.SawFailure([]reflection.StepView{{Observation: observed}}) {
+		if summary == "" {
+			summary = "verification failed"
+		}
+		return false, summary
+	}
+	return true, summary
+}
 
 // planningPrompt is injected as an ephemeral user message when the model enters the
 // Planning state (via enter_plan_mode or /plan). The restricted toolset already
@@ -722,12 +870,30 @@ func (r *Runner) checkpoint(ctx context.Context, sess *session.Session) {
 // under the window. Instead the next model call (immediately after this, at the
 // top of the loop) measures the true reduced size and refreshes PromptTokens —
 // which also finalizes the observability stat. A compaction that changed nothing
-// (the recent window already is the whole history) is not recorded.
+// (the recent window already is the whole history) is not recorded, and a
+// measured compaction that stayed over the threshold puts the session in
+// cooldown (see Session.NeedCompaction) instead of retrying every iteration.
 func (r *Runner) maybeCompact(ctx context.Context, sess *session.Session) error {
 	if r.Compactor == nil || !sess.NeedCompaction() {
 		return nil
 	}
 	before := sess.PromptTokens
+
+	// Tier-0 (P12.c): deterministic pruning first — zero LLM cost. When its
+	// estimated savings already put the prompt back under the threshold, skip
+	// the summarize call entirely this round; the next model call measures the
+	// truth either way, and if it disagrees this path re-runs with nothing left
+	// to prune and falls through to the summarizer.
+	if r.CompactKeepTokens > 0 {
+		if saved := session.PruneOldContext(sess, r.CompactKeepTokens); saved > 0 {
+			savedTokens := saved / 4
+			r.emit(Event{Kind: EventContextPruned, BeforeTokens: before, SavedTokens: savedTokens})
+			if before-savedTokens < sess.CompactThreshold {
+				return nil
+			}
+		}
+	}
+
 	prevLen, prevSummary := len(sess.Messages), sess.Summary
 	if err := r.Compactor.Compact(ctx, sess); err != nil {
 		return err

@@ -396,7 +396,8 @@ func handleCommand(line string, cfg app.Config, mc *app.ModelConfig, runner *age
 		runner.Model = newProvider
 		runner.ModelName = newMC.Model
 		runner.Temperature = newMC.Temperature
-		runner.Compactor = runtime.BuildCompactor(newMC, newProvider)
+		runner.Compactor = runtime.BuildCompactor(cfg, newMC, newProvider)
+		runner.CompactKeepTokens = cfg.CompactKeepTokens(newMC)
 		// The budget belongs to the session, not the runner: switching to a model
 		// with a different window must change WHEN this conversation compacts.
 		sess.ContextWindow = newMC.ContextWindow

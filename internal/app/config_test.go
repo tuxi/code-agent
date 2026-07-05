@@ -62,11 +62,17 @@ workspace:
 	if mc.ContextWindow != 128000 {
 		t.Errorf("context_window = %d, want default 128000", mc.ContextWindow)
 	}
-	if cfg.Agent.CompactRatio != 0.5 {
-		t.Errorf("compact_ratio = %v, want default 0.5", cfg.Agent.CompactRatio)
+	if cfg.Agent.CompactRatio != 0.75 {
+		t.Errorf("compact_ratio = %v, want default 0.75", cfg.Agent.CompactRatio)
 	}
-	if got := cfg.CompactThreshold(mc); got != 64000 {
-		t.Errorf("CompactThreshold = %d, want 64000 (128000 * 0.5)", got)
+	if got := cfg.CompactThreshold(mc); got != 96000 {
+		t.Errorf("CompactThreshold = %d, want 96000 (128000 * 0.75)", got)
+	}
+	if cfg.Agent.CompactKeepRatio != 0.3 {
+		t.Errorf("compact_keep_ratio = %v, want default 0.3", cfg.Agent.CompactKeepRatio)
+	}
+	if got := cfg.CompactKeepTokens(mc); got != 28800 {
+		t.Errorf("CompactKeepTokens = %d, want 28800 (96000 * 0.3)", got)
 	}
 	// No provider section in this config -> transport defaults apply.
 	if cfg.Provider.RequestTimeoutSeconds != 120 || cfg.Provider.MaxRetries != 2 ||

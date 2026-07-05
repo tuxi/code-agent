@@ -27,10 +27,13 @@ const (
 // Hook is one configured command. Match is a tool name, or "*"/"" for any tool.
 // Command is run via `sh -c`, so it may be a pipeline. The tool's input arrives on
 // stdin (JSON) and the tool name in $CODEAGENT_TOOL_NAME.
+//
+// The struct carries both yaml tags (config.yaml `hooks:`, layer 0) and json tags
+// (the project settings layer's `hooks` block, P11.c) so one type serves both.
 type Hook struct {
-	Event   Event  `yaml:"event"`
-	Match   string `yaml:"match"`
-	Command string `yaml:"command"`
+	Event   Event  `yaml:"event" json:"event"`
+	Match   string `yaml:"match" json:"match"`
+	Command string `yaml:"command" json:"command"`
 }
 
 // Runner executes the configured hooks. Construct with New (which returns nil when

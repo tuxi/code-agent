@@ -135,17 +135,18 @@ func (s *SubAgent) Run(ctx context.Context, ec tools.ExecutionContext, taskPromp
 	s.Forwarder.ForwardBracket(started, ec.SessionID)
 
 	sub := &agent.Runner{
-		Model:         s.Provider,
-		ModelName:     s.MC.Model,
-		Temperature:   s.MC.Temperature,
-		Tools:         s.ReadOnly,
-		MaxSteps:      SubAgentMaxSteps,
-		Approver:      DenyAllApprover{}, // fail-closed; should be unreachable (read-only set)
-		Observer:      observation.DefaultObserver{},
-		Reflector:     agent.DefaultReflector{},
-		Compactor:     BuildCompactor(s.MC, s.Provider),
-		Emitter:       emitter, // store-only (or nil) — never the parent's live renderer
-		WorkspaceRoot: workspaceRoot,
+		Model:             s.Provider,
+		ModelName:         s.MC.Model,
+		Temperature:       s.MC.Temperature,
+		Tools:             s.ReadOnly,
+		MaxSteps:          SubAgentMaxSteps,
+		Approver:          DenyAllApprover{}, // fail-closed; should be unreachable (read-only set)
+		Observer:          observation.DefaultObserver{},
+		Reflector:         agent.DefaultReflector{},
+		Compactor:         BuildCompactor(s.Cfg, s.MC, s.Provider),
+		CompactKeepTokens: s.Cfg.CompactKeepTokens(s.MC),
+		Emitter:           emitter, // store-only (or nil) — never the parent's live renderer
+		WorkspaceRoot:     workspaceRoot,
 	}
 
 	res, err := sub.RunTurn(ctx, sess, taskPrompt)

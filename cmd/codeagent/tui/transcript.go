@@ -48,13 +48,29 @@ func (tr *transcript) render(ev agent.Event, width int) []string {
 	case agent.EventSkillLoaded:
 		tr.step.tools = append(tr.step.tools, Item{Kind: ItemSkill, Name: ev.ToolName, Version: ev.Version, Status: StatusOK})
 
-	case agent.EventReflected:
+	case agent.EventReflected, agent.EventPreMutation:
 		out = append(out, tr.flush(width)...)
 		out = append(out, renderEntry(Item{Kind: ItemReflection, Text: ev.Text}, width)...)
 
+	case agent.EventVerified:
+		txt := ev.Text
+		if txt == "" {
+			txt = "verification passed"
+		}
+		out = append(out, tr.flush(width)...)
+		out = append(out, renderEntry(Item{Kind: ItemReflection, Text: "verify: " + txt}, width)...)
+
 	case agent.EventCompacted:
 		out = append(out, tr.flush(width)...)
-		out = append(out, renderEntry(Item{Kind: ItemCompaction, Before: ev.BeforeTokens, After: ev.AfterTokens, Saved: ev.SavedTokens, SummaryChars: ev.SummaryChars, Ratio: ev.Ratio}, width)...)
+		out = append(out, renderEntry(Item{
+			Kind: ItemCompaction, Before: ev.BeforeTokens, After: ev.AfterTokens,
+			Saved: ev.SavedTokens, SummaryChars: ev.SummaryChars, Ratio: ev.Ratio,
+			Pending: ev.AfterTokens == 0, Ineffective: ev.Ineffective,
+		}, width)...)
+
+	case agent.EventContextPruned:
+		out = append(out, tr.flush(width)...)
+		out = append(out, renderEntry(Item{Kind: ItemCompaction, Pruned: true, Before: ev.BeforeTokens, Saved: ev.SavedTokens}, width)...)
 
 	case agent.EventTurnFinished:
 		out = append(out, tr.flush(width)...)

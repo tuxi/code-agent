@@ -67,14 +67,31 @@ func (consoleEmitter) Emit(e agent.Event) {
 		// The model said it was done; a grounded self-check sent it back for one
 		// more pass. Show the human why, so the extra work reads as intent.
 		fmt.Printf("\n[reflection] work looks incomplete — asking the model to self-check:\n%s\n", e.Text)
+	case agent.EventPreMutation:
+		// A failure surfaced and the model was about to edit — it was asked to
+		// state a root-cause hypothesis first (P4.3-R Move 3).
+		fmt.Printf("\n[reflection] about to edit after a failure — asking for a root-cause hypothesis first:\n%s\n", e.Text)
+	case agent.EventVerified:
+		// The runtime ran the real verify command at the finish line (P4.3-R Move 2).
+		if e.Text == "" {
+			fmt.Print("\n[verify] ran the configured verification — passed.\n")
+		} else {
+			fmt.Printf("\n[verify] ran the configured verification: %s\n", e.Text)
+		}
 	case agent.EventCompacted:
-		if e.AfterTokens == 0 {
+		switch {
+		case e.AfterTokens == 0:
 			fmt.Printf("Context compacted: %d tokens → summary of %d chars (new size measured on next call)\n",
 				e.BeforeTokens, e.SummaryChars)
-		} else {
+		case e.Ineffective:
+			fmt.Printf("[compaction] INEFFECTIVE: before=%d after=%d — still over the compact threshold; cooling down (context likely exceeds the model window)\n",
+				e.BeforeTokens, e.AfterTokens)
+		default:
 			fmt.Printf("[compaction] before=%d after=%d saved=%d ratio=%.1f%% summary=%dchars\n",
 				e.BeforeTokens, e.AfterTokens, e.SavedTokens, e.Ratio*100, e.SummaryChars)
 		}
+	case agent.EventContextPruned:
+		fmt.Printf("[compaction] pruned ~%d tokens of old tool output/reasoning (no LLM call)\n", e.SavedTokens)
 	}
 	// EventTurnStarted / EventModelStarted / EventModelFinished / EventTurnFinished
 	// are emitted but intentionally not rendered here: the caller prints the final

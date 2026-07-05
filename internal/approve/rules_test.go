@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"code-agent/internal/settings"
 )
 
 func TestPatternFor(t *testing.T) {
@@ -43,7 +45,7 @@ func TestGrantPersistsAndReloads(t *testing.T) {
 	if err != nil {
 		t.Fatalf("settings.local.json not written: %v", err)
 	}
-	var f settingsFile
+	var f settings.File
 	if err := json.Unmarshal(data, &f); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
@@ -89,10 +91,12 @@ func TestNewRuleStoreMergesSources(t *testing.T) {
 	t.Setenv("HOME", home)
 
 	writeSettings(t, filepath.Join(home, ".codeagent", "settings.json"), "user__tool")
+	writeSettings(t, filepath.Join(root, ".codeagent", "settings.json"), "shared__tool") // P11.a: project-shared layer
 	writeSettings(t, filepath.Join(root, ".codeagent", "settings.local.json"), "local__tool")
 
 	s := NewRuleStore(root, []string{"yaml__tool"}, nil)
-	for _, name := range []string{"yaml__tool", "user__tool", "local__tool"} {
+	// yaml (layer 0) + user (1) + project-shared (2) + project-local (3) all union.
+	for _, name := range []string{"yaml__tool", "user__tool", "shared__tool", "local__tool"} {
 		if _, ok := s.MatchAllow(name); !ok {
 			t.Errorf("store should allow %q from its source", name)
 		}

@@ -25,6 +25,7 @@ import (
 	"code-agent/internal/model"
 	"code-agent/internal/runtime"
 	"code-agent/internal/server"
+	"code-agent/internal/settings"
 )
 
 // defaultCapabilities is the capability set advertised in the WebSocket hello
@@ -59,6 +60,13 @@ type Options struct {
 	// Empty => no MCP servers. On a sandboxed (iOS) host, stdio servers are still
 	// skipped — only http/sse servers connect (they need no subprocess).
 	MCPJSON string
+
+	// SettingsJSON is the raw project settings document (a Claude-style
+	// settings.json: permissions / verify / hooks) injected in-memory, the same way
+	// MCPJSON is — embedded hosts (iOS) have no fixed .codeagent/settings.json path.
+	// Its blocks fold into the config layer (permissions, verify command, and — on a
+	// non-sandboxed host — hooks). Empty => none. Secrets never belong here.
+	SettingsJSON string
 
 	// ModelName selects which configured model to use. Empty => default_model.
 	ModelName string
@@ -183,6 +191,10 @@ func (h *Handle) ResumeSession(sessionID string) error {
 // current keys); modelName selects a configured model (pass "" to keep current).
 // The swap lands at the next turn boundary; in-flight turns finish on the old
 // config.
+//
+// Reconfigure only swaps the model and its provider credentials. Changes that
+// affect the tool graph (web search provider keys, MCP server list, etc.) require
+// a server restart: the host should call Stop + Start with the updated secrets.
 func (h *Handle) Reconfigure(secretsJSON, modelName string) error {
 	if h.rt == nil {
 		return fmt.Errorf("runtime not started")
@@ -191,8 +203,9 @@ func (h *Handle) Reconfigure(secretsJSON, modelName string) error {
 	if err != nil {
 		return err
 	}
-	// Start from the base config, re-inject secrets, and select the (possibly new)
-	// model, so a bare model switch keeps the existing keys and vice versa.
+	// Start from the stored config, re-inject secrets, and select the model. The
+	// copy-on-stack pattern keeps h.cfg unchanged on error so a failed reconfigure
+	// doesn't leave a half-updated stored config.
 	cfg := h.cfg
 	injectSecrets(&cfg, secrets)
 	mc, err := cfg.SelectModel(modelName)
@@ -223,6 +236,23 @@ func StartServer(ctx context.Context, opt Options) (*Handle, error) {
 	if opt.WorkspaceDir != "" {
 		cfg.Workspace.Root = opt.WorkspaceDir
 	}
+	// Project settings injected in-memory (P11.d): fold each block into the config
+	// layer so it flows through the same paths as a disk settings.json — permissions
+	// into the RuleStore seed, verify into the command, hooks into cfg.Hooks. Done
+	// BEFORE the sandboxed block so cfg.Hooks = nil below still wins on iOS.
+	if opt.SettingsJSON != "" {
+		sf, err := settings.ParseJSON([]byte(opt.SettingsJSON))
+		if err != nil {
+			return nil, err
+		}
+		cfg.Permissions.Allow = append(cfg.Permissions.Allow, sf.Permissions.Allow...)
+		cfg.Permissions.Deny = append(cfg.Permissions.Deny, sf.Permissions.Deny...)
+		cfg.Hooks = append(cfg.Hooks, sf.Hooks...)
+		if v := sf.Verify; v != nil && v.Command != "" && !(v.Enabled != nil && !*v.Enabled) {
+			cfg.Agent.VerifyCommand = v.Command
+		}
+	}
+
 	if opt.Sandboxed {
 		cfg.Profile = app.ProfileSandboxed
 		cfg.Hooks = nil // hooks run `sh -c`; disable them on a no-subprocess host

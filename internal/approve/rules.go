@@ -1,13 +1,11 @@
 package approve
 
 import (
-	"encoding/json"
-	"fmt"
 	"os"
-	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
+
+	"code-agent/internal/settings"
 )
 
 // Scope is where an "always allow" rule is persisted, mirroring Claude Code's
@@ -35,18 +33,6 @@ func ParseScope(s string) Scope {
 	return ScopeProjectLocal
 }
 
-// settingsFile is the machine-writable JSON we persist permission rules to — a
-// subset of a Claude-style settings.json. Only the permissions block is read or
-// written; unknown fields in an existing file are preserved by re-reading and
-// re-marshaling just this shape is NOT enough, so we merge into a generic map
-// (see persist) to avoid clobbering settings we don't model.
-type settingsFile struct {
-	Permissions struct {
-		Allow []string `json:"allow"`
-		Deny  []string `json:"deny"`
-	} `json:"permissions"`
-}
-
 // RuleStore is the single source of truth for permission rules: the union of the
 // YAML config's permissions and the loaded settings files, plus any rules granted
 // interactively at runtime ("Always allow"). It is safe for concurrent use — the
@@ -60,11 +46,6 @@ type RuleStore struct {
 	mu    sync.RWMutex
 	allow map[string]struct{}
 	deny  map[string]struct{}
-
-	// persistMu serializes the read-modify-write of a settings file so two
-	// concurrent grants (in serve mode every session shares one store) cannot
-	// clobber each other's rule. Separate from mu so it never blocks matching.
-	persistMu sync.Mutex
 
 	projectLocalPath string // "" when no workspace root is known
 	userPath         string // "" when the home dir cannot be resolved
@@ -81,40 +62,28 @@ func NewRuleStore(root string, yamlAllow, yamlDeny []string) *RuleStore {
 		allow: toSet(yamlAllow),
 		deny:  toSet(yamlDeny),
 	}
+	home, _ := os.UserHomeDir()
+	// Write paths for a NEW grant: project-local by default, user for a shared
+	// grant. Reading is a union across all layers (below); scope only decides where
+	// a grant is persisted. Grants never target the shared settings.json (that file
+	// is committable/team-owned — see docs/p11-project-settings.md).
 	if root != "" {
-		s.projectLocalPath = filepath.Join(root, ".codeagent", "settings.local.json")
+		s.projectLocalPath = settings.ProjectLocalPath(root)
 	}
-	if home, err := os.UserHomeDir(); err == nil {
-		s.userPath = filepath.Join(home, ".codeagent", "settings.json")
+	if home != "" {
+		s.userPath = settings.UserPath(home)
 	}
-	// User first, then project-local, so both contribute (it is a union — scope
-	// precedence only matters for where a NEW grant is written, not for matching).
-	s.loadFile(s.userPath)
-	s.loadFile(s.projectLocalPath)
-	return s
-}
-
-func (s *RuleStore) loadFile(path string) {
-	if path == "" {
-		return
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return // missing (or unreadable) → nothing to add
-	}
-	var f settingsFile
-	if err := json.Unmarshal(data, &f); err != nil {
-		fmt.Fprintf(os.Stderr, "[permissions] ignoring malformed %s: %v\n", path, err)
-		return
-	}
-	s.mu.Lock()
-	for _, p := range f.Permissions.Allow {
+	// Union in the file-sourced permissions across every layer — user,
+	// project-shared, and project-local (P11.a: the shared settings.json now
+	// contributes too, matching Claude Code's layering).
+	merged := settings.Load(root, home, os.Stderr)
+	for _, p := range merged.Permissions.Allow {
 		s.allow[p] = struct{}{}
 	}
-	for _, p := range f.Permissions.Deny {
+	for _, p := range merged.Permissions.Deny {
 		s.deny[p] = struct{}{}
 	}
-	s.mu.Unlock()
+	return s
 }
 
 // MatchDeny reports the first deny pattern matching name, if any.
@@ -179,60 +148,11 @@ func (s *RuleStore) pathFor(scope Scope) string {
 	return s.userPath
 }
 
-// persistAllow appends pattern to the permissions.allow array of the settings
-// file at path, preserving any other keys already in the file (it merges into a
-// generic map, so settings we don't model are not clobbered). It creates the
-// parent directory as needed.
-//
-// persistMu serializes the whole read-modify-write so concurrent grants don't
-// lose each other's rule, and the write is atomic (temp file + rename) so a crash
-// mid-write can't leave a partial/corrupt settings file.
+// persistAllow appends pattern to the settings file's permissions.allow via the
+// single canonical atomic, unknown-key-preserving writer in the settings package
+// (P11.d — the same writer the agent's verify self-write uses).
 func (s *RuleStore) persistAllow(path, pattern string) error {
-	s.persistMu.Lock()
-	defer s.persistMu.Unlock()
-
-	doc := map[string]any{}
-	if data, err := os.ReadFile(path); err == nil {
-		_ = json.Unmarshal(data, &doc) // a corrupt file is overwritten with a valid one
-	}
-
-	perms, _ := doc["permissions"].(map[string]any)
-	if perms == nil {
-		perms = map[string]any{}
-	}
-	allow := toStringSlice(perms["allow"])
-	for _, p := range allow {
-		if p == pattern {
-			return nil // already persisted
-		}
-	}
-	allow = append(allow, pattern)
-	sort.Strings(allow)
-	perms["allow"] = allow
-	doc["permissions"] = perms
-
-	out, err := json.MarshalIndent(doc, "", "  ")
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	// Atomic replace: write a sibling temp file, then rename over the target.
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".settings-*.tmp")
-	if err != nil {
-		return err
-	}
-	tmpName := tmp.Name()
-	defer os.Remove(tmpName) // no-op after a successful rename
-	if _, err := tmp.Write(append(out, '\n')); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tmpName, path)
+	return settings.AddAllowRule(path, pattern)
 }
 
 // patternFor maps a tool name to the rule an "always allow" grant should add:

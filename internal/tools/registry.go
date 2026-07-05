@@ -79,6 +79,25 @@ func (r *Registry) Names() []string {
 	return names
 }
 
+// Replace swaps in a new implementation for the named tool. It is a no-op when
+// the name is not already registered, so a caller can hot-swap a provider-backed
+// tool (e.g. web_search) without worrying about whether the tool was previously
+// configured. The replacement keeps the original registration order and internal
+// flag.
+func (r *Registry) Replace(tool Tool) {
+	if tool == nil {
+		return
+	}
+	name := tool.Name()
+	if name == "" {
+		return
+	}
+	if _, exists := r.tools[name]; !exists {
+		return
+	}
+	r.tools[name] = tool
+}
+
 // Clone returns a shallow copy of r with the same tools registered in the same
 // order. Modifications to the clone (Register, RegisterInternal) do not affect
 // the original. The registered Tool values are shared (not deep-copied).

@@ -12,6 +12,7 @@ import (
 	"code-agent/internal/tools/filesystem"
 	"code-agent/internal/tools/git"
 	projectgraph "code-agent/internal/tools/project_graph"
+	"code-agent/internal/tools/projectcfg"
 	"code-agent/internal/tools/search"
 	"code-agent/internal/tools/shell"
 	"code-agent/internal/tools/skill"
@@ -96,6 +97,7 @@ func RegisterBuiltinTools(registry *tools.Registry, cfg app.Config, skillReg *sk
 		jobReg.Sink = jobSink // before any Start (jobs.Registry.Sink contract)
 		toolList = append(toolList,
 			projectgraph.NewProjectGraphTool(),
+			projectcfg.NewSetVerifyCommandTool(), // configure verify; needs run_command to actually run
 			git.NewDiffTool(),
 			git.NewApplyPatchTool(),
 			git.NewGitCommitTool(),

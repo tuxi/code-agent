@@ -157,6 +157,217 @@ func TestNilReflectorAcceptsFirstFinish(t *testing.T) {
 	}
 }
 
+// P4.3-R Move 3: when the model is about to edit code AFTER a failure surfaced
+// this turn, a one-shot pre-mutation self-check fires: the premature edit is
+// dropped (not executed, not persisted) and re-prompted with a hypothesis nudge.
+func TestPreMutationCheckFiresBeforeEditAfterFailure(t *testing.T) {
+	reg := tools.NewRegistry()
+	mustReg(t, reg, &sequencedTool{name: "run_command", outs: []string{goTestFailJSON, goTestOKJSON}})
+	mustReg(t, reg, &jsonResultTool{name: "edit_file", out: "edited"})
+
+	provider := &scriptedProvider{responses: []model.Response{
+		toolCallResp("run_command", `{"command":"go test ./..."}`),     // fails
+		toolCallResp("edit_file", `{"path":"internal/app/config.go"}`), // dropped by Move 3
+		toolCallResp("edit_file", `{"path":"internal/app/config.go"}`), // the re-prompted edit
+		toolCallResp("run_command", `{"command":"go test ./..."}`),     // passes
+		{Content: "fixed the cause", FinishReason: "stop"},
+	}}
+
+	em := &capturingEmitter{}
+	runner := &Runner{
+		Model: provider, Tools: reg, MaxSteps: 10, Emitter: em,
+		Observer:         observation.DefaultObserver{},
+		Reflector:        DefaultReflector{},
+		RemindHypothesis: true,
+	}
+	res, err := runner.RunTurn(context.Background(), newSession(), "make tests pass")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Exactly one pre-mutation check.
+	n := 0
+	for _, e := range em.events {
+		if e.Kind == EventPreMutation {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("EventPreMutation count = %d, want 1 (one-shot)", n)
+	}
+	ev, _ := em.first(EventPreMutation)
+	if !strings.Contains(ev.Text, "root-cause hypothesis") {
+		t.Errorf("pre-mutation nudge missing the hypothesis prompt: %q", ev.Text)
+	}
+	if res.Final != "fixed the cause" {
+		t.Errorf("final = %q, want %q", res.Final, "fixed the cause")
+	}
+}
+
+// The check must NOT fire when no failure has surfaced: a first-pass edit on a
+// clean turn proceeds untouched (precision — this is not a tax on every edit).
+func TestPreMutationCheckSkippedWithoutFailure(t *testing.T) {
+	reg := tools.NewRegistry()
+	mustReg(t, reg, &jsonResultTool{name: "edit_file", out: "edited"})
+	mustReg(t, reg, &sequencedTool{name: "run_command", outs: []string{goTestOKJSON}})
+
+	provider := &scriptedProvider{responses: []model.Response{
+		toolCallResp("edit_file", `{"path":"internal/app/feature.go"}`),
+		toolCallResp("run_command", `{"command":"go build ./..."}`),
+		{Content: "added the feature", FinishReason: "stop"},
+	}}
+	em := &capturingEmitter{}
+	runner := &Runner{
+		Model: provider, Tools: reg, MaxSteps: 10, Emitter: em,
+		Observer:         observation.DefaultObserver{},
+		Reflector:        DefaultReflector{},
+		RemindHypothesis: true,
+	}
+	res, err := runner.RunTurn(context.Background(), newSession(), "add a feature")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := em.first(EventPreMutation); ok {
+		t.Error("no failure surfaced — the pre-mutation check must not fire")
+	}
+	if res.Final != "added the feature" {
+		t.Errorf("final = %q, want %q", res.Final, "added the feature")
+	}
+}
+
+// Opt-in: with RemindHypothesis off, an edit after a failure proceeds as before.
+func TestPreMutationCheckOptIn(t *testing.T) {
+	reg := tools.NewRegistry()
+	mustReg(t, reg, &sequencedTool{name: "run_command", outs: []string{goTestFailJSON, goTestOKJSON}})
+	mustReg(t, reg, &jsonResultTool{name: "edit_file", out: "edited"})
+
+	provider := &scriptedProvider{responses: []model.Response{
+		toolCallResp("run_command", `{"command":"go test ./..."}`),
+		toolCallResp("edit_file", `{"path":"internal/app/config.go"}`),
+		toolCallResp("run_command", `{"command":"go test ./..."}`),
+		{Content: "done", FinishReason: "stop"},
+	}}
+	em := &capturingEmitter{}
+	runner := &Runner{
+		Model: provider, Tools: reg, MaxSteps: 10, Emitter: em,
+		Observer:  observation.DefaultObserver{},
+		Reflector: DefaultReflector{}, // RemindHypothesis deliberately off
+	}
+	if _, err := runner.RunTurn(context.Background(), newSession(), "make tests pass"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := em.first(EventPreMutation); ok {
+		t.Error("RemindHypothesis is off — the pre-mutation check must not fire")
+	}
+}
+
+// P4.3-R Move 2 (2a): a turn that edits code without verifying it, with a
+// VerifyCommand configured, runs the real verify at finalize. A PASS accepts the
+// finish with no re-prompt — the change is genuinely confirmed, not guessed.
+func TestFinalizeVerifyPassAcceptsFinish(t *testing.T) {
+	reg := tools.NewRegistry()
+	mustReg(t, reg, &jsonResultTool{name: "edit_file", out: "edited"})
+	mustReg(t, reg, &sequencedTool{name: "run_command", outs: []string{goTestOKJSON}})
+
+	provider := &scriptedProvider{responses: []model.Response{
+		toolCallResp("edit_file", `{"path":"internal/app/config.go"}`),
+		{Content: "done", FinishReason: "stop"},
+	}}
+	em := &capturingEmitter{}
+	runner := &Runner{
+		Model: provider, Tools: reg, MaxSteps: 10, Emitter: em,
+		Observer:      observation.DefaultObserver{},
+		Reflector:     DefaultReflector{},
+		VerifyCommand: "go test ./...",
+	}
+	res, err := runner.RunTurn(context.Background(), newSession(), "change config")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := em.first(EventVerified); !ok {
+		t.Error("expected a deterministic finalize verify to run")
+	}
+	if _, ok := em.first(EventReflected); ok {
+		t.Error("a passing verify must not re-prompt")
+	}
+	if res.Final != "done" {
+		t.Errorf("final = %q, want %q (passing verify accepts the finish)", res.Final, "done")
+	}
+}
+
+// A FAILING verify feeds the real failure back and re-prompts; the model fixes
+// and finishes. The verify runs at most once (the fix's finish is not re-verified).
+func TestFinalizeVerifyFailReprompts(t *testing.T) {
+	reg := tools.NewRegistry()
+	mustReg(t, reg, &jsonResultTool{name: "edit_file", out: "edited"})
+	mustReg(t, reg, &sequencedTool{name: "run_command", outs: []string{goTestFailJSON}})
+
+	provider := &scriptedProvider{responses: []model.Response{
+		toolCallResp("edit_file", `{"path":"internal/app/config.go"}`),
+		{Content: "done", FinishReason: "stop"}, // premature — verify fails, re-prompted
+		toolCallResp("edit_file", `{"path":"internal/app/config.go"}`),
+		{Content: "fixed for real", FinishReason: "stop"},
+	}}
+	em := &capturingEmitter{}
+	runner := &Runner{
+		Model: provider, Tools: reg, MaxSteps: 10, Emitter: em,
+		Observer:      observation.DefaultObserver{},
+		Reflector:     DefaultReflector{},
+		VerifyCommand: "go test ./...",
+	}
+	res, err := runner.RunTurn(context.Background(), newSession(), "change config")
+	if err != nil {
+		t.Fatal(err)
+	}
+	nv := 0
+	for _, e := range em.events {
+		if e.Kind == EventVerified {
+			nv++
+		}
+	}
+	if nv != 1 {
+		t.Fatalf("EventVerified count = %d, want 1 (verify runs once)", nv)
+	}
+	ev, ok := em.first(EventReflected)
+	if !ok || !strings.Contains(ev.Text, "FAILED") {
+		t.Errorf("expected a failure re-prompt carrying the real result, got %q", ev.Text)
+	}
+	if res.Final != "fixed for real" {
+		t.Errorf("final = %q, want %q", res.Final, "fixed for real")
+	}
+}
+
+// 2b: with NO VerifyCommand, an unverified code change is SILENT — the runtime
+// never guesses "unverified". The first finish is accepted, no verify, no nudge.
+func TestFinalizeNoVerifyCommandIsSilent(t *testing.T) {
+	reg := tools.NewRegistry()
+	mustReg(t, reg, &jsonResultTool{name: "edit_file", out: "edited"})
+
+	provider := &scriptedProvider{responses: []model.Response{
+		toolCallResp("edit_file", `{"path":"internal/app/config.go"}`),
+		{Content: "done", FinishReason: "stop"},
+	}}
+	em := &capturingEmitter{}
+	runner := &Runner{
+		Model: provider, Tools: reg, MaxSteps: 10, Emitter: em,
+		Observer:  observation.DefaultObserver{},
+		Reflector: DefaultReflector{}, // VerifyCommand deliberately empty
+	}
+	res, err := runner.RunTurn(context.Background(), newSession(), "change config")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := em.first(EventVerified); ok {
+		t.Error("no VerifyCommand — the runtime must not run a verify")
+	}
+	if _, ok := em.first(EventReflected); ok {
+		t.Error("no VerifyCommand — the runtime must not nudge about 'unverified'")
+	}
+	if res.Final != "done" {
+		t.Errorf("final = %q, want %q (first finish accepted silently)", res.Final, "done")
+	}
+}
+
 func mustReg(t *testing.T, reg *tools.Registry, tool tools.Tool) {
 	t.Helper()
 	if err := reg.Register(tool); err != nil {

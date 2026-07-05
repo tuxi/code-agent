@@ -20,8 +20,14 @@ const (
 	// context_window. 128k matches the smaller models currently configured.
 	defaultContextWindow = 128000
 	// defaultCompactRatio is the fraction of the context window at which a session
-	// compacts when agent.compact_ratio is unset or invalid.
-	defaultCompactRatio = 0.5
+	// compacts when agent.compact_ratio is unset or invalid. 0.75 sits in the
+	// mainstream 70–95% band (Gemini CLI 70%, Codex ≤90%, Claude Code ~92–95%),
+	// leaving headroom for output and the compaction pass itself (P12.e).
+	defaultCompactRatio = 0.75
+	// defaultCompactKeepRatio is the fraction of the compaction threshold kept as
+	// the verbatim recent tail when agent.compact_keep_ratio is unset or invalid
+	// (P12.a; matches Gemini CLI's 30% preserve fraction).
+	defaultCompactKeepRatio = 0.3
 
 	// Provider transport defaults (see ProviderConfig). Tuned for large prompts:
 	// prefill on a 90k-token context can exceed a minute, so the per-attempt
@@ -147,10 +153,27 @@ type ModelConfig struct {
 type AgentConfig struct {
 	MaxSteps int `yaml:"max_steps"`
 
+	// VerifyCommand is the project's real build/test command (e.g. "go test ./...").
+	// When set, the finalize self-check runs it deterministically once at the end
+	// of a turn that changed verifiable code without verifying it (P4.3-R Move 2,
+	// the port of Claude Code's Stop hook): a passing run confirms the change, a
+	// failing run re-prompts the model with the real failure. Empty (the default)
+	// disables the runtime verify — the runtime never guesses "unverified".
+	VerifyCommand string `yaml:"verify_command"`
+
 	// CompactRatio is the fraction of a model's context window at which the
 	// session compacts. Defaults to defaultCompactRatio; values outside (0,1) are
 	// treated as unset.
 	CompactRatio float64 `yaml:"compact_ratio"`
+
+	// CompactKeepRatio is the fraction of the compaction threshold kept as the
+	// verbatim recent tail when compacting (P12.a). Token-denominated: the tail
+	// is CompactThreshold × CompactKeepRatio approximate tokens, which is what
+	// makes compaction converge by construction — summary + bounded tail lands
+	// back under the threshold on a 32k local window as much as on a 128k one.
+	// Defaults to defaultCompactKeepRatio; values outside (0,1) are treated as
+	// unset.
+	CompactKeepRatio float64 `yaml:"compact_keep_ratio"`
 
 	// SubagentModel names the model a delegated read-only subagent (the `task`
 	// tool, 8.3) runs on. Empty inherits the main model; point it at a cheaper
@@ -367,6 +390,9 @@ func LoadConfigBytes(data []byte) (Config, error) {
 	if cfg.Agent.CompactRatio <= 0 || cfg.Agent.CompactRatio >= 1 {
 		cfg.Agent.CompactRatio = defaultCompactRatio
 	}
+	if cfg.Agent.CompactKeepRatio <= 0 || cfg.Agent.CompactKeepRatio >= 1 {
+		cfg.Agent.CompactKeepRatio = defaultCompactKeepRatio
+	}
 
 	if cfg.Provider.RequestTimeoutSeconds <= 0 {
 		cfg.Provider.RequestTimeoutSeconds = defaultRequestTimeoutSeconds
@@ -451,6 +477,13 @@ func (c Config) SelectModel(name string) (ModelConfig, error) {
 // 256k-window model gets a proportionally higher threshold than a 128k one.
 func (c Config) CompactThreshold(mc ModelConfig) int {
 	return int(float64(mc.ContextWindow) * c.Agent.CompactRatio)
+}
+
+// CompactKeepTokens is the approximate token budget for the verbatim recent
+// tail kept by compaction (P12.a): the compaction threshold scaled by the keep
+// ratio. Everything older is folded into the summary.
+func (c Config) CompactKeepTokens(mc ModelConfig) int {
+	return int(float64(c.CompactThreshold(mc)) * c.Agent.CompactKeepRatio)
 }
 
 // ModelNames returns the configured model names, sorted.

@@ -32,10 +32,11 @@ type StepView struct {
 // ships the two highest-value signals; more can follow from telemetry.
 type ReflectionContext struct {
 	MutatedFiles           []string // files changed via edit_file / apply_patch this turn
+	CodeFilesMutated       []string // subset of MutatedFiles that is verifiable code (has a meaningful build/test)
 	TestFilesMutated       []string // subset of MutatedFiles ending in _test.go
 	LastVerifyPassed       *bool    // result of the turn's last build/test (nil = unknown/none)
 	TestEditedAfterFailure bool     // a test file was edited after a test failed
-	UnverifiedMutation     bool     // code changed, but no build/test ran afterward
+	UnverifiedMutation     bool     // verifiable code changed, but no build/test ran afterward
 }
 
 // Concerns reports whether anything is worth asking the model about. When false,
@@ -50,14 +51,20 @@ func (c ReflectionContext) Concerns() bool {
 // "did any verification run" holds even if enrichment is absent.
 func Reflect(steps []StepView) ReflectionContext {
 	var rc ReflectionContext
-	lastMutationIdx, lastVerifyIdx, lastTestFailIdx := -1, -1, -1
+	lastCodeMutationIdx, lastVerifyIdx, lastTestFailIdx := -1, -1, -1
 
 	for i, s := range steps {
 		// Mutations.
 		if paths := mutatedPaths(s.Tool, s.Input); len(paths) > 0 {
-			lastMutationIdx = i
 			for _, p := range paths {
 				rc.MutatedFiles = appendUnique(rc.MutatedFiles, p)
+				// Only verifiable code counts toward "unverified": a .md / .json
+				// write has no meaningful build/test to run, so it must not demand
+				// one (P4.3-R Move 1). Docs are still recorded in MutatedFiles.
+				if isVerifiableCode(p) {
+					rc.CodeFilesMutated = appendUnique(rc.CodeFilesMutated, p)
+					lastCodeMutationIdx = i
+				}
 				if isTestFile(p) {
 					rc.TestFilesMutated = appendUnique(rc.TestFilesMutated, p)
 					if lastTestFailIdx >= 0 && lastTestFailIdx < i {
@@ -85,11 +92,37 @@ func Reflect(steps []StepView) ReflectionContext {
 		}
 	}
 
-	// A mutation with no verify after it (regardless of pass/fail) is unverified.
-	if lastMutationIdx >= 0 && lastVerifyIdx < lastMutationIdx {
+	// A verifiable-code mutation with no verify after it (regardless of pass/fail)
+	// is unverified. A doc/data-only turn never trips this — there is nothing to
+	// build or test, so lastCodeMutationIdx stays -1 (P4.3-R Move 1).
+	if lastCodeMutationIdx >= 0 && lastVerifyIdx < lastCodeMutationIdx {
 		rc.UnverifiedMutation = true
 	}
 	return rc
+}
+
+// IsMutatingTool reports whether a tool name writes project files. Kept in
+// lockstep with mutatedPaths's cases below. P4.3-R Move 3 uses it to fire a
+// pre-mutation self-check before the first edit that follows a failure.
+func IsMutatingTool(tool string) bool {
+	switch tool {
+	case "edit_file", "create_file", "write_file", "apply_patch":
+		return true
+	}
+	return false
+}
+
+// SawFailure reports whether any step this turn surfaced a P4.1 failure
+// observation (failure=test/compile/…). It marks the paper-over hot zone: an
+// edit about to happen in the wake of a failure, where a root-cause hypothesis
+// should be stated first (P4.3-R Move 3).
+func SawFailure(steps []StepView) bool {
+	for _, s := range steps {
+		if known, _, failure := parseObsMarker(s.Observation); known && failure != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // mutatedPaths returns the workspace files a mutating tool call touches.
@@ -155,6 +188,28 @@ func isVerifyCommand(cmd string) bool {
 
 func isTestFile(path string) bool {
 	return strings.HasSuffix(path, "_test.go")
+}
+
+// isVerifiableCode reports whether a path is source code that a build/test could
+// meaningfully confirm — as opposed to documentation or data (P4.3-R Move 1). A
+// denylist by extension (same extension-classification discipline as isTestFile):
+// everything counts as verifiable code EXCEPT known doc/data formats, so a change
+// in any real language still trips UnverifiedMutation while a pure-doc write does
+// not. The runtime must never tell the model to "run a verification" on a .md.
+func isVerifiableCode(path string) bool {
+	return !isDocOrData(path)
+}
+
+// isDocOrData reports whether a path is a documentation or data file — the kinds
+// that have no build/test to run. Extensible; extensions are matched case-
+// insensitively.
+func isDocOrData(path string) bool {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".md", ".markdown", ".mdx", ".txt", ".rst", ".adoc",
+		".json", ".yaml", ".yml", ".toml", ".csv", ".tsv", ".ini", ".cfg", ".conf":
+		return true
+	}
+	return false
 }
 
 // parseObsMarker reads P4.1's prepended "[observation] ok|failure=<type>" line.

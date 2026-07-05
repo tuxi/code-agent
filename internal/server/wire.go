@@ -61,6 +61,7 @@ type wireEvent struct {
 	SavedTokens  int     `json:"saved_tokens,omitempty"`
 	SummaryChars int     `json:"summary_chars,omitempty"`
 	Ratio        float64 `json:"ratio,omitempty"`
+	Ineffective  bool    `json:"ineffective,omitempty"`
 
 	// Background jobs (P8.7). job_finished's process exit code; omitted when 0
 	// (text "exited" already means success) — present when failed (>0, or -1 for
@@ -106,6 +107,7 @@ func toWire(e agent.Event) wireEvent {
 		SavedTokens:     e.SavedTokens,
 		SummaryChars:    e.SummaryChars,
 		Ratio:           e.Ratio,
+		Ineffective:     e.Ineffective,
 		ExitCode:        e.ExitCode,
 		Err:             e.Err,
 	}

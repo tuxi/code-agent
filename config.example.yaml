@@ -79,6 +79,15 @@ models:
   #     context_window: 32768
 agent:
   max_steps: 32
+  # LEGACY (P11): the project's REAL build/test command for the finalize verify
+  # (P4.3-R Move 2). PREFER the project settings layer instead —
+  # .codeagent/settings.json (shared) or .codeagent/settings.local.json (local):
+  #   { "verify": { "command": "go test ./..." } }   // or "auto" to detect
+  # A verify block there overrides this value. This key is kept as the
+  # config-level / embedded-host fallback. Empty (the default) = disabled; the
+  # runtime never guesses "unverified". Must be a build/test command (a mutating
+  # command is skipped, never auto-run).
+  # verify_command: "go test ./..."
   # P8.8: how many INDEPENDENT read-only tool calls in one batch run at once.
   # Omitted/0/1 = the strictly-sequential loop (the default). Raise it to let the
   # model fan out — e.g. several `task` subagents or reads in one turn run
@@ -86,8 +95,14 @@ agent:
   # fan-out orchestration reminder. Uncomment to try the map scenario:
   # max_parallel_tools: 8
   # compact when the prompt reaches this fraction of the model's context_window.
-  # Optional (default 0.5); values outside (0,1) fall back to the default.
-  compact_ratio: 0.5
+  # Optional (default 0.75 — inside the mainstream 70-95% band, leaving headroom
+  # for output and the compaction pass); values outside (0,1) fall back.
+  compact_ratio: 0.75
+  # P12.a: fraction of the compaction threshold kept as the verbatim recent tail
+  # when compacting. Token-denominated — this is what makes compaction converge
+  # on a 32k local window as reliably as on a 128k one. Optional (default 0.3,
+  # matching Gemini CLI's preserve fraction); values outside (0,1) fall back.
+  # compact_keep_ratio: 0.3
   # Model the read-only `task` subagent (8.3) runs on. Optional — empty inherits
   # the main model. Point it at a cheaper model to make delegated read-only
   # investigation fast and cheap. An unknown/key-less name falls back to the main
@@ -167,6 +182,12 @@ web:
 # `match` is a tool name or "*". The tool input arrives on stdin as JSON and the
 # tool name in $CODEAGENT_TOOL_NAME. Commands run via `sh -c` in the workspace
 # root. Optional.
+#
+# P11.c: hooks may ALSO live in the project settings layer, where they CONCATENATE
+# with these (all run). Same {event,match,command} shape, as JSON:
+#   .codeagent/settings.json        (shared)  or
+#   .codeagent/settings.local.json  (local):  { "hooks": [ {"event":"post_tool_use","match":"edit_file","command":"gofmt -w ."} ] }
+# On no-subprocess hosts (iOS) hooks from every layer are disabled (they run sh -c).
 hooks:
   - event: post_tool_use
     match: edit_file

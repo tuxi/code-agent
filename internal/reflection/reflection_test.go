@@ -157,16 +157,67 @@ func TestNudgeContainsOnlyTriggeredSignals(t *testing.T) {
 		t.Errorf("nudge included the unverified line when it should not: %q", n)
 	}
 
-	// Only the unverified signal.
+	// P4.3-R Move 2: the unverified signal no longer produces a nudge — the
+	// runtime does not GUESS "unverified"; the loop's deterministic verify (or
+	// silence) handles it. So an unverified-only context yields an empty nudge.
 	n = ReflectionContext{
 		UnverifiedMutation: true,
 		MutatedFiles:       []string{"internal/app/config.go"},
+		CodeFilesMutated:   []string{"internal/app/config.go"},
 	}.Nudge()
-	if !strings.Contains(n, "no build or test has confirmed") {
-		t.Errorf("nudge missing the unverified line: %q", n)
+	if n != "" {
+		t.Errorf("unverified-only nudge = %q, want empty (Move 2 retired the guess)", n)
 	}
-	if strings.Contains(n, "edited a test file") {
-		t.Errorf("nudge included the test-edit line when it should not: %q", n)
+}
+
+// P4.3-R Move 1: a turn that writes ONLY doc/data files (no verifiable code) must
+// not fire UnverifiedMutation — there is no build/test to run on a .md.
+func TestReflectDocOnlyTurnHasNoConcern(t *testing.T) {
+	createDoc := func(path string) StepView {
+		return StepView{Tool: "create_file", Input: `{"path":"` + path + `"}`, Observation: okObs()}
+	}
+	steps := []StepView{
+		createDoc("btc-reports/01-price-market.md"),
+		createDoc("btc-reports/02-onchain.md"),
+		createDoc("data/summary.json"),
+	}
+	rc := Reflect(steps)
+	if rc.UnverifiedMutation {
+		t.Errorf("UnverifiedMutation = true, want false for a doc/data-only turn: %+v", rc)
+	}
+	if len(rc.CodeFilesMutated) != 0 {
+		t.Errorf("CodeFilesMutated = %v, want empty (no verifiable code)", rc.CodeFilesMutated)
+	}
+	if len(rc.MutatedFiles) != 3 {
+		t.Errorf("MutatedFiles = %v, want the 3 doc/data files still recorded", rc.MutatedFiles)
+	}
+	if rc.Concerns() {
+		t.Errorf("Concerns() = true, want false — nothing verifiable was written: %+v", rc)
+	}
+	if n := rc.Nudge(); n != "" {
+		t.Errorf("Nudge = %q, want empty for a doc-only turn", n)
+	}
+}
+
+// P4.3-R Move 1: a mixed turn (code + doc, no verify after) is still an
+// unverified CODE change — UnverifiedMutation fires and CodeFilesMutated holds
+// only the code file, never the doc. (Move 2 consumes CodeFilesMutated in the
+// loop's verify re-prompt, so the doc exclusion stays load-bearing.)
+func TestReflectMixedCodeAndDocIsCodeOnly(t *testing.T) {
+	createDoc := StepView{Tool: "create_file", Input: `{"path":"docs/notes.md"}`, Observation: okObs()}
+	steps := []StepView{
+		editFile("internal/app/config.go"),
+		createDoc,
+	}
+	rc := Reflect(steps)
+	if !rc.UnverifiedMutation {
+		t.Errorf("UnverifiedMutation = false, want true (code changed, no verify): %+v", rc)
+	}
+	if len(rc.CodeFilesMutated) != 1 || rc.CodeFilesMutated[0] != "internal/app/config.go" {
+		t.Errorf("CodeFilesMutated = %v, want [internal/app/config.go] (doc excluded)", rc.CodeFilesMutated)
+	}
+	if len(rc.MutatedFiles) != 2 {
+		t.Errorf("MutatedFiles = %v, want both files recorded", rc.MutatedFiles)
 	}
 }
 

@@ -21,6 +21,13 @@ type Reflector interface {
 type DefaultReflector struct{}
 
 func (DefaultReflector) Reflect(steps []Step) reflection.ReflectionContext {
+	return reflection.Reflect(stepViews(steps))
+}
+
+// stepViews adapts the agent's richer Step into the reflection package's neutral
+// StepView. Shared by DefaultReflector and the loop's pre-mutation self-check
+// (P4.3-R Move 3), so the agent→reflection dependency stays one-way.
+func stepViews(steps []Step) []reflection.StepView {
 	views := make([]reflection.StepView, len(steps))
 	for i, s := range steps {
 		views[i] = reflection.StepView{
@@ -29,5 +36,5 @@ func (DefaultReflector) Reflect(steps []Step) reflection.ReflectionContext {
 			Observation: s.Observation,
 		}
 	}
-	return reflection.Reflect(views)
+	return views
 }
