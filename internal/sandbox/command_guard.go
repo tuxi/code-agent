@@ -547,3 +547,11 @@ func ContainsAssignment(command string) bool {
 	// Look for WORD=value patterns at the start or after spaces.
 	return strings.Contains(structure, "=") && !strings.Contains(structure, "==")
 }
+
+// ContainsRedirect reports whether the command structure contains redirect
+// operators (>, >>, <, 2>, &>) outside quotes. Commands with redirects need
+// sh -c for the shell to interpret them.
+func ContainsRedirect(command string) bool {
+	structure := unquotedStructure(command)
+	return strings.Contains(structure, ">") || strings.Contains(structure, "<")
+}
