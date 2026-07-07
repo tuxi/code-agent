@@ -9,7 +9,11 @@
 // the policy lives here so it can be tested and tightened in one place.
 package sandbox
 
-import "strings"
+import (
+	"strings"
+
+	"code-agent/internal/sandbox/ast"
+)
 
 // Decision is the outcome of classifying a command. It is a string-valued enum
 // so a Classification marshals directly to readable JSON ("allow" / "confirm" /
@@ -185,13 +189,78 @@ func (p CommandPolicy) Classify(command string) Classification {
 		return inner
 	}
 
-	// 1. Compound commands (Phase A/B): split on && ; | || and classify each
-	//    subcommand independently. The strictest verdict wins.
+	// 1. AST-based classification (Phase D): use recursive-descent parser to
+	//    extract subcommands with proper argv. Falls back to token-based
+	//    classification when AST parsing is unavailable.
+	if prog := ast.Parse(cmd); len(prog.Statements) > 1 || hasComplexStructure(prog) {
+		return p.classifyAST(prog, cmd)
+	}
+
+	// 2. Compound commands (Phase A/B fallback): split on && ; | || and classify
+	//    each subcommand independently. Used when AST parsing produces only one
+	//    statement (i.e. the AST didn't add value over token-based parsing).
 	if ContainsChainOperators(cmd) {
 		return p.classifyChain(cmd)
 	}
 
 	return p.classifyOne(cmd)
+}
+
+// hasComplexStructure reports whether the AST found structures that need
+// per-statement classification (pipelines, multiple statements, redirects).
+func hasComplexStructure(prog *ast.Program) bool {
+	for _, st := range prog.Statements {
+		if st.TooComplex {
+			return true
+		}
+		if st.Cmd != nil && len(st.Cmd.Redirects) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// classifyAST classifies each statement from an AST parse independently. Too
+// complex statements are treated as Confirm (fail-safe: ask the user).
+func (p CommandPolicy) classifyAST(prog *ast.Program, originalCommand string) Classification {
+	var worst Classification
+	reasons := make([]string, 0, len(prog.Statements))
+
+	for i, st := range prog.Statements {
+		var c Classification
+		if st.TooComplex {
+			c = Classification{
+				Command:  originalCommand,
+				Decision: Confirm,
+				Level:    LevelUnknown,
+				Reason:   "too complex structure; needs confirmation",
+			}
+		} else if st.Cmd != nil && st.Cmd.Program != "" {
+			// Reconstruct the subcommand from AST argv.
+			subCmd := strings.Join(st.Cmd.Args, " ")
+			c = p.classifyOne(peelWrappers(subCmd))
+			c.Command = subCmd
+		} else {
+			c = p.classifyOne(originalCommand)
+		}
+
+		reasons = append(reasons, c.Reason)
+
+		if i == 0 {
+			worst = c
+			continue
+		}
+		switch {
+		case c.Decision == Block || worst.Decision == Block:
+			worst.Decision = Block
+		case c.Decision == Confirm || worst.Decision == Confirm:
+			worst.Decision = Confirm
+		}
+	}
+
+	worst.Command = originalCommand
+	worst.Reason = "AST compound (" + strings.Join(reasons, "; ") + ")"
+	return worst
 }
 
 // classifyOne classifies a single (non-compound, non-wrapper) command through
