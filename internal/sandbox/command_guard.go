@@ -538,3 +538,12 @@ func ContainsCommandSubstitution(command string) bool {
 	structure := unquotedStructure(command)
 	return strings.Contains(structure, "$(")
 }
+
+// ContainsAssignment reports whether the command structure contains VAR=val
+// assignments (outside quotes). Commands with assignments need sh -c for the
+// shell to set the environment variables before executing the command.
+func ContainsAssignment(command string) bool {
+	structure := unquotedStructure(command)
+	// Look for WORD=value patterns at the start or after spaces.
+	return strings.Contains(structure, "=") && !strings.Contains(structure, "==")
+}

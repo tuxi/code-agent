@@ -243,8 +243,11 @@ func (p CommandPolicy) classifyAST(prog *ast.Program, originalCommand string) Cl
 				Reason:   "too complex structure; needs confirmation",
 			}
 		} else if st.Cmd != nil && st.Cmd.Program != "" {
-			// Reconstruct the subcommand from AST argv.
-			subCmd := strings.Join(st.Cmd.Args, " ")
+			// Reconstruct the subcommand from AST argv + assignments so
+			// dangerous env vars are detected (e.g. LD_PRELOAD=/x).
+			parts := append([]string{}, st.Cmd.Assignments...)
+			parts = append(parts, st.Cmd.Args...)
+			subCmd := strings.Join(parts, " ")
 			c = p.classifyOne(peelWrappers(subCmd))
 			c.Command = subCmd
 		} else {

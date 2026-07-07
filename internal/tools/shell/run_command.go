@@ -154,7 +154,7 @@ func (t *RunCommandTool) Execute(ctx context.Context, ec tools.ExecutionContext,
 	// subcommand classification already done by Classify(). Skip the single-
 	// program guards below and delegate to the shell execution path.
 	// $() needs sh -c for expansion even when there are no chain operators.
-	if sandbox.ContainsChainOperators(command) || sandbox.ContainsCommandSubstitution(command) {
+	if sandbox.ContainsChainOperators(command) || sandbox.ContainsCommandSubstitution(command) || sandbox.ContainsAssignment(command) {
 		return t.executeShell(ctx, ec, in, command, class)
 	}
 
