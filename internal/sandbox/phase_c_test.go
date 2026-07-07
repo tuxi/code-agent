@@ -109,8 +109,8 @@ func TestCommandSubstitutionStillRejected(t *testing.T) {
 	// $() and backticks must STILL be rejected by ContainsShellOperators.
 	// $() and backticks OUTSIDE quotes are still rejected. Inside double quotes,
 	// unquotedStructure strips them (known limitation — ASCII-level only).
+	// Only backticks remain rejected. $() is now supported.
 	rejected := []string{
-		"echo $(date)",
 		"echo `date`",
 	}
 	for _, c := range rejected {

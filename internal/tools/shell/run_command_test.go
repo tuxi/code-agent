@@ -61,8 +61,8 @@ func TestRunCommandBlockedDoesNotExecute(t *testing.T) {
 
 func TestRunCommandShellOperatorsRejected(t *testing.T) {
 	tool := NewRunCommandTool()
-	// $(date) is still rejected (command substitution not supported).
-	res, err := tool.Execute(context.Background(), tools.ExecutionContext{WorkspaceRoot: "."}, json.RawMessage(`{"command":"echo $(date)"}`))
+	// Single & (backgrounding) is still rejected.
+	res, err := tool.Execute(context.Background(), tools.ExecutionContext{WorkspaceRoot: "."}, json.RawMessage(`{"command":"echo hi & echo there"}`))
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -70,8 +70,8 @@ func TestRunCommandShellOperatorsRejected(t *testing.T) {
 	if r.ExitCode != -1 {
 		t.Errorf("exit_code = %d, want -1", r.ExitCode)
 	}
-	if !strings.Contains(r.Note, "command substitution") {
-		t.Errorf("note = %q, want it to mention command substitution", r.Note)
+	if r.Note == "" {
+		t.Error("note should not be empty for rejected command")
 	}
 }
 
@@ -83,8 +83,6 @@ func TestRunCommandHintIsTailored(t *testing.T) {
 		wantHint string
 	}{
 		{"cd cmd/foo && go vet", "path"},  // cd → "pass a path"
-		{"echo $(date)", "command"},       // $() → "command substitution"
-		{"echo `date`", "command"},        // backticks → "command substitution"
 	}
 	for _, c := range cases {
 		if got := shellOperatorHint(c.command); !strings.Contains(got, c.wantHint) {

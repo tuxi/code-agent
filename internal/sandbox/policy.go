@@ -189,6 +189,13 @@ func (p CommandPolicy) Classify(command string) Classification {
 		return inner
 	}
 
+	// 0b. $() command substitution extraction: classify each inner command
+	//     independently. If any inner command is not Allow, the whole command
+	//     inherits the stricter verdict.
+	if subs := extractCommandSubstitutions(cmd); len(subs) > 0 {
+		return p.classifyWithSubstitutions(cmd, subs)
+	}
+
 	// 1. AST-based classification (Phase D): use recursive-descent parser to
 	//    extract subcommands with proper argv. Falls back to token-based
 	//    classification when AST parsing is unavailable.
@@ -261,6 +268,80 @@ func (p CommandPolicy) classifyAST(prog *ast.Program, originalCommand string) Cl
 	worst.Command = originalCommand
 	worst.Reason = "AST compound (" + strings.Join(reasons, "; ") + ")"
 	return worst
+}
+
+// classifyWithSubstitutions classifies a command that contains $(...) command
+// substitutions. Each inner command is independently classified, and the outer
+// command (with substitutions stripped) is also classified. The aggregate
+// verdict applies: any Block → Block, any Confirm → Confirm, all Allow → Allow.
+func (p CommandPolicy) classifyWithSubstitutions(originalCommand string, subs []string) Classification {
+	reasons := make([]string, 0, len(subs)+1)
+
+	// Classify each inner substitution command.
+	var worst Classification
+	for i, sub := range subs {
+		c := p.classifyOne(peelWrappers(sub))
+		reasons = append(reasons, "$("+sub+") → "+c.Reason)
+		if i == 0 {
+			worst = c
+		} else if c.Decision == Block || worst.Decision == Block {
+			worst.Decision = Block
+		} else if c.Decision == Confirm || worst.Decision == Confirm {
+			worst.Decision = Confirm
+		}
+	}
+
+	// Classify the outer command with $() stripped.
+	stripped := stripSubstitutions(originalCommand)
+	if stripped != "" && stripped != originalCommand {
+		outer := p.Classify(stripped)
+		reasons = append(reasons, "outer: "+outer.Reason)
+		if outer.Decision == Block || worst.Decision == Block {
+			worst.Decision = Block
+		} else if outer.Decision == Confirm || worst.Decision == Confirm {
+			worst.Decision = Confirm
+		}
+	}
+
+	worst.Command = originalCommand
+	worst.Reason = "command substitution (" + strings.Join(reasons, "; ") + ")"
+	return worst
+}
+
+// stripSubstitutions removes all $(...) command substitutions from a command,
+// replacing each with a placeholder so the outer structure remains intact.
+func stripSubstitutions(command string) string {
+	var b strings.Builder
+	inSingle, inDouble := false, false
+	i := 0
+	for i < len(command) {
+		r := rune(command[i])
+		switch {
+		case inSingle:
+			if r == '\'' { inSingle = false }
+			b.WriteRune(r); i++
+		case inDouble:
+			if strings.HasPrefix(command[i:], "$(") {
+				_, end := extractBracketContent(command[i+2:])
+				b.WriteString("''")
+				i += 2 + end + 1
+			} else {
+				if r == '"' { inDouble = false }
+				b.WriteRune(r); i++
+			}
+		case r == '\'':
+			inSingle = true; b.WriteRune(r); i++
+		case r == '"':
+			inDouble = true; b.WriteRune(r); i++
+		case strings.HasPrefix(command[i:], "$("):
+			_, end := extractBracketContent(command[i+2:])
+			b.WriteString("''") // placeholder so adjacent tokens don't merge
+			i += 2 + end + 1
+		default:
+			b.WriteRune(r); i++
+		}
+	}
+	return strings.TrimSpace(b.String())
 }
 
 // classifyOne classifies a single (non-compound, non-wrapper) command through

@@ -12,7 +12,7 @@ import (
 //
 // NOTE: single "&" (backgrounding) remains rejected. "|" is only rejected when
 // it's NOT part of "||" or "|&".
-var shellOperators = []string{"$(", "`", "\n", "&"}
+var shellOperators = []string{"`", "\n", "&"}
 
 // ContainsShellOperators reports whether the command *structure* uses shell
 // control operators that are NOT supported by Phases A/B. Supported operators
@@ -392,4 +392,69 @@ func skipEnvArgs(s string) string {
 		}
 		s = s[idx+1:]
 	}
+}
+
+// extractCommandSubstitutions finds all $(...) command substitutions in a shell
+// command (outside quotes) and returns their inner command strings. Nested $()
+// is handled via bracket counting.
+func extractCommandSubstitutions(command string) []string {
+	var results []string
+	inSingle, inDouble := false, false
+	i := 0
+	for i < len(command) {
+		r := rune(command[i])
+		switch {
+		case inSingle:
+			if r == '\'' { inSingle = false }
+			i++
+		case inDouble:
+			// $() IS expanded inside double quotes in a real shell.
+			if strings.HasPrefix(command[i:], "$(") {
+				inner, end := extractBracketContent(command[i+2:])
+				if inner != "" {
+					results = append(results, strings.TrimSpace(inner))
+				}
+				i += 2 + end + 1
+			} else {
+				if r == '"' { inDouble = false }
+				i++
+			}
+		case r == '\'':
+			inSingle = true; i++
+		case r == '"':
+			inDouble = true; i++
+		case strings.HasPrefix(command[i:], "$("):
+			inner, end := extractBracketContent(command[i+2:])
+			if inner != "" {
+				results = append(results, strings.TrimSpace(inner))
+			}
+			i += 2 + end + 1
+		default:
+			i++
+		}
+	}
+	return results
+}
+
+func extractBracketContent(s string) (string, int) {
+	depth := 1
+	inSingle, inDouble := false, false
+	for i, r := range s {
+		switch {
+		case inSingle:
+			if r == '\'' { inSingle = false }
+		case inDouble:
+			if r == '"' { inDouble = false }
+		case r == '\'':
+			inSingle = true
+		case r == '"':
+			inDouble = true
+		case r == '(':
+			depth++
+		case r == ')':
+			depth--
+			if depth == 0 { return s[:i], i }
+		}
+	}
+	return "", 0
 }
