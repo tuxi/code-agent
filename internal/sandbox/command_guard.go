@@ -12,7 +12,7 @@ import (
 //
 // NOTE: single "&" (backgrounding) remains rejected. "|" is only rejected when
 // it's NOT part of "||" or "|&".
-var shellOperators = []string{"`", "\n", "&"}
+var shellOperators = []string{"\n", "&"}
 
 // ContainsShellOperators reports whether the command *structure* uses shell
 // control operators that are NOT supported by Phases A/B. Supported operators
@@ -554,4 +554,47 @@ func ContainsAssignment(command string) bool {
 func ContainsRedirect(command string) bool {
 	structure := unquotedStructure(command)
 	return strings.Contains(structure, ">") || strings.Contains(structure, "<")
+}
+
+// ConvertBackticks converts backtick command substitution `cmd` to $(cmd) so
+// the existing $() extraction and classification pipeline handles it.
+// Backticks inside single quotes are left unchanged (not expanded by shell).
+func ConvertBackticks(command string) string {
+	if !strings.Contains(command, "`") {
+		return command
+	}
+	var b strings.Builder
+	inSingle := false
+	i := 0
+	for i < len(command) {
+		r := rune(command[i])
+		switch {
+		case inSingle:
+			if r == '\'' { inSingle = false }
+			b.WriteRune(r)
+			i++
+		case r == '\'':
+			inSingle = true
+			b.WriteRune(r)
+			i++
+		case r == '`':
+			// Found an opening backtick. Find the matching closing backtick.
+			end := strings.IndexRune(command[i+1:], '`')
+			if end < 0 {
+				// Unterminated — keep as-is.
+				b.WriteRune(r)
+				i++
+			} else {
+				inner := command[i+1 : i+1+end]
+				b.WriteString("$(")
+				b.WriteString(inner)
+				b.WriteString(")")
+				i += end + 2
+			}
+		default:
+			b.WriteRune(r)
+			i++
+		}
+	}
+	return b.String()
 }

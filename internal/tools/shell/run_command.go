@@ -117,8 +117,8 @@ func shellOperatorHint(command string) string {
 	case strings.Contains(command, "cd "):
 		return "no `cd`: commands run from the workspace root. " +
 			"Pass a path instead, e.g. `go vet ./cmd/foo/` rather than `cd cmd/foo && go vet`."
-	case strings.Contains(command, "`"):
-		return "no backticks for command substitution. Use $(...) instead — e.g. `echo $(date)`."
+	case strings.Contains(command, "\n"):
+		return "no newlines in commands. Use && to chain — e.g. `go build && go test`."
 	default:
 		return "command contains unsupported shell operators. " +
 			"Tip: you CAN use &&, ;, |, ||, and > for chaining, pipes, and output redirection."
@@ -136,6 +136,10 @@ func (t *RunCommandTool) Execute(ctx context.Context, ec tools.ExecutionContext,
 	if command == "" {
 		return tools.ToolResult{}, fmt.Errorf("command is required")
 	}
+
+	// Convert backtick command substitution `cmd` to $(cmd) so it flows
+	// through the existing $() extraction and classification pipeline.
+	command = sandbox.ConvertBackticks(command)
 
 	class := t.Policy.Classify(command)
 

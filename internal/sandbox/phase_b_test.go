@@ -113,8 +113,7 @@ func TestChainOperatorsPassShellCheck(t *testing.T) {
 
 	// Still rejected.
 	rejected := []string{
-		"a & b",       // backgrounding
-		"echo `date`",  // backticks (still rejected)
+		"a & b", // backgrounding (still rejected)
 	}
 	for _, c := range rejected {
 		if !ContainsShellOperators(c) {

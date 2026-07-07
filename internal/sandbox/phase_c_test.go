@@ -105,18 +105,10 @@ func TestClassifyWrappersBackstop(t *testing.T) {
 	}
 }
 
-func TestCommandSubstitutionStillRejected(t *testing.T) {
-	// $() and backticks must STILL be rejected by ContainsShellOperators.
-	// $() and backticks OUTSIDE quotes are still rejected. Inside double quotes,
-	// unquotedStructure strips them (known limitation — ASCII-level only).
-	// Only backticks remain rejected. $() is now supported.
-	rejected := []string{
-		"echo `date`",
-	}
-	for _, c := range rejected {
-		if !ContainsShellOperators(c) {
-			t.Errorf("ContainsShellOperators(%q) = false, want true (still rejected)", c)
-		}
+func TestBackticksNowSupported(t *testing.T) {
+	// Backticks are now converted to $() and supported.
+	if ContainsShellOperators("echo `date`") {
+		t.Error("backticks should now be supported, not rejected")
 	}
 }
 
