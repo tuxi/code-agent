@@ -347,6 +347,23 @@ func stripSubstitutions(command string) string {
 // classifyOne classifies a single (non-compound, non-wrapper) command through
 // the full pipeline: blocked patterns → dangerous tokens → prefix match.
 func (p CommandPolicy) classifyOne(cmd string) Classification {
+	// 0. Strip safe variable assignments (e.g. GOOS=linux) from the beginning
+	//    of the command so the actual command is what gets classified. Dangerous
+	//    assignments stay — they are escalated to Confirm below.
+	trimmed := stripSafeAssignments(cmd)
+	if trimmed != cmd {
+		// Reclassify the trimmed command. If the assignment was dangerous,
+		// the escalation check at step 4 below handles it.
+		result := p.classifyOne(trimmed)
+		// Check the ORIGINAL command for dangerous assignments.
+		if v, ok := hasDangerousAssignment(cmd); ok && result.Decision == Allow {
+			result.Decision = Confirm
+			result.Reason = "dangerous env var " + v + " — needs confirmation"
+		}
+		result.Command = cmd
+		return result
+	}
+
 	// 1. Catastrophic patterns are refused no matter what else matches. The match
 	//    runs against the command's structure (quoted argument contents removed),
 	//    so a commit message that merely *mentions* "rm -rf /" is not blocked —
@@ -373,14 +390,26 @@ func (p CommandPolicy) classifyOne(cmd string) Classification {
 	allowPfx := longestPrefixMatch(cmd, p.AllowedCommands)
 	confirmPfx := longestPrefixMatch(cmd, p.RequiresConfirm)
 
+	var result Classification
 	switch {
 	case allowPfx != "" && len(allowPfx) >= len(confirmPfx):
-		return Classification{Command: cmd, Decision: Allow, Level: p.levelOf(allowPfx), Reason: "allowed: " + allowPfx}
+		result = Classification{Command: cmd, Decision: Allow, Level: p.levelOf(allowPfx), Reason: "allowed: " + allowPfx}
 	case confirmPfx != "":
-		return Classification{Command: cmd, Decision: Confirm, Level: p.levelOf(confirmPfx), Reason: "needs confirmation: " + confirmPfx}
+		result = Classification{Command: cmd, Decision: Confirm, Level: p.levelOf(confirmPfx), Reason: "needs confirmation: " + confirmPfx}
 	default:
-		return Classification{Command: cmd, Decision: Confirm, Level: LevelUnknown, Reason: "unrecognized command; needs confirmation"}
+		result = Classification{Command: cmd, Decision: Confirm, Level: LevelUnknown, Reason: "unrecognized command; needs confirmation"}
 	}
+
+	// 4. Variable scope tracking: dangerous env var assignments (PATH=,
+	//    LD_PRELOAD=, etc.) escalate Allow → Confirm so the user sees them.
+	if result.Decision == Allow {
+		if v, ok := hasDangerousAssignment(cmd); ok {
+			result.Decision = Confirm
+			result.Reason = "dangerous env var " + v + " — needs confirmation"
+		}
+	}
+
+	return result
 }
 
 func (p CommandPolicy) levelOf(prefix string) Level {

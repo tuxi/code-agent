@@ -458,3 +458,75 @@ func extractBracketContent(s string) (string, int) {
 	}
 	return "", 0
 }
+
+// dangerousEnvVars are environment variables that can alter program behavior
+// in dangerous ways when set before a command. Setting any of these escalates
+// the classification: Allow → Confirm, so the user sees the assignment before
+// it executes. Mirrors Claude Code's env-var intercept list.
+var dangerousEnvVars = []string{
+	"PATH",
+	"LD_PRELOAD", "LD_LIBRARY_PATH",
+	"DYLD_INSERT_LIBRARIES", "DYLD_LIBRARY_PATH",
+	"PYTHONPATH", "RUBYOPT", "RUBYLIB",
+	"PERL5LIB", "PERLLIB",
+	"BASH_ENV", "ENV", "SHELLOPTS",
+	"GIT_EXEC_PATH", "GIT_TEMPLATE_DIR",
+	"NPM_CONFIG_REGISTRY", "YARN_REGISTRY",
+	"PIP_INDEX_URL", "PIP_TRUSTED_HOST",
+}
+
+// hasDangerousAssignment checks whether a command starts with dangerous VAR=val
+// assignments. It returns true and the variable name if found.
+func hasDangerousAssignment(command string) (string, bool) {
+	cmd := strings.TrimSpace(command)
+	for {
+		idx := strings.IndexAny(cmd, " \t")
+		word := cmd
+		if idx >= 0 {
+			word = cmd[:idx]
+		}
+		// Check if this word looks like VAR=val (contains '=' and not a flag).
+		if strings.Contains(word, "=") && !strings.HasPrefix(word, "-") {
+			varName := word[:strings.Index(word, "=")]
+			for _, d := range dangerousEnvVars {
+				if strings.EqualFold(varName, d) {
+					return d, true
+				}
+			}
+			// Not dangerous — skip to next assignment.
+			if idx < 0 {
+				return "", false
+			}
+			cmd = strings.TrimSpace(cmd[idx:])
+			continue
+		}
+		// Not an assignment — stop checking.
+		return "", false
+	}
+}
+
+// stripSafeAssignments removes VAR=val assignments from the beginning of a
+// command when VAR is NOT a dangerous env var. This lets "GOOS=linux go build"
+// classify as "go build" rather than being unrecognized.
+func stripSafeAssignments(command string) string {
+	cmd := strings.TrimSpace(command)
+	for {
+		idx := strings.IndexAny(cmd, " \t")
+		word := cmd
+		if idx >= 0 {
+			word = cmd[:idx]
+		}
+		if strings.Contains(word, "=") && !strings.HasPrefix(word, "-") {
+			if _, dangerous := hasDangerousAssignment(word); dangerous {
+				return command // don't strip — let the escalation handle it
+			}
+			// Safe assignment — strip it.
+			if idx < 0 {
+				return strings.TrimSpace(cmd[len(word):])
+			}
+			cmd = strings.TrimSpace(cmd[idx:])
+			continue
+		}
+		return cmd // not an assignment, stop
+	}
+}
