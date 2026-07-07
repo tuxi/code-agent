@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -86,8 +87,9 @@ func (t *RunCommandTool) Description() string {
 		"Read-only and build commands (ls, cat, grep, git status/diff/log, go build/test/vet, cargo check) run directly; " +
 		"commands that mutate the tree or reach the network (rm, mv, curl, git checkout/commit/push) require user confirmation; " +
 		"a few catastrophic commands are blocked. " +
-		"ONE command line — NO pipes (|), redirection (>, 2>&1), or backgrounding (&). " +
-		"Chain with && or ; — e.g. `go build ./... && go test ./...` or `git add .; git commit -m wip`. " +
+		"ONE command line — NO backgrounding (&). " +
+		"Chain with &&, ;, |, || — e.g. `go build ./... && go test ./... | grep FAIL` or `git add .; git commit -m wip`. " +
+		"Redirect with > — e.g. `go test ./... > /tmp/out`. " +
 		"Still: (1) the command runs from the workspace ROOT, so pass a path argument rather than `cd`; " +
 		"(2) output is already captured and truncated for you, so DON'T pipe to head/tail/grep — just run the bare command and read the result; " +
 		"(3) to filter, run the tool's own flag (e.g. `go test -run TestName`) rather than piping. " +
@@ -115,13 +117,13 @@ func shellOperatorHint(command string) string {
 	case strings.Contains(command, "cd "):
 		return "no `cd`: commands run from the workspace root. " +
 			"Pass a path instead, e.g. `go vet ./cmd/foo/` rather than `cd cmd/foo && go vet`."
-	case strings.Contains(command, "|"), strings.Contains(command, "2>"), strings.Contains(command, ">"):
-		return "no pipes or redirection (|, >, 2>&1): the full output is already captured and truncated for you. " +
-			"Run the bare command (no `| head`/`| grep`); use the tool's own filter flag if you need less output. " +
-			"Tip: you CAN chain commands with && or ; — e.g. `go build ./... && go test ./...`."
+	case strings.Contains(command, "$("), strings.Contains(command, "`"):
+		return "no command substitution ($(...) or backticks). Use a separate run_command call."
+	case strings.Contains(command, "<") && !strings.Contains(command, "2>&"):
+		return "no input redirection (<). Read the file with the read_file tool instead."
 	default:
-		return "pipes, redirection, and backgrounding (&) are not supported. " +
-			"Tip: you CAN chain commands with && or ; — e.g. `go build ./... && go test ./...`."
+		return "command contains unsupported shell operators. " +
+			"Tip: you CAN use &&, ;, |, ||, and > for chaining, pipes, and output redirection."
 	}
 }
 
@@ -255,7 +257,7 @@ func (t *RunCommandTool) Execute(ctx context.Context, ec tools.ExecutionContext,
 	return t.result(res)
 }
 
-// executeShell runs cmd via sh -c for compound commands (Phase A). It skips the
+// executeShell runs cmd via sh -c for compound commands (Phase A/B). It skips the
 // single-program guards (outsideWorkspaceRead, shell operator rejection) because
 // safety is handled by classifyChain() during classification.
 func (t *RunCommandTool) executeShell(ctx context.Context, ec tools.ExecutionContext, in runCommandInput, command string, class sandbox.Classification) (tools.ToolResult, error) {
@@ -264,13 +266,24 @@ func (t *RunCommandTool) executeShell(ctx context.Context, ec tools.ExecutionCon
 		return tools.ToolResult{}, err
 	}
 
+	// Redirect target safety check (Phase B): extract > and >> targets and
+	// validate them against workspace boundaries and protected paths.
+	// >/dev/null and 2>&1 are always safe.
+	if note := checkRedirectTargets(command, rootAbs); note != "" {
+		return t.result(commandResult{
+			Command:  command,
+			ExitCode: -1,
+			Decision: string(class.Decision),
+			Note:     note,
+		})
+	}
+
 	// Background: launch via sh -c in a background job.
 	if in.Background {
 		if t.Jobs == nil {
 			t.Jobs = jobs.NewRegistry()
 		}
 		owner := jobs.Owner{SessionID: ec.SessionID, TurnID: ec.TurnID, CallID: ec.CallID}
-		// Use sh -c to interpret the compound command.
 		snap := t.Jobs.Start(rootAbs, "sh", []string{"-c", command}, owner).Snapshot()
 		return t.jsonResult(backgroundResult{
 			Command:  command,
@@ -378,6 +391,112 @@ func (w *streamWriter) Write(p []byte) (int, error) {
 		w.stream(s)
 	}
 	return len(p), nil
+}
+
+// redirectPatterns matches shell redirect operators that write to files.
+// 2>&1 and &> are handled separately — they merge streams and are always safe.
+var redirectPatterns = []string{">>", ">", "2>", "&>"}
+
+// checkRedirectTargets validates file targets of shell redirect operators.
+// >/dev/null and 2>&1 are always safe. Redirects to protected paths (secrets,
+// .git, .ssh) are blocked. Redirects to paths outside the workspace are noted
+// but not blocked. Returns "" if all redirect targets are safe.
+func checkRedirectTargets(command, rootAbs string) string {
+	// Walk the command, tracking quote state, to find redirect targets.
+	inSingle, inDouble := false, false
+	i := 0
+	for i < len(command) {
+		r := rune(command[i])
+		switch {
+		case inSingle:
+			if r == '\'' {
+				inSingle = false
+			}
+			i++
+		case inDouble:
+			if r == '"' {
+				inDouble = false
+			}
+			i++
+		case r == '\'':
+			inSingle = true
+			i++
+		case r == '"':
+			inDouble = true
+			i++
+		default:
+			// Check for redirect operator.
+			for _, op := range redirectPatterns {
+				if strings.HasPrefix(command[i:], op) {
+					rest := strings.TrimSpace(command[i+len(op):])
+					// Extract the target: everything up to the next space, operator, or end-of-string.
+					target := rest
+					if idx := strings.IndexAny(rest, " |;&\n\t"); idx >= 0 {
+						target = rest[:idx]
+					}
+					target = strings.TrimSpace(target)
+					if target == "" {
+						break
+					}
+					if note := validateRedirectTarget(target, rootAbs); note != "" {
+						return note
+					}
+					i += len(op) // skip past the operator
+					break
+				}
+			}
+			i++
+		}
+	}
+	return ""
+}
+
+// validateRedirectTarget checks a single redirect target path. Returns ""
+// if safe, or a human-readable refusal note if the target is not allowed.
+func validateRedirectTarget(target, rootAbs string) string {
+	// /dev/null, /dev/stdout, /dev/stderr — always safe.
+	t := strings.TrimSpace(target)
+	if t == "/dev/null" || t == "/dev/stdout" || t == "/dev/stderr" || t == "/dev/tty" {
+		return ""
+	}
+	// 2>&1 style (merge stderr to stdout) — always safe, no file target.
+	if t == "&1" || t == "&2" {
+		return ""
+	}
+	// &> style with /dev/null — safe.
+	if strings.HasPrefix(t, "/dev/") {
+		return ""
+	}
+
+	// Resolve the target path: if relative, join with workspace root; if absolute, use as-is.
+	var absTarget string
+	var err error
+	if filepath.IsAbs(t) {
+		absTarget = filepath.Clean(t)
+	} else {
+		absTarget, err = filepath.Abs(filepath.Join(rootAbs, filepath.Clean(t)))
+		if err != nil {
+			return fmt.Sprintf("redirect target %q could not be resolved", t)
+		}
+	}
+
+	// Block redirects to protected paths.
+	if sandbox.IsPathProtected(t, sandbox.ProtectedPaths(nil)) {
+		return fmt.Sprintf("redirect refused: target %q is a protected path", t)
+	}
+
+	// Note: workspace boundary check is informational only — we don't block
+	// redirects outside the workspace (e.g., > /tmp/log) since they are common
+	// for build output and logging.
+	_ = absTarget
+
+	// Block redirects to obvious security-sensitive locations.
+	home, _ := os.UserHomeDir()
+	if home != "" && strings.HasPrefix(absTarget, filepath.Join(home, ".ssh")) {
+		return fmt.Sprintf("redirect refused: target %q is in ~/.ssh", t)
+	}
+
+	return ""
 }
 
 func outsideWorkspaceRead(args []string, rootAbs string) string {

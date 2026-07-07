@@ -5,41 +5,47 @@ import (
 	"strings"
 )
 
-// shellOperators are metacharacters that only a shell interprets. && and ; are
-// now supported via sh -c execution with per-subcommand classification (Phase A);
-// the remaining operators (pipe, single &, redirect, command substitution) are
-// still rejected — they require further safety work (Phases B/C).
+// shellOperators are metacharacters that only a shell interprets. Phase A opened
+// && and ; via sh -c; Phase B adds |, ||, and >, >>, 2>&1.
+// The remaining operators (<, $(), backticks, \n, single &) are still rejected.
 //
-// NOTE: "&" (single ampersand, backgrounding) remains rejected. It is listed
-// before "&&" so the longer match in ContainsChainOperators takes priority.
-var shellOperators = []string{"|", "&", ">", "<", "$(", "`", "\n"}
+// NOTE: single "&" (backgrounding) remains rejected. "|" is only rejected when
+// it's NOT part of "||" or "|&".
+var shellOperators = []string{"<", "$(", "`", "\n", "&"}
 
 // ContainsShellOperators reports whether the command *structure* uses shell
-// control operators that are NOT supported by Phase A. Chain operators (&& and ;)
-// are excluded from this check — they are handled by classifyChain and sh -c.
+// control operators that are NOT supported by Phases A/B. Supported operators
+// (&&, ;, |, ||, >, >>, 2>&1) are excluded from this check.
 func ContainsShellOperators(command string) bool {
 	structure := unquotedStructure(command)
 	for _, op := range shellOperators {
-		if strings.Contains(structure, op) {
-			// "&" matches both "&&" and "&". Skip the match when it's part of "&&".
-			if op == "&" && strings.Contains(structure, "&&") {
-				// Only flag "&" when it's NOT part of "&&".
-				// Remove all "&&" occurrences and check for remaining "&".
-				cleaned := strings.ReplaceAll(structure, "&&", "")
-				if !strings.Contains(cleaned, "&") {
-					continue
-				}
-			}
-			return true
+		idx := strings.Index(structure, op)
+		if idx < 0 {
+			continue
 		}
+		// "&" (single) should not match "&&". Remove "&&" occurrences first.
+		if op == "&" {
+			cleaned := strings.ReplaceAll(structure, "&&", "")
+			if !strings.Contains(cleaned, "&") {
+				continue
+			}
+		}
+		return true
 	}
 	return false
 }
 
-// chainOperators are the subset of shell operators that Phase A supports:
-// && (conditional and) and ; (sequential separator). These trigger sh -c
-// execution with per-subcommand safety classification.
-var chainOperators = []string{"&&", ";"}
+// chainOperators are the subset of shell operators that sh -c execution supports
+// with per-subcommand safety classification:
+//
+//	&&   conditional and (Phase A)
+//	;    sequential separator (Phase A)
+//	|    pipe — stdout of left feeds stdin of right (Phase B)
+//	||   conditional or (Phase B)
+//
+// Note: "|" must appear after "||" in this list so splitByOperators tries the
+// longer match first.
+var chainOperators = []string{"&&", "||", "|", ";"}
 
 // ContainsShellOperators reports whether the command *structure* uses shell
 // control operators (pipes, redirection, command substitution, chaining).
@@ -151,9 +157,9 @@ func matchesPrefix(command, prefix string) bool {
 	return strings.HasPrefix(command, prefix+" ")
 }
 
-// ContainsChainOperators reports whether the command structure uses && or ;
-// (outside quotes). These are safe to execute via sh -c with per-subcommand
-// safety classification — unlike pipes and redirects which are still rejected.
+// ContainsChainOperators reports whether the command structure uses &&, ;, |, or
+// || (outside quotes). These trigger sh -c execution with per-subcommand safety
+// classification.
 func ContainsChainOperators(command string) bool {
 	structure := unquotedStructure(command)
 	for _, op := range chainOperators {
@@ -164,12 +170,14 @@ func ContainsChainOperators(command string) bool {
 	return false
 }
 
-// splitByOperators splits a command on && and ; outside of quoted spans. It
-// returns the trimmed subcommands in order and the operators between them.
-// For example:
+// splitByOperators splits a command on &&, ;, |, and || outside of quoted spans.
+// It returns the trimmed subcommands in order and the operators between them.
+//
+// Examples:
 //
 //	"go build && go test"       → ["go build", "go test"], ["&&"]
-//	"git add .; git commit -m wip" → ["git add .", "git commit -m wip"], [";"]
+//	"go test | grep FAIL"       → ["go test", "grep FAIL"], ["|"]
+//	"go build || echo failed"   → ["go build", "echo failed"], ["||"]
 //
 // Operators inside quotes are treated as literal text and do NOT split.
 // Trailing operators are ignored.
@@ -209,8 +217,14 @@ func splitByOperators(command string) (subcommands []string, operators []string)
 		case strings.HasPrefix(cmd[i:], "&&"):
 			points = append(points, splitPoint{pos: i, op: "&&"})
 			i += 2
+		case strings.HasPrefix(cmd[i:], "||"):
+			points = append(points, splitPoint{pos: i, op: "||"})
+			i += 2
 		case r == ';':
 			points = append(points, splitPoint{pos: i, op: ";"})
+			i++
+		case r == '|':
+			points = append(points, splitPoint{pos: i, op: "|"})
 			i++
 		default:
 			i++
@@ -246,10 +260,20 @@ func splitByOperators(command string) (subcommands []string, operators []string)
 // all Allow → Allow. If splitting fails (unterminated quote etc.), it falls
 // back to classifying the whole command as a single unit.
 func (p CommandPolicy) classifyChain(command string) Classification {
-	subs, ops := splitByOperators(command)
+	// Pre-check: run P2 dangerous pattern detection on the FULL command before
+	// splitting. Patterns like "curl ... | bash" or "cat .env |" span across
+	// pipe operators and would be missed by per-subcommand classification.
+	cmd := strings.TrimSpace(command)
+	if args, err := SplitArgs(cmd); err == nil {
+		if dp, ok := matchDangerousTokens(args); ok {
+			return Classification{Command: cmd, Decision: Block, Level: LevelFullShell, Reason: "dangerous pattern: " + dp.desc}
+		}
+	}
+
+	subs, ops := splitByOperators(cmd)
 	if len(subs) <= 1 {
 		// No operators found or only one subcommand — classify normally.
-		return p.Classify(command)
+		return p.Classify(cmd)
 	}
 
 	var worst Classification

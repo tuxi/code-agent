@@ -170,9 +170,9 @@ line two"`,
 		}
 	}
 
-	// Real, unquoted operators are still detected.
-	if !ContainsShellOperators("cat a.txt | grep x") {
-		t.Error("ContainsShellOperators(cat a.txt | grep x) = false, want true")
+	// Real, unquoted operators that are still rejected (Phase B opened | and >).
+	if !ContainsShellOperators("cat a.txt < /dev/stdin") {
+		t.Error("ContainsShellOperators(cat a.txt < /dev/stdin) = false, want true")
 	}
 }
 
@@ -204,8 +204,8 @@ func TestSplitArgs(t *testing.T) {
 }
 
 func TestContainsShellOperators(t *testing.T) {
-	// Operators still rejected by ContainsShellOperators (Phase A opened && and ;).
-	with := []string{"a | b", "a > out.txt", "cat < in", "echo $(date)", "a `b`", "a & b"}
+	// Operators still rejected by ContainsShellOperators (Phase A/B opened &&, ;, |, ||, >).
+	with := []string{"cat < in", "echo $(date)", "a `b`", "a & b"}
 	for _, c := range with {
 		if !ContainsShellOperators(c) {
 			t.Errorf("ContainsShellOperators(%q) = false, want true", c)
