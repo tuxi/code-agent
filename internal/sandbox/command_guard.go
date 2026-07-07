@@ -530,3 +530,11 @@ func stripSafeAssignments(command string) string {
 		return cmd // not an assignment, stop
 	}
 }
+
+// ContainsCommandSubstitution reports whether the command structure contains
+// $(...) command substitution (outside single quotes). It is used to route
+// commands that need shell expansion to the sh -c execution path.
+func ContainsCommandSubstitution(command string) bool {
+	structure := unquotedStructure(command)
+	return strings.Contains(structure, "$(")
+}
