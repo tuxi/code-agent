@@ -279,7 +279,7 @@ func (p CommandPolicy) classifyChain(command string) Classification {
 	var worst Classification
 	reasons := make([]string, 0, len(subs))
 	for i, sub := range subs {
-		c := p.Classify(sub)
+		c := p.classifyOne(peelWrappers(sub))
 		reasons = append(reasons, c.Reason)
 		_ = ops // operators don't affect the verdict; only subcommands matter
 
@@ -301,4 +301,94 @@ func (p CommandPolicy) classifyChain(command string) Classification {
 	worst.Command = command
 	worst.Reason = "compound command (" + strings.Join(reasons, "; ") + ")"
 	return worst
+}
+
+// safeWrappers are commands that modify HOW another command runs without changing
+// WHAT it does. They are stripped before classification so the inner command is
+// what gets classified. Wrapper flags (durations, env vars, signal masks) are
+// irrelevant to safety.
+var safeWrappers = []string{
+	"timeout", // timeout 30s cmd → classify cmd
+	"time",    // time cmd → classify cmd
+	"env",     // env VAR=val cmd → classify cmd
+	"nohup",   // nohup cmd → classify cmd
+	"nice",    // nice -n 10 cmd → classify cmd
+	"sudo",    // sudo cmd → classify cmd
+	"stdbuf",  // stdbuf -oL cmd → classify cmd
+}
+
+// peelWrappers recursively strips known safe wrappers from a command, returning
+// the inner command that should be classified. Non-wrapped commands are returned
+// unchanged.
+func peelWrappers(command string) string {
+	cmd := strings.TrimSpace(command)
+	for {
+		found := false
+		for _, w := range safeWrappers {
+			if cmd == w || strings.HasPrefix(cmd, w+" ") {
+				rest := strings.TrimSpace(cmd[len(w):])
+				if rest == "" {
+					return cmd
+				}
+				switch w {
+				case "timeout":
+					rest = skipFirstArg(rest) // skip duration
+				case "env":
+					rest = skipEnvArgs(rest) // skip VAR=val assignments
+				case "nice":
+					if strings.HasPrefix(rest, "-n ") {
+						rest = skipFirstArg(skipFirstArg(rest)) // skip -n and value
+					} else if strings.HasPrefix(rest, "-") {
+						rest = skipFirstArg(rest)
+					}
+				case "stdbuf":
+					for strings.HasPrefix(rest, "-") {
+						rest = skipFirstArg(rest)
+					}
+				case "sudo":
+					for strings.HasPrefix(rest, "-") {
+						// flag-with-value: skip flag and its argument
+						rest = skipFirstArg(skipFirstArg(rest))
+					}
+					if strings.HasPrefix(rest, "-- ") {
+						rest = rest[3:]
+					}
+				}
+				cmd = strings.TrimSpace(rest)
+				found = true
+				break
+			}
+		}
+		if !found {
+			break
+		}
+	}
+	return cmd
+}
+
+func skipFirstArg(s string) string {
+	s = strings.TrimSpace(s)
+	idx := strings.IndexAny(s, " \t")
+	if idx < 0 {
+		return ""
+	}
+	return strings.TrimSpace(s[idx:])
+}
+
+func skipEnvArgs(s string) string {
+	for {
+		s = strings.TrimSpace(s)
+		idx := strings.IndexAny(s, " \t")
+		if idx < 0 {
+			if strings.Contains(s, "=") {
+				return ""
+			}
+			return s
+		}
+		word := s[:idx]
+		if !strings.Contains(word, "=") {
+			return s
+		}
+		s = s[idx+1:]
+	}
 }

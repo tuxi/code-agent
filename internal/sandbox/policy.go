@@ -176,12 +176,27 @@ func (p CommandPolicy) Classify(command string) Classification {
 		return Classification{Command: cmd, Decision: Block, Level: LevelUnknown, Reason: "empty command"}
 	}
 
-	// 0. Compound commands (Phase A): split on && / ; and classify each
+	// 0. Wrapper peeling (Phase C): strip known safe wrappers (timeout, env,
+	//    sudo, etc.) and classify the inner command. The original command is
+	//    preserved for display.
+	if peeled := peelWrappers(cmd); peeled != cmd {
+		inner := p.classifyOne(peeled)
+		inner.Command = cmd
+		return inner
+	}
+
+	// 1. Compound commands (Phase A/B): split on && ; | || and classify each
 	//    subcommand independently. The strictest verdict wins.
 	if ContainsChainOperators(cmd) {
 		return p.classifyChain(cmd)
 	}
 
+	return p.classifyOne(cmd)
+}
+
+// classifyOne classifies a single (non-compound, non-wrapper) command through
+// the full pipeline: blocked patterns → dangerous tokens → prefix match.
+func (p CommandPolicy) classifyOne(cmd string) Classification {
 	// 1. Catastrophic patterns are refused no matter what else matches. The match
 	//    runs against the command's structure (quoted argument contents removed),
 	//    so a commit message that merely *mentions* "rm -rf /" is not blocked —
