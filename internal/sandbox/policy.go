@@ -176,6 +176,12 @@ func (p CommandPolicy) Classify(command string) Classification {
 		return Classification{Command: cmd, Decision: Block, Level: LevelUnknown, Reason: "empty command"}
 	}
 
+	// 0. Compound commands (Phase A): split on && / ; and classify each
+	//    subcommand independently. The strictest verdict wins.
+	if ContainsChainOperators(cmd) {
+		return p.classifyChain(cmd)
+	}
+
 	// 1. Catastrophic patterns are refused no matter what else matches. The match
 	//    runs against the command's structure (quoted argument contents removed),
 	//    so a commit message that merely *mentions* "rm -rf /" is not blocked —

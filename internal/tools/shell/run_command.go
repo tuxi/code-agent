@@ -86,8 +86,9 @@ func (t *RunCommandTool) Description() string {
 		"Read-only and build commands (ls, cat, grep, git status/diff/log, go build/test/vet, cargo check) run directly; " +
 		"commands that mutate the tree or reach the network (rm, mv, curl, git checkout/commit/push) require user confirmation; " +
 		"a few catastrophic commands are blocked. " +
-		"ONE plain command per call — NO pipes (|), redirection (>, 2>&1), or chaining (&&, ;). " +
-		"Instead: (1) the command runs from the workspace ROOT, so pass a path argument rather than `cd` (use `go vet ./cmd/foo/`, not `cd cmd/foo && go vet`); " +
+		"ONE command line — NO pipes (|), redirection (>, 2>&1), or backgrounding (&). " +
+		"Chain with && or ; — e.g. `go build ./... && go test ./...` or `git add .; git commit -m wip`. " +
+		"Still: (1) the command runs from the workspace ROOT, so pass a path argument rather than `cd`; " +
 		"(2) output is already captured and truncated for you, so DON'T pipe to head/tail/grep — just run the bare command and read the result; " +
 		"(3) to filter, run the tool's own flag (e.g. `go test -run TestName`) rather than piping. " +
 		`Set "background": true for a long build/test that would otherwise block — you get a job_id back immediately; then poll job_status / job_logs, or stop it with job_cancel.`
@@ -111,14 +112,16 @@ func (t *RunCommandTool) InputSchema() json.RawMessage {
 // retry the same broken shape.
 func shellOperatorHint(command string) string {
 	switch {
-	case strings.Contains(command, "&&") || strings.Contains(command, ";") || strings.Contains(command, "cd "):
-		return "no command chaining (&&, ;) — and no `cd`: commands run from the workspace root. " +
+	case strings.Contains(command, "cd "):
+		return "no `cd`: commands run from the workspace root. " +
 			"Pass a path instead, e.g. `go vet ./cmd/foo/` rather than `cd cmd/foo && go vet`."
 	case strings.Contains(command, "|"), strings.Contains(command, "2>"), strings.Contains(command, ">"):
 		return "no pipes or redirection (|, >, 2>&1): the full output is already captured and truncated for you. " +
-			"Run the bare command (no `| head`/`| grep`); use the tool's own filter flag if you need less output."
+			"Run the bare command (no `| head`/`| grep`); use the tool's own filter flag if you need less output. " +
+			"Tip: you CAN chain commands with && or ; — e.g. `go build ./... && go test ./...`."
 	default:
-		return "pipes, redirection, and chaining are not supported; run one plain command from the workspace root."
+		return "pipes, redirection, and backgrounding (&) are not supported. " +
+			"Tip: you CAN chain commands with && or ; — e.g. `go build ./... && go test ./...`."
 	}
 }
 
@@ -145,6 +148,13 @@ func (t *RunCommandTool) Execute(ctx context.Context, ec tools.ExecutionContext,
 			Decision: string(class.Decision),
 			Note:     "refused by policy: " + class.Reason,
 		})
+	}
+
+	// Phase A: compound commands (with && or ;) execute via sh -c with per-
+	// subcommand classification already done by classifyChain(). Skip the
+	// single-program guards below and delegate to the shell execution path.
+	if sandbox.ContainsChainOperators(command) {
+		return t.executeShell(ctx, ec, in, command, class)
 	}
 
 	// We execute a single program directly (no shell), so shell operators would
@@ -237,6 +247,76 @@ func (t *RunCommandTool) Execute(ctx context.Context, ec tools.ExecutionContext,
 			res.ExitCode = exitErr.ExitCode()
 		} else {
 			// Command could not start (not found, not executable, ...).
+			res.ExitCode = -1
+			res.Note = runErr.Error()
+		}
+	}
+
+	return t.result(res)
+}
+
+// executeShell runs cmd via sh -c for compound commands (Phase A). It skips the
+// single-program guards (outsideWorkspaceRead, shell operator rejection) because
+// safety is handled by classifyChain() during classification.
+func (t *RunCommandTool) executeShell(ctx context.Context, ec tools.ExecutionContext, in runCommandInput, command string, class sandbox.Classification) (tools.ToolResult, error) {
+	rootAbs, err := filepath.Abs(ec.WorkspaceRoot)
+	if err != nil {
+		return tools.ToolResult{}, err
+	}
+
+	// Background: launch via sh -c in a background job.
+	if in.Background {
+		if t.Jobs == nil {
+			t.Jobs = jobs.NewRegistry()
+		}
+		owner := jobs.Owner{SessionID: ec.SessionID, TurnID: ec.TurnID, CallID: ec.CallID}
+		// Use sh -c to interpret the compound command.
+		snap := t.Jobs.Start(rootAbs, "sh", []string{"-c", command}, owner).Snapshot()
+		return t.jsonResult(backgroundResult{
+			Command:  command,
+			JobID:    snap.ID,
+			Status:   string(snap.Status),
+			Decision: string(class.Decision),
+			Note:     "started in background (compound command via sh -c); job_wait blocks until it finishes, job_logs reads output, job_cancel stops it",
+		})
+	}
+
+	cmdCtx, cancel := context.WithTimeout(ctx, t.Timeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(cmdCtx, "sh", "-c", command)
+	cmd.Dir = rootAbs
+
+	var stdout, stderr bytes.Buffer
+	swOut := streamWriter{buf: &stdout, stream: ec.OnStdout}
+	swErr := streamWriter{buf: &stderr, stream: ec.OnStderr}
+	cmd.Stdout = &swOut
+	cmd.Stderr = &swErr
+
+	start := time.Now()
+	runErr := cmd.Run()
+	duration := time.Since(start)
+
+	res := commandResult{
+		Command:    command,
+		Stdout:     truncate.Head(stdout.String(), t.MaxOutputBytes),
+		Stderr:     truncate.Head(stderr.String(), t.MaxOutputBytes),
+		ExitCode:   0,
+		DurationMS: duration.Milliseconds(),
+		Decision:   string(class.Decision),
+	}
+
+	if errors.Is(cmdCtx.Err(), context.DeadlineExceeded) {
+		res.ExitCode = -1
+		res.Note = fmt.Sprintf("timed out after %s", t.Timeout)
+		return t.result(res)
+	}
+
+	if runErr != nil {
+		var exitErr *exec.ExitError
+		if errors.As(runErr, &exitErr) {
+			res.ExitCode = exitErr.ExitCode()
+		} else {
 			res.ExitCode = -1
 			res.Note = runErr.Error()
 		}

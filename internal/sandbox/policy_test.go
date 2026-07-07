@@ -204,13 +204,15 @@ func TestSplitArgs(t *testing.T) {
 }
 
 func TestContainsShellOperators(t *testing.T) {
-	with := []string{"a | b", "a && b", "a > out.txt", "cat < in", "echo $(date)", "a; b", "a `b`"}
+	// Operators still rejected by ContainsShellOperators (Phase A opened && and ;).
+	with := []string{"a | b", "a > out.txt", "cat < in", "echo $(date)", "a `b`", "a & b"}
 	for _, c := range with {
 		if !ContainsShellOperators(c) {
 			t.Errorf("ContainsShellOperators(%q) = false, want true", c)
 		}
 	}
-	without := []string{"go test ./...", "git status --short", "ls -la"}
+	// Phase A: && and ; are now supported, not rejected.
+	without := []string{"go test ./...", "git status --short", "ls -la", "a && b", "a; b"}
 	for _, c := range without {
 		if ContainsShellOperators(c) {
 			t.Errorf("ContainsShellOperators(%q) = true, want false", c)
