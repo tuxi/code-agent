@@ -56,9 +56,9 @@ deploy/
 assets/
 swag-docs/
 
-main
-codeagentd
-codeagent
+/main
+/codeagentd
+/codeagent
 
 # project_graph Swift index store helper (auto-compiled on first use)
 internal/tools/project_graph/indexstore-helper/indexstore-helper
