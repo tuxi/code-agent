@@ -84,7 +84,7 @@ func TestRunCommandHintIsTailored(t *testing.T) {
 	}{
 		{"cd cmd/foo && go vet", "path"},  // cd → "pass a path"
 		{"echo $(date)", "command"},       // $() → "command substitution"
-		{"cat < /dev/stdin", "input"},     // < → "input redirection"
+		{"echo `date`", "command"},        // backticks → "command substitution"
 	}
 	for _, c := range cases {
 		if got := shellOperatorHint(c.command); !strings.Contains(got, c.wantHint) {

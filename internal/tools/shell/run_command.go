@@ -87,9 +87,9 @@ func (t *RunCommandTool) Description() string {
 		"Read-only and build commands (ls, cat, grep, git status/diff/log, go build/test/vet, cargo check) run directly; " +
 		"commands that mutate the tree or reach the network (rm, mv, curl, git checkout/commit/push) require user confirmation; " +
 		"a few catastrophic commands are blocked. " +
-		"ONE command line — NO backgrounding (&). " +
+		"ONE command line — NO backgrounding (&) or command substitution ($(...)). " +
 		"Chain with &&, ;, |, || — e.g. `go build ./... && go test ./... | grep FAIL` or `git add .; git commit -m wip`. " +
-		"Redirect with > — e.g. `go test ./... > /tmp/out`. " +
+		"Redirect — e.g. `go test > /tmp/out` or `mysql < schema.sql`. " +
 		"Still: (1) the command runs from the workspace ROOT, so pass a path argument rather than `cd`; " +
 		"(2) output is already captured and truncated for you, so DON'T pipe to head/tail/grep — just run the bare command and read the result; " +
 		"(3) to filter, run the tool's own flag (e.g. `go test -run TestName`) rather than piping. " +
@@ -119,8 +119,6 @@ func shellOperatorHint(command string) string {
 			"Pass a path instead, e.g. `go vet ./cmd/foo/` rather than `cd cmd/foo && go vet`."
 	case strings.Contains(command, "$("), strings.Contains(command, "`"):
 		return "no command substitution ($(...) or backticks). Use a separate run_command call."
-	case strings.Contains(command, "<") && !strings.Contains(command, "2>&"):
-		return "no input redirection (<). Read the file with the read_file tool instead."
 	default:
 		return "command contains unsupported shell operators. " +
 			"Tip: you CAN use &&, ;, |, ||, and > for chaining, pipes, and output redirection."
@@ -395,7 +393,7 @@ func (w *streamWriter) Write(p []byte) (int, error) {
 
 // redirectPatterns matches shell redirect operators that write to files.
 // 2>&1 and &> are handled separately — they merge streams and are always safe.
-var redirectPatterns = []string{">>", ">", "2>", "&>"}
+var redirectPatterns = []string{">>", ">", "2>", "&>", "<"}
 
 // checkRedirectTargets validates file targets of shell redirect operators.
 // >/dev/null and 2>&1 are always safe. Redirects to protected paths (secrets,

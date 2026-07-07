@@ -171,8 +171,8 @@ line two"`,
 	}
 
 	// Real, unquoted operators that are still rejected (Phase B opened | and >).
-	if !ContainsShellOperators("cat a.txt < /dev/stdin") {
-		t.Error("ContainsShellOperators(cat a.txt < /dev/stdin) = false, want true")
+	if !ContainsShellOperators("echo $(date)") {
+		t.Error("ContainsShellOperators(echo $(date)) = false, want true")
 	}
 }
 
@@ -205,7 +205,7 @@ func TestSplitArgs(t *testing.T) {
 
 func TestContainsShellOperators(t *testing.T) {
 	// Operators still rejected by ContainsShellOperators (Phase A/B opened &&, ;, |, ||, >).
-	with := []string{"cat < in", "echo $(date)", "a `b`", "a & b"}
+	with := []string{"echo $(date)", "a `b`", "a & b"}
 	for _, c := range with {
 		if !ContainsShellOperators(c) {
 			t.Errorf("ContainsShellOperators(%q) = false, want true", c)

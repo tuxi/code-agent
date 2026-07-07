@@ -7,11 +7,12 @@ import (
 
 // shellOperators are metacharacters that only a shell interprets. Phase A opened
 // && and ; via sh -c; Phase B adds |, ||, and >, >>, 2>&1.
-// The remaining operators (<, $(), backticks, \n, single &) are still rejected.
+// The remaining operators ($(), backticks, \n, single &) are still rejected.
+// < (input redirect) is now supported — target path validated in checkRedirectTargets.
 //
 // NOTE: single "&" (backgrounding) remains rejected. "|" is only rejected when
 // it's NOT part of "||" or "|&".
-var shellOperators = []string{"<", "$(", "`", "\n", "&"}
+var shellOperators = []string{"$(", "`", "\n", "&"}
 
 // ContainsShellOperators reports whether the command *structure* uses shell
 // control operators that are NOT supported by Phases A/B. Supported operators

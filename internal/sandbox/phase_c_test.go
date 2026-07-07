@@ -120,9 +120,9 @@ func TestCommandSubstitutionStillRejected(t *testing.T) {
 	}
 }
 
-func TestInputRedirectStillRejected(t *testing.T) {
-	// < must STILL be rejected.
-	if !ContainsShellOperators("cat < /dev/stdin") {
-		t.Error("input redirect must still be rejected")
+func TestInputRedirectNowSupported(t *testing.T) {
+	// < is now supported (Phase D extension). /dev/null is always safe.
+	if ContainsShellOperators("cat < /dev/null") {
+		t.Error("input redirect < should now be supported, not rejected")
 	}
 }
