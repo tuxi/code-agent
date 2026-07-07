@@ -147,8 +147,10 @@ github.com/stretchr/testify v1.2.2/go.mod h1:a8OnRcib4nhh0OaRAV+Yts87kKdq0PP7pXf
 github.com/stretchr/testify v1.4.0/go.mod h1:j7eGeouHqKxXV5pUuKE4zz7dFj8WfuZ+81PSLYec5m4=
 github.com/stretchr/testify v1.11.1 h1:7s2iGBzp5EwR7/aIZr8ao5+dra3wiQyKjjFuvgVKu7U=
 github.com/stretchr/testify v1.11.1/go.mod h1:wZwfW3scLgRK+23gO65QZefKpKQRnfz6sD981Nm4B6U=
-github.com/tuxi/flux v1.0.3 h1:GSIyRC35uz2vo8GN99OIGM6CgGwxWMSe6gtihslfRc0=
-github.com/tuxi/flux v1.0.3/go.mod h1:kgpgU2sl4GUbFaj6TJQKWg5YjM5jNWFxvNCDCFhHXls=
+github.com/tuxi/flux v1.0.5 h1:OolOlCn2+TfsaDZZiLmbvh1mQSAe0QdMoVEsZNf8vIw=
+github.com/tuxi/flux v1.0.5/go.mod h1:92NshJ8N5wuiCliWN+SAoptt/kWqBkNB4ODOVnAUMoY=
+github.com/tuxi/flux-workflow v1.0.0 h1:JNSChkbFtyUObE/rsNOIhTeYn+Irn89dgfg/gfnOp8E=
+github.com/tuxi/flux-workflow v1.0.0/go.mod h1:ocAI5dIWCuu13btdHzKdEmT5Cf2tTGtJ1gqpu7x1ga0=
 github.com/xanzy/ssh-agent v0.3.3 h1:+/15pJfg/RsTxqYcX6fHqOXZwwMP+2VyYWJeWM2qQFM=
 github.com/xanzy/ssh-agent v0.3.3/go.mod h1:6dzNDKs0J9rVPHPhaGCukekBHKqfl+L3KghI1Bc68Uw=
 github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e h1:JVG44RsyaB9T2KIHavMF/ppJZNG9ZpyihvCd0w101no=

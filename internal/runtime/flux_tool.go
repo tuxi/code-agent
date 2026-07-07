@@ -7,9 +7,9 @@ import (
 	"time"
 
 	flux "github.com/tuxi/flux"
+	fluxtool "github.com/tuxi/flux-workflow/tool"
 	fluxmodel "github.com/tuxi/flux/model"
 	fluxstore "github.com/tuxi/flux/store"
-	fluxtool "github.com/tuxi/flux/tool"
 	builtin "github.com/tuxi/flux/tool/builtin"
 
 	"code-agent/internal/app"

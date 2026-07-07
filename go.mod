@@ -13,7 +13,8 @@ require (
 	github.com/mattn/go-runewidth v0.0.19
 	github.com/modelcontextprotocol/go-sdk v1.6.1
 	github.com/pmezard/go-difflib v1.0.0
-	github.com/tuxi/flux v1.0.3
+	github.com/tuxi/flux v1.0.5
+	github.com/tuxi/flux-workflow v1.0.0
 	golang.org/x/net v0.56.0
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.52.0
