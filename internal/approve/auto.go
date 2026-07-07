@@ -27,6 +27,7 @@ import (
 	"sync/atomic"
 
 	"code-agent/internal/agent"
+	"code-agent/internal/sandbox"
 	"code-agent/internal/workspace"
 )
 
@@ -113,6 +114,11 @@ func (a *AutoApprover) autoApprove(toolName string, input json.RawMessage) (stri
 		}
 		if !a.insideWorkspace(path) {
 			return "", false // out-of-workspace write → human (the tool also refuses)
+		}
+		// Protected paths (P3+P4): .env, credentials, keys, etc. — never auto-
+		// approved. The human must explicitly confirm writes to these files.
+		if sandbox.IsPathProtected(path, sandbox.ProtectedPaths(nil)) {
+			return "", false // protected path → human must confirm
 		}
 		return "workspace-internal write: " + path, true
 	default:

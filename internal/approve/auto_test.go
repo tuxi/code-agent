@@ -167,3 +167,32 @@ func TestNewAutoApprover_RelativeRootAbsolutized(t *testing.T) {
 		t.Fatalf("root %q should be absolute", a.root)
 	}
 }
+
+// Protected paths (P4): even in-workspace writes to .env, credentials, etc.
+// must NOT be auto-approved — the human must explicitly confirm.
+func TestAutoApprove_ProtectedPathRequiresHuman(t *testing.T) {
+	protected := []string{".env", ".env.production", "credentials", "private.key", "secrets"}
+	for _, path := range protected {
+		h := &fakeHuman{v: agent.VerdictDeny} // would deny if consulted
+		a := NewAutoApprover(t.TempDir(), h, true)
+
+		approved, reason := a.ApproveAudited("edit_file", editInput(t, path))
+		if approved != agent.VerdictDeny {
+			t.Errorf("protected path %q: should NOT auto-approve, got verdict=%v reason=%q", path, approved, reason)
+		}
+		if h.calls != 1 {
+			t.Errorf("protected path %q: human should have been consulted, calls=%d", path, h.calls)
+		}
+	}
+}
+
+// Normal paths still auto-approve in workspace.
+func TestAutoApprove_NormalPathStillAutoApproves(t *testing.T) {
+	h := &fakeHuman{v: agent.VerdictDeny}
+	a := NewAutoApprover(t.TempDir(), h, true)
+
+	approved, _ := a.ApproveAudited("edit_file", editInput(t, "main.go"))
+	if approved != agent.VerdictAllow {
+		t.Fatal("normal path should still auto-approve")
+	}
+}
