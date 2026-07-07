@@ -27,8 +27,15 @@ import (
 
 // Permissions is the tool-name allow/deny block, matched as globs downstream.
 type Permissions struct {
-	Allow []string `json:"allow"`
-	Deny  []string `json:"deny"`
+	Allow          []string `json:"allow"`
+	Deny           []string `json:"deny"`
+	// ProtectedPaths are file patterns (base names like ".env" or globs like
+	// "*.key") that the safety layer treats as sensitive. Reading or writing them
+	// is never auto-approved — even read-only tools trigger an audit event and
+	// mutating tools require explicit confirmation regardless of allow rules.
+	// Built-in defaults (see sandbox.DefaultProtectedPaths) always apply; this
+	// list only ADDS paths, never removes them.
+	ProtectedPaths []string `json:"protected_paths"`
 }
 
 // Verify is the finalize-verify block (P4.3-R Move 2, relocated here by P11.b).
@@ -133,6 +140,7 @@ func Load(root, home string, warn io.Writer) Settings {
 		}
 		s.Permissions.Allow = appendUnique(s.Permissions.Allow, f.Permissions.Allow...)
 		s.Permissions.Deny = appendUnique(s.Permissions.Deny, f.Permissions.Deny...)
+		s.Permissions.ProtectedPaths = appendUnique(s.Permissions.ProtectedPaths, f.Permissions.ProtectedPaths...)
 		// Verify overrides: iterating low → high, the last layer to set a block wins.
 		if f.Verify != nil {
 			s.Verify = f.Verify

@@ -77,7 +77,7 @@ func NewRemoteApprover(sink FrameSink, timeout time.Duration, granter Permission
 // deadline elapses, or the approver is closed. When no client is connected (sink
 // is nil) the send is skipped — the request waits in pending until UpdateSink
 // re-sends it. It denies on any path other than an explicit approval.
-func (a *RemoteApprover) Approve(toolName string, input json.RawMessage) bool {
+func (a *RemoteApprover) Approve(toolName string, input json.RawMessage) agent.Verdict {
 	id := newApprovalID()
 	req := &pendingReq{
 		ch:       make(chan outcome, 1),
@@ -88,7 +88,7 @@ func (a *RemoteApprover) Approve(toolName string, input json.RawMessage) bool {
 	a.mu.Lock()
 	if a.closed {
 		a.mu.Unlock()
-		return false
+		return agent.VerdictDeny
 	}
 	a.pending[id] = req
 	snk := a.sink // capture under lock
@@ -106,7 +106,7 @@ func (a *RemoteApprover) Approve(toolName string, input json.RawMessage) bool {
 		r := NewApprovalRequest(id, "", "", toolName, string(input), a.timeout.Milliseconds())
 		frame, err := json.Marshal(r)
 		if err != nil {
-			return false
+			return agent.VerdictDeny
 		}
 		// A send failure means the client disconnected mid-send. Don't deny —
 		// the request stays registered and will be re-sent on the next UpdateSink.
@@ -131,9 +131,12 @@ func (a *RemoteApprover) Approve(toolName string, input json.RawMessage) bool {
 				fmt.Fprintf(os.Stderr, "[permissions] always allowing %q (%s)\n", rule, scopeLabel(res.scope))
 			}
 		}
-		return res.approved
+		if res.approved {
+				return agent.VerdictAllow
+			}
+			return agent.VerdictDeny
 	case <-deadline:
-		return false // no answer in time: deny
+		return agent.VerdictDeny // no answer in time: deny
 	}
 }
 
@@ -313,7 +316,7 @@ func (a *RemoteApprover) Close() {
 // controls a conversation (fail-safe default).
 type denyApprover struct{}
 
-func (denyApprover) Approve(string, json.RawMessage) bool { return false }
+func (denyApprover) Approve(string, json.RawMessage) agent.Verdict { return agent.VerdictDeny }
 
 func newApprovalID() string {
 	var b [6]byte

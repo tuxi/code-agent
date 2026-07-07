@@ -42,11 +42,11 @@ func (t *recordingTool) Execute(_ context.Context, _ tools.ExecutionContext, _ j
 
 type allowApprover struct{}
 
-func (allowApprover) Approve(string, json.RawMessage) bool { return true }
+func (allowApprover) Approve(string, json.RawMessage) Verdict { return VerdictAllow }
 
 type denyApprover struct{}
 
-func (denyApprover) Approve(string, json.RawMessage) bool { return false }
+func (denyApprover) Approve(string, json.RawMessage) Verdict { return VerdictDeny }
 
 func newSession() *session.Session {
 	return &session.Session{
@@ -97,12 +97,12 @@ func TestGateDeniesSideEffectingTool(t *testing.T) {
 
 	var sawDecline bool
 	for _, s := range res.Steps {
-		if strings.Contains(s.Observation, "declined") {
+		if strings.Contains(s.Observation, "not approved") {
 			sawDecline = true
 		}
 	}
 	if !sawDecline {
-		t.Error("expected the model to be told the user declined")
+		t.Error("expected the model to be told the tool was not approved")
 	}
 }
 

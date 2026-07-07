@@ -7,6 +7,8 @@ import (
 	"os"
 	"sort"
 	"strings"
+
+	"code-agent/internal/agent"
 )
 
 // AlwaysAllower persists an "always allow" decision so future matching calls are
@@ -35,7 +37,7 @@ type ConfirmApprover struct {
 	Granter AlwaysAllower
 }
 
-func (a ConfirmApprover) Approve(toolName string, input json.RawMessage) bool {
+func (a ConfirmApprover) Approve(toolName string, input json.RawMessage) agent.Verdict {
 	fmt.Printf("\nThe agent wants to run a side-effecting tool: %s\n", toolName)
 
 	var fields map[string]any
@@ -58,23 +60,23 @@ func (a ConfirmApprover) Approve(toolName string, input json.RawMessage) bool {
 	}
 	line, err := a.readLine(prompt)
 	if err != nil {
-		return false
+		return agent.VerdictDeny
 	}
 	switch strings.TrimSpace(strings.ToLower(line)) {
 	case "y", "yes", "o", "once":
-		return true
+		return agent.VerdictAllow
 	case "a", "always":
 		if a.Granter == nil {
-			return true // no persistence available; treat as a one-time yes
+			return agent.VerdictAllow // no persistence available; treat as a one-time yes
 		}
 		if rule, err := a.Granter.AllowAlways(toolName); err != nil {
 			fmt.Printf("  (could not persist always-allow, allowing once: %v)\n", err)
 		} else {
 			fmt.Printf("  ✓ always allowing %q (project-local)\n", rule)
 		}
-		return true
+		return agent.VerdictAllow
 	default:
-		return false
+		return agent.VerdictDeny
 	}
 }
 

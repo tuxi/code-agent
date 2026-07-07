@@ -198,6 +198,19 @@ func (r *Runner) runToolCall(ctx context.Context, p toolCallPlan) toolCallResult
 		blockReason = r.preHookBlock(ctx, p.call.Function.Name, p.input)
 	}
 
+	// Inspect (P0): tool-specific static safety validation. Runs after the
+	// pre-tool hook and before any policy/permission decision — pure static
+	// analysis, no I/O, no human prompt. Mirrors Claude Code's
+	// tool.validateInput() stage. Tools that don't implement Inspector skip
+	// this with zero overhead.
+	if p.valid && p.executor != "client" && blockReason == "" {
+		if inspector, ok := p.tool.(tools.Inspector); ok {
+			if err := inspector.Inspect(p.input, r.WorkspaceRoot); err != nil {
+				blockReason = "blocked: " + err.Error()
+			}
+		}
+	}
+
 	var observation string
 	var output json.RawMessage
 	var assetRefs []assets.Ref
@@ -212,9 +225,9 @@ func (r *Runner) runToolCall(ctx context.Context, p toolCallPlan) toolCallResult
 				"Answer with the results you already have, or web_fetch a specific URL.",
 			p.webSearchOrdinal-1, r.maxWebSearches())
 	case blockReason != "":
-		observation = "The tool call was blocked by a configured hook. " + blockReason
-	case tools.HasSideEffectsFor(p.tool, p.input) && !r.approve(p.call.Function.Name, p.input):
-		observation = "The user declined to run this tool. No changes were made."
+		observation = "The tool call was blocked. " + blockReason
+	case tools.HasSideEffectsFor(p.tool, p.input) && r.approve(p.call.Function.Name, p.input) != VerdictAllow:
+		observation = "The tool call was not approved. No changes were made."
 	case p.executor == "client":
 		result, waitErr := r.ClientWaiter.Wait(ctx, p.call.ID, r.clientToolTimeout())
 		if waitErr != nil {

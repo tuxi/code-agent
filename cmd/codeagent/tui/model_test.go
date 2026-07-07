@@ -59,7 +59,7 @@ func TestDoneClearsBusy(t *testing.T) {
 
 func TestApprovalApprove(t *testing.T) {
 	m := newTestModel()
-	reply := make(chan bool, 1)
+	reply := make(chan agent.Verdict, 1)
 	req := approvalReq{tool: "create_file", input: json.RawMessage(`{"path":"x"}`), reply: reply}
 
 	m = asModel(t, must(m.Update(approvalMsg(req))))
@@ -70,20 +70,20 @@ func TestApprovalApprove(t *testing.T) {
 	if m.pending != nil {
 		t.Fatal("answering should clear pending")
 	}
-	if !<-reply {
+	if <-reply != agent.VerdictAllow {
 		t.Fatal("'y' should approve the tool")
 	}
 }
 
 func TestApprovalDeny(t *testing.T) {
 	m := newTestModel()
-	reply := make(chan bool, 1)
+	reply := make(chan agent.Verdict, 1)
 	m.pending = &approvalReq{tool: "run_command", reply: reply}
 	m = asModel(t, must(m.handleApprovalKey(tea.KeyMsg{Type: tea.KeyEsc})))
 	if m.pending != nil {
 		t.Fatal("esc should clear pending")
 	}
-	if <-reply {
+	if <-reply == agent.VerdictAllow {
 		t.Fatal("esc should deny the tool")
 	}
 }
@@ -148,12 +148,12 @@ func TestApprovalAlwaysGrants(t *testing.T) {
 	m := newTestModel()
 	g := &fakeGranter{}
 	m.src.granter = g
-	reply := make(chan bool, 1)
+	reply := make(chan agent.Verdict, 1)
 	m.pending = &approvalReq{tool: "mcp__github__list_issues", reply: reply}
 
 	// 'a' = always allow: approves this call AND persists a rule via the granter.
 	m = asModel(t, must(m.handleApprovalKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})))
-	if !<-reply {
+	if <-reply != agent.VerdictAllow {
 		t.Fatal("'a' should approve the tool")
 	}
 	if g.tool != "mcp__github__list_issues" {

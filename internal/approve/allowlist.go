@@ -43,20 +43,20 @@ func Allowlisted(store *RuleStore, next agent.Approver) agent.Approver {
 }
 
 // Approve implements agent.Approver (verdict only).
-func (a *Allowlist) Approve(toolName string, input json.RawMessage) bool {
-	ok, _ := a.ApproveAudited(toolName, input)
-	return ok
+func (a *Allowlist) Approve(toolName string, input json.RawMessage) agent.Verdict {
+	v, _ := a.ApproveAudited(toolName, input)
+	return v
 }
 
 // ApproveAudited implements agent.AuditedApprover. deny wins over allow (Claude's
 // precedence). A matched allow rule auto-grants with a reason the loop logs.
 // Otherwise it delegates, preserving the wrapped approver's audit when it has one.
-func (a *Allowlist) ApproveAudited(toolName string, input json.RawMessage) (bool, string) {
+func (a *Allowlist) ApproveAudited(toolName string, input json.RawMessage) (agent.Verdict, string) {
 	if _, ok := a.store.MatchDeny(toolName); ok {
-		return false, "" // denied — no audit reason (denials are not auto-grants)
+		return agent.VerdictDeny, "" // denied — no audit reason (denials are not auto-grants)
 	}
 	if pattern, ok := a.store.MatchAllow(toolName); ok {
-		return true, "auto-approved by permission rule " + pattern
+		return agent.VerdictAllow, "auto-approved by permission rule " + pattern
 	}
 	if aa, ok := a.next.(agent.AuditedApprover); ok {
 		return aa.ApproveAudited(toolName, input)

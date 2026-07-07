@@ -11,11 +11,12 @@ import (
 // returns a fixed verdict, so tests can tell short-circuit from delegation.
 type recordingApprover struct {
 	called  bool
-	verdict bool
+	verdict agent.Verdict
 }
 
-func (r *recordingApprover) Approve(string, json.RawMessage) bool {
+func (r *recordingApprover) Approve(string, json.RawMessage) agent.Verdict {
 	r.called = true
+	if r.verdict == agent.VerdictAsk { return agent.VerdictDeny }
 	return r.verdict
 }
 
@@ -51,18 +52,18 @@ func TestMatchGlob(t *testing.T) {
 
 // A nil store must return the wrapped approver unchanged.
 func TestAllowlistedNilStorePassThrough(t *testing.T) {
-	base := &recordingApprover{verdict: true}
+	base := &recordingApprover{verdict: agent.VerdictAllow}
 	if got := Allowlisted(nil, base); got != agent.Approver(base) {
 		t.Fatalf("nil store should return the base approver unchanged, got %T", got)
 	}
 }
 
 func TestAllowlistAllowShortCircuits(t *testing.T) {
-	base := &recordingApprover{verdict: false} // would deny if consulted
+	base := &recordingApprover{verdict: agent.VerdictDeny} // would deny if consulted
 	a := Allowlisted(newTestStore(t, []string{"mcp__github__*"}, nil), base).(*Allowlist)
 
 	ok, reason := a.ApproveAudited("mcp__github__list_issues", nil)
-	if !ok {
+	if ok != agent.VerdictAllow {
 		t.Fatal("allow rule should auto-approve")
 	}
 	if base.called {
@@ -75,10 +76,10 @@ func TestAllowlistAllowShortCircuits(t *testing.T) {
 
 // deny wins over allow, and a denied call never consults the fallback.
 func TestAllowlistDenyBeatsAllow(t *testing.T) {
-	base := &recordingApprover{verdict: true}
+	base := &recordingApprover{verdict: agent.VerdictAllow}
 	a := Allowlisted(newTestStore(t, []string{"mcp__github__*"}, []string{"mcp__github__delete_*"}), base).(*Allowlist)
 
-	if ok, _ := a.ApproveAudited("mcp__github__delete_repo", nil); ok {
+	if ok, _ := a.ApproveAudited("mcp__github__delete_repo", nil); ok != agent.VerdictDeny {
 		t.Fatal("deny should win over allow")
 	}
 	if base.called {
@@ -88,14 +89,14 @@ func TestAllowlistDenyBeatsAllow(t *testing.T) {
 
 // A call matching neither list falls through to the wrapped approver.
 func TestAllowlistFallsThrough(t *testing.T) {
-	base := &recordingApprover{verdict: true}
+	base := &recordingApprover{verdict: agent.VerdictAllow}
 	a := Allowlisted(newTestStore(t, []string{"mcp__github__*"}, nil), base).(*Allowlist)
 
 	ok, _ := a.ApproveAudited("mcp__slack__post", nil)
 	if !base.called {
 		t.Fatal("an unmatched call should delegate to the fallback approver")
 	}
-	if !ok {
+	if ok != agent.VerdictAllow {
 		t.Fatal("should return the fallback's verdict")
 	}
 }
@@ -104,26 +105,26 @@ func TestAllowlistFallsThrough(t *testing.T) {
 // so auto mode's own auto-grant reason still reaches the loop.
 func TestAllowlistForwardsAuditedDelegate(t *testing.T) {
 	root := t.TempDir()
-	auto := NewAutoApprover(root, &recordingApprover{verdict: false}, true) // enabled
+	auto := NewAutoApprover(root, &recordingApprover{verdict: agent.VerdictDeny}, true) // enabled
 	a := Allowlisted(newTestStore(t, []string{"mcp__x__*"}, nil), auto).(*Allowlist)
 
 	// edit_file inside the workspace isn't in the allowlist, so it delegates to the
 	// AutoApprover, which auto-approves workspace writes with a reason.
 	in := json.RawMessage(`{"path":"foo.txt"}`)
 	ok, reason := a.ApproveAudited("edit_file", in)
-	if !ok || reason == "" {
+	if ok != agent.VerdictAllow || reason == "" {
 		t.Fatalf("delegated auto-mode grant should keep its audit reason, got ok=%v reason=%q", ok, reason)
 	}
 }
 
 // A rule Granted at runtime is honored on the next call, without rebuilding.
 func TestAllowlistHonorsRuntimeGrant(t *testing.T) {
-	base := &recordingApprover{verdict: false}
+	base := &recordingApprover{verdict: agent.VerdictDeny}
 	store := newTestStore(t, nil, nil)
 	a := Allowlisted(store, base).(*Allowlist)
 
 	// Before granting: unmatched → delegates (and base denies).
-	if ok, _ := a.ApproveAudited("mcp__github__list_issues", nil); ok {
+	if ok, _ := a.ApproveAudited("mcp__github__list_issues", nil); ok != agent.VerdictDeny {
 		t.Fatal("no rule yet — should not be auto-approved")
 	}
 	if _, err := store.AllowAlways("mcp__github__list_issues"); err != nil {
@@ -133,7 +134,7 @@ func TestAllowlistHonorsRuntimeGrant(t *testing.T) {
 	// now auto-approved without a prompt.
 	base.called = false
 	ok, _ := a.ApproveAudited("mcp__github__create_pr", nil)
-	if !ok {
+	if ok != agent.VerdictAllow {
 		t.Fatal("granting mcp__github__* should auto-approve the whole server")
 	}
 	if base.called {

@@ -3,6 +3,7 @@ package filesystem
 import (
 	"bufio"
 	"code-agent/internal/assetref"
+	"code-agent/internal/sandbox"
 	"code-agent/internal/tools"
 	"code-agent/internal/workspace"
 	"context"
@@ -94,6 +95,33 @@ func (r *ReadFileTool) InputSchema() json.RawMessage {
 			Description: "Optional. Maximum number of lines to read from offset. Default reads to end of file. Accepts a string number too.",
 		},
 	}, "path").JSON()
+}
+
+// Inspect implements tools.Inspector. It blocks reads of protected paths
+// (files likely to contain secrets) and suggests using grep with a specific
+// pattern instead. The protected path list comes from sandbox.DefaultProtectedPaths
+// unions with any user-configured additions from settings.json's
+// permissions.protected_paths — so a project can add its own sensitive patterns.
+//
+// This is a static safety check — it runs before any permission prompt, so a
+// blocked path never wastes a human's attention.
+func (r *ReadFileTool) Inspect(input json.RawMessage, workspaceRoot string) error {
+	var in readFileInput
+	if len(input) > 0 {
+		if err := json.Unmarshal(input, &in); err != nil {
+			return nil // can't parse — let Execute surface the error
+		}
+	}
+	if in.Path == "" {
+		return nil
+	}
+	// Use the shared sandbox registry with built-in defaults only for now.
+	// Settings-configured paths will be threaded through when the Runner wires
+	// the protected list to each tool via ExecutionContext.
+	if sandbox.IsPathProtected(in.Path, sandbox.ProtectedPaths(nil)) {
+		return fmt.Errorf("reading %s: this path may contain secrets — use grep with a specific pattern to search it instead of reading the full file", filepath.Base(in.Path))
+	}
+	return nil
 }
 
 func (r *ReadFileTool) Execute(ctx context.Context, ec tools.ExecutionContext, input json.RawMessage) (tools.ToolResult, error) {
@@ -258,3 +286,8 @@ func (r *ReadFileTool) assetResult(rootAbs string, ec tools.ExecutionContext, re
 	}
 	return output, []assets.Ref{ref}, nil
 }
+
+var (
+	_ tools.Tool      = (*ReadFileTool)(nil)
+	_ tools.Inspector = (*ReadFileTool)(nil)
+)

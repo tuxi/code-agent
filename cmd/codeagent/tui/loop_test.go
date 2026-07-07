@@ -101,10 +101,10 @@ func TestApprovalListenerKeepsFiring(t *testing.T) {
 	m := newModel(b, HeaderInfo{}, sessionSource{})
 	m.width, m.ready = 80, true
 
-	_, cmd := m.Update(approvalMsg{tool: "edit_file", reply: make(chan bool, 1)})
+	_, cmd := m.Update(approvalMsg{tool: "edit_file", reply: make(chan agent.Verdict, 1)})
 	// b.approvals is unbuffered (the runner blocks for an answer), so send async —
 	// the re-issued waitForApproval inside cmd is the receiver.
-	go func() { b.approvals <- approvalReq{tool: "create_file", reply: make(chan bool, 1)} }()
+	go func() { b.approvals <- approvalReq{tool: "create_file", reply: make(chan agent.Verdict, 1)} }()
 
 	found := false
 	for _, msg := range runLeaves(cmd) {

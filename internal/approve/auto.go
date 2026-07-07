@@ -75,21 +75,21 @@ func (a *AutoApprover) Enabled() bool { return a.enabled.Load() }
 
 // Approve implements agent.Approver. It is the verdict-only path for callers that
 // do not audit; the loop uses ApproveAudited so auto-grants are logged.
-func (a *AutoApprover) Approve(toolName string, input json.RawMessage) bool {
-	approved, _ := a.ApproveAudited(toolName, input)
-	return approved
+func (a *AutoApprover) Approve(toolName string, input json.RawMessage) agent.Verdict {
+	v, _ := a.ApproveAudited(toolName, input)
+	return v
 }
 
 // ApproveAudited implements agent.AuditedApprover. Disabled → delegate to the
 // human (today's behavior), no audit. Enabled → auto-approve the locked safe set,
 // returning a reason for the loop to emit a correlated audit event; otherwise
 // fail-safe to the human prompt (no audit — a human saw it).
-func (a *AutoApprover) ApproveAudited(toolName string, input json.RawMessage) (bool, string) {
+func (a *AutoApprover) ApproveAudited(toolName string, input json.RawMessage) (agent.Verdict, string) {
 	if !a.enabled.Load() {
 		return a.Human.Approve(toolName, input), ""
 	}
 	if reason, ok := a.autoApprove(toolName, input); ok {
-		return true, reason
+		return agent.VerdictAllow, reason
 	}
 	return a.Human.Approve(toolName, input), ""
 }

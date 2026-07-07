@@ -433,7 +433,11 @@ func (m model) handleApprovalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			// Best-effort: a failed persist still allows this call.
 			_, _ = m.src.granter.AllowAlways(m.pending.tool)
 		}
-		m.pending.reply <- approved
+		if approved {
+			m.pending.reply <- agent.VerdictAllow
+		} else {
+			m.pending.reply <- agent.VerdictDeny
+		}
 		m.pending, m.approveIdx, m.showPreview = nil, 0, false
 		return m, nil // listeners stay alive (approvalMsg already re-issued waitForApproval)
 	}
@@ -457,7 +461,7 @@ func (m model) handleApprovalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "n", "N", "esc":
 		return answer(false, false)
 	case "ctrl+c":
-		m.pending.reply <- false
+		m.pending.reply <- agent.VerdictDeny
 		m.pending, m.approveIdx, m.showPreview = nil, 0, false
 		return m, tea.Quit
 	}

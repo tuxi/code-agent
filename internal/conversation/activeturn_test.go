@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"sync"
 	"testing"
+
+	"code-agent/internal/agent"
 )
 
 func TestActiveTurnRegistry_BeginFinish(t *testing.T) {
@@ -84,7 +86,7 @@ func TestActiveTurnRegistry_Approver(t *testing.T) {
 		t.Error("unknown session should return nil approver")
 	}
 
-	fa := &fakeApprover{allow: true}
+	fa := &fakeApprover{v: agent.VerdictAllow}
 	r.SetApprover("s1", fa)
 	if a := r.Approver("s1"); a != fa {
 		t.Error("approver not set")
@@ -125,7 +127,7 @@ func TestActiveTurnRegistry_Shutdown(t *testing.T) {
 		t.Error("BeginTurn should fail after Shutdown")
 	}
 	// SetApprover should be no-op.
-	r.SetApprover("s2", &fakeApprover{true})
+	r.SetApprover("s2", &fakeApprover{v: agent.VerdictAllow})
 	if a := r.Approver("s2"); a != nil {
 		t.Error("SetApprover should be no-op after Shutdown")
 	}
@@ -169,6 +171,6 @@ func TestActiveTurnRegistry_Concurrent(t *testing.T) {
 }
 
 // fakeApprover implements agent.Approver for testing.
-type fakeApprover struct{ allow bool }
+type fakeApprover struct{ v agent.Verdict }
 
-func (f *fakeApprover) Approve(string, json.RawMessage) bool { return f.allow }
+func (f *fakeApprover) Approve(string, json.RawMessage) agent.Verdict { return f.v }

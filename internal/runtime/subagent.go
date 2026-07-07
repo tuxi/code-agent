@@ -45,7 +45,7 @@ var PlanModeToolNames = append([]string{
 // "allow".
 type DenyAllApprover struct{}
 
-func (DenyAllApprover) Approve(string, json.RawMessage) bool { return false }
+func (DenyAllApprover) Approve(string, json.RawMessage) agent.Verdict { return agent.VerdictDeny }
 
 // SubAgent is the concrete task.SubAgent: each Run builds a fresh, isolated,
 // ephemeral session and a read-only sub-runner, executes one turn, and returns

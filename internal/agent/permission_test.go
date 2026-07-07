@@ -8,24 +8,24 @@ import (
 // auditedFake is an AuditedApprover with a fixed verdict and reason, to drive
 // r.approve's audit-emission path without a real auto-approver.
 type auditedFake struct {
-	approved bool
-	reason   string
+	v      Verdict
+	reason string
 }
 
-func (f auditedFake) Approve(string, json.RawMessage) bool { return f.approved }
-func (f auditedFake) ApproveAudited(string, json.RawMessage) (bool, string) {
-	return f.approved, f.reason
+func (f auditedFake) Approve(string, json.RawMessage) Verdict { return f.v }
+func (f auditedFake) ApproveAudited(string, json.RawMessage) (Verdict, string) {
+	return f.v, f.reason
 }
 
 // An auto-grant (non-empty reason) emits exactly one EventAutoApproved, stamped
 // with the turn's correlation IDs and timestamp so it is retrievable per run.
 func TestApprove_AuditedAutoGrantEmitsCorrelatedEvent(t *testing.T) {
 	em := &capturingEmitter{}
-	r := &Runner{Approver: auditedFake{approved: true, reason: "workspace-internal write: a.go"}, Emitter: em}
+	r := &Runner{Approver: auditedFake{v: VerdictAllow, reason: "workspace-internal write: a.go"}, Emitter: em}
 	r.emitSessionID = "sess-1"
 	r.emitTurnID = "turn-9"
 
-	if !r.approve("edit_file", json.RawMessage(`{"path":"a.go"}`)) {
+	if r.approve("edit_file", json.RawMessage(`{"path":"a.go"}`)) != VerdictAllow {
 		t.Fatal("expected approval")
 	}
 	if len(em.events) != 1 {
@@ -49,14 +49,14 @@ func TestApprove_AuditedAutoGrantEmitsCorrelatedEvent(t *testing.T) {
 // A human verdict or a denial (empty reason) is not an auto-grant → no audit event.
 func TestApprove_HumanOrDenyEmitsNoAuditEvent(t *testing.T) {
 	for _, f := range []auditedFake{
-		{approved: true, reason: ""},  // human approved
-		{approved: false, reason: ""}, // denied
+		{v: VerdictAllow, reason: ""}, // human approved — no auto-grant
+		{v: VerdictDeny, reason: ""},  // denied
 	} {
 		em := &capturingEmitter{}
 		r := &Runner{Approver: f, Emitter: em}
 		r.approve("edit_file", json.RawMessage(`{"path":"a.go"}`))
 		if len(em.events) != 0 {
-			t.Fatalf("approved=%v reason=%q: emitted %d events, want 0", f.approved, f.reason, len(em.events))
+			t.Fatalf("v=%v reason=%q: emitted %d events, want 0", f.v, f.reason, len(em.events))
 		}
 	}
 }
@@ -65,7 +65,7 @@ func TestApprove_HumanOrDenyEmitsNoAuditEvent(t *testing.T) {
 func TestApprove_PlainApproverUnchanged(t *testing.T) {
 	em := &capturingEmitter{}
 	r := &Runner{Approver: allowApprover{}, Emitter: em}
-	if !r.approve("edit_file", nil) {
+	if r.approve("edit_file", nil) != VerdictAllow {
 		t.Fatal("allowApprover should approve")
 	}
 	if len(em.events) != 0 {
@@ -76,7 +76,7 @@ func TestApprove_PlainApproverUnchanged(t *testing.T) {
 // A nil Approver still fail-safe denies.
 func TestApprove_NilApproverDenies(t *testing.T) {
 	r := &Runner{}
-	if r.approve("edit_file", nil) {
+	if r.approve("edit_file", nil) != VerdictDeny {
 		t.Fatal("nil approver must fail-safe deny")
 	}
 }

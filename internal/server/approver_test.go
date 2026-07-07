@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"code-agent/internal/approve"
+	"code-agent/internal/agent"
 )
 
 // waitApprovalID polls the sink for the approval_request frame and returns its id.
@@ -31,14 +32,14 @@ func TestRemoteApproverResolveApproves(t *testing.T) {
 	sink := &syncSink{}
 	a := NewRemoteApprover(sink, time.Second, nil)
 
-	got := make(chan bool, 1)
+	got := make(chan agent.Verdict, 1)
 	go func() { got <- a.Approve("run_command", json.RawMessage(`{"command":"x"}`)) }()
 
 	a.Resolve(waitApprovalID(t, sink), true)
 
 	select {
 	case v := <-got:
-		if !v {
+		if v != agent.VerdictAllow {
 			t.Error("Approve returned false after an approval")
 		}
 	case <-time.After(2 * time.Second):
@@ -50,12 +51,12 @@ func TestRemoteApproverResolveDenies(t *testing.T) {
 	sink := &syncSink{}
 	a := NewRemoteApprover(sink, time.Second, nil)
 
-	got := make(chan bool, 1)
+	got := make(chan agent.Verdict, 1)
 	go func() { got <- a.Approve("run_command", nil) }()
 
 	a.Resolve(waitApprovalID(t, sink), false)
 
-	if <-got {
+	if <-got == agent.VerdictAllow {
 		t.Error("Approve returned true after a denial")
 	}
 }
@@ -79,12 +80,12 @@ func TestRemoteApproverResolveToolAlwaysGrants(t *testing.T) {
 	g := &fakeGranter{}
 	a := NewRemoteApprover(sink, time.Second, g)
 
-	got := make(chan bool, 1)
+	got := make(chan agent.Verdict, 1)
 	go func() { got <- a.Approve("mcp__github__list_issues", nil) }()
 
 	a.ResolveTool(waitApprovalID(t, sink), true, true, 1 /* ScopeUser */)
 
-	if !<-got {
+	if <-got != agent.VerdictAllow {
 		t.Error("Approve returned false after an 'always' approval")
 	}
 	if g.tool != "mcp__github__list_issues" || g.scope != 1 {
@@ -97,12 +98,12 @@ func TestRemoteApproverResolveToolOnceDoesNotGrant(t *testing.T) {
 	g := &fakeGranter{}
 	a := NewRemoteApprover(sink, time.Second, g)
 
-	got := make(chan bool, 1)
+	got := make(chan agent.Verdict, 1)
 	go func() { got <- a.Approve("mcp__github__list_issues", nil) }()
 
 	a.ResolveTool(waitApprovalID(t, sink), true, false, 0)
 
-	if !<-got {
+	if <-got != agent.VerdictAllow {
 		t.Error("Approve returned false after a 'once' approval")
 	}
 	if g.tool != "" {
@@ -112,7 +113,7 @@ func TestRemoteApproverResolveToolOnceDoesNotGrant(t *testing.T) {
 
 func TestRemoteApproverTimeoutDenies(t *testing.T) {
 	a := NewRemoteApprover(&syncSink{}, 20*time.Millisecond, nil)
-	if a.Approve("x", nil) {
+	if a.Approve("x", nil) != agent.VerdictDeny {
 		t.Error("Approve must deny when no response arrives before the deadline")
 	}
 }
@@ -124,7 +125,7 @@ func TestRemoteApproverZeroTimeoutWaitsForVerdict(t *testing.T) {
 	sink := &syncSink{}
 	a := NewRemoteApprover(sink, 0, nil)
 
-	got := make(chan bool, 1)
+	got := make(chan agent.Verdict, 1)
 	go func() { got <- a.Approve("run_command", nil) }()
 
 	id := waitApprovalID(t, sink)
@@ -145,7 +146,7 @@ func TestRemoteApproverZeroTimeoutWaitsForVerdict(t *testing.T) {
 	a.Resolve(id, true)
 	select {
 	case v := <-got:
-		if !v {
+		if v != agent.VerdictAllow {
 			t.Error("Approve returned false after an approval")
 		}
 	case <-time.After(2 * time.Second):
@@ -157,7 +158,7 @@ func TestRemoteApproverCloseDeniesPending(t *testing.T) {
 	sink := &syncSink{}
 	a := NewRemoteApprover(sink, 0, nil) // no deadline; rely on Close
 
-	got := make(chan bool, 1)
+	got := make(chan agent.Verdict, 1)
 	go func() { got <- a.Approve("run_command", nil) }()
 	waitApprovalID(t, sink) // request sent => pending registered
 
@@ -165,7 +166,7 @@ func TestRemoteApproverCloseDeniesPending(t *testing.T) {
 
 	select {
 	case v := <-got:
-		if v {
+		if v == agent.VerdictAllow {
 			t.Error("a pending Approve must deny when the approver is closed")
 		}
 	case <-time.After(2 * time.Second):
@@ -178,7 +179,7 @@ func TestRemoteApproverClosedRejectsImmediately(t *testing.T) {
 	a := NewRemoteApprover(sink, time.Second, nil)
 	a.Close()
 
-	if a.Approve("x", nil) {
+	if a.Approve("x", nil) != agent.VerdictDeny {
 		t.Error("a closed approver must deny")
 	}
 	if sink.count() != 0 {
@@ -191,7 +192,7 @@ func TestRemoteApproverDeniesOnSendError(t *testing.T) {
 	// The timeout should eventually deny.
 	a := NewRemoteApprover(&errSink{failAt: 1}, 50*time.Millisecond, nil)
 	start := time.Now()
-	if a.Approve("x", nil) {
+	if a.Approve("x", nil) != agent.VerdictDeny {
 		t.Error("Approve must deny when no response arrives before the deadline")
 	}
 	if elapsed := time.Since(start); elapsed < 40*time.Millisecond {
@@ -203,7 +204,7 @@ func TestRemoteApproverNilSinkDoesNotSend(t *testing.T) {
 	// A nil sink means no client is connected. Approve should register the
 	// request and block, not panic.
 	a := NewRemoteApprover(nil, 50*time.Millisecond, nil)
-	if a.Approve("x", nil) {
+	if a.Approve("x", nil) != agent.VerdictDeny {
 		t.Error("Approve must deny on timeout when no sink is available")
 	}
 }
@@ -214,7 +215,7 @@ func TestRemoteApproverClearSinkDoesNotDeny(t *testing.T) {
 	sink := &syncSink{}
 	a := NewRemoteApprover(sink, 2*time.Second, nil)
 
-	got := make(chan bool, 1)
+	got := make(chan agent.Verdict, 1)
 	go func() { got <- a.Approve("run_command", nil) }()
 	waitApprovalID(t, sink) // request sent to first sink
 
@@ -236,7 +237,7 @@ func TestRemoteApproverClearSinkDoesNotDeny(t *testing.T) {
 
 	select {
 	case v := <-got:
-		if !v {
+		if v != agent.VerdictAllow {
 			t.Error("Approve returned false after ClearSink + UpdateSink + Resolve")
 		}
 	case <-time.After(2 * time.Second):
@@ -248,7 +249,7 @@ func TestRemoteApproverUpdateSinkResends(t *testing.T) {
 	// After updating the sink, pending requests must be re-sent to the new sink.
 	a := NewRemoteApprover(nil, 2*time.Second, nil) // no sink initially
 
-	got := make(chan bool, 1)
+	got := make(chan agent.Verdict, 1)
 	go func() { got <- a.Approve("run_command", json.RawMessage(`{"cmd":"ls"}`)) }()
 
 	// Give Approve time to register the pending request.
@@ -265,7 +266,7 @@ func TestRemoteApproverUpdateSinkResends(t *testing.T) {
 
 	select {
 	case v := <-got:
-		if !v {
+		if v != agent.VerdictAllow {
 			t.Error("Approve returned false after re-send + approval")
 		}
 	case <-time.After(2 * time.Second):

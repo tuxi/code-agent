@@ -188,7 +188,17 @@ func (p CommandPolicy) Classify(command string) Classification {
 		}
 	}
 
-	// 2. Longest-prefix match across the allow and confirm lists.
+	// 2. Structure-aware dangerous token patterns (P2). These operate on argv so
+	//    word order is irrelevant and quoted content is excluded. The check is
+	//    best-effort: if SplitArgs fails, the command is almost certainly malformed
+	//    and will be rejected downstream anyway.
+	if args, err := SplitArgs(cmd); err == nil {
+		if dp, ok := matchDangerousTokens(args); ok {
+			return Classification{Command: cmd, Decision: Block, Level: LevelFullShell, Reason: "dangerous pattern: " + dp.desc}
+		}
+	}
+
+	// 3. Longest-prefix match across the allow and confirm lists.
 	allowPfx := longestPrefixMatch(cmd, p.AllowedCommands)
 	confirmPfx := longestPrefixMatch(cmd, p.RequiresConfirm)
 

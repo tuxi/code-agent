@@ -171,7 +171,7 @@ func waitForEvent(ch chan agent.Event) tea.Cmd {
 type approvalReq struct {
 	tool  string
 	input json.RawMessage
-	reply chan bool
+	reply chan agent.Verdict
 }
 
 type approvalMsg approvalReq
@@ -188,8 +188,8 @@ type promptRenderedMsg struct {
 // goroutine, posts a request, and blocks until the UI sends a decision back.
 type tuiApprover struct{ ch chan approvalReq }
 
-func (a tuiApprover) Approve(tool string, input json.RawMessage) bool {
-	reply := make(chan bool, 1)
+func (a tuiApprover) Approve(tool string, input json.RawMessage) agent.Verdict {
+	reply := make(chan agent.Verdict, 1)
 	a.ch <- approvalReq{tool: tool, input: input, reply: reply}
 	return <-reply
 }

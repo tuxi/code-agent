@@ -1,6 +1,7 @@
 package filesystem
 
 import (
+	"code-agent/internal/sandbox"
 	"code-agent/internal/tools"
 	"context"
 	"encoding/json"
@@ -191,4 +192,107 @@ func TestReadFileEmitsFileAsset(t *testing.T) {
 	if out.Kind != "file" || out.AssetID != ref.ID || out.DisplayRange.StartLine != 2 || out.LineCount != 2 {
 		t.Fatalf("output = %+v, asset id = %q", out, ref.ID)
 	}
+}
+
+func TestReadFileInspect(t *testing.T) {
+	tool := NewReadFileTool()
+
+	t.Run("normal path passes inspect", func(t *testing.T) {
+		err := tool.Inspect(json.RawMessage(`{"path": "main.go"}`), "/tmp/ws")
+		if err != nil {
+			t.Errorf("normal path should pass inspect, got: %v", err)
+		}
+	})
+
+	t.Run("empty path passes inspect", func(t *testing.T) {
+		err := tool.Inspect(json.RawMessage(`{"path": ""}`), "/tmp/ws")
+		if err != nil {
+			t.Errorf("empty path should pass inspect (Execute surfaces error), got: %v", err)
+		}
+	})
+
+	t.Run("malformed input passes inspect", func(t *testing.T) {
+		err := tool.Inspect(json.RawMessage(`not json`), "/tmp/ws")
+		if err != nil {
+			t.Errorf("malformed input should pass inspect (Execute surfaces error), got: %v", err)
+		}
+	})
+
+	t.Run("empty input passes inspect", func(t *testing.T) {
+		err := tool.Inspect(nil, "/tmp/ws")
+		if err != nil {
+			t.Errorf("nil input should pass inspect, got: %v", err)
+		}
+	})
+
+	// Protected paths
+	for _, path := range []string{
+		".env", ".env.local", ".env.production", ".env.staging",
+		".git-credentials",
+		"credentials", "secrets", "tokens",
+		"private.key", "id_rsa", "id_ed25519",
+	} {
+		t.Run("protected path blocked: "+path, func(t *testing.T) {
+			err := tool.Inspect(json.RawMessage(`{"path": "`+path+`"}`), "/tmp/ws")
+			if err == nil {
+				t.Errorf("protected path %q should be blocked by inspect", path)
+			}
+		})
+	}
+
+	t.Run("deep protected path blocked", func(t *testing.T) {
+		err := tool.Inspect(json.RawMessage(`{"path": "config/.env.production"}`), "/tmp/ws")
+		if err == nil {
+			t.Error("deep protected path should be blocked by inspect")
+		}
+	})
+
+	t.Run("non-protected path passes", func(t *testing.T) {
+		for _, path := range []string{"main.go", "README.md", "cmd/server/main.go", "pkg/util/config.go"} {
+			err := tool.Inspect(json.RawMessage(`{"path": "`+path+`"}`), "/tmp/ws")
+			if err != nil {
+				t.Errorf("non-protected path %q should pass inspect, got: %v", path, err)
+			}
+		}
+	})
+}
+
+func TestIsPathProtected(t *testing.T) {
+	pp := sandbox.ProtectedPaths(nil)
+
+	t.Run("exact base name", func(t *testing.T) {
+		if !sandbox.IsPathProtected(".env", pp) {
+			t.Error(".env should be protected")
+		}
+	})
+
+	t.Run("deep path with protected base", func(t *testing.T) {
+		if !sandbox.IsPathProtected("apps/backend/.env.production", pp) {
+			t.Error("apps/backend/.env.production should be protected")
+		}
+	})
+
+	t.Run("normal file is not protected", func(t *testing.T) {
+		if sandbox.IsPathProtected("main.go", pp) {
+			t.Error("main.go should not be protected")
+		}
+	})
+
+	t.Run("case insensitive match", func(t *testing.T) {
+		if !sandbox.IsPathProtected(".ENV", pp) {
+			t.Error(".ENV should be protected (case insensitive)")
+		}
+	})
+
+	t.Run("glob pattern *.key", func(t *testing.T) {
+		if !sandbox.IsPathProtected("server.key", pp) {
+			t.Error("server.key should be protected by *.key glob")
+		}
+	})
+
+	t.Run("glob pattern *.pem", func(t *testing.T) {
+		if !sandbox.IsPathProtected("ca.pem", pp) {
+			t.Error("ca.pem should be protected by *.pem glob")
+		}
+	})
 }

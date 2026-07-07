@@ -179,7 +179,7 @@ func TestNewSubAgentReadOnlySetIsFailClosed(t *testing.T) {
 }
 
 func TestDenyAllRefusesEverything(t *testing.T) {
-	if (runtime.DenyAllApprover{}).Approve("edit_file", json.RawMessage(`{}`)) {
+	if (runtime.DenyAllApprover{}).Approve("edit_file", json.RawMessage(`{}`)) != agent.VerdictDeny {
 		t.Fatal("the fail-closed approver must deny every call")
 	}
 }

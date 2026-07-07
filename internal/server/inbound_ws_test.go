@@ -43,7 +43,7 @@ func (s *approvalSession) SendMessage(context.Context, string) (agent.TurnResult
 	a := s.appr
 	s.mu.Unlock()
 	approved := a.Approve("run_command", json.RawMessage(`{"command":"git push"}`))
-	s.events <- agent.Event{Kind: agent.EventTurnFinished, Text: fmt.Sprintf("approved=%v", approved)}
+	s.events <- agent.Event{Kind: agent.EventTurnFinished, Text: fmt.Sprintf("approved=%v", approved == agent.VerdictAllow)}
 	return agent.TurnResult{}, nil
 }
 
