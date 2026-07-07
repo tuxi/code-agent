@@ -91,6 +91,66 @@ func TestEditDiffFormat(t *testing.T) {
 	}
 }
 
+func TestEditFileFoldsSmartQuotes(t *testing.T) {
+	// File uses curly quotes; the model reproduces the line with straight ASCII
+	// quotes (the transcript failure). The tolerant tier should still match.
+	root, rel := writeTemp(t, "f.go", "// 表示一个“工作流产品”，定义模板\npackage x\n")
+	content, err := runEdit(t, root, map[string]any{
+		"path": rel,
+		"old":  `// 表示一个"工作流产品"，定义模板`,
+		"new":  "// 工作流定义",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(content, "verify the result") {
+		t.Errorf("expected a tolerant-match note, got: %s", content)
+	}
+	got, _ := os.ReadFile(filepath.Join(root, rel))
+	if string(got) != "// 工作流定义\npackage x\n" {
+		t.Errorf("replacement not applied at the real byte span, got: %q", got)
+	}
+}
+
+func TestEditFileStripsLineNumberPrefixes(t *testing.T) {
+	// The model copies 'old' straight out of read_file, prefixes and all.
+	root, rel := writeTemp(t, "f.go", "package x\n\nfunc A() {}\n")
+	if _, err := runEdit(t, root, map[string]any{
+		"path": rel,
+		"old":  "3\tfunc A() {}",
+		"new":  "func B() {}",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := os.ReadFile(filepath.Join(root, rel))
+	if !strings.Contains(string(got), "func B()") || strings.Contains(string(got), "func A()") {
+		t.Errorf("prefixed replacement not applied: %s", got)
+	}
+}
+
+func TestEditFileNearMissNamesTheDifferingRune(t *testing.T) {
+	// A mismatch the tolerant tiers cannot fix: a mistyped identifier. The
+	// not-found message should point at the closest line and the differing rune.
+	root, rel := writeTemp(t, "f.go", "package x\n\nresult := compute(x)\n")
+	content, err := runEdit(t, root, map[string]any{
+		"path": rel,
+		"old":  "result := kompute(x)",
+		"new":  "result := run(x)",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(content, "closest line in the file is line 3") {
+		t.Errorf("expected a near-miss pointer to line 3, got: %s", content)
+	}
+	if !strings.Contains(content, "First difference at column") {
+		t.Errorf("expected a first-difference column, got: %s", content)
+	}
+	if got, _ := os.ReadFile(filepath.Join(root, rel)); string(got) != "package x\n\nresult := compute(x)\n" {
+		t.Errorf("file should be unchanged after a near miss, got: %q", got)
+	}
+}
+
 func TestEditFilePathEscapeIsError(t *testing.T) {
 	root, _ := writeTemp(t, "f.txt", "hi\n")
 	if _, err := runEdit(t, root, map[string]any{"path": "../escape.txt", "old": "hi", "new": "bye"}); err == nil {
