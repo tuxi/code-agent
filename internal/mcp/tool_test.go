@@ -159,6 +159,164 @@ func TestWireNameSanitizesIllegalChars(t *testing.T) {
 	}
 }
 
+func TestMergeOutputNilStructured(t *testing.T) {
+	// When StructuredContent is nil, derived output is returned as-is.
+	derived := json.RawMessage(`{"kind":"mcp_content","items":[]}`)
+	got := mergeOutput(nil, derived)
+	if string(got) != string(derived) {
+		t.Fatalf("got %s, want derived passthrough", got)
+	}
+}
+
+func TestMergeOutputNilStructNilDerived(t *testing.T) {
+	got := mergeOutput(nil, nil)
+	if got != nil {
+		t.Fatalf("got %s, want nil", got)
+	}
+}
+
+func TestMergeOutputStructOnly(t *testing.T) {
+	// When only StructuredContent is present (no derived), it becomes Output.
+	structured := map[string]any{
+		"evidence": map[string]any{"auditEventID": "audit_001"},
+	}
+	got := mergeOutput(structured, nil)
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(got, &m); err != nil {
+		t.Fatalf("output not a JSON object: %s", got)
+	}
+	var evidence map[string]string
+	if err := json.Unmarshal(m["evidence"], &evidence); err != nil {
+		t.Fatalf("evidence key missing or wrong type: %s", got)
+	}
+	if evidence["auditEventID"] != "audit_001" {
+		t.Fatalf("auditEventID = %q, want audit_001", evidence["auditEventID"])
+	}
+}
+
+func TestMergeOutputBothPresent(t *testing.T) {
+	// When both are present, derived items nest under _mcp_content.
+	structured := map[string]any{
+		"execution": map[string]any{"status": "ok"},
+		"evidence":  map[string]any{"auditEventID": "audit_002"},
+	}
+	derived := json.RawMessage(`{"kind":"mcp_content","items":[{"kind":"image"}]}`)
+	got := mergeOutput(structured, derived)
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(got, &m); err != nil {
+		t.Fatalf("output not a JSON object: %s", got)
+	}
+	// StructuredContent keys at top level.
+	if _, ok := m["execution"]; !ok {
+		t.Fatalf("execution key missing from output: %s", got)
+	}
+	if _, ok := m["evidence"]; !ok {
+		t.Fatalf("evidence key missing from output: %s", got)
+	}
+	// Derived content nested.
+	content, ok := m["_mcp_content"]
+	if !ok {
+		t.Fatalf("_mcp_content key missing from output: %s", got)
+	}
+	if !strings.Contains(string(content), "mcp_content") {
+		t.Fatalf("_mcp_content = %s, want nested derived output", content)
+	}
+}
+
+func TestMergeOutputWithDesktopControlShape(t *testing.T) {
+	// Exact shape from desktop-control-mcp: empty content blocks,
+	// structuredContent carries the evidence.
+	structured := map[string]any{
+		"execution":    map[string]any{},
+		"verification": map[string]any{},
+		"evidence": map[string]any{
+			"auditEventID": "audit_dc_42",
+		},
+	}
+	got := mergeOutput(structured, nil)
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(got, &m); err != nil {
+		t.Fatalf("output not a JSON object: %s", got)
+	}
+	var evidence map[string]string
+	if err := json.Unmarshal(m["evidence"], &evidence); err != nil {
+		t.Fatalf("evidence key missing or wrong type: %s", got)
+	}
+	if evidence["auditEventID"] != "audit_dc_42" {
+		t.Fatalf("auditEventID = %q, want audit_dc_42", evidence["auditEventID"])
+	}
+}
+
+func TestExecuteForwardsStructuredContent(t *testing.T) {
+	// The full integration: remoteTool.Execute → ToolResult carries structuredContent
+	// in Output, so AgentKit can read tool_finished.output.evidence.auditEventID.
+	structured := map[string]any{
+		"evidence": map[string]any{"auditEventID": "audit_int_1"},
+	}
+	c := &fakeCaller{res: &mcpsdk.CallToolResult{
+		Content:           []mcpsdk.Content{&mcpsdk.TextContent{Text: "done"}},
+		StructuredContent: structured,
+	}}
+	got, err := newTestTool(c).Execute(context.Background(), tools.ExecutionContext{}, json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.Content != "done" {
+		t.Fatalf("content = %q, want done", got.Content)
+	}
+	if len(got.Output) == 0 {
+		t.Fatal("Output is empty; StructuredContent was dropped")
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(got.Output, &m); err != nil {
+		t.Fatalf("Output is not a JSON object: %s", got.Output)
+	}
+	var evidence map[string]string
+	if err := json.Unmarshal(m["evidence"], &evidence); err != nil {
+		t.Fatalf("evidence key missing: %s", got.Output)
+	}
+	if evidence["auditEventID"] != "audit_int_1" {
+		t.Fatalf("auditEventID = %q, want audit_int_1", evidence["auditEventID"])
+	}
+}
+
+func TestExecuteStructuredContentAndNonTextAssets(t *testing.T) {
+	// When both structuredContent and non-text blocks (image) are present,
+	// structuredContent is at top level and derived items under _mcp_content.
+	structured := map[string]any{
+		"evidence": map[string]any{"auditEventID": "audit_both"},
+	}
+	c := &fakeCaller{res: &mcpsdk.CallToolResult{
+		Content: []mcpsdk.Content{
+			&mcpsdk.TextContent{Text: "done with image"},
+			&mcpsdk.ImageContent{MIMEType: "image/png", Data: []byte("abc")},
+		},
+		StructuredContent: structured,
+	}}
+	got, err := newTestTool(c).Execute(context.Background(), tools.ExecutionContext{
+		TurnID: "t1", CallID: "c1",
+	}, json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(got.Output, &m); err != nil {
+		t.Fatalf("Output is not a JSON object: %s", got.Output)
+	}
+	// Structured content at top level.
+	if _, ok := m["evidence"]; !ok {
+		t.Fatalf("evidence key missing: %s", got.Output)
+	}
+	// Derived items still present.
+	if _, ok := m["_mcp_content"]; !ok {
+		t.Fatalf("_mcp_content key missing (non-text assets dropped): %s", got.Output)
+	}
+	// Assets still present.
+	if len(got.Assets) != 1 {
+		t.Fatalf("assets = %d, want 1", len(got.Assets))
+	}
+}
+
 func TestSideEffectsAlwaysTrue(t *testing.T) {
 	if !newTestTool(&fakeCaller{}).SideEffects() {
 		t.Fatal("remote tools must always declare side effects")

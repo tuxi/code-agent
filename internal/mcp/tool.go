@@ -94,7 +94,45 @@ func (t *remoteTool) Execute(ctx context.Context, ec tools.ExecutionContext, inp
 		// self-correct, so surface it through the loop's existing failure path.
 		return tools.ToolResult{}, fmt.Errorf("mcp: tool error: %s", text)
 	}
-	return tools.ToolResult{Content: text, Output: rendered.Output, Assets: rendered.Assets}, nil
+	return tools.ToolResult{Content: text, Output: mergeOutput(res.StructuredContent, rendered.Output), Assets: rendered.Assets}, nil
+}
+
+// mergeOutput combines the MCP server's StructuredContent (the semantically
+// meaningful structured result — e.g. execution, verification, evidence) with
+// the content-block-derived output (non-text blocks like images/audio/resources)
+// into a single json.RawMessage. StructuredContent sits at the top level so
+// downstream consumers (AgentKit TimelineExtension) can access it directly via
+// tool_finished.output; any derived items nest under _mcp_content so they never
+// collide with structured-content keys.
+func mergeOutput(structured any, derived json.RawMessage) json.RawMessage {
+	if structured == nil {
+		return derived
+	}
+	sc, err := json.Marshal(structured)
+	if err != nil {
+		return derived
+	}
+	if len(derived) == 0 {
+		return json.RawMessage(sc)
+	}
+	// Both present: nest derived items under _mcp_content so the structured
+	// result is flat and directly addressable.
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(sc, &m); err != nil {
+		// structuredContent is not a JSON object (array, string, number, …);
+		// wrap both under explicit keys so nothing is dropped.
+		merged := make(map[string]json.RawMessage)
+		merged["value"] = json.RawMessage(sc)
+		merged["_mcp_content"] = derived
+		b, _ := json.Marshal(merged)
+		return json.RawMessage(b)
+	}
+	m["_mcp_content"] = derived
+	b, err := json.Marshal(m)
+	if err != nil {
+		return json.RawMessage(sc)
+	}
+	return json.RawMessage(b)
 }
 
 func rawForLog(b []byte) string {
