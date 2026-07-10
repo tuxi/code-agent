@@ -17,7 +17,6 @@ import (
 
 	"code-agent/internal/app"
 	"code-agent/internal/conversation"
-	"code-agent/internal/mcp"
 	"code-agent/internal/runtime"
 	"code-agent/internal/server"
 )
@@ -54,14 +53,12 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	// MCP servers come from Claude-compatible `.mcp.json` files, layered by scope:
-	// project (<root>/.mcp.json) over user (~/.codeagent/mcp.json). Set
-	// CODEAGENT_MCP_INHERIT_CLAUDE=1 to also inherit user-scope servers from an
-	// existing ~/.claude.json. Missing files => no MCP.
+	// MCP servers come from Claude-compatible `.mcp.json` files resolved PER
+	// CONVERSATION WORKSPACE (layered local > project > user, matching Claude
+	// Code), not from the daemon's launch directory — see WorkspaceRegistry.
+	// EnableMCP below. Set CODEAGENT_MCP_INHERIT_CLAUDE=1 to also inherit
+	// user-scope servers from an existing ~/.claude.json.
 	inheritClaude := os.Getenv("CODEAGENT_MCP_INHERIT_CLAUDE") == "1"
-	if cfg.MCP, err = mcp.ResolveDesktop(cfg.Workspace.Root, inheritClaude); err != nil {
-		return err
-	}
 	if cfg.GlobalSkillsDir == "" {
 		if home, err := os.UserHomeDir(); err == nil {
 			cfg.GlobalSkillsDir = filepath.Join(home, ".codeagent", "skills")
@@ -94,14 +91,16 @@ func run() error {
 	defer telemetryStore.Close()
 	runtime.AttachObserver(provider, telemetryStore, ctx)
 
-	// Build the global tool registry once.
-	toolReg, _, mcpMgr, planRef, jobSink, err := runtime.BuildRegistry(ctx, cfg, mc, provider, telemetryStore, nil)
+	// Build the shared BASE tool registry once: built-ins only, no MCP. Each
+	// workspace clones it and layers its own MCP tools on top (EnableMCP), so the
+	// daemon's launch directory never decides which MCP tools a conversation sees.
+	toolReg, _, planRef, jobSink, err := runtime.BuildBaseRegistry(ctx, cfg, mc, provider, telemetryStore, nil)
 	if err != nil {
 		return err
 	}
-	defer mcpMgr.Close()
 
 	wsReg := runtime.NewWorkspaceRegistry(root, cfg.GlobalSkillsDir)
+	wsReg.EnableMCP(ctx, toolReg, cfg, nil, inheritClaude)
 	defer wsReg.Close()
 
 	// Execution Model components.
@@ -133,12 +132,12 @@ func run() error {
 	}
 
 	handler := server.NewMux(repo, eventStore, executor, server.MuxOptions{
-		ServerName:    "codeagentd/" + mc.Model,
+		ServerName:      "codeagentd/" + mc.Model,
 		Capabilities:    defaultCapabilities,
-			WorkspaceRoot:   root,
-			Granter:         rb.Rules(),
-			Prompts:         mcpMgr,
-			CredentialStore: executor.SetSessionCredential,
+		WorkspaceRoot:   root,
+		Granter:         rb.Rules(),
+		Prompts:         wsReg, // default workspace's MCP prompts; per-workspace needs a wire change
+		CredentialStore: executor.SetSessionCredential,
 	})
 
 	srv := &http.Server{Addr: addr, Handler: handler}

@@ -120,14 +120,14 @@ func RegisterBuiltinTools(registry *tools.Registry, cfg app.Config, skillReg *sk
 	return nil
 }
 
-// BuildRegistry registers the model-facing tool set, loads the skills registry,
-// and connects any configured MCP servers — registering their tools into the
-// SAME registry, so remote tools are gated and observed exactly like built-ins.
-// Shared by run, repl, and tui. The returned skills registry feeds both the
-// load_skill tool (here) and the system-prompt index (the session builder), so
-// the index the model sees and the bodies it can load stay in sync. The returned
-// Manager owns the MCP subprocesses; the caller must Close it.
-func BuildRegistry(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider model.Provider, store session.Store, progress agent.Emitter) (*tools.Registry, *skills.Registry, *mcp.Manager, *agent.RunnerRef, *JobEventSink, error) {
+// BuildBaseRegistry registers every process-wide tool — built-ins, task, flux,
+// and the plan tools — but does NOT touch MCP. It exists for serve-mode entry
+// points (codeagentd, embed.Assemble), where MCP servers are resolved per
+// conversation workspace by the WorkspaceRegistry rather than once from the
+// process root: the returned registry is the shared base each workspace clones
+// and layers its own MCP tools onto. Single-workspace entry points (run, repl,
+// tui) keep using BuildRegistry, which builds on top of this.
+func BuildBaseRegistry(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider model.Provider, store session.Store, progress agent.Emitter) (*tools.Registry, *skills.Registry, *agent.RunnerRef, *JobEventSink, error) {
 	root := cfg.Workspace.Root
 	registry := tools.NewRegistry()
 
@@ -137,7 +137,7 @@ func BuildRegistry(ctx context.Context, cfg app.Config, mc app.ModelConfig, prov
 		fmt.Fprintf(os.Stderr, "[registry]   skipped %q: %s\n", label, reason)
 	}
 	if err != nil {
-		return nil, nil, nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 
 	// Background jobs get their own event partition (P8.7 Phase A): each job's
@@ -153,7 +153,7 @@ func BuildRegistry(ctx context.Context, cfg app.Config, mc app.ModelConfig, prov
 		registerSink = jobSink
 	}
 	if err := RegisterBuiltinTools(registry, cfg, skillReg, registerSink); err != nil {
-		return nil, nil, nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 
 	// Subagent (8.3): freeze the read-only subset from the built-ins ONLY — before
@@ -164,8 +164,45 @@ func BuildRegistry(ctx context.Context, cfg app.Config, mc app.ModelConfig, prov
 	sub := NewSubAgent(cfg, mc, provider, root, registry, skillReg.PromptIndex(), store, progress, jobSink)
 	if taskTool := task.NewTool(sub); cfg.Agent.ToolAllowed(taskTool.Name()) {
 		if err := registry.Register(taskTool); err != nil {
-			return nil, nil, nil, nil, nil, err
+			return nil, nil, nil, nil, err
 		}
+	}
+
+	// Flux v3 (plan_workflow) stays gated on subprocess support: its internal
+	// registry needs a shell, so on a sandboxed host the DAG planner can't validate
+	// any real plan (see the note below). This is separate from MCP transport.
+	if cfg.Profile.AllowsSubprocess() && cfg.Agent.ToolAllowed("plan_workflow") {
+		RegisterFluxTool(registry, mc, nil, false) // mc → reuse resolved LLM creds; nil → in-memory stores
+	}
+
+	// Flux (plan_workflow) is intentionally NOT registered on sandboxed hosts (iOS).
+	// Without a shell, the only tool in flux's internal registry is merge_result —
+	// the DAG planner can't validate any real plan, and every invocation wastes a
+	// turn on "plan did not validate". It will be re-enabled when flux supports
+	// injecting code-agent's own tool set (instead of its separate, isolated registry).
+
+	// Plan mode tools: enter_plan_mode and propose_plan. They use a RunnerRef for
+	// late binding — the Runner is constructed after the registry. The returned ref
+	// must be wired via planRef.R = runner after BuildRunner.
+	planRef := WirePlanTools(registry, filepath.Join(root, ".codeagent", "plans"))
+
+	return registry, skillReg, planRef, jobSink, nil
+}
+
+// BuildRegistry builds the base registry (BuildBaseRegistry) and then connects
+// any configured MCP servers — registering their tools into the SAME registry,
+// so remote tools are gated and observed exactly like built-ins. Shared by the
+// single-workspace entry points (run, repl, tui), where the process root IS the
+// workspace and one MCP config for the whole process is the correct semantics.
+// Serve-mode entry points use BuildBaseRegistry + workspace-scoped MCP instead
+// (see WorkspaceRegistry.EnableMCP). The returned skills registry feeds both the
+// load_skill tool and the system-prompt index, so the index the model sees and
+// the bodies it can load stay in sync. The returned Manager owns the MCP
+// subprocesses; the caller must Close it.
+func BuildRegistry(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider model.Provider, store session.Store, progress agent.Emitter) (*tools.Registry, *skills.Registry, *mcp.Manager, *agent.RunnerRef, *JobEventSink, error) {
+	registry, skillReg, planRef, jobSink, err := BuildBaseRegistry(ctx, cfg, mc, provider, store, progress)
+	if err != nil {
+		return nil, nil, nil, nil, nil, err
 	}
 
 	// MCP tools are registered AFTER the built-ins, so they appear after them in
@@ -198,24 +235,6 @@ func BuildRegistry(ctx context.Context, cfg app.Config, mc app.ModelConfig, prov
 			return nil, nil, nil, nil, nil, fmt.Errorf("register mcp tool: %w", err)
 		}
 	}
-
-	// Flux v3 (plan_workflow) stays gated on subprocess support: its internal
-	// registry needs a shell, so on a sandboxed host the DAG planner can't validate
-	// any real plan (see the note below). This is separate from MCP transport.
-	if cfg.Profile.AllowsSubprocess() && cfg.Agent.ToolAllowed("plan_workflow") {
-		RegisterFluxTool(registry, mc, nil, false) // mc → reuse resolved LLM creds; nil → in-memory stores
-	}
-
-	// Flux (plan_workflow) is intentionally NOT registered on sandboxed hosts (iOS).
-	// Without a shell, the only tool in flux's internal registry is merge_result —
-	// the DAG planner can't validate any real plan, and every invocation wastes a
-	// turn on "plan did not validate". It will be re-enabled when flux supports
-	// injecting code-agent's own tool set (instead of its separate, isolated registry).
-
-	// Plan mode tools: enter_plan_mode and propose_plan. They use a RunnerRef for
-	// late binding — the Runner is constructed after the registry. The returned ref
-	// must be wired via planRef.R = runner after BuildRunner.
-	planRef := WirePlanTools(registry, filepath.Join(root, ".codeagent", "plans"))
 
 	return registry, skillReg, mgr, planRef, jobSink, nil
 }

@@ -23,7 +23,10 @@ import (
 // runner it was built with; the swap lands at the next Build, i.e. the next turn
 // boundary — the same guarantee the TUI's /use already relies on.
 type ServeRunBuilder struct {
-	Cfg     app.Config
+	Cfg app.Config
+	// ToolReg is the shared BASE registry (built-ins, no MCP). Build prefers the
+	// session workspace's own registry (base + that workspace's MCP tools) and
+	// falls back to this when the workspace has no MCP config or fails to resolve.
 	ToolReg *tools.Registry
 	WSReg   *WorkspaceRegistry
 	PlanRef *agent.RunnerRef // late-bound per-turn in Build()
@@ -106,20 +109,28 @@ func (b *ServeRunBuilder) Build(ctx conversation.RuntimeContext) conversation.Tu
 			ctx.Credential != nil, mc.Credential.IsZero())
 	}
 
-	// Resolve skills for the session's workspace.
+	// Resolve skills AND tools for the session's workspace. The workspace instance
+	// carries its own tool registry (base built-ins + the workspace's MCP tools,
+	// from <workspace>/.mcp.json); a workspace without MCP has a nil ToolReg and
+	// uses the shared base registry directly. This is what makes the MCP tool set
+	// follow conversation.workspace_path instead of the daemon's launch directory.
 	workspacePath := ctx.Session.WorkspacePath
 	var skillReg *skills.Registry
+	toolReg := b.ToolReg
 	if inst, err := b.WSReg.Get(workspacePath); err == nil {
 		skillReg = inst.SkillReg
+		if inst.ToolReg != nil {
+			toolReg = inst.ToolReg
+		}
 	}
 
-	runner := BuildRunner(b.Cfg, mc, provider, b.ToolReg, skillReg, ctx.Approver, ctx.Publisher, b.rules)
+	runner := BuildRunner(b.Cfg, mc, provider, toolReg, skillReg, ctx.Approver, ctx.Publisher, b.rules)
 	if workspacePath != "" {
 		runner.WorkspaceRoot = workspacePath
 	}
-	// Merge client-registered tools into a per-turn clone so the global registry stays unmodified.
+	// Merge client-registered tools into a per-turn clone so the shared registry stays unmodified.
 	if len(ctx.ClientTools) > 0 {
-		reg := b.ToolReg.Clone()
+		reg := toolReg.Clone()
 		for _, def := range ctx.ClientTools {
 			proxy := tools.NewClientProxyTool(def.Name, def.Description, def.InputSchema)
 			if err := reg.Register(proxy); err != nil {

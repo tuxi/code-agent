@@ -211,7 +211,7 @@ func (h *Handle) Reconfigure(secretsJSON, modelName string) error {
 	// doesn't leave a half-updated stored config.
 	cfg := h.cfg
 	injectedResolver := injectSecrets(&cfg, secrets)
-		credChain := cfg.CredentialResolver(injectedResolver)
+	credChain := cfg.CredentialResolver(injectedResolver)
 	mc, err := cfg.SelectModel(modelName)
 	if err != nil {
 		return err
@@ -366,14 +366,19 @@ func Assemble(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider 
 	closers = append(closers, func() { telemetryStore.Close() })
 	runtime.AttachObserver(provider, telemetryStore, ctx)
 
-	toolReg, _, mcpMgr, planRef, jobSink, err := runtime.BuildRegistry(ctx, cfg, mc, provider, telemetryStore, nil)
+	// Base registry: built-ins only. MCP is workspace-scoped — each conversation
+	// workspace resolves its own .mcp.json on first access (EnableMCP below).
+	// cfg.MCP carries only host-INJECTED servers (the embedded MCPJSON document);
+	// they participate as an extra user-scope layer under every workspace's own
+	// files. The CLI serve path leaves cfg.MCP empty (see runServe).
+	toolReg, _, planRef, jobSink, err := runtime.BuildBaseRegistry(ctx, cfg, mc, provider, telemetryStore, nil)
 	if err != nil {
 		release()
 		return nil, nil, nil, err
 	}
-	closers = append(closers, func() { mcpMgr.Close() })
 
 	wsReg := runtime.NewWorkspaceRegistry(root, cfg.GlobalSkillsDir)
+	wsReg.EnableMCP(ctx, toolReg, cfg, cfg.MCP.Servers, false)
 	closers = append(closers, func() { wsReg.Close() })
 
 	// Re-anchor persisted workspace refs only on the sandboxed (iOS) host, where the
@@ -416,7 +421,7 @@ func Assemble(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider 
 		Capabilities:  defaultCapabilities,
 		WorkspaceRoot: root,
 		Granter:       rb.Rules(),
-		Prompts:       mcpMgr,
+		Prompts:       wsReg, // default workspace's MCP prompts; per-workspace needs a wire change
 		// Wire the WS auth layer into the TurnExecutor's per-session credential
 		// store. When a client connects with Authorization: Bearer <jwt>, the JWT
 		// flows: WS upgrade → CredentialStore → TurnExecutor → RuntimeContext →
@@ -558,7 +563,6 @@ func parseCredentialValue(raw string) (credential.Credential, error) {
 	}
 	return cred, nil
 }
-
 
 // LoopbackURL returns the ws scheme base URL the host should hand to its client,
 // e.g. for building the conversation stream endpoint.

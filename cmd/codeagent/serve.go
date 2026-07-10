@@ -8,6 +8,7 @@ import (
 
 	"code-agent/internal/app"
 	"code-agent/internal/embed"
+	"code-agent/internal/mcp"
 	"code-agent/internal/model"
 )
 
@@ -19,6 +20,14 @@ import (
 // every conversation regardless of workspace.
 func runServe(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider model.Provider, addr string) error {
 	root := cfg.Workspace.Root
+
+	// Serve mode resolves MCP per conversation workspace (WorkspaceRegistry.
+	// EnableMCP inside Assemble). main() pre-resolved cfg.MCP from the process
+	// CWD for the single-workspace commands (run/repl/tui); passing that on would
+	// inject the CWD's servers into EVERY workspace, so clear it — a conversation
+	// whose workspace IS the CWD picks the same .mcp.json up again via the
+	// workspace-scoped path.
+	cfg.MCP = mcp.Config{}
 
 	// The CLI serve path uses process lifecycle, not the in-app suspend/resume
 	// verbs, so it ignores the returned Runtime bundle.
