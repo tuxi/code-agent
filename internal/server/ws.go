@@ -2,9 +2,14 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"net/http"
+	"os"
+	"strings"
 	"sync"
 	"time"
+
+	"code-agent/internal/credential"
 
 	"github.com/coder/websocket"
 )
@@ -84,6 +89,11 @@ type WSHandler struct {
 	// disables prompt invocation over the wire.
 	Prompts PromptService
 
+	// CredentialStore stores a per-session credential extracted from the
+	// Authorization header. Called at WS upgrade time. Nil = server mode
+	// without auth (uses base provider credential chain).
+	CredentialStore func(sessionID string, cred credential.Resolver)
+
 	// Session-scoped approvers that survive connection changes. Keyed by session ID.
 	mu        sync.Mutex
 	approvers map[string]*RemoteApprover
@@ -115,6 +125,25 @@ func (h *WSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	sink := &wsSink{conn: conn, ctx: ctx, writeTimeout: writeTimeout}
 
 	sessionID := r.PathValue("id")
+
+	// Extract the JWT from the Authorization header and store it for this
+	// session. The credential flows through TurnExecutor → RuntimeContext →
+	// ServeRunBuilder.Build() → the turn's model provider.
+	if h.CredentialStore != nil {
+		if token := bearerToken(r); token != "" {
+			target := credential.Target{Namespace: "gateway", Name: "default"}
+			resolver := credential.StaticResolver{
+				target: {Type: credential.Bearer, Secret: token},
+			}
+			h.CredentialStore(sessionID, resolver)
+			fmt.Fprintf(os.Stderr, "[auth] ws: stored credential for session %s (target: %s, token len: %d)\n",
+				sessionID, target.String(), len(token))
+		} else {
+			fmt.Fprintf(os.Stderr, "[auth] ws: no Authorization header for session %s\n", sessionID)
+		}
+	} else {
+		fmt.Fprintf(os.Stderr, "[auth] ws: CredentialStore is nil — per-session auth disabled\n")
+	}
 
 	// Get or create the session-scoped RemoteApprover. On a first connection
 	// this creates a new one; on a reconnect after a page switch this returns the
@@ -195,6 +224,20 @@ func (h *WSHandler) RemoveApprover(sessionID string) {
 	if ok {
 		ra.Close()
 	}
+}
+
+// bearerToken extracts the Bearer token from an HTTP request's Authorization
+// header. Returns "" if the header is absent or malformed (no Bearer prefix).
+func bearerToken(r *http.Request) string {
+	auth := r.Header.Get("Authorization")
+	if auth == "" {
+		return ""
+	}
+	const prefix = "Bearer "
+	if !strings.HasPrefix(auth, prefix) {
+		return ""
+	}
+	return strings.TrimSpace(auth[len(prefix):])
 }
 
 func (h *WSHandler) serverName() string {

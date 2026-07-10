@@ -202,7 +202,7 @@ func TestSuspendAll_MarksInFlightTurnPaused(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		_, _ = ex.ExecuteWithSession(context.Background(), sess, "hi")
+		_, _ = ex.ExecuteWithSession(context.Background(), sess, "hi", "")
 		close(done)
 	}()
 	<-br.started // the turn is in flight, blocked on ctx

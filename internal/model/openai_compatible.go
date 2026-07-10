@@ -12,36 +12,88 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"code-agent/internal/credential"
 )
 
+// OpenAICompatibleProvider speaks the OpenAI-compatible /v1/chat/completions
+// protocol. It supports both static API keys (backward compatible) and dynamic
+// credentials via credential.Resolver (for Gateway JWT, MCP OAuth, etc.).
 type OpenAICompatibleProvider struct {
 	BaseURL    string
-	APIKey     string
 	HTTPClient *http.Client
+
+	// Credential, when non-nil, resolves the credential dynamically on each
+	// request. CredentialTarget is passed to Credential.Resolve() to identify
+	// which service this provider is calling.
+	//
+	// When Credential is nil, the provider falls back to the static APIKey
+	// field (backward compatible path).
+	Credential       credential.Resolver
+	CredentialTarget credential.Target
+
+	// APIKey is the static API key, used when Credential is nil.
+	// Deprecated: set Credential + CredentialTarget instead.
+	APIKey string
 }
 
-func NewOpenAICompatibleProvider(baseURL, apiKey string) *OpenAICompatibleProvider {
+// NewOpenAICompatibleProvider creates a provider that resolves credentials
+// dynamically via cred. The target identifies which service this provider calls.
+//
+// When cred is nil, the provider assumes no authentication is needed (local
+// models, or HTTPClient.Transport handles it).
+func NewOpenAICompatibleProvider(baseURL string, cred credential.Resolver, target credential.Target) *OpenAICompatibleProvider {
 	return &OpenAICompatibleProvider{
-		BaseURL: strings.TrimRight(baseURL, "/"),
-		APIKey:  apiKey,
-		HTTPClient: &http.Client{
-			// No total Timeout: it is a hard ceiling on the WHOLE exchange
-			// including the response body, so a fixed value silently kills any
-			// streamed or long generation that runs past it (the classic
-			// "context deadline exceeded ... while reading body" on long tasks).
-			// Per-attempt total time is governed by ResilientProvider's context
-			// deadline (request_timeout_seconds) instead. Here we only bound the
-			// phases that SHOULD have a hard ceiling — connect, TLS, and time to
-			// first response byte — none of which scale with generation length.
-			Transport: &http.Transport{
-				Proxy:                 http.ProxyFromEnvironment,
-				DialContext:           (&net.Dialer{Timeout: 10 * time.Second}).DialContext,
-				TLSHandshakeTimeout:   10 * time.Second,
-				ResponseHeaderTimeout: 60 * time.Second,
-				ExpectContinueTimeout: 1 * time.Second,
-				MaxIdleConns:          100,
-				IdleConnTimeout:       90 * time.Second,
-			},
+		BaseURL:          strings.TrimRight(baseURL, "/"),
+		Credential:       cred,
+		CredentialTarget: target,
+		HTTPClient:       defaultHTTPClient(),
+	}
+}
+
+// NewOpenAICompatibleProviderWithKey creates a provider with a static API key.
+// Internally it wraps the key in a StaticResolver so the credential path is
+// identical — only the source differs.
+//
+// Deprecated: use NewOpenAICompatibleProvider with a credential.Resolver.
+// This constructor is kept for backward compatibility and will be removed
+// in a future major version.
+func NewOpenAICompatibleProviderWithKey(baseURL, apiKey string) *OpenAICompatibleProvider {
+	p := &OpenAICompatibleProvider{
+		BaseURL:    strings.TrimRight(baseURL, "/"),
+		APIKey:     apiKey,
+		HTTPClient: defaultHTTPClient(),
+	}
+	// If an API key is provided, also wire it through the credential path so
+	// applyAuth has a single code path.
+	if apiKey != "" {
+		p.Credential = credential.StaticResolver{
+			{Namespace: "llm", Name: "default"}: {Type: credential.Bearer, Secret: apiKey},
+		}
+		p.CredentialTarget = credential.Target{Namespace: "llm", Name: "default"}
+	}
+	return p
+}
+
+// defaultHTTPClient returns the standard HTTP client used by providers.
+func defaultHTTPClient() *http.Client {
+	// No total Timeout: it is a hard ceiling on the WHOLE exchange including
+	// the response body, so a fixed value silently kills any streamed or long
+	// generation that runs past it (the classic "context deadline exceeded
+	// ... while reading body" on long tasks). Per-attempt total time is
+	// governed by ResilientProvider's context deadline
+	// (request_timeout_seconds) instead. Here we only bound the phases that
+	// SHOULD have a hard ceiling — connect, TLS, and time to first response
+	// byte — none of which scale with generation length.
+	return &http.Client{
+		Transport: &http.Transport{
+			Proxy:                 http.ProxyFromEnvironment,
+			DialContext:           (&net.Dialer{Timeout: 10 * time.Second}).DialContext,
+			TLSHandshakeTimeout:   10 * time.Second,
+			ResponseHeaderTimeout: 60 * time.Second,
+			ExpectContinueTimeout: 1 * time.Second,
+			MaxIdleConns:          100,
+			IdleConnTimeout:       90 * time.Second,
 		},
 	}
 }
@@ -115,6 +167,40 @@ type streamChunk struct {
 	} `json:"usage"`
 }
 
+// hasCredential reports whether this provider has any means of authentication
+// (either a dynamic credential resolver or a static API key).
+func (p *OpenAICompatibleProvider) hasCredential() bool {
+	return p.Credential != nil || p.APIKey != ""
+}
+
+// applyAuth resolves the credential for this provider and sets the Authorization
+// header on req. When Credential is set, it resolves dynamically; otherwise it
+// falls back to the static APIKey field.
+func (p *OpenAICompatibleProvider) applyAuth(ctx context.Context, req *http.Request) error {
+	if p.Credential != nil {
+		c, err := p.Credential.Resolve(ctx, p.CredentialTarget)
+		if err != nil {
+			return fmt.Errorf("resolve credential for %v: %w", p.CredentialTarget, err)
+		}
+		if !c.IsZero() {
+			switch c.Type {
+			case credential.Bearer:
+				req.Header.Set("Authorization", "Bearer "+c.Secret)
+			case credential.Secret:
+				// Non-Bearer — HTTPClient.Transport handles the details.
+			case credential.None:
+				// No auth needed.
+			}
+			return nil
+		}
+	}
+	// Fallback to static API key (backward compatible path).
+	if p.APIKey != "" {
+		req.Header.Set("Authorization", "Bearer "+p.APIKey)
+	}
+	return nil
+}
+
 // IsLocalBaseURL reports whether urlStr points to a loopback address. Local model
 // servers (Ollama, vLLM, llama.cpp, LM Studio) run on localhost and do not require
 // an API key, so both the config layer and the provider layer skip the key check
@@ -140,12 +226,12 @@ func IsLocalBaseURL(urlStr string) bool {
 // loop needs them whole), and returns the same complete Response Complete would —
 // so everything downstream is identical; only a renderer saw the text live.
 func (p *OpenAICompatibleProvider) CompleteStream(ctx context.Context, req Request, onText func(string)) (Response, error) {
-	// Local endpoints (Ollama etc.) do not require an API key.
-	if p.APIKey == "" && !IsLocalBaseURL(p.BaseURL) {
-		return Response{}, fmt.Errorf("missing api key")
+	// Local endpoints (Ollama etc.) do not require a credential.
+	if !p.hasCredential() && !IsLocalBaseURL(p.BaseURL) {
+		return Response{}, fmt.Errorf("missing credential")
 	}
-	if p.BaseURL == "" || req.Model == "" {
-		return Response{}, fmt.Errorf("missing base url or model")
+	if p.BaseURL == "" {
+		return Response{}, fmt.Errorf("missing base url")
 	}
 
 	data, err := json.Marshal(chatCompletionRequest{
@@ -161,8 +247,8 @@ func (p *OpenAICompatibleProvider) CompleteStream(ctx context.Context, req Reque
 	if err != nil {
 		return Response{}, err
 	}
-	if p.APIKey != "" {
-		httpReq.Header.Set("Authorization", "Bearer "+p.APIKey)
+	if err := p.applyAuth(ctx, httpReq); err != nil {
+		return Response{}, err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "text/event-stream")
@@ -252,16 +338,15 @@ func (p *OpenAICompatibleProvider) CompleteStream(ctx context.Context, req Reque
 }
 
 func (p *OpenAICompatibleProvider) Complete(ctx context.Context, req Request) (Response, error) {
-	// Local endpoints (Ollama etc.) do not require an API key.
-	if p.APIKey == "" && !IsLocalBaseURL(p.BaseURL) {
-		return Response{}, fmt.Errorf("missing api key")
+	// Local endpoints (Ollama etc.) do not require a credential.
+	if !p.hasCredential() && !IsLocalBaseURL(p.BaseURL) {
+		return Response{}, fmt.Errorf("missing credential")
 	}
 	if p.BaseURL == "" {
 		return Response{}, fmt.Errorf("missing base url")
 	}
-	if req.Model == "" {
-		return Response{}, fmt.Errorf("missing model")
-	}
+	// Model may be empty for Gateway — the Gateway server selects the model.
+	// Non-Gateway providers reject empty models at the API level.
 
 	body := chatCompletionRequest{
 		Model:       req.Model,
@@ -286,8 +371,8 @@ func (p *OpenAICompatibleProvider) Complete(ctx context.Context, req Request) (R
 		return Response{}, err
 	}
 
-	if p.APIKey != "" {
-		httpReq.Header.Set("Authorization", "Bearer "+p.APIKey)
+	if err := p.applyAuth(ctx, httpReq); err != nil {
+		return Response{}, err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 

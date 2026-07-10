@@ -1,0 +1,946 @@
+openapi: "3.0.3"
+info:
+  title: Agent Gateway API
+  description: |
+    Code-Agent 端侧 Runtime 的云端 Provider + Account/Billing Backend。
+
+    **角色：** 本文件是 Agent Gateway、AgentKit (Swift)、Code-Agent (Go) 三方之间的正式 API 契约。
+
+    **调用方分工：**
+    - **AgentKit (Swift):** `/auth/*`, `/user/*`, `/agent/usage`, `/agent/models`
+    - **Code-Agent (Go):** `/agent/chat/completions`, `/agent/models`
+    - **CLI (Go):** 全部
+  version: "1.0.0"
+  contact:
+    name: Agent Gateway Team
+
+servers:
+  - url: http://localhost:12221/api/v1
+    description: 本地开发环境
+  - url: https://api.example.com/api/v1
+    description: 生产环境
+
+tags:
+  - name: Auth
+    description: 认证接口（AgentKit 调用）
+  - name: Account
+    description: 账户与资料（AgentKit 调用）
+  - name: Agent
+    description: Agent Chat & 模型（Code-Agent Runtime 调用）
+  - name: Usage
+    description: 用量查询（AgentKit 调用）
+
+# ==================== Security ====================
+security:
+  - BearerAuth: []
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: 登录/注册返回的 access_token
+
+  headers:
+    XDeviceID:
+      schema:
+        type: string
+      description: 设备标识符
+    XDeviceType:
+      schema:
+        type: string
+        enum: [ios, macos, cli]
+    XAppVersion:
+      schema:
+        type: string
+      description: 客户端版本号
+
+  schemas:
+    # ---- 通用 ----
+    ApiResponse:
+      type: object
+      properties:
+        trace_id:
+          type: string
+          description: 请求追踪 ID
+        code:
+          type: integer
+          description: 业务错误码，0 表示成功
+        msg:
+          type: string
+          description: 人类可读消息
+        data:
+          description: 响应数据负载
+
+    # ---- Auth ----
+    AuthRes:
+      type: object
+      properties:
+        is_new:
+          type: boolean
+          description: 是否为新注册用户
+        access_token:
+          type: string
+          description: JWT Bearer token
+        refresh_token:
+          type: string
+          description: 用于刷新 access_token
+        access_exp:
+          type: integer
+          format: int64
+          description: access_token 过期时间（Unix 秒）
+        refresh_exp:
+          type: integer
+          format: int64
+          description: refresh_token 过期时间（Unix 秒）
+        user_id:
+          type: integer
+          format: int64
+        role:
+          type: integer
+          description: 1=Guest, 2=User, 5090=Admin
+        account_type:
+          type: string
+          enum: [anonymous, registered]
+        nickname:
+          type: string
+
+    PasswordLoginReq:
+      type: object
+      required: [username, password]
+      properties:
+        username:
+          type: string
+        password:
+          type: string
+
+    PhoneCodeLoginReq:
+      type: object
+      required: [phone, code]
+      properties:
+        phone:
+          type: string
+        code:
+          type: string
+
+    SendPhoneCodeReq:
+      type: object
+      required: [phone]
+      properties:
+        phone:
+          type: string
+
+    OneTapLoginReq:
+      type: object
+      required: [access_token]
+      properties:
+        access_token:
+          type: string
+        out_id:
+          type: string
+
+    AppleLoginReq:
+      type: object
+      required: [identity_token, authorization_code]
+      properties:
+        identity_token:
+          type: string
+        authorization_code:
+          type: string
+        email:
+          type: string
+        given_name:
+          type: string
+        family_name:
+          type: string
+
+    RefreshReq:
+      type: object
+      required: [refresh_token]
+      properties:
+        refresh_token:
+          type: string
+
+    SecurityStatusRes:
+      type: object
+      properties:
+        user_id:
+          type: integer
+          format: int64
+        phone_masked:
+          type: string
+        has_phone:
+          type: boolean
+        has_apple:
+          type: boolean
+        has_password:
+          type: boolean
+        can_bind_phone:
+          type: boolean
+        can_bind_apple:
+          type: boolean
+        can_unbind_apple:
+          type: boolean
+        bound_login_methods:
+          type: array
+          items:
+            type: string
+        recommended_login_methods:
+          type: array
+          items:
+            type: string
+        preferred_login_method:
+          type: string
+
+    BindPhoneSendCodeReq:
+      type: object
+      required: [phone]
+      properties:
+        phone:
+          type: string
+
+    BindPhoneConfirmReq:
+      type: object
+      required: [phone, code]
+      properties:
+        phone:
+          type: string
+        code:
+          type: string
+
+    BindAuthRes:
+      type: object
+      properties:
+        success:
+          type: boolean
+        message:
+          type: string
+
+    # ---- Account ----
+    UserProfileRes:
+      type: object
+      properties:
+        user_id:
+          type: integer
+          format: int64
+        username:
+          type: string
+        nickname:
+          type: string
+        avatar_url:
+          type: string
+        phone_masked:
+          type: string
+        has_phone:
+          type: boolean
+        has_apple:
+          type: boolean
+        is_active:
+          type: boolean
+        register_source:
+          type: string
+        created_at:
+          type: integer
+          format: int64
+        updated_at:
+          type: integer
+          format: int64
+        subscription_active:
+          type: boolean
+        current_subscription:
+          type: string
+        subscription_expired_at:
+          type: integer
+          format: int64
+        available_points:
+          type: integer
+          format: int64
+        frozen_points:
+          type: integer
+          format: int64
+        can_use_1080p:
+          type: boolean
+        can_use_hd_image:
+          type: boolean
+        can_remove_watermark:
+          type: boolean
+        can_use_priority_queue:
+          type: boolean
+        can_use_custom_aspect_ratio:
+          type: boolean
+        point_discount_rate:
+          type: number
+          format: double
+
+    UpdateProfileReq:
+      type: object
+      properties:
+        nickname:
+          type: string
+        avatar_url:
+          type: string
+
+    # ---- Agent Chat ----
+    ChatRequest:
+      type: object
+      required: [model, messages]
+      properties:
+        model:
+          type: string
+          description: 模型 ID
+          example: "deepseek-v4-pro"
+        messages:
+          type: array
+          items:
+            $ref: '#/components/schemas/ChatMessage'
+        max_tokens:
+          type: integer
+          description: 最大输出 token 数
+        temperature:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 2
+        tools:
+          type: array
+          items:
+            $ref: '#/components/schemas/ToolDef'
+        stream:
+          type: boolean
+          default: false
+
+    ChatMessage:
+      type: object
+      required: [role]
+      properties:
+        role:
+          type: string
+          enum: [system, user, assistant, tool]
+        content:
+          type: string
+        tool_calls:
+          type: array
+          items:
+            $ref: '#/components/schemas/ToolCall'
+        tool_call_id:
+          type: string
+
+    ToolDef:
+      type: object
+      required: [type, function]
+      properties:
+        type:
+          type: string
+          enum: [function]
+        function:
+          type: object
+          required: [name]
+          properties:
+            name:
+              type: string
+            description:
+              type: string
+            parameters:
+              type: object
+
+    ToolCall:
+      type: object
+      properties:
+        id:
+          type: string
+        type:
+          type: string
+        function:
+          type: object
+          properties:
+            name:
+              type: string
+            arguments:
+              type: string
+
+    ChatResponse:
+      type: object
+      properties:
+        id:
+          type: string
+        execution_id:
+          type: string
+        model:
+          type: string
+        choices:
+          type: array
+          items:
+            type: object
+            properties:
+              index:
+                type: integer
+              message:
+                $ref: '#/components/schemas/ChatMessage'
+              finish_reason:
+                type: string
+        usage:
+          $ref: '#/components/schemas/UsageInfo'
+        quota_remaining:
+          $ref: '#/components/schemas/QuotaRemaining'
+
+    UsageInfo:
+      type: object
+      properties:
+        prompt_tokens:
+          type: integer
+        completion_tokens:
+          type: integer
+        total_tokens:
+          type: integer
+        billing_units:
+          type: integer
+          format: int64
+
+    QuotaRemaining:
+      type: object
+      properties:
+        daily_units:
+          type: integer
+          format: int64
+        weekly_units:
+          type: integer
+          format: int64
+        monthly_units:
+          type: integer
+          format: int64
+
+    QuotaExceededError:
+      type: object
+      properties:
+        code:
+          type: integer
+          example: 42001
+        msg:
+          type: string
+        data:
+          type: object
+          properties:
+            limit_type:
+              type: string
+              enum: [daily, weekly, monthly]
+            units_used:
+              type: integer
+              format: int64
+            units_limit:
+              type: integer
+              format: int64
+            resets_at:
+              type: string
+              format: date-time
+            suggestion:
+              type: string
+
+    # ---- Model ----
+    ModelListRes:
+      type: object
+      properties:
+        models:
+          type: array
+          items:
+            $ref: '#/components/schemas/ModelItem'
+        default_model:
+          type: string
+
+    ModelItem:
+      type: object
+      properties:
+        id:
+          type: string
+        display_name:
+          type: string
+        provider:
+          type: string
+        capabilities:
+          type: array
+          items:
+            type: string
+        context_window:
+          type: integer
+        max_output_tokens:
+          type: integer
+        supports_streaming:
+          type: boolean
+        supports_tool_calls:
+          type: boolean
+        supports_reasoning:
+          type: boolean
+        input_billing_factor:
+          type: number
+          format: double
+        output_billing_factor:
+          type: number
+          format: double
+        available:
+          type: boolean
+
+    # ---- Usage ----
+    UsageRes:
+      type: object
+      properties:
+        tier:
+          type: string
+          enum: [free, pro, power, ultimate]
+        mode:
+          type: string
+          enum: [managed, byok]
+        daily:
+          $ref: '#/components/schemas/QuotaPeriod'
+        weekly:
+          $ref: '#/components/schemas/QuotaPeriod'
+        monthly:
+          $ref: '#/components/schemas/QuotaPeriod'
+        by_model:
+          type: array
+          items:
+            $ref: '#/components/schemas/ModelUsageItem'
+
+    QuotaPeriod:
+      type: object
+      properties:
+        units_used:
+          type: integer
+          format: int64
+        units_limit:
+          type: integer
+          format: int64
+        tokens_used:
+          type: integer
+          format: int64
+        utilization_pct:
+          type: number
+          format: double
+        resets_at:
+          type: string
+          format: date-time
+
+    ModelUsageItem:
+      type: object
+      properties:
+        model:
+          type: string
+        units_used:
+          type: integer
+          format: int64
+        tokens_used:
+          type: integer
+          format: int64
+        call_count:
+          type: integer
+          format: int64
+
+    UsageReportReq:
+      type: object
+      required: [provider, model, input_tokens, output_tokens]
+      properties:
+        execution_id:
+          type: string
+        session_id:
+          type: string
+        provider:
+          type: string
+        model:
+          type: string
+        input_tokens:
+          type: integer
+        output_tokens:
+          type: integer
+        tool_calls_count:
+          type: integer
+        duration_ms:
+          type: integer
+
+# ==================== Paths ====================
+paths:
+  # ---- Auth ----
+  /auth/login/password:
+    post:
+      tags: [Auth]
+      summary: 密码登录
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PasswordLoginReq'
+      responses:
+        '200':
+          description: 登录成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - properties:
+                      data:
+                        $ref: '#/components/schemas/AuthRes'
+
+  /auth/register/password:
+    post:
+      tags: [Auth]
+      summary: 密码注册（注册即登录）
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PasswordLoginReq'
+      responses:
+        '200':
+          description: 注册成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - properties:
+                      data:
+                        $ref: '#/components/schemas/AuthRes'
+
+  /auth/phone/login-by-code:
+    post:
+      tags: [Auth]
+      summary: 手机验证码登录
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PhoneCodeLoginReq'
+      responses:
+        '200':
+          description: 登录成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - properties:
+                      data:
+                        $ref: '#/components/schemas/AuthRes'
+
+  /auth/phone/send-code:
+    post:
+      tags: [Auth]
+      summary: 发送手机验证码
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SendPhoneCodeReq'
+      responses:
+        '200':
+          description: 发送成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - properties:
+                      data:
+                        type: object
+                        properties:
+                          success:
+                            type: boolean
+
+  /auth/phone/login-by-one-tap:
+    post:
+      tags: [Auth]
+      summary: 阿里一键登录
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OneTapLoginReq'
+      responses:
+        '200':
+          description: 登录成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - properties:
+                      data:
+                        $ref: '#/components/schemas/AuthRes'
+
+  /auth/apple/login:
+    post:
+      tags: [Auth]
+      summary: Apple 登录
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AppleLoginReq'
+      responses:
+        '200':
+          description: 登录成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - properties:
+                      data:
+                        $ref: '#/components/schemas/AuthRes'
+
+  /anonymous/register:
+    post:
+      tags: [Auth]
+      summary: 匿名注册（App 首次启动）
+      description: 无需 Authorization。每次调用生成新的 user_id。满足 Apple 5.1.1(v) 要求。
+      security: []
+      responses:
+        '200':
+          description: 注册成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - properties:
+                      data:
+                        $ref: '#/components/schemas/AuthRes'
+
+  /auth/refresh:
+    post:
+      tags: [Auth]
+      summary: 刷新 Token
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RefreshReq'
+      responses:
+        '200':
+          description: 刷新成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - properties:
+                      data:
+                        $ref: '#/components/schemas/AuthRes'
+
+  /auth/logout:
+    post:
+      tags: [Auth]
+      summary: 登出
+      responses:
+        '200':
+          description: 登出成功
+
+  /auth/security-status:
+    get:
+      tags: [Auth]
+      summary: 安全状态查询
+      responses:
+        '200':
+          description: 查询成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - properties:
+                      data:
+                        $ref: '#/components/schemas/SecurityStatusRes'
+
+  /auth/bind/phone/send-code:
+    post:
+      tags: [Auth]
+      summary: 发送绑定手机验证码
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BindPhoneSendCodeReq'
+      responses:
+        '200':
+          description: 发送成功
+
+  /auth/bind/phone/confirm:
+    post:
+      tags: [Auth]
+      summary: 确认绑定手机号
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BindPhoneConfirmReq'
+      responses:
+        '200':
+          description: 绑定成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - properties:
+                      data:
+                        $ref: '#/components/schemas/BindAuthRes'
+
+  /auth/bind/apple:
+    post:
+      tags: [Auth]
+      summary: 绑定 Apple 账号
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AppleLoginReq'
+      responses:
+        '200':
+          description: 绑定成功
+
+  /auth/unbind/apple:
+    post:
+      tags: [Auth]
+      summary: 解绑 Apple 账号
+      responses:
+        '200':
+          description: 解绑成功
+
+  # ---- Account ----
+  /user/profile:
+    get:
+      tags: [Account]
+      summary: 获取用户资料
+      responses:
+        '200':
+          description: 查询成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - properties:
+                      data:
+                        $ref: '#/components/schemas/UserProfileRes'
+    patch:
+      tags: [Account]
+      summary: 更新用户资料
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateProfileReq'
+      responses:
+        '200':
+          description: 更新成功
+
+  # ---- Agent Chat ----
+  /agent/chat/completions:
+    post:
+      tags: [Agent]
+      summary: Chat Completion（OpenAI 兼容）
+      description: |
+        **Code-Agent Runtime 的核心接口。** 完全兼容 OpenAI Chat Completions API 格式。
+
+        - 非流式：返回标准 JSON 响应
+        - 流式（stream: true）：返回 SSE 事件流
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChatRequest'
+      responses:
+        '200':
+          description: 成功（非流式）
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - properties:
+                      data:
+                        $ref: '#/components/schemas/ChatResponse'
+        '200-str':
+          description: 成功（流式 SSE）
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: |
+                  OpenAI 兼容的 SSE 流。
+                  每个 chunk 格式: `data: {"id":"...","choices":[{"delta":{...}}]}\n\n`
+                  结束信号: `data: [DONE]\n\n`
+        '429':
+          description: 配额耗尽
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QuotaExceededError'
+
+  /agent/models:
+    get:
+      tags: [Agent]
+      summary: 获取可用模型列表
+      description: Runtime 和 AgentKit 均可调用
+      responses:
+        '200':
+          description: 查询成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - properties:
+                      data:
+                        $ref: '#/components/schemas/ModelListRes'
+
+  # ---- Usage ----
+  /agent/usage:
+    get:
+      tags: [Usage]
+      summary: 获取用量
+      description: AgentKit 调用，展示用户配额使用情况
+      responses:
+        '200':
+          description: 查询成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - properties:
+                      data:
+                        $ref: '#/components/schemas/UsageRes'
+
+  /agent/usage/report:
+    post:
+      tags: [Usage]
+      summary: BYOK 用量上报
+      description: P2 优先级。仅当用户主动开启时调用。不影响配额。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UsageReportReq'
+      responses:
+        '200':
+          description: 上报成功

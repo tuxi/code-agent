@@ -44,7 +44,7 @@ func TestLocalEndpointSkipsAPIKey(t *testing.T) {
 
 	// Strip the scheme/host from the test server URL to get a local-ish endpoint.
 	// httptest.Server listens on 127.0.0.1, so it IS local.
-	p := NewOpenAICompatibleProvider(srv.URL, "" /* no key */)
+	p := NewOpenAICompatibleProviderWithKey(srv.URL, "" /* no key */)
 	resp, err := p.Complete(context.Background(), Request{Model: "test"})
 	if err != nil {
 		t.Fatalf("local endpoint should not require an API key: %v", err)
@@ -61,7 +61,7 @@ func TestLocalEndpointSkipsAPIKey(t *testing.T) {
 // per-attempt time must come from ResilientProvider's context deadline; the
 // client should only bound connect/TLS/time-to-first-byte via its Transport.
 func TestProviderClientHasNoTotalTimeout(t *testing.T) {
-	p := NewOpenAICompatibleProvider("https://example.test", "key")
+	p := NewOpenAICompatibleProviderWithKey("https://example.test", "key")
 	if p.HTTPClient.Timeout != 0 {
 		t.Fatalf("http.Client.Timeout = %s, want 0 (no total ceiling — it would cap long/streamed body reads)", p.HTTPClient.Timeout)
 	}
@@ -94,7 +94,7 @@ func TestParsesCachedPromptTokens(t *testing.T) {
 			}))
 			defer srv.Close()
 
-			p := NewOpenAICompatibleProvider(srv.URL, "key")
+			p := NewOpenAICompatibleProviderWithKey(srv.URL, "key")
 			resp, err := p.Complete(context.Background(), Request{Model: "m"})
 			if err != nil {
 				t.Fatalf("Complete: %v", err)

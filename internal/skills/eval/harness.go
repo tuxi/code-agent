@@ -67,7 +67,7 @@ func NewHarness() (*Harness, error) {
 	if err != nil {
 		return nil, fmt.Errorf("select model: %w", err)
 	}
-	provider, err := runtime.BuildProvider(mc, cfg.Provider)
+	provider, err := runtime.BuildProvider(mc, cfg.Provider, nil)
 	if err != nil {
 		return nil, fmt.Errorf("build provider: %w", err)
 	}

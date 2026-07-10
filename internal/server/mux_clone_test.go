@@ -1,7 +1,6 @@
 package server
 
 import (
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -41,7 +40,7 @@ func TestClone_InvalidURL_HTTP(t *testing.T) {
 		t.Fatalf("status = %d, want 400", resp.StatusCode)
 	}
 	var body cloneErrorResponse
-	_ = json.NewDecoder(resp.Body).Decode(&body)
+	decodeResponse(t, resp, &body)
 	if body.Error != "invalid_url" {
 		t.Errorf("error code = %q, want invalid_url", body.Error)
 	}
@@ -61,7 +60,7 @@ func TestClone_InvalidName_HTTP(t *testing.T) {
 		t.Fatalf("status = %d, want 400", resp.StatusCode)
 	}
 	var body cloneErrorResponse
-	_ = json.NewDecoder(resp.Body).Decode(&body)
+	decodeResponse(t, resp, &body)
 	if body.Error != "invalid_name" {
 		t.Errorf("error code = %q, want invalid_name", body.Error)
 	}

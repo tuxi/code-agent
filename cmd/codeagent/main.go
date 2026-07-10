@@ -105,7 +105,7 @@ func run() error {
 		return err
 	}
 
-	provider, err := runtime.BuildProvider(mc, cfg.Provider)
+	provider, err := runtime.BuildProvider(mc, cfg.Provider, nil)
 	if err != nil {
 		return err
 	}
@@ -134,7 +134,7 @@ func run() error {
 		}
 		return repl(ctx, cfg, mc, provider, args[1], autoMode)
 	case "serve":
-		addr := "127.0.0.1:8787"
+		addr := "127.0.0.1:8797"
 		if len(args) >= 2 {
 			addr = args[1]
 		}
@@ -658,7 +658,7 @@ func runTUI(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider mo
 		if err != nil {
 			return tui.HeaderInfo{}, err
 		}
-		newProvider, err := runtime.BuildProvider(newMC, cfg.Provider)
+		newProvider, err := runtime.BuildProvider(newMC, cfg.Provider, nil)
 		if err != nil {
 			return tui.HeaderInfo{}, err
 		}
@@ -746,7 +746,7 @@ func printUsage() {
   codeagent stats                          aggregate compaction + provider telemetry
   codeagent trace [N]                      show the last N requests, per attempt
   codeagent [--model NAME] resume <id>     resume a saved session
-  codeagent [--model NAME] serve [addr]    run the runtime server (HTTP + agent-wire WebSocket; default 127.0.0.1:8787)
+  codeagent [--model NAME] serve [addr]    run the runtime server (HTTP + agent-wire WebSocket; default 127.0.0.1:8797)
   codeagent skill init <name>              scaffold a new skill under ./skills/<name>/
   codeagent plugin install <url> [name]    install skill plugins from a marketplace repo
   codeagent plugin list                    list installed plugins

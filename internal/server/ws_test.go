@@ -23,7 +23,7 @@ type testSession struct {
 func (s *testSession) Subscribe() (<-chan agent.Event, func()) {
 	return s.hub.subscribe()
 }
-func (s *testSession) SendMessage(context.Context, string) (agent.TurnResult, error) {
+func (s *testSession) SendMessage(context.Context, string, string) (agent.TurnResult, error) {
 	return agent.TurnResult{}, nil
 }
 func (s *testSession) Cancel()                                    {}

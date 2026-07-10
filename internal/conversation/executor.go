@@ -7,9 +7,14 @@ import (
 	"strings"
 	"time"
 
+	"fmt"
+	"os"
+
 	"code-agent/internal/agent"
+	"code-agent/internal/credential"
 	"code-agent/internal/model"
 	"code-agent/internal/session"
+	"sync"
 )
 
 // TurnExecutor is the single execution entry point for all transports (WS,
@@ -25,6 +30,12 @@ type TurnExecutor struct {
 	active *ActiveTurnRegistry
 	subs   *SubscriptionManager
 	rb     RunBuilder
+
+	// sessionCreds stores per-session credential resolvers, set by the handler
+	// layer at WS upgrade time from the Authorization header. Server mode only;
+	// embedded mode uses the injected StaticResolver instead.
+	sessionCreds   map[string]credential.Resolver
+	sessionCredsMu sync.RWMutex
 
 	// titleGen, if set, asynchronously generates a human-readable title after the
 	// first turn completes. Nil means no auto-titling (tests, headless).
@@ -44,24 +55,67 @@ func (e *TurnExecutor) SetTitleGenerator(g TitleGenerator) {
 
 // NewTurnExecutor wires the execution pipeline.
 func NewTurnExecutor(repo ConversationRepository, events ConversationEventStore, active *ActiveTurnRegistry, subs *SubscriptionManager, rb RunBuilder) *TurnExecutor {
-	return &TurnExecutor{repo: repo, events: events, active: active, subs: subs, rb: rb}
+	return &TurnExecutor{
+		repo:         repo,
+		events:       events,
+		active:       active,
+		subs:         subs,
+		rb:           rb,
+		sessionCreds: make(map[string]credential.Resolver),
+	}
+}
+
+// SetSessionCredential stores a credential resolver for a session. It is called
+// by the handler layer at WS upgrade time after extracting the JWT from the
+// Authorization header. In embedded mode this is never called — credential
+// injection goes through secretsJSON instead.
+func (e *TurnExecutor) SetSessionCredential(sessionID string, cred credential.Resolver) {
+	e.sessionCredsMu.Lock()
+	e.sessionCreds[sessionID] = cred
+	e.sessionCredsMu.Unlock()
+	fmt.Fprintf(os.Stderr, "[auth] executor: stored credential for session %s (%d total stored)\n",
+		sessionID, len(e.sessionCreds))
+}
+
+// sessionCredential returns the stored credential for a session, or nil.
+func (e *TurnExecutor) sessionCredential(sessionID string) credential.Resolver {
+	e.sessionCredsMu.RLock()
+	defer e.sessionCredsMu.RUnlock()
+	c := e.sessionCreds[sessionID]
+	if c != nil {
+		fmt.Fprintf(os.Stderr, "[auth] executor: found credential for session %s\n", sessionID)
+	} else {
+		fmt.Fprintf(os.Stderr, "[auth] executor: NO credential for session %s (%d stored: %v)\n",
+			sessionID, len(e.sessionCreds), e.sessionIDs())
+	}
+	return c
+}
+
+func (e *TurnExecutor) sessionIDs() []string {
+	ids := make([]string, 0, len(e.sessionCreds))
+	for id := range e.sessionCreds {
+		ids = append(ids, id)
+	}
+	return ids
 }
 
 // Execute drives one turn to completion against the session identified by
 // sessionID. It loads the session from the Repository, claims the turn slot,
 // builds a fresh Runner, runs, saves, and releases the slot.
-func (e *TurnExecutor) Execute(ctx context.Context, sessionID string, input string) (agent.TurnResult, error) {
+// model is the optional model profile name; empty means "use the server default".
+func (e *TurnExecutor) Execute(ctx context.Context, sessionID string, input string, model string) (agent.TurnResult, error) {
 	sess, err := e.repo.Load(ctx, sessionID)
 	if err != nil {
 		return agent.TurnResult{}, err
 	}
-	return e.ExecuteWithSession(ctx, sess, input)
+	return e.ExecuteWithSession(ctx, sess, input, model)
 }
 
 // ExecuteWithSession runs a turn against an already-loaded session — the REPL
 // and TUI path, where the caller holds a session handle across turns.
-func (e *TurnExecutor) ExecuteWithSession(parentCtx context.Context, sess *session.Session, input string) (agent.TurnResult, error) {
-	res, runErr := e.driveTurn(parentCtx, sess,
+// model is the optional model profile name; empty means "use the server default".
+func (e *TurnExecutor) ExecuteWithSession(parentCtx context.Context, sess *session.Session, input string, model string) (agent.TurnResult, error) {
+	res, runErr := e.driveTurn(parentCtx, sess, model,
 		func(ctx context.Context, runner TurnRunner) (agent.TurnResult, error) {
 			return runner.RunTurn(ctx, sess, input)
 		},
@@ -106,7 +160,7 @@ func (e *TurnExecutor) Resume(parentCtx context.Context, sessionID string) (agen
 	if sess.TurnStatus() != session.TurnStatusPaused {
 		return agent.TurnResult{}, nil
 	}
-	return e.driveTurn(parentCtx, sess,
+	return e.driveTurn(parentCtx, sess, "",
 		func(ctx context.Context, runner TurnRunner) (agent.TurnResult, error) {
 			return runner.ResumeTurn(ctx, sess)
 		},
@@ -122,6 +176,7 @@ func (e *TurnExecutor) Resume(parentCtx context.Context, sessionID string) (agen
 func (e *TurnExecutor) driveTurn(
 	parentCtx context.Context,
 	sess *session.Session,
+	model string,
 	run func(ctx context.Context, runner TurnRunner) (agent.TurnResult, error),
 	recordStatus func(sess *session.Session, runErr error),
 ) (agent.TurnResult, error) {
@@ -145,11 +200,13 @@ func (e *TurnExecutor) driveTurn(
 	// 3. Build a fresh turnRunner for this turn.
 	rctx := RuntimeContext{
 		Session:      sess,
+		Model:        model,
 		Publisher:    pub,
 		Approver:     e.active.Approver(sess.ID),
 		PlanApprover: e.active.PlanApprover(sess.ID),
 		ClientWaiter: e.active.ClientToolWaiter(sess.ID),
 		ClientTools:  e.active.ClientTools(sess.ID),
+		Credential:   e.sessionCredential(sess.ID),
 		// Mid-turn crash-safety (v1.2 §2): persist at each loop boundary so a hard
 		// kill loses at most the in-progress step. The turn-boundary Save below is
 		// still the backstop.

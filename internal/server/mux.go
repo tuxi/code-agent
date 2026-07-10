@@ -12,6 +12,7 @@ import (
 	"code-agent/internal/agent"
 	"code-agent/internal/assetref"
 	"code-agent/internal/conversation"
+	"code-agent/internal/credential"
 	"code-agent/internal/mcp"
 	"code-agent/internal/repos"
 	"code-agent/internal/session"
@@ -151,6 +152,10 @@ type MuxOptions struct {
 	// Prompts serves GET /v1/prompts and renders invoke_prompt. Nil disables MCP
 	// prompts on the wire (the endpoint returns an empty list; invoke is a no-op).
 	Prompts PromptService
+	// CredentialStore stores a per-session credential extracted from the
+	// Authorization header at WS upgrade time. Nil means credentials come from
+	// the base provider (embedded/CLI modes).
+	CredentialStore func(sessionID string, cred credential.Resolver)
 }
 
 // NewMux builds the HTTP surface of `codeagent serve`:
@@ -200,7 +205,7 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 				PausedAt:      m.PausedAt,
 			})
 		}
-		writeJSON(w, http.StatusOK, refs)
+		writeJSON(w, r, http.StatusOK, refs)
 	})
 
 	mux.HandleFunc("POST /v1/conversations", func(w http.ResponseWriter, r *http.Request) {
@@ -212,7 +217,7 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		writeJSON(w, http.StatusCreated, ConversationRef{
+		writeJSON(w, r, http.StatusCreated, ConversationRef{
 			ID:            sess.ID,
 			WorkspacePath: sess.WorkspacePath,
 			Workspace:     workspaceDTO(sess.WorkspacePath),
@@ -254,7 +259,7 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 				detail.MessageCount++
 			}
 		}
-		writeJSON(w, http.StatusOK, detail)
+		writeJSON(w, r, http.StatusOK, detail)
 	})
 
 	mux.HandleFunc("GET /v1/conversations/{id}/messages", func(w http.ResponseWriter, r *http.Request) {
@@ -278,7 +283,7 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 				msgs = append(msgs, MessageView{Seq: len(msgs), Role: role, Content: ev.Text})
 			}
 		}
-		writeJSON(w, http.StatusOK, msgs)
+		writeJSON(w, r, http.StatusOK, msgs)
 	})
 
 	mux.HandleFunc("GET /v1/conversations/{id}/events", func(w http.ResponseWriter, r *http.Request) {
@@ -303,30 +308,30 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 				frames = append(frames, frame)
 			}
 		}
-		writeJSON(w, http.StatusOK, frames)
+		writeJSON(w, r, http.StatusOK, frames)
 	})
 
 	mux.HandleFunc("GET /v1/conversations/{id}/assets/{asset_id}/preview", func(w http.ResponseWriter, r *http.Request) {
 		resp, err := previewConversationAsset(r.Context(), eventStore, repo, r.PathValue("id"), r.PathValue("asset_id"))
 		if err != nil {
-			writeAssetError(w, err)
+			writeAssetError(w, r, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, resp)
+		writeJSON(w, r, http.StatusOK, resp)
 	})
 
 	mux.HandleFunc("GET /v1/conversations/{id}/assets/{asset_id}/content", func(w http.ResponseWriter, r *http.Request) {
 		resp, err := contentConversationAsset(r.Context(), eventStore, repo, r.PathValue("id"), r.PathValue("asset_id"))
 		if err != nil {
-			writeAssetError(w, err)
+			writeAssetError(w, r, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, resp)
+		writeJSON(w, r, http.StatusOK, resp)
 	})
 
 	mux.HandleFunc("GET /v1/conversations/{id}/assets/{asset_id}/blob", func(w http.ResponseWriter, r *http.Request) {
 		if err := serveConversationAssetBlob(r.Context(), w, r, eventStore, repo, r.PathValue("id"), r.PathValue("asset_id")); err != nil {
-			writeAssetError(w, err)
+			writeAssetError(w, r, err)
 			return
 		}
 	})
@@ -347,12 +352,13 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 		return conversation.NewTransportSession(id, executor), nil
 	}
 	ws := &WSHandler{
-		Resolve:      wsResolve,
-		ServerName:   opts.ServerName,
-		Capabilities: opts.Capabilities,
-		Accept:       opts.Accept,
-		Granter:      opts.Granter,
-		Prompts:      opts.Prompts,
+		Resolve:         wsResolve,
+		ServerName:      opts.ServerName,
+		Capabilities:    opts.Capabilities,
+		Accept:          opts.Accept,
+		Granter:         opts.Granter,
+		Prompts:         opts.Prompts,
+		CredentialStore: opts.CredentialStore,
 	}
 	mux.Handle("GET /v1/conversations/{id}/stream", ws)
 	mux.Handle("GET /v2/conversations/{id}/stream", ws)
@@ -381,7 +387,7 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 				frames = append(frames, frame)
 			}
 		}
-		writeJSON(w, http.StatusOK, frames)
+		writeJSON(w, r, http.StatusOK, frames)
 	})
 
 	jobStream := &JobStreamHandler{
@@ -407,12 +413,12 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 
 	// GET /v1/prompts — list the MCP prompts a client can invoke via invoke_prompt.
 	// Server-wide (MCP servers are global), so it needs no conversation id.
-	mux.HandleFunc("GET /v1/prompts", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("GET /v1/prompts", func(w http.ResponseWriter, r *http.Request) {
 		var specs []mcp.PromptSpec
 		if opts.Prompts != nil {
 			specs = opts.Prompts.Prompts()
 		}
-		writeJSON(w, http.StatusOK, toPromptsResponse(specs))
+		writeJSON(w, r, http.StatusOK, toPromptsResponse(specs))
 	})
 
 	mux.HandleFunc("PATCH /v1/conversations/{id}", func(w http.ResponseWriter, r *http.Request) {
@@ -442,7 +448,7 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		writeJSON(w, http.StatusOK, ConversationRef{
+		writeJSON(w, r, http.StatusOK, ConversationRef{
 			ID:            sess.ID,
 			WorkspacePath: sess.WorkspacePath,
 			Workspace:     workspaceDTO(sess.WorkspacePath),
@@ -479,12 +485,12 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 	// docs/ios_github_clone_spec.md.
 	mux.HandleFunc("POST /v1/repos/clone", func(w http.ResponseWriter, r *http.Request) {
 		if opts.WorkspaceRoot == "" {
-			writeJSON(w, http.StatusBadRequest, cloneErrorResponse{Error: "io_error", Message: "server has no workspace root configured"})
+			writeJSON(w, r, http.StatusBadRequest, cloneErrorResponse{Error: "io_error", Message: "server has no workspace root configured"})
 			return
 		}
 		var req CloneRepoRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeJSON(w, http.StatusBadRequest, cloneErrorResponse{Error: "invalid_url", Message: "invalid JSON body"})
+			writeJSON(w, r, http.StatusBadRequest, cloneErrorResponse{Error: "invalid_url", Message: "invalid JSON body"})
 			return
 		}
 		res, err := repos.Clone(r.Context(), opts.WorkspaceRoot, repos.CloneOptions{
@@ -493,13 +499,13 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 		if err != nil {
 			var ce *repos.CloneError
 			if errors.As(err, &ce) {
-				writeJSON(w, statusForCloneCode(ce.Code), cloneErrorResponse{Error: ce.Code, Message: ce.Err.Error()})
+				writeJSON(w, r, statusForCloneCode(ce.Code), cloneErrorResponse{Error: ce.Code, Message: ce.Err.Error()})
 				return
 			}
-			writeJSON(w, http.StatusInternalServerError, cloneErrorResponse{Error: "io_error", Message: err.Error()})
+			writeJSON(w, r, http.StatusInternalServerError, cloneErrorResponse{Error: "io_error", Message: err.Error()})
 			return
 		}
-		writeJSON(w, http.StatusCreated, CloneRepoResponse{
+		writeJSON(w, r, http.StatusCreated, CloneRepoResponse{
 			WorkspacePath: res.AbsPath,
 			WorkspaceRef:  &WorkspaceRefDTO{Root: session.RootWorkspace, Rel: res.Rel},
 		})
@@ -603,8 +609,27 @@ func workspaceDTO(path string) *WorkspaceDTO {
 	}
 }
 
-func writeJSON(w http.ResponseWriter, status int, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(v)
+// writeJSON writes a unified-envelope JSON response. All public API endpoints
+// use this so every response has the {trace_id, code, msg, data} shape that
+// matches the Agent Gateway format.
+//
+// For success (2xx), the value is the data payload.
+// For errors (4xx/5xx), the value is included as data when it is a structured
+// error (cloneErrorResponse), otherwise a generic message is used.
+func writeJSON(w http.ResponseWriter, r *http.Request, status int, v any) {
+	switch {
+	case status >= 200 && status < 300:
+		writeResponse(w, status, apiResponse{
+			TraceID: traceID(r),
+			Code:    0,
+			Msg:     "success",
+			Data:    v,
+		})
+	default:
+		msg := http.StatusText(status)
+		if e, ok := v.(cloneErrorResponse); ok {
+			msg = e.Message
+		}
+		Result(w, r, status, status*100, msg, v)
+	}
 }

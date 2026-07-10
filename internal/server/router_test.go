@@ -32,7 +32,7 @@ func newFakeCommands() *fakeCommands {
 	return &fakeCommands{text: make(chan string, 1), canceled: make(chan struct{}, 1)}
 }
 
-func (f *fakeCommands) SendMessage(_ context.Context, text string) (agent.TurnResult, error) {
+func (f *fakeCommands) SendMessage(_ context.Context, text string, _ string) (agent.TurnResult, error) {
 	f.text <- text
 	return agent.TurnResult{}, nil
 }
@@ -81,7 +81,7 @@ type ctxCapturingCommands struct {
 	ctxs chan context.Context
 }
 
-func (f *ctxCapturingCommands) SendMessage(ctx context.Context, _ string) (agent.TurnResult, error) {
+func (f *ctxCapturingCommands) SendMessage(ctx context.Context, _ string, _ string) (agent.TurnResult, error) {
 	f.ctxs <- ctx
 	return agent.TurnResult{}, nil
 }

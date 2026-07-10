@@ -59,6 +59,7 @@ type AgentInput struct {
 	Type       string      `json:"type"`                  // always "agent_input"
 	Kind       string      `json:"kind"`                  // "text" | "tool_result" | "command" | "system"
 	Text       string      `json:"text,omitempty"`        // kind="text" | "command"
+	Model      string      `json:"model,omitempty"`       // optional: model profile name to use this turn
 	ToolResult *ToolResult `json:"tool_result,omitempty"` // kind="tool_result"
 	// kind="system" fields (v1.1 parses but stubs out the semantics):
 	Command      string `json:"command,omitempty"`

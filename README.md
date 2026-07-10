@@ -98,7 +98,7 @@ codeagent --auto goal "fix the failing test in internal/agent/loop_test.go"
 ### Serve mode
 
 ```bash
-codeagent serve 127.0.0.1:8787
+codeagent serve 127.0.0.1:8797
 # HTTP + agent-wire WebSocket protocol for client integrations
 ```
 

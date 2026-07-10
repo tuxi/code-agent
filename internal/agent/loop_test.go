@@ -31,7 +31,7 @@ func TestRunnerNativeLoop(t *testing.T) {
 	mustRegister(t, reg, search.NewGrepTool())
 
 	runner := &Runner{
-		Model:     model.NewOpenAICompatibleProvider(baseURL, apiKey),
+		Model:     model.NewOpenAICompatibleProviderWithKey(baseURL, apiKey),
 		ModelName: modelName,
 		Tools:     reg,
 		MaxSteps:  8,

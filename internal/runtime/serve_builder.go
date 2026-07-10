@@ -1,6 +1,8 @@
 package runtime
 
 import (
+	"fmt"
+	"os"
 	"sync"
 
 	"code-agent/internal/agent"
@@ -63,8 +65,46 @@ func (b *ServeRunBuilder) Reconfigure(mc app.ModelConfig, provider model.Provide
 // workspace, merges client-registered tools, and wires plan tools + client waiter.
 func (b *ServeRunBuilder) Build(ctx conversation.RuntimeContext) conversation.TurnRunner {
 	b.mu.RLock()
-	mc, provider := b.mc, b.provider
+	mc, baseProvider := b.mc, b.provider
+	cfg := b.Cfg
 	b.mu.RUnlock()
+
+	// Per-turn model selection: if the client specified a model name, first
+	// try to match a config profile. When no profile matches, treat it as a
+	// direct wire model string (for Gateway — the Gateway chooses the provider).
+	if ctx.Model != "" {
+		if altMC, err := cfg.SelectModel(ctx.Model); err == nil {
+			mc = altMC
+		} else {
+			// Not a config profile — forward as-is to the provider.
+			mc.Model = ctx.Model
+		}
+	}
+
+	// If the session has a per-session credential (server mode — JWT from
+	// Authorization header), build a provider that uses it. The session
+	// credential takes priority over the base credential chain.
+	provider := baseProvider
+	if ctx.Credential != nil && !mc.Credential.IsZero() {
+		p, err := BuildProvider(mc, b.Cfg.Provider, ctx.Credential)
+		if err == nil {
+			provider = p
+			fmt.Fprintf(os.Stderr, "[auth] builder: using per-session credential for model %q\n", mc.Name)
+		} else {
+			fmt.Fprintf(os.Stderr, "[auth] builder: failed to build per-session provider: %v\n", err)
+		}
+	} else if ctx.Model != "" || mc.Name != b.mc.Name {
+		// Model changed but no session credential — rebuild provider with
+		// the alternative model config.
+		p, err := BuildProvider(mc, b.Cfg.Provider, nil)
+		if err == nil {
+			provider = p
+			fmt.Fprintf(os.Stderr, "[auth] builder: using per-turn model %q (no session credential)\n", mc.Name)
+		}
+	} else {
+		fmt.Fprintf(os.Stderr, "[auth] builder: using base provider (ctx.Credential=%v, mc.Credential.IsZero=%v)\n",
+			ctx.Credential != nil, mc.Credential.IsZero())
+	}
 
 	// Resolve skills for the session's workspace.
 	workspacePath := ctx.Session.WorkspacePath

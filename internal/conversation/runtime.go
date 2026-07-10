@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"code-agent/internal/agent"
+	"code-agent/internal/credential"
 	"code-agent/internal/session"
 )
 
@@ -26,6 +27,19 @@ type RuntimeContext struct {
 	PlanApprover agent.PlanApprover     // nil = auto-approve plans (test/headless path)
 	ClientWaiter agent.ClientToolWaiter // nil = no client tool executor
 	ClientTools  []agent.ClientToolDef  // client-registered tools (nil if none)
+
+	// Model is the optional model profile name for this turn. When non-empty,
+	// the runner looks up this model from config instead of using the server
+	// default. Set from the client's agent_input.model field. Empty means
+	// "use the server's default_model".
+	Model string
+
+	// Credential is the per-session credential resolver. When non-nil, the
+	// turn runner uses this resolver (chained with the base resolver) for
+	// model calls. In server mode this carries the client's JWT extracted
+	// from the Authorization header at WS upgrade time. Nil means "use the
+	// base provider as-is" (embedded + CLI modes).
+	Credential credential.Resolver
 
 	// Checkpointer persists the session mid-turn (v1.2 §2). The TurnExecutor sets
 	// it from its repository so the Runner can checkpoint at each loop boundary;

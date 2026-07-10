@@ -171,8 +171,7 @@ func TestMuxRebindFlow(t *testing.T) {
 		t.Fatal(err)
 	}
 	var ref ConversationRef
-	_ = json.NewDecoder(resp.Body).Decode(&ref)
-	resp.Body.Close()
+	decodeResponse(t, resp, &ref)
 	if ref.ID == "" {
 		t.Fatal("no id from create")
 	}
@@ -184,7 +183,7 @@ func TestMuxRebindFlow(t *testing.T) {
 		}
 		defer r.Body.Close()
 		var d ConversationDetail
-		_ = json.NewDecoder(r.Body).Decode(&d)
+		decodeResponse(t, r, &d)
 		return d
 	}
 
@@ -249,9 +248,7 @@ func TestMuxCreateThenList(t *testing.T) {
 		t.Fatalf("create status = %d, want 201", resp.StatusCode)
 	}
 	var ref ConversationRef
-	if err := json.NewDecoder(resp.Body).Decode(&ref); err != nil {
-		t.Fatal(err)
-	}
+	decodeResponse(t, resp, &ref)
 	if ref.ID == "" {
 		t.Fatal("create did not return an id")
 	}
@@ -272,9 +269,7 @@ func TestMuxCreateThenList(t *testing.T) {
 	}
 	defer resp2.Body.Close()
 	var refs []ConversationRef
-	if err := json.NewDecoder(resp2.Body).Decode(&refs); err != nil {
-		t.Fatal(err)
-	}
+	decodeResponse(t, resp2, &refs)
 	found := false
 	for _, r := range refs {
 		if r.ID == ref.ID {
@@ -312,7 +307,7 @@ func TestMuxDelete(t *testing.T) {
 	// Create then delete.
 	resp, _ := http.Post(srv.URL+"/v1/conversations", "application/json", nil)
 	var ref ConversationRef
-	json.NewDecoder(resp.Body).Decode(&ref)
+	decodeResponse(t, resp, &ref)
 	resp.Body.Close()
 
 	req, _ := http.NewRequest("DELETE", srv.URL+"/v1/conversations/"+ref.ID, nil)
@@ -328,7 +323,7 @@ func TestMuxDelete(t *testing.T) {
 	// List should be empty.
 	resp3, _ := http.Get(srv.URL + "/v1/conversations")
 	var refs []ConversationRef
-	json.NewDecoder(resp3.Body).Decode(&refs)
+	decodeResponse(t, resp3, &refs)
 	resp3.Body.Close()
 	if len(refs) != 0 {
 		t.Errorf("list after delete = %d, want 0", len(refs))
@@ -382,9 +377,7 @@ func TestMuxGetEventsReEncodesToWire(t *testing.T) {
 	}
 	defer resp.Body.Close()
 	var frames []map[string]any
-	if err := json.NewDecoder(resp.Body).Decode(&frames); err != nil {
-		t.Fatal(err)
-	}
+	decodeResponse(t, resp, &frames)
 	if len(frames) != 4 {
 		t.Fatalf("want 4 event frames, got %d", len(frames))
 	}
@@ -447,9 +440,7 @@ func TestMuxGetEventsReplaysToolAssets(t *testing.T) {
 	}
 	defer resp.Body.Close()
 	var frames []map[string]any
-	if err := json.NewDecoder(resp.Body).Decode(&frames); err != nil {
-		t.Fatal(err)
-	}
+	decodeResponse(t, resp, &frames)
 	if len(frames) != 1 {
 		t.Fatalf("want 1 event frame, got %d", len(frames))
 	}
@@ -526,9 +517,7 @@ func TestMuxAssetPreviewAndContent(t *testing.T) {
 		t.Fatalf("preview status = %d, want 200", resp.StatusCode)
 	}
 	var preview AssetPreviewResponse
-	if err := json.NewDecoder(resp.Body).Decode(&preview); err != nil {
-		t.Fatal(err)
-	}
+	decodeResponse(t, resp, &preview)
 	if preview.Source != "file_window" || !strings.Contains(preview.Content, "5:     let value = 42") {
 		t.Fatalf("preview = %+v", preview)
 	}
@@ -542,9 +531,7 @@ func TestMuxAssetPreviewAndContent(t *testing.T) {
 		t.Fatalf("content status = %d, want 200", resp2.StatusCode)
 	}
 	var body AssetContentResponse
-	if err := json.NewDecoder(resp2.Body).Decode(&body); err != nil {
-		t.Fatal(err)
-	}
+	decodeResponse(t, resp2, &body)
 	if body.Content != content || body.MIMEType != "text/x-swift" {
 		t.Fatalf("content response = %+v", body)
 	}
@@ -583,9 +570,7 @@ func TestMuxAssetPreviewFallsBackToMetadata(t *testing.T) {
 		t.Fatalf("preview status = %d, want 200", resp.StatusCode)
 	}
 	var preview AssetPreviewResponse
-	if err := json.NewDecoder(resp.Body).Decode(&preview); err != nil {
-		t.Fatal(err)
-	}
+	decodeResponse(t, resp, &preview)
 	if preview.Source != "asset_preview" || preview.Content != ref.Preview || preview.Asset.Metadata["mcp_type"] != "image" {
 		t.Fatalf("preview = %+v", preview)
 	}
@@ -628,9 +613,7 @@ func TestMuxAssetPreviewAndBlobForBinaryFile(t *testing.T) {
 		t.Fatalf("preview status = %d, want 200", previewResp.StatusCode)
 	}
 	var preview AssetPreviewResponse
-	if err := json.NewDecoder(previewResp.Body).Decode(&preview); err != nil {
-		t.Fatal(err)
-	}
+	decodeResponse(t, previewResp, &preview)
 	if preview.Source != "metadata" || preview.MIMEType != "image/png" || preview.SizeBytes != int64(len(data)) {
 		t.Fatalf("preview = %+v", preview)
 	}
@@ -755,9 +738,7 @@ func TestMuxGetEventsSince(t *testing.T) {
 		}
 		defer resp.Body.Close()
 		var frames []map[string]any
-		if err := json.NewDecoder(resp.Body).Decode(&frames); err != nil {
-			t.Fatal(err)
-		}
+		decodeResponse(t, resp, &frames)
 		var out []float64
 		for _, f := range frames {
 			out = append(out, f["seq"].(float64))
@@ -784,9 +765,7 @@ func TestMuxGetMessagesDerivesFromEvents(t *testing.T) {
 	}
 	defer resp.Body.Close()
 	var msgs []MessageView
-	if err := json.NewDecoder(resp.Body).Decode(&msgs); err != nil {
-		t.Fatal(err)
-	}
+	decodeResponse(t, resp, &msgs)
 	if len(msgs) != 2 {
 		t.Fatalf("want 2 messages (user+assistant), got %d: %+v", len(msgs), msgs)
 	}
@@ -809,9 +788,7 @@ func TestMuxGetDetail(t *testing.T) {
 	}
 	defer resp.Body.Close()
 	var d ConversationDetail
-	if err := json.NewDecoder(resp.Body).Decode(&d); err != nil {
-		t.Fatal(err)
-	}
+	decodeResponse(t, resp, &d)
 	if d.ID != id || d.TurnCount != 1 || d.MessageCount != 2 {
 		t.Errorf("detail = %+v", d)
 	}
@@ -867,9 +844,7 @@ func TestMuxJobEventsEndpoint(t *testing.T) {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
 	}
 	var frames []map[string]any
-	if err := json.NewDecoder(resp.Body).Decode(&frames); err != nil {
-		t.Fatal(err)
-	}
+	decodeResponse(t, resp, &frames)
 	if len(frames) != 3 {
 		t.Fatalf("want 3 frames, got %d", len(frames))
 	}

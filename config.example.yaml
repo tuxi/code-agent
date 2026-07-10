@@ -1,193 +1,128 @@
 default_model: deepseek-pro
 
+# ── Credential 来源 ────────────────────────────────────────────
+# 每个 credential 条目用 namespace + name 唯一标识。
+# model 通过 credential.namespace + credential.name 引用此处的条目。
+#
+# source:
+#   injected  — 宿主（AgentKit / CLI --gateway-token）注入，不在本文件配置 secret
+#   env       — 从环境变量读取
+#   none      — 无需凭证（本地模型）
+credentials:
+  # ── Gateway ──
+  gateway:
+    default:
+      source: injected
+
+  # ── BYOK ──
+  llm:
+    deepseek:
+      source: env
+      env: DEEPSEEK_API_KEY
+    openai:
+      source: env
+      env: OPENAI_API_KEY
+    qwen:
+      source: env
+      env: DASHSCOPE_API_KEY
+    glm:
+      source: env
+      env: GLM_API_KEY
+
 models:
+  # ── Gateway 模式 ─────────────────────────────────────────────
+  # 通过 Agent Gateway 调用模型。认证由宿主注入 JWT：
+  #   secretsJSON: {"gateway/default": {"type": "bearer", "secret": "eyJ..."}}
+  # 模型选择在 Gateway 服务端完成（model: "" = 默认模型）。
+  gateway:
+    provider: openai
+    base_url: "https://agent.xxx.com/api/v1/agent"
+    model: ""                                       # Gateway 服务端选择
+    credential:
+      namespace: gateway
+      name: default
+    context_window: 128000
+
+  # ── BYOK 模式 ────────────────────────────────────────────────
+  # 直连模型 API。credential.namespace + credential.name 引用
+  # 上方 credentials section 中的条目。
   deepseek:
     provider: openai
     base_url: "https://api.deepseek.com"
-    # model must support function calling
     model: "deepseek-v4-flash"
-    api_key_env: DEEPSEEK_API_KEY
+    credential:
+      namespace: llm
+      name: deepseek
     temperature: 0.2
-    # max context in tokens; sizes the compaction threshold. Optional (default 128000).
     context_window: 128000
-    # price per 1,000,000 tokens, in `currency`; powers the cost section of `stats`.
-    # Optional — omit to leave a model "unpriced".
     input_price_per_million: 0.27
     output_price_per_million: 1.10
-    # lower price for prompt tokens served from the provider's cache (cache hit).
-    # Optional — when omitted, cached tokens are billed at input_price_per_million
-    # (the conservative estimate), so cost is never under-counted.
     cache_input_price_per_million: 0.027
 
   deepseek-pro:
     provider: openai
     base_url: "https://api.deepseek.com"
     model: "deepseek-v4-pro"
-    api_key_env: DEEPSEEK_API_KEY
+    credential:
+      namespace: llm
+      name: deepseek
     context_window: 128000
     input_price_per_million: 2.0
     output_price_per_million: 8.0
+
   qwen:
     provider: openai
     base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
     model: "qwen3-coder-plus"
-    api_key_env: DASHSCOPE_API_KEY
+    credential:
+      namespace: llm
+      name: qwen
     context_window: 256000
     input_price_per_million: 2.0
     output_price_per_million: 8.0
+
   glm:
     provider: openai
     base_url: "https://open.bigmodel.cn/api/paas/v4"
-    model: "glm-5.1"
-    api_key_env: GLM_API_KEY
+    model: "glm-4.7"
+    credential:
+      namespace: llm
+      name: glm
     context_window: 128000
-    input_price_per_million: 2.0
-    output_price_per_million: 8.0
 
-  # ── Local models via Ollama ───────────────────────────────────────────
-  # Two wiring options:
-  #   1) provider: ollama   — native /api/chat, keep_alive, no /v1 prefix
-  #   2) provider: openai   — Ollama's OpenAI-compatible /v1/chat/completions
-  # Both work; native gives you keep_alive (model stays loaded between turns).
-  # Install: brew install ollama && ollama serve
-  #
-  # Available coding models with native tool calling (verified on Ollama):
-  #   ollama pull qwen3-coder              # 18 GB, 30B MoE
-  #   ollama create qwen3-coder-tool -f docs/ollama-modelfile   # ← fix tool calling
-  #   (The upstream modelfile uses {{ .Prompt }} which breaks tool calls.
-  #    Our custom modelfile adds proper Qwen chat markers.)
+  # ── 本地模型（Ollama）───────────────────────────────────────
   ollama-coder:
-    provider: ollama                # native Ollama protocol (/api/chat)
-    base_url: "http://localhost:11434"
-    model: "qwen3-coder-tool"        # custom modelfile — proper tool_calls ✅
-    temperature: 0.2
-    context_window: 65536
-
-  ollama-coder-fast:
     provider: ollama
     base_url: "http://localhost:11434"
-    model: "qwen2.5-coder:14b"      # 9.0 GB, faster but XML tools (use with provider: openai)
+    model: "qwen3-coder-tool"
     temperature: 0.2
     context_window: 32768
 
-  # Other local servers (vLLM, llama.cpp, LM Studio, LocalAI) speak OpenAI-
-  # compatible protocol. Use provider: openai and point at their /v1 endpoint.
-  #   vllm:
-  #     provider: openai
-  #     base_url: "http://localhost:8000/v1"
-  #     model: "Qwen/Qwen2.5-Coder-14B"
-  #     context_window: 32768
 agent:
-  max_steps: 32
-  # LEGACY (P11): the project's REAL build/test command for the finalize verify
-  # (P4.3-R Move 2). PREFER the project settings layer instead —
-  # .codeagent/settings.json (shared) or .codeagent/settings.local.json (local):
-  #   { "verify": { "command": "go test ./..." } }   // or "auto" to detect
-  # A verify block there overrides this value. This key is kept as the
-  # config-level / embedded-host fallback. Empty (the default) = disabled; the
-  # runtime never guesses "unverified". Must be a build/test command (a mutating
-  # command is skipped, never auto-run).
-  # verify_command: "go test ./..."
-  # P8.8: how many INDEPENDENT read-only tool calls in one batch run at once.
-  # Omitted/0/1 = the strictly-sequential loop (the default). Raise it to let the
-  # model fan out — e.g. several `task` subagents or reads in one turn run
-  # concurrently; side-effecting calls are always serialized. Also enables the
-  # fan-out orchestration reminder. Uncomment to try the map scenario:
-  # max_parallel_tools: 8
-  # compact when the prompt reaches this fraction of the model's context_window.
-  # Optional (default 0.75 — inside the mainstream 70-95% band, leaving headroom
-  # for output and the compaction pass); values outside (0,1) fall back.
+  max_steps: 48
+  max_parallel_tools: 8
   compact_ratio: 0.75
-  # P12.a: fraction of the compaction threshold kept as the verbatim recent tail
-  # when compacting. Token-denominated — this is what makes compaction converge
-  # on a 32k local window as reliably as on a 128k one. Optional (default 0.3,
-  # matching Gemini CLI's preserve fraction); values outside (0,1) fall back.
-  # compact_keep_ratio: 0.3
-  # Model the read-only `task` subagent (8.3) runs on. Optional — empty inherits
-  # the main model. Point it at a cheaper model to make delegated read-only
-  # investigation fast and cheap. An unknown/key-less name falls back to the main
-  # model at runtime.
   subagent_model: deepseek
-  # Lease for a single client-executed tool call (v1.1 client tool execution).
-  # How long the loop waits for the client to deliver a tool_result before giving
-  # up with "client timeout". Optional; 0 = built-in 2-minute default. Raise it
-  # when client tools run long (e.g. a sidecar that generates images/video).
-  # client_tool_timeout_seconds: 900
-  # Deny-by-default allowlist of built-in tool names. Optional; unset = register
-  # all (default). When set (even empty), ONLY the named built-ins register —
-  # shell/filesystem/git/plan_workflow/task/MCP are dropped. Use it to lock down a
-  # deployment that must not expose the server's shell/filesystem to end users
-  # (e.g. a DreamAI sidecar whose only tool is registered at runtime over the wire):
-  #   builtin_tools: []            # expose no built-ins at all
-  #   builtin_tools: [web_search]  # expose only web_search
+  client_tool_timeout_seconds: 900
 
-# Transport resilience: each model call gets a per-attempt timeout and retries
-# transient failures (timeout, 429, 5xx) with exponential backoff. All optional.
 provider:
-  request_timeout_seconds: 120
-  max_retries: 2
+  request_timeout_seconds: 600
+  max_retries: 5
   backoff_millis: 500
   max_backoff_seconds: 8
 
-# display symbol for cost reporting (the price fields are in this unit). Optional (default "$").
 currency: "$"
 
-# External MCP servers are NOT configured here. They live in Claude-compatible
-# `.mcp.json` files (same format as Claude Code), layered by scope:
-#   local    <root>/.mcp.local.json    (private to this machine + project, gitignored)
-#   project  <root>/.mcp.json          (checked into VCS, shared with the team)
-#   user     ~/.codeagent/mcp.json     (private, all your projects)
-# Precedence on same-name servers: local > project > user (whole entry wins, no
-# field merge). Set CODEAGENT_MCP_INHERIT_CLAUDE=1
-# to also inherit user-scope servers from an existing ~/.claude.json. Their tools
-# register alongside the built-ins as `mcp__<server>__<tool>` (shown in logs as
-# `mcp.<server>.<tool>`), and every remote tool is treated as side-effecting, so
-# each call is confirmed. See .mcp.json.example; CODEAGENT_MCP_DEBUG=1 traces I/O.
-
-# Permission rules (Claude Code style): pre-approve or deny tool calls by name
-# pattern, so you don't confirm every call from a trusted MCP server one by one.
-# Patterns match the tool's model-facing name; '*' is a wildcard; deny wins over
-# allow. Gates only calls that need approval (all MCP tools + side-effecting
-# built-ins). Omit the block to confirm every call as before.
-# These are the STATIC rules; picking "always allow" at a terminal approval prompt
-# appends a rule to <root>/.codeagent/settings.local.json (machine-local, already
-# gitignored), and it takes effect immediately + on restart. For an MCP tool the
-# grant covers the whole server (mcp__<server>__*), so you confirm once, not once
-# per tool.
-# permissions:
-#   allow:
-#     - "mcp__github__*"        # every tool from the github MCP server
-#     - "mcp__db__query"        # one specific tool
-#   deny:
-#     - "mcp__github__delete_*" # ...but never the destructive ones
-
-# Web browsing tools: web_search and web_fetch.
-# Both are optional — omit the block and the tools still register but
-# web_search returns an error if no provider is configured.
 web:
   search:
-    provider: tavily            # "tavily" (default), "brave", or "searxng"
-    tavily_api_key_env: TAVILY_API_KEY   # env var holding your Tavily key (free tier at https://tavily.com)
-    # fallback_provider: searxng          # optional fallback
-    # brave_api_key_env: BRAVE_API_KEY
-    # searxng_base_url: "http://127.0.0.1:8080"  # self-hosted SearXNG with json format enabled
+    provider: tavily
+    tavily_api_key_env: TAVILY_API_KEY
     top_k: 5
     timeout_seconds: 10
   fetch:
     timeout_seconds: 30
-    cache_ttl_seconds: 600     # 10 minutes
-# Hooks: shell commands run automatically around tool calls (8.5) — deterministic
-# rules that fire every time, regardless of the model. `event` is pre_tool_use
-# (a non-zero exit BLOCKS the call) or post_tool_use (e.g. format after an edit).
-# `match` is a tool name or "*". The tool input arrives on stdin as JSON and the
-# tool name in $CODEAGENT_TOOL_NAME. Commands run via `sh -c` in the workspace
-# root. Optional.
-#
-# P11.c: hooks may ALSO live in the project settings layer, where they CONCATENATE
-# with these (all run). Same {event,match,command} shape, as JSON:
-#   .codeagent/settings.json        (shared)  or
-#   .codeagent/settings.local.json  (local):  { "hooks": [ {"event":"post_tool_use","match":"edit_file","command":"gofmt -w ."} ] }
-# On no-subprocess hosts (iOS) hooks from every layer are disabled (they run sh -c).
+    cache_ttl_seconds: 600
+
 hooks:
   - event: post_tool_use
     match: edit_file

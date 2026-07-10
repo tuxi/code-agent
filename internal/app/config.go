@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 
+	"code-agent/internal/credential"
 	"code-agent/internal/hooks"
 	"code-agent/internal/mcp"
 	"code-agent/internal/model"
@@ -39,11 +40,15 @@ const (
 )
 
 type Config struct {
-	DefaultModel string                 `yaml:"default_model"`
-	Models       map[string]ModelConfig `yaml:"models"`
-	Agent        AgentConfig            `yaml:"agent"`
-	Workspace    WorkspaceConfig        `yaml:"workspace"`
-	Provider     ProviderConfig         `yaml:"provider"`
+	DefaultModel string                      `yaml:"default_model"`
+	Models       map[string]ModelConfig      `yaml:"models"`
+	// Credentials maps namespace → name → config. The outer key is the
+	// credential namespace ("gateway", "llm", "mcp"); the inner key is the
+	// credential name ("default", "deepseek", "github").
+	Credentials  map[string]map[string]CredentialConfig `yaml:"credentials"`
+	Agent        AgentConfig                 `yaml:"agent"`
+	Workspace    WorkspaceConfig             `yaml:"workspace"`
+	Provider     ProviderConfig              `yaml:"provider"`
 
 	// Currency is the display symbol for cost reporting (the price fields are in
 	// this unit). Defaults to "$".
@@ -145,9 +150,36 @@ type ModelConfig struct {
 	// never silently under-counts a model whose cache price is unconfigured.
 	CacheInputPricePerM float64 `yaml:"cache_input_price_per_million"`
 
+	// Credential explicitly references a credential entry in the credentials
+	// section. When set, credential resolution follows this reference instead
+	// of using the legacy api_key_env path.
+	Credential CredentialRef `yaml:"credential"`
+
 	// Resolved at load time, not read from YAML.
 	Name   string `yaml:"-"` // the friendly name (the map key)
 	APIKey string `yaml:"-"` // resolved from APIKeyEnv
+}
+
+// CredentialRef points to a credential entry in Config.Credentials.
+type CredentialRef struct {
+	Namespace string `yaml:"namespace"` // "gateway" | "llm" | "mcp"
+	Name      string `yaml:"name"`      // "default" | "deepseek" | "github"
+}
+
+// IsZero reports whether ref is the zero value.
+func (r CredentialRef) IsZero() bool {
+	return r.Namespace == "" && r.Name == ""
+}
+
+// Target converts the ref to a credential.Target.
+func (r CredentialRef) Target() credential.Target {
+	return credential.Target{Namespace: r.Namespace, Name: r.Name}
+}
+
+// CredentialConfig describes how a named credential is obtained.
+type CredentialConfig struct {
+	Source string `yaml:"source"` // "env" | "injected" | "none"
+	Env    string `yaml:"env"`    // env var name (when source == "env")
 }
 
 type AgentConfig struct {
@@ -374,12 +406,23 @@ func LoadConfigBytes(data []byte) (Config, error) {
 		if mc.ContextWindow <= 0 {
 			mc.ContextWindow = defaultContextWindow
 		}
-		// Injection-priority: a key already set on the struct (e.g. injected by an
-		// embedded host from the iOS Keychain) wins over the env lookup. On a normal
-		// CLI run APIKey is always empty here (yaml:"-"), so env resolution is
-		// unchanged; only an in-process caller that pre-sets it skips env.
+		// Resolve the API key from the env (legacy path). Done first so the
+		// credential-ref normalisation below can inspect the resolved key.
+		// Injection-priority: a key already set on the struct (e.g. injected by
+		// an embedded host from the iOS Keychain) wins over the env lookup.
 		if mc.APIKey == "" && mc.APIKeyEnv != "" {
 			mc.APIKey = os.Getenv(mc.APIKeyEnv)
+		}
+
+		// Normalise credential ref: if not explicitly set, derive from the
+		// resolved state. Only derive when we actually have a working credential
+		// so SelectModel can still give an early error for missing keys.
+		if mc.Credential.IsZero() {
+			if mc.APIKey != "" {
+				mc.Credential = CredentialRef{Namespace: "llm", Name: name}
+			} else if model.IsLocalBaseURL(mc.BaseURL) {
+				mc.Credential = CredentialRef{} // none needed
+			}
 		}
 		cfg.Models[name] = mc
 	}
@@ -464,9 +507,11 @@ func (c Config) SelectModel(name string) (ModelConfig, error) {
 		return ModelConfig{}, fmt.Errorf("unknown model %q; configured models: %s",
 			name, strings.Join(c.ModelNames(), ", "))
 	}
-	if mc.APIKey == "" && !model.IsLocalBaseURL(mc.BaseURL) {
-		return ModelConfig{}, fmt.Errorf("model %q has no API key; set the %s environment variable",
-			name, mc.APIKeyEnv)
+	if mc.APIKey == "" && !model.IsLocalBaseURL(mc.BaseURL) && mc.Credential.IsZero() {
+		if mc.APIKeyEnv != "" {
+			return ModelConfig{}, fmt.Errorf("model %q has no API key; set the %s environment variable", name, mc.APIKeyEnv)
+		}
+		return ModelConfig{}, fmt.Errorf("model %q has no credential configured; add a credential: section or set api_key_env", name)
 	}
 	return mc, nil
 }
@@ -484,6 +529,47 @@ func (c Config) CompactThreshold(mc ModelConfig) int {
 // ratio. Everything older is folded into the summary.
 func (c Config) CompactKeepTokens(mc ModelConfig) int {
 	return int(float64(c.CompactThreshold(mc)) * c.Agent.CompactKeepRatio)
+}
+
+// CredentialResolver builds a credential.Resolver from the configured
+// credentials section and environment. It returns a ChainResolver that tries
+// (in order): injected credentials (from the secrets map, populated by the
+// caller after LoadConfigBytes), environment variables, and explicit "none".
+//
+// When the credentials section is empty and no external resolver has been
+// injected, a plain EnvResolver is returned (CLI backward compat).
+func (c Config) CredentialResolver(injected credential.Resolver) credential.Resolver {
+	var resolvers []credential.Resolver
+
+	// 1. Injected credentials (AgentKit secretsJSON / CLI --gateway-token).
+	if injected != nil {
+		resolvers = append(resolvers, injected)
+	}
+
+	// 2. Configured env-based credentials (nested: namespace → name → config).
+	if len(c.Credentials) > 0 {
+		envResolver := &credential.EnvResolver{}
+		for namespace, entries := range c.Credentials {
+			for name, cc := range entries {
+				if cc.Source == "env" && cc.Env != "" {
+					target := credential.Target{Namespace: namespace, Name: name}
+					if envResolver.Mapping == nil {
+						envResolver.Mapping = make(map[string][]credential.Target)
+					}
+					envResolver.Mapping[cc.Env] = append(envResolver.Mapping[cc.Env], target)
+				}
+			}
+		}
+		if envResolver.Mapping != nil {
+			resolvers = append(resolvers, envResolver)
+		}
+	}
+
+	// 3. Default env resolver for models with api_key_env but no explicit
+	//    credential section (backward compat).
+	resolvers = append(resolvers, &credential.EnvResolver{})
+
+	return &credential.ChainResolver{Resolvers: resolvers}
 }
 
 // ModelNames returns the configured model names, sorted.

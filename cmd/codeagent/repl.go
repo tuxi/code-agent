@@ -172,7 +172,7 @@ func repl(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider mode
 	// the turn text from the server's prompt template rather than the typed line.
 	runTurn := func(text string) {
 		turnCtx, turnCancel := signal.NotifyContext(ctx, os.Interrupt)
-		res, err := executor.ExecuteWithSession(turnCtx, sess, text)
+		res, err := executor.ExecuteWithSession(turnCtx, sess, text, "")
 		turnCancel()
 		switch {
 		case errors.Is(err, context.Canceled):
@@ -387,7 +387,7 @@ func handleCommand(line string, cfg app.Config, mc *app.ModelConfig, runner *age
 		if err != nil {
 			return sess, false, err
 		}
-		newProvider, err := runtime.BuildProvider(newMC, cfg.Provider)
+		newProvider, err := runtime.BuildProvider(newMC, cfg.Provider, nil)
 		if err != nil {
 			return sess, false, err
 		}

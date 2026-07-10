@@ -4,7 +4,7 @@
 //
 // Usage:
 //
-//	codeagentd [--model NAME] [addr]   default addr: 127.0.0.1:8787
+//	codeagentd [--model NAME] [addr]   default addr: 127.0.0.1:8797
 package main
 
 import (
@@ -45,7 +45,7 @@ func run() error {
 	args := os.Args[1:]
 	modelName, args := runtime.ExtractModelFlag(args)
 
-	addr := "127.0.0.1:8787"
+	addr := "127.0.0.1:8797"
 	if len(args) > 0 {
 		addr = args[0]
 	}
@@ -76,7 +76,7 @@ func run() error {
 		return err
 	}
 
-	provider, err := runtime.BuildProvider(mc, cfg.Provider)
+	provider, err := runtime.BuildProvider(mc, cfg.Provider, nil)
 	if err != nil {
 		return err
 	}
@@ -134,10 +134,11 @@ func run() error {
 
 	handler := server.NewMux(repo, eventStore, executor, server.MuxOptions{
 		ServerName:    "codeagentd/" + mc.Model,
-		Capabilities:  defaultCapabilities,
-		WorkspaceRoot: root,
-		Granter:       rb.Rules(),
-		Prompts:       mcpMgr,
+		Capabilities:    defaultCapabilities,
+			WorkspaceRoot:   root,
+			Granter:         rb.Rules(),
+			Prompts:         mcpMgr,
+			CredentialStore: executor.SetSessionCredential,
 	})
 
 	srv := &http.Server{Addr: addr, Handler: handler}

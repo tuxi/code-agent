@@ -25,7 +25,7 @@ func TestCompleteStreamParsesTextToolCallsAndUsage(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := NewOpenAICompatibleProvider(srv.URL, "key")
+	p := NewOpenAICompatibleProviderWithKey(srv.URL, "key")
 	var deltas []string
 	resp, err := p.CompleteStream(context.Background(), Request{Model: "m"}, func(d string) {
 		deltas = append(deltas, d)

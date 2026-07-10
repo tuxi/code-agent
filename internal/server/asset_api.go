@@ -70,13 +70,13 @@ func findConversationAsset(ctx context.Context, eventStore conversation.Conversa
 	return assets.Ref{}, nil, assetHTTPError{status: http.StatusNotFound, message: "asset not found"}
 }
 
-func writeAssetError(w http.ResponseWriter, err error) {
+func writeAssetError(w http.ResponseWriter, r *http.Request, err error) {
 	var ae assetHTTPError
 	if errors.As(err, &ae) {
-		http.Error(w, ae.message, ae.status)
+		ErrorSimple(w, r, ae.status, ae.message)
 		return
 	}
-	http.Error(w, err.Error(), http.StatusInternalServerError)
+	ErrorSimple(w, r, http.StatusInternalServerError, err.Error())
 }
 
 func previewConversationAsset(ctx context.Context, eventStore conversation.ConversationEventStore, repo conversation.ConversationRepository, conversationID, assetID string) (AssetPreviewResponse, error) {

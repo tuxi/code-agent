@@ -16,11 +16,14 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"code-agent/internal/app"
 	"code-agent/internal/conversation"
+	"code-agent/internal/credential"
 	"code-agent/internal/mcp"
 	"code-agent/internal/model"
 	"code-agent/internal/runtime"
@@ -207,12 +210,13 @@ func (h *Handle) Reconfigure(secretsJSON, modelName string) error {
 	// copy-on-stack pattern keeps h.cfg unchanged on error so a failed reconfigure
 	// doesn't leave a half-updated stored config.
 	cfg := h.cfg
-	injectSecrets(&cfg, secrets)
+	injectedResolver := injectSecrets(&cfg, secrets)
+		credChain := cfg.CredentialResolver(injectedResolver)
 	mc, err := cfg.SelectModel(modelName)
 	if err != nil {
 		return err
 	}
-	provider, err := runtime.BuildProvider(mc, cfg.Provider)
+	provider, err := runtime.BuildProvider(mc, cfg.Provider, credChain)
 	if err != nil {
 		return err
 	}
@@ -271,13 +275,14 @@ func StartServer(ctx context.Context, opt Options) (*Handle, error) {
 		cfg.GlobalSkillsDir = filepath.Join(dataDir, "skills")
 	}
 
-	injectSecrets(&cfg, opt.Secrets)
+	injectedResolver := injectSecrets(&cfg, opt.Secrets)
+	credChain := cfg.CredentialResolver(injectedResolver)
 
 	mc, err := cfg.SelectModel(opt.ModelName)
 	if err != nil {
 		return nil, err
 	}
-	provider, err := runtime.BuildProvider(mc, cfg.Provider)
+	provider, err := runtime.BuildProvider(mc, cfg.Provider, credChain)
 	if err != nil {
 		return nil, err
 	}
@@ -412,6 +417,11 @@ func Assemble(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider 
 		WorkspaceRoot: root,
 		Granter:       rb.Rules(),
 		Prompts:       mcpMgr,
+		// Wire the WS auth layer into the TurnExecutor's per-session credential
+		// store. When a client connects with Authorization: Bearer <jwt>, the JWT
+		// flows: WS upgrade → CredentialStore → TurnExecutor → RuntimeContext →
+		// ServeRunBuilder.Build() → model provider → Gateway.
+		CredentialStore: executor.SetSessionCredential,
 	})
 	rt := &Runtime{Executor: executor, Builder: rb, Repo: repo}
 	return handler, rt, closers, nil
@@ -419,16 +429,33 @@ func Assemble(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider 
 
 // parseSecretsJSON decodes the JSON secrets object Reconfigure receives (gomobile
 // cannot bridge a map, so secrets cross as a JSON string). Empty input yields a
-// nil map, i.e. "keep the current keys".
+// nil map.
+//
+// The top-level JSON object may contain two shapes of values:
+//   - Old format: plain strings  → {"DEEPSEEK_API_KEY": "sk-xxx"}
+//   - New format: JSON objects   → {"gateway/default": {"type":"bearer","secret":"..."}}
+//
+// Both are returned as string values in the map; object values are stored as their
+// raw JSON text so injectSecrets can parse them further.
 func parseSecretsJSON(secretsJSON string) (map[string]string, error) {
 	if secretsJSON == "" {
 		return nil, nil
 	}
-	var m map[string]string
-	if err := json.Unmarshal([]byte(secretsJSON), &m); err != nil {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(secretsJSON), &raw); err != nil {
 		return nil, fmt.Errorf("invalid secretsJSON: %w", err)
 	}
-	return m, nil
+	result := make(map[string]string, len(raw))
+	for k, v := range raw {
+		var s string
+		if err := json.Unmarshal(v, &s); err == nil {
+			result[k] = s
+		} else {
+			// Value is a JSON object — store raw so injectSecrets can parse it.
+			result[k] = string(v)
+		}
+	}
+	return result, nil
 }
 
 // injectSecrets overrides resolved API keys from the host-supplied secrets map.
@@ -438,34 +465,100 @@ func parseSecretsJSON(secretsJSON string) (map[string]string, error) {
 // Web search provider keys (Tavily, Brave) are also injected here: a secret whose
 // key matches the configured tavily_api_key_env or brave_api_key_env is set on the
 // WebSearchConfig, following the same pattern as model keys.
-func injectSecrets(cfg *app.Config, secrets map[string]string) {
+func injectSecrets(cfg *app.Config, secrets map[string]string) credential.Resolver {
 	if len(secrets) == 0 {
-		return
+		return nil
 	}
-	for name, mc := range cfg.Models {
-		if v := secrets[mc.APIKeyEnv]; v != "" {
-			mc.APIKey = v
-		}
-		if v := secrets[name]; v != "" {
-			mc.APIKey = v
-		}
-		cfg.Models[name] = mc
-	}
+	resolver := make(credential.StaticResolver)
 
-	// Web search provider keys: match by the env-var name declared in config
-	// (e.g. TAVILY_API_KEY). This lets the iOS app pull search keys from the
-	// Keychain the same way it does model keys — no env vars needed.
-	if cfg.Web.Search.TavilyAPIKeyEnv != "" {
-		if v := secrets[cfg.Web.Search.TavilyAPIKeyEnv]; v != "" {
-			cfg.Web.Search.TavilyKey = v
+	for key, val := range secrets {
+		if val == "" {
+			continue
+		}
+		// Detect format: keys containing '/' or '%2F' are credential targets
+		// (new format per credential-injection-v1 §3).
+		if strings.Contains(key, "/") || strings.Contains(key, "%2F") {
+			target, err := parseTargetKey(key)
+			if err != nil {
+				continue
+			}
+			cred, err := parseCredentialValue(val)
+			if err != nil {
+				continue
+			}
+			resolver[target] = cred
+			// Also set APIKey on matching models for backward compat.
+			for name, mc := range cfg.Models {
+				if mc.Credential.Namespace == target.Namespace && mc.Credential.Name == target.Name {
+					mc.APIKey = cred.Secret
+					cfg.Models[name] = mc
+				}
+			}
+		} else {
+			// Old format: env-var name → plain string value.
+			for name, mc := range cfg.Models {
+				if key == mc.APIKeyEnv || key == name {
+					mc.APIKey = val
+					cfg.Models[name] = mc
+				}
+			}
+			// Web search provider keys.
+			if cfg.Web.Search.TavilyAPIKeyEnv != "" && key == cfg.Web.Search.TavilyAPIKeyEnv {
+				cfg.Web.Search.TavilyKey = val
+			}
+			if cfg.Web.Search.BraveAPIKeyEnv != "" && key == cfg.Web.Search.BraveAPIKeyEnv {
+				cfg.Web.Search.BraveKey = val
+			}
 		}
 	}
-	if cfg.Web.Search.BraveAPIKeyEnv != "" {
-		if v := secrets[cfg.Web.Search.BraveAPIKeyEnv]; v != "" {
-			cfg.Web.Search.BraveKey = v
-		}
+	if len(resolver) == 0 {
+		return nil
 	}
+	return resolver
 }
+
+// parseTargetKey decodes a "{namespace}/{name}" key back into a Target.
+// The components may be url.PathEscape-encoded per the injection contract.
+func parseTargetKey(key string) (credential.Target, error) {
+	idx := strings.LastIndex(key, "/")
+	if idx < 0 {
+		return credential.Target{}, fmt.Errorf("invalid target key %q: missing '/'", key)
+	}
+	namespace, err := url.PathUnescape(key[:idx])
+	if err != nil {
+		return credential.Target{}, fmt.Errorf("invalid target key %q: %w", key, err)
+	}
+	name, err := url.PathUnescape(key[idx+1:])
+	if err != nil {
+		return credential.Target{}, fmt.Errorf("invalid target key %q: %w", key, err)
+	}
+	return credential.Target{Namespace: namespace, Name: name}, nil
+}
+
+// parseCredentialValue parses a JSON credential object from a string value.
+func parseCredentialValue(raw string) (credential.Credential, error) {
+	var c struct {
+		Type      string `json:"type"`
+		Secret    string `json:"secret"`
+		ExpiresAt *int64 `json:"expires_at"`
+	}
+	if err := json.Unmarshal([]byte(raw), &c); err != nil {
+		return credential.Credential{}, err
+	}
+	if c.Type == "" || c.Secret == "" {
+		return credential.Credential{}, fmt.Errorf("credential value missing type or secret")
+	}
+	cred := credential.Credential{
+		Type:   credential.CredentialType(c.Type),
+		Secret: c.Secret,
+	}
+	if c.ExpiresAt != nil {
+		t := time.Unix(*c.ExpiresAt, 0)
+		cred.ExpiresAt = &t
+	}
+	return cred, nil
+}
+
 
 // LoopbackURL returns the ws scheme base URL the host should hand to its client,
 // e.g. for building the conversation stream endpoint.

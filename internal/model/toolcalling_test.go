@@ -32,7 +32,7 @@ func TestNativeToolCallingRoundTrip(t *testing.T) {
 	baseURL := getenvDefault("CODEAGENT_TEST_BASE_URL", "https://api.deepseek.com")
 	modelName := getenvDefault("CODEAGENT_TEST_MODEL", "deepseek-v4-flash")
 
-	provider := NewOpenAICompatibleProvider(baseURL, apiKey)
+	provider := NewOpenAICompatibleProviderWithKey(baseURL, apiKey)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()

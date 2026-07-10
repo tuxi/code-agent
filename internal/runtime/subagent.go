@@ -191,7 +191,7 @@ func ResolveSubAgentModel(cfg app.Config, mc app.ModelConfig, parent model.Provi
 		fmt.Fprintf(os.Stderr, "[subagent] model %q unusable (%v); using %s\n", name, err, mc.Name)
 		return parent, mc
 	}
-	subProvider, err := BuildProvider(subMC, cfg.Provider)
+	subProvider, err := BuildProvider(subMC, cfg.Provider, nil)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[subagent] cannot build provider for %q (%v); using %s\n", name, err, mc.Name)
 		return parent, mc

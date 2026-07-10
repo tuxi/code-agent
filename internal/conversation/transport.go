@@ -26,8 +26,8 @@ func (s *TransportSession) Subscribe() (<-chan agent.Event, func()) {
 }
 
 // SendMessage drives one turn. Satisfies server.CommandTarget.
-func (s *TransportSession) SendMessage(ctx context.Context, text string) (agent.TurnResult, error) {
-	return s.ex.Execute(ctx, s.id, text)
+func (s *TransportSession) SendMessage(ctx context.Context, text string, model string) (agent.TurnResult, error) {
+	return s.ex.Execute(ctx, s.id, text, model)
 }
 
 // Cancel stops the in-flight turn. Satisfies server.CommandTarget.

@@ -9,13 +9,13 @@
 ## 0. 一分钟跑通
 
 ```bash
-codeagent serve                       # 默认 127.0.0.1:8787
+codeagent serve                       # 默认 127.0.0.1:8797
 # 另开一个终端：
-curl -s localhost:8787/healthz                                   # -> ok
-curl -s -XPOST localhost:8787/v1/conversations -d '{"workspace_path":"/p"}'
+curl -s localhost:8797/healthz                                   # -> ok
+curl -s -XPOST localhost:8797/v1/conversations -d '{"workspace_path":"/p"}'
 #   -> {"id":"20260625-002716-74c7ae7b"}
 # 用上面的 id 连 WebSocket：
-#   ws://127.0.0.1:8787/v1/conversations/<id>/stream
+#   ws://127.0.0.1:8797/v1/conversations/<id>/stream
 #   连上后第一帧：
 #   {"type":"hello","protocol_version":1,"server":"codeagent/<model>"}
 ```
@@ -37,7 +37,7 @@ curl -s -XPOST localhost:8787/v1/conversations -d '{"workspace_path":"/p"}'
 
 ## 2. HTTP API
 
-基址：`http://<addr>`（默认 `http://127.0.0.1:8787`）。
+基址：`http://<addr>`（默认 `http://127.0.0.1:8797`）。
 
 ### `GET /healthz`
 存活探针。`200`，body 文本 `ok`。

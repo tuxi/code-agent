@@ -201,7 +201,7 @@ func TestTurnExecutor_Execute_LoadsAndSaves(t *testing.T) {
 	// Use a stub runner so we control the turn.
 	// We can't easily replace the runner in TurnExecutor (it builds via RunBuilder),
 	// so we test through Execute and verify side effects.
-	_, err := exec.Execute(context.Background(), "test-session", "hello")
+	_, err := exec.Execute(context.Background(), "test-session", "hello", "")
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -225,7 +225,7 @@ func TestTurnExecutor_Execute_MissingSession(t *testing.T) {
 	repo := newFakeRepo()
 	exec := NewTurnExecutor(repo, &fakeEventStore{}, NewActiveTurnRegistry(), NewSubscriptionManager(), &fakeRunBuilder{})
 
-	_, err := exec.Execute(context.Background(), "nonexistent", "hello")
+	_, err := exec.Execute(context.Background(), "nonexistent", "hello", "")
 	if err == nil {
 		t.Fatal("expected error for missing session")
 	}
@@ -252,7 +252,7 @@ func TestTurnExecutor_Execute_Concurrency(t *testing.T) {
 	ctx := context.Background()
 	_, cancel1, _ := active.BeginTurn("busy-session", ctx)
 	// Don't finish — second Execute should get ErrBusy.
-	_, err := exec.Execute(ctx, "busy-session", "msg")
+	_, err := exec.Execute(ctx, "busy-session", "msg", "")
 	if err != ErrBusy {
 		t.Errorf("want ErrBusy, got %v", err)
 	}
@@ -276,7 +276,7 @@ func TestTurnExecutor_OnSaveError(t *testing.T) {
 	sess.Messages = append(sess.Messages, model.Message{}, model.Message{})
 	repo.sessions["s"] = sess
 
-	_, _ = exec.Execute(context.Background(), "s", "msg")
+	_, _ = exec.Execute(context.Background(), "s", "msg", "")
 	if saveErr == nil {
 		t.Error("OnSaveError should be called")
 	}
@@ -295,7 +295,7 @@ func TestTurnExecutor_PersistsEventsAfterCallerContextCanceled(t *testing.T) {
 	rb := &emitAfterCancelBuilder{cancelParent: cancel}
 	exec := NewTurnExecutor(repo, events, NewActiveTurnRegistry(), NewSubscriptionManager(), rb)
 
-	if _, err := exec.Execute(ctx, "s1", "hello"); err != nil {
+	if _, err := exec.Execute(ctx, "s1", "hello", ""); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 
@@ -328,7 +328,7 @@ func TestTurnExecutor_LiveEventsReachResubscribedClient(t *testing.T) {
 	}}
 
 	exec := NewTurnExecutor(repo, &fakeEventStore{}, NewActiveTurnRegistry(), subs, rb)
-	if _, err := exec.Execute(context.Background(), "s1", "hello"); err != nil {
+	if _, err := exec.Execute(context.Background(), "s1", "hello", ""); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 
@@ -350,7 +350,7 @@ func TestTurnExecutor_Shutdown(t *testing.T) {
 
 	exec.Shutdown()
 	// Post-shutdown Execute should fail.
-	_, err := exec.Execute(context.Background(), "any", "msg")
+	_, err := exec.Execute(context.Background(), "any", "msg", "")
 	if err == nil {
 		t.Error("Execute should fail after Shutdown")
 	}

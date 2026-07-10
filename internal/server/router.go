@@ -13,7 +13,9 @@ import (
 // wiring — so the routing layer can be unit-tested against a fake and reused by
 // any transport.
 type CommandTarget interface {
-	SendMessage(ctx context.Context, text string) (agent.TurnResult, error)
+	// SendMessage drives one turn. model is the config profile name; empty means
+	// "use the server's default model".
+	SendMessage(ctx context.Context, text string, model string) (agent.TurnResult, error)
 	Cancel()
 	RegisterTools(tools []agent.ClientToolDef)
 }
@@ -69,7 +71,7 @@ func (r Router) Route(ctx context.Context, data []byte) {
 			// lifetime is owned by the session registry — cancel_turn,
 			// SuspendAll, Shutdown — never by the transport.
 			turnCtx := context.WithoutCancel(ctx)
-			go func() { _, _ = r.Commands.SendMessage(turnCtx, m.Text) }()
+			go func() { _, _ = r.Commands.SendMessage(turnCtx, m.Text, "") }()
 		}
 	case MsgTypeRegisterTools:
 		var m RegisterTools
@@ -87,7 +89,8 @@ func (r Router) Route(ctx context.Context, data []byte) {
 				// Same detachment as send_message: the turn must survive this
 				// connection closing.
 				turnCtx := context.WithoutCancel(ctx)
-				go func() { _, _ = r.Commands.SendMessage(turnCtx, m.Text) }()
+				model := m.Model
+				go func() { _, _ = r.Commands.SendMessage(turnCtx, m.Text, model) }()
 			}
 		case "tool_result":
 			if m.ToolResult != nil && r.ToolResults != nil {
@@ -121,7 +124,7 @@ func (r Router) Route(ctx context.Context, data []byte) {
 				if err != nil {
 					return // bad command / missing arg: client validates against GET /v1/prompts
 				}
-				_, _ = r.Commands.SendMessage(turnCtx, text)
+				_, _ = r.Commands.SendMessage(turnCtx, text, "")
 			}()
 		}
 	case MsgTypeCancelTurn:
