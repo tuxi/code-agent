@@ -61,9 +61,11 @@ type Config struct {
 	// registered alongside the built-in ones. It is code-level only (yaml:"-"):
 	// MCP servers are configured in a separate Claude-compatible `.mcp.json`
 	// document, not in this YAML, so a config authored for Claude Code is consumed
-	// verbatim. Desktop entry points populate this from the project-root
-	// `.mcp.json` (see mcp.LoadProject); embedded hosts (iOS/macOS) inject it
-	// in-memory (see embed.Options.MCPJSON). Empty (the default) disables it.
+	// verbatim. CLI entry points (run/repl/tui) populate this from CWD's
+	// `.mcp.json` via mcp.ResolveDesktop; the daemon (codeagentd) leaves it empty
+	// and resolves MCP per conversation workspace via WorkspaceRegistry.
+	// Embedded hosts (iOS/macOS) inject it in-memory (see embed.Options.MCPJSON).
+	// Empty (the default) disables it.
 	MCP mcp.Config `yaml:"-"`
 
 	// Hooks are user-configured pre/post-tool shell commands (8.5). Empty disables.

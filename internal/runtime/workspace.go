@@ -210,10 +210,12 @@ func (inst *WorkspaceInstance) initMCP(mc *workspaceMCP) {
 			fmt.Fprintf(os.Stderr, "[workspace] %s: skip MCP tool %s: %v\n", inst.RootPath, tool.Name(), err)
 		}
 	}
+	inst.mu.Lock()
 	inst.MCPMgr = mgr
 	inst.ToolReg = reg
 	inst.mcpCfg = mc
 	inst.mcpMTime = latestMCPFileTime(inst.RootPath)
+	inst.mu.Unlock()
 }
 
 // Prompts implements server.PromptService by collecting MCP prompts across ALL
@@ -388,12 +390,14 @@ func (wr *WorkspaceRegistry) PruneIdle(maxAge time.Duration) {
 	cutoff := time.Now().Add(-maxAge)
 	for root, inst := range wr.instances {
 		if inst.lastAccess.Before(cutoff) && inst.MCPMgr != nil {
+			inst.mu.Lock()
 			inst.MCPMgr.Close()
 			inst.MCPMgr = nil
 			inst.ToolReg = nil
 			inst.mcpCfg = nil
 			inst.mcpMTime = time.Time{}
 			inst.mcpOnce = sync.Once{}
+			inst.mu.Unlock()
 			fmt.Fprintf(os.Stderr, "[workspace] %s: MCP pruned (idle)\n", root)
 		}
 	}
