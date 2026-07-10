@@ -45,7 +45,14 @@ type ServeRunBuilder struct {
 func NewServeRunBuilder(cfg app.Config, mc app.ModelConfig, provider model.Provider, toolReg *tools.Registry, wsReg *WorkspaceRegistry, planRef *agent.RunnerRef) *ServeRunBuilder {
 	return &ServeRunBuilder{
 		Cfg: cfg, ToolReg: toolReg, WSReg: wsReg, PlanRef: planRef,
-		rules: approve.NewRuleStore(cfg.Workspace.Root, cfg.Permissions.Allow, cfg.Permissions.Deny),
+		// Pre-GA: RuleStore should be workspace-scoped via WorkspaceInstance.Rules
+		// (Phase 3). For now, seed from config permissions only — workspace-level
+		// persistence (scopeProjectLocal) resolves against the conversation's
+		// workspacePath rather than a fixed daemon root via the build-time routing
+		// below. The empty root means "no project-local persistence path," so
+		// grants default to the user scope, which is workspace-independent and
+		// correct for serve mode until Phase 3 lands.
+		rules: approve.NewRuleStore("", cfg.Permissions.Allow, cfg.Permissions.Deny),
 		mc:    mc, provider: provider,
 	}
 }
@@ -124,7 +131,7 @@ func (b *ServeRunBuilder) Build(ctx conversation.RuntimeContext) conversation.Tu
 		}
 	}
 
-	runner := BuildRunner(b.Cfg, mc, provider, toolReg, skillReg, ctx.Approver, ctx.Publisher, b.rules)
+	runner := BuildRunner(b.Cfg, mc, provider, toolReg, skillReg, ctx.Approver, ctx.Publisher, b.rules, workspacePath)
 	if workspacePath != "" {
 		runner.WorkspaceRoot = workspacePath
 	}

@@ -81,10 +81,14 @@ func run() error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 
-	root := cfg.Workspace.Root
+	home, _ := os.UserHomeDir()
+	daemonDir := filepath.Join(home, ".codeagent", "daemon")
+	reposDir := filepath.Join(home, ".codeagent", "repos")
 
-	// Open the default workspace's store for global telemetry.
-	telemetryStore, err := runtime.OpenStore(root)
+	// Open the daemon's own store for global telemetry (listing all conversations
+	// across all workspaces). The per-workspace stores are opened by
+	// WorkspaceRegistry separately.
+	telemetryStore, err := runtime.OpenStore(daemonDir)
 	if err != nil {
 		return err
 	}
@@ -94,12 +98,14 @@ func run() error {
 	// Build the shared BASE tool registry once: built-ins only, no MCP. Each
 	// workspace clones it and layers its own MCP tools on top (EnableMCP), so the
 	// daemon's launch directory never decides which MCP tools a conversation sees.
-	toolReg, _, planRef, jobSink, err := runtime.BuildBaseRegistry(ctx, cfg, mc, provider, telemetryStore, nil)
+	// root for skills: "" means no project-local skills from the daemon itself;
+	// workspace-scoped skills are loaded per instance by WorkspaceRegistry.
+	toolReg, _, planRef, jobSink, err := runtime.BuildBaseRegistry(ctx, cfg, mc, provider, telemetryStore, "", nil)
 	if err != nil {
 		return err
 	}
 
-	wsReg := runtime.NewWorkspaceRegistry(root, cfg.GlobalSkillsDir)
+	wsReg := runtime.NewWorkspaceRegistry(cfg.GlobalSkillsDir)
 	wsReg.EnableMCP(ctx, toolReg, cfg, nil, inheritClaude)
 	defer wsReg.Close()
 
@@ -134,7 +140,7 @@ func run() error {
 	handler := server.NewMux(repo, eventStore, executor, server.MuxOptions{
 		ServerName:      "codeagentd/" + mc.Model,
 		Capabilities:    defaultCapabilities,
-		WorkspaceRoot:   root,
+		WorkspaceRoot:   reposDir,
 		Granter:         rb.Rules(),
 		Prompts:         wsReg, // default workspace's MCP prompts; per-workspace needs a wire change
 		CredentialStore: executor.SetSessionCredential,
@@ -146,7 +152,7 @@ func run() error {
 		_ = srv.Close()
 	}()
 
-	fmt.Printf("codeagentd serve — http://%s  (default workspace: %s, model: %s)\n", addr, root, mc.Model)
+	fmt.Printf("codeagentd serve — http://%s  (model: %s, repos: %s, data: %s)\n", addr, mc.Model, reposDir, daemonDir)
 	fmt.Println("  GET  /healthz")
 	fmt.Println("  GET  /v1/conversations")
 	fmt.Println("  POST  /v1/conversations            {\"workspace_path\":\"...\"}  -> {\"id\":\"...\"}")

@@ -37,10 +37,11 @@ type replRunBuilder struct {
 	approver agent.Approver
 	emitter  agent.Emitter
 	rules    *approve.RuleStore
+	root     string
 }
 
 func (b *replRunBuilder) Build(ctx conversation.RuntimeContext) conversation.TurnRunner {
-	runner := runtime.BuildRunner(b.cfg, b.mc, b.provider, b.registry, b.skillReg, b.approver, b.emitter, b.rules)
+	runner := runtime.BuildRunner(b.cfg, b.mc, b.provider, b.registry, b.skillReg, b.approver, b.emitter, b.rules, b.root)
 	runner.ClientWaiter = ctx.ClientWaiter
 	return runner
 }
@@ -61,7 +62,7 @@ type lineReader func(prompt string) (string, error)
 // half a character lingers) and can drive some terminals into buggy wide-char
 // wrap rendering.
 func repl(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider model.Provider, resumeID string, auto bool) error {
-	root := cfg.Workspace.Root
+	root, _ := os.Getwd()
 
 	store, err := runtime.OpenStore(root)
 	if err != nil {
@@ -70,7 +71,7 @@ func repl(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider mode
 	defer store.Close()
 	runtime.AttachObserver(provider, store, ctx)
 
-	registry, skillReg, mcpMgr, planRef, _, err := runtime.BuildRegistry(ctx, cfg, mc, provider, store, subagentProgress())
+	registry, skillReg, mcpMgr, planRef, _, err := runtime.BuildRegistry(ctx, cfg, mc, provider, store, root, subagentProgress())
 	if err != nil {
 		return err
 	}
@@ -120,7 +121,7 @@ func repl(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider mode
 	// seeded it on; /auto on|off flips it per session. Auto-grants are audited by the
 	// loop (correlated EventAutoApproved), so the approver takes no emitter.
 	approver := approve.NewAutoApprover(root, ui.ConfirmApprover{Prompt: ask, Granter: rules}, auto)
-	runner := runtime.BuildRunner(cfg, mc, provider, registry, skillReg, approver, runtime.WithEventStore(buildEmitter(), store, ctx), rules)
+	runner := runtime.BuildRunner(cfg, mc, provider, registry, skillReg, approver, runtime.WithEventStore(buildEmitter(), store, ctx), rules, root)
 	planRef.R = runner // wire plan tools to the runner (late binding)
 	runner.PlanApprover = &replPlanApprover{ask: ask}
 	if auto {
@@ -158,6 +159,7 @@ func repl(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider mode
 		approver: approver,
 		emitter:  runtime.WithEventStore(buildEmitter(), store, ctx),
 		rules:    rules,
+		root:     root,
 	}
 	executor := conversation.NewTurnExecutor(repo, eventStore, active, subs, rb)
 	executor.OnSaveError = func(err error) {

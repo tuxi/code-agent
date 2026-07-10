@@ -19,7 +19,7 @@ import (
 // receives its workspace via ExecutionContext — so the same tool instances serve
 // every conversation regardless of workspace.
 func runServe(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider model.Provider, addr string) error {
-	root := cfg.Workspace.Root
+	root, _ := os.Getwd()
 
 	// Serve mode resolves MCP per conversation workspace (WorkspaceRegistry.
 	// EnableMCP inside Assemble). main() pre-resolved cfg.MCP from the process
@@ -31,7 +31,7 @@ func runServe(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider 
 
 	// The CLI serve path uses process lifecycle, not the in-app suspend/resume
 	// verbs, so it ignores the returned Runtime bundle.
-	handler, _, closers, err := embed.Assemble(ctx, cfg, mc, provider)
+	handler, _, closers, err := embed.Assemble(ctx, cfg, mc, provider, root)
 	if err != nil {
 		return err
 	}

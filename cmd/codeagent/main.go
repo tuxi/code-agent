@@ -39,6 +39,7 @@ func main() {
 }
 
 func run() error {
+	root, _ := os.Getwd()
 	args := os.Args[1:]
 	modelName, args := runtime.ExtractModelFlag(args)
 	autoMode, args := runtime.ExtractAutoFlag(args)
@@ -52,7 +53,7 @@ func run() error {
 	// CODEAGENT_MCP_INHERIT_CLAUDE=1 to also inherit user-scope servers from an
 	// existing ~/.claude.json. Missing files => no MCP.
 	inheritClaude := os.Getenv("CODEAGENT_MCP_INHERIT_CLAUDE") == "1"
-	if cfg.MCP, err = mcp.ResolveDesktop(cfg.Workspace.Root, inheritClaude); err != nil {
+	if cfg.MCP, err = mcp.ResolveDesktop(root, inheritClaude); err != nil {
 		return err
 	}
 	// User-level skills on the desktop are under ~/.codeagent/skills/. The embedded
@@ -147,7 +148,8 @@ func run() error {
 
 // listSessions prints saved sessions, most recently updated first.
 func listSessions(ctx context.Context, cfg app.Config) error {
-	store, err := runtime.OpenStore(cfg.Workspace.Root)
+	root, _ := os.Getwd()
+	store, err := runtime.OpenStore(root)
 	if err != nil {
 		return err
 	}
@@ -180,7 +182,8 @@ func printSessionMetas(metas []session.Meta) {
 
 // runStats prints aggregate telemetry across all saved sessions.
 func runStats(ctx context.Context, cfg app.Config) error {
-	store, err := runtime.OpenStore(cfg.Workspace.Root)
+	root, _ := os.Getwd()
+	store, err := runtime.OpenStore(root)
 	if err != nil {
 		return err
 	}
@@ -343,7 +346,8 @@ func printLatencyHistogram(buckets []session.LatencyBucket) {
 
 // runTrace prints the most recent requests with their per-attempt breakdown.
 func runTrace(ctx context.Context, cfg app.Config, limit int) error {
-	store, err := runtime.OpenStore(cfg.Workspace.Root)
+	root, _ := os.Getwd()
+	store, err := runtime.OpenStore(root)
 	if err != nil {
 		return err
 	}
@@ -384,7 +388,8 @@ func printTrace(recs []session.RequestRecord) {
 // full (otherwise invisible) investigation. Inspect one with `codeagent
 // task-trace <id>`.
 func runTasks(ctx context.Context, cfg app.Config) error {
-	store, err := runtime.OpenStore(cfg.Workspace.Root)
+	root, _ := os.Getwd()
+	store, err := runtime.OpenStore(root)
 	if err != nil {
 		return err
 	}
@@ -412,7 +417,8 @@ func runTasks(ctx context.Context, cfg app.Config) error {
 // did (its reads, searches, observations), which is invisible by design while it
 // runs (default-quiet).
 func runTaskTrace(ctx context.Context, cfg app.Config, sessionID string) error {
-	store, err := runtime.OpenStore(cfg.Workspace.Root)
+	root, _ := os.Getwd()
+	store, err := runtime.OpenStore(root)
 	if err != nil {
 		return err
 	}
@@ -473,7 +479,7 @@ func runAsk(ctx context.Context, mc app.ModelConfig, provider model.Provider, qu
 }
 
 func runAgent(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider model.Provider, goal string, autoMode bool) error {
-	root := cfg.Workspace.Root
+	root, _ := os.Getwd()
 
 	store, err := runtime.OpenStore(root)
 	if err != nil {
@@ -482,7 +488,7 @@ func runAgent(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider 
 	defer store.Close()
 	runtime.AttachObserver(provider, store, ctx)
 
-	registry, skillReg, mcpMgr, planRef, _, err := runtime.BuildRegistry(ctx, cfg, mc, provider, store, subagentProgress())
+	registry, skillReg, mcpMgr, planRef, _, err := runtime.BuildRegistry(ctx, cfg, mc, provider, store, root, subagentProgress())
 	if err != nil {
 		return err
 	}
@@ -496,7 +502,7 @@ func runAgent(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider 
 	// the loop (correlated EventAutoApproved), so the approver itself takes no emitter.
 	rules := approve.NewRuleStore(root, cfg.Permissions.Allow, cfg.Permissions.Deny)
 	approver := approve.NewAutoApprover(root, ui.ConfirmApprover{}, autoMode)
-	runner := runtime.BuildRunner(cfg, mc, provider, registry, skillReg, approver, runtime.WithEventStore(buildEmitter(), store, ctx), rules)
+	runner := runtime.BuildRunner(cfg, mc, provider, registry, skillReg, approver, runtime.WithEventStore(buildEmitter(), store, ctx), rules, root)
 	planRef.R = runner
 
 	sess, err := session.NewBuilder(root).
@@ -535,7 +541,7 @@ func runGoal(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider m
 	if strings.TrimSpace(objective) == "" {
 		return fmt.Errorf(`usage: codeagent [--auto] goal "<objective>"`)
 	}
-	root := cfg.Workspace.Root
+	root, _ := os.Getwd()
 
 	store, err := runtime.OpenStore(root)
 	if err != nil {
@@ -544,7 +550,7 @@ func runGoal(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider m
 	defer store.Close()
 	runtime.AttachObserver(provider, store, ctx)
 
-	registry, skillReg, mcpMgr, planRef, _, err := runtime.BuildRegistry(ctx, cfg, mc, provider, store, subagentProgress())
+	registry, skillReg, mcpMgr, planRef, _, err := runtime.BuildRegistry(ctx, cfg, mc, provider, store, root, subagentProgress())
 	if err != nil {
 		return err
 	}
@@ -558,7 +564,7 @@ func runGoal(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider m
 
 	rules := approve.NewRuleStore(root, cfg.Permissions.Allow, cfg.Permissions.Deny)
 	approver := approve.NewAutoApprover(root, ui.ConfirmApprover{}, autoMode)
-	runner := runtime.BuildRunner(cfg, mc, provider, registry, skillReg, approver, runtime.WithEventStore(buildEmitter(), store, ctx), rules)
+	runner := runtime.BuildRunner(cfg, mc, provider, registry, skillReg, approver, runtime.WithEventStore(buildEmitter(), store, ctx), rules, root)
 	planRef.R = runner
 
 	sess, err := session.NewBuilder(root).
@@ -592,7 +598,7 @@ func (o mcpPromptOps) Render(command string, args []string) (string, error) {
 // loop runs on a background goroutine while the program owns the terminal. The
 // agent is unchanged; only the renderer differs.
 func runTUI(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider model.Provider, autoMode bool) error {
-	root := cfg.Workspace.Root
+	root, _ := os.Getwd()
 
 	store, err := runtime.OpenStore(root)
 	if err != nil {
@@ -606,7 +612,7 @@ func runTUI(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider mo
 	// renders them as a status line, never the transcript.
 	backend := tui.NewBackend()
 
-	registry, skillReg, mcpMgr, planRef, _, err := runtime.BuildRegistry(ctx, cfg, mc, provider, store, backend.Emitter)
+	registry, skillReg, mcpMgr, planRef, _, err := runtime.BuildRegistry(ctx, cfg, mc, provider, store, root, backend.Emitter)
 	if err != nil {
 		return err
 	}
@@ -632,7 +638,7 @@ func runTUI(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider mo
 	// interactive "always allow" grant into it is a later step.
 	rules := approve.NewRuleStore(root, cfg.Permissions.Allow, cfg.Permissions.Deny)
 	approver := approve.NewAutoApprover(root, backend.Approver, autoMode)
-	runner := runtime.BuildRunner(cfg, mc, provider, registry, skillReg, approver, runtime.WithEventStore(backend.Emitter, store, ctx), rules)
+	runner := runtime.BuildRunner(cfg, mc, provider, registry, skillReg, approver, runtime.WithEventStore(backend.Emitter, store, ctx), rules, root)
 	planRef.R = runner
 	runner.Stream = true // 8.6: stream the model's text live (TUI only)
 	runner.PlanApprover = backend.PlanApprover

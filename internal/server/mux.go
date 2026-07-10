@@ -212,6 +212,10 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 		var req CreateConversationRequest
 		_ = json.NewDecoder(r.Body).Decode(&req)
 
+			if req.WorkspacePath == "" {
+				http.Error(w, `"workspace_path" is required`, http.StatusBadRequest)
+				return
+			}
 		sess, err := repo.Create(r.Context(), req.WorkspacePath, req.WorkspaceExtID)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)

@@ -65,11 +65,11 @@ func writeMCPJSON(t *testing.T, root, serverName, toolName string) {
 // newMCPTestRegistry builds a WorkspaceRegistry with MCP enabled over an empty
 // base registry, hermetic against the developer's real ~/.codeagent/mcp.json
 // (HOME is pointed at a temp dir).
-func newMCPTestRegistry(t *testing.T, defaultRoot string) *WorkspaceRegistry {
+func newMCPTestRegistry(t *testing.T) *WorkspaceRegistry {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir()) // user-scope ~/.codeagent/mcp.json must not leak in
 
-	wr := NewWorkspaceRegistry(defaultRoot, "")
+	wr := NewWorkspaceRegistry("")
 	wr.EnableMCP(context.Background(), tools.NewRegistry(), app.Config{}, nil, false)
 	t.Cleanup(func() { wr.Close() })
 	return wr
@@ -84,7 +84,7 @@ func TestWorkspaceMCPIsolation(t *testing.T) {
 	writeMCPJSON(t, wsA, "srv_a", "alpha")
 	writeMCPJSON(t, wsB, "srv_b", "beta")
 
-	wr := newMCPTestRegistry(t, wsC)
+	wr := newMCPTestRegistry(t)
 
 	instA, err := wr.Get(wsA)
 	if err != nil {
@@ -142,7 +142,7 @@ func TestWorkspaceMCPMalformedConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	wr := newMCPTestRegistry(t, ws)
+	wr := newMCPTestRegistry(t)
 	inst, err := wr.Get(ws)
 	if err != nil {
 		t.Fatalf("Get on malformed .mcp.json must still build the workspace: %v", err)
@@ -162,7 +162,7 @@ func TestWorkspaceMCPToolAllowedGate(t *testing.T) {
 	locked := app.Config{}
 	locked.Agent.BuiltinTools = &[]string{} // nothing allowed
 
-	wr := NewWorkspaceRegistry(ws, "")
+	wr := NewWorkspaceRegistry("")
 	wr.EnableMCP(context.Background(), tools.NewRegistry(), locked, nil, false)
 	t.Cleanup(func() { wr.Close() })
 

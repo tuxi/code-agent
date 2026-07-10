@@ -29,6 +29,7 @@ import (
 	"code-agent/internal/runtime"
 	"code-agent/internal/server"
 	"code-agent/internal/settings"
+	"os"
 )
 
 // defaultCapabilities is the capability set advertised in the WebSocket hello
@@ -238,7 +239,7 @@ func StartServer(ctx context.Context, opt Options) (*Handle, error) {
 		return nil, err
 	}
 	if opt.WorkspaceDir != "" {
-		cfg.Workspace.Root = opt.WorkspaceDir
+		// cfg.Workspace removed: workspaceDir flows through Assemble explicitly.
 	}
 	// Project settings injected in-memory (P11.d): fold each block into the config
 	// layer so it flows through the same paths as a disk settings.json — permissions
@@ -303,7 +304,8 @@ func StartServer(ctx context.Context, opt Options) (*Handle, error) {
 		}
 	}()
 
-	handler, rt, closers, err := Assemble(srvCtx, cfg, mc, provider)
+	workspaceDir := opt.WorkspaceDir
+	handler, rt, closers, err := Assemble(srvCtx, cfg, mc, provider, workspaceDir)
 	if err != nil {
 		return nil, err
 	}
@@ -350,8 +352,10 @@ func StartServer(ctx context.Context, opt Options) (*Handle, error) {
 // The provider must already be built (callers differ in how they resolve creds:
 // the CLI from env, the embedded host from injected secrets). On error, any
 // resources opened before the failure are released before returning.
-func Assemble(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider model.Provider) (http.Handler, *Runtime, []func(), error) {
-	root := cfg.Workspace.Root
+func Assemble(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider model.Provider, workspaceDir string) (http.Handler, *Runtime, []func(), error) {
+	if workspaceDir == "" {
+		workspaceDir, _ = os.Getwd()
+	}
 	var closers []func()
 	release := func() {
 		for i := len(closers) - 1; i >= 0; i-- {
@@ -359,7 +363,7 @@ func Assemble(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider 
 		}
 	}
 
-	telemetryStore, err := runtime.OpenStore(root)
+	telemetryStore, err := runtime.OpenStore(workspaceDir)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -371,13 +375,13 @@ func Assemble(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider 
 	// cfg.MCP carries only host-INJECTED servers (the embedded MCPJSON document);
 	// they participate as an extra user-scope layer under every workspace's own
 	// files. The CLI serve path leaves cfg.MCP empty (see runServe).
-	toolReg, _, planRef, jobSink, err := runtime.BuildBaseRegistry(ctx, cfg, mc, provider, telemetryStore, nil)
+	toolReg, _, planRef, jobSink, err := runtime.BuildBaseRegistry(ctx, cfg, mc, provider, telemetryStore, workspaceDir, nil)
 	if err != nil {
 		release()
 		return nil, nil, nil, err
 	}
 
-	wsReg := runtime.NewWorkspaceRegistry(root, cfg.GlobalSkillsDir)
+	wsReg := runtime.NewWorkspaceRegistry(cfg.GlobalSkillsDir)
 	wsReg.EnableMCP(ctx, toolReg, cfg, cfg.MCP.Servers, false)
 	closers = append(closers, func() { wsReg.Close() })
 
@@ -387,7 +391,7 @@ func Assemble(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider 
 	// pass "" to keep absolute behavior unchanged.
 	currentWorkspaceDir := ""
 	if cfg.Profile == app.ProfileSandboxed {
-		currentWorkspaceDir = root
+		currentWorkspaceDir = workspaceDir
 	}
 	repo := conversation.NewSQLiteRepository(
 		telemetryStore,
@@ -419,7 +423,7 @@ func Assemble(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider 
 	handler := server.NewMux(repo, eventStore, executor, server.MuxOptions{
 		ServerName:    "codeagent/" + mc.Model,
 		Capabilities:  defaultCapabilities,
-		WorkspaceRoot: root,
+		WorkspaceRoot: workspaceDir,
 		Granter:       rb.Rules(),
 		Prompts:       wsReg, // default workspace's MCP prompts; per-workspace needs a wire change
 		// Wire the WS auth layer into the TurnExecutor's per-session credential

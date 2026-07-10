@@ -42,10 +42,10 @@ func BuildCompactor(cfg app.Config, mc app.ModelConfig, provider model.Provider)
 // tool) and the Emitter (how the event stream is rendered) — everything else
 // (tools, observation, reflection, the skills nudge, compaction, the step cap) is
 // identical, so it lives here and callers cannot drift apart.
-func BuildRunner(cfg app.Config, mc app.ModelConfig, provider model.Provider, registry *tools.Registry, skillReg *skills.Registry, approver agent.Approver, emitter agent.Emitter, rules *approve.RuleStore) *agent.Runner {
+func BuildRunner(cfg app.Config, mc app.ModelConfig, provider model.Provider, registry *tools.Registry, skillReg *skills.Registry, approver agent.Approver, emitter agent.Emitter, rules *approve.RuleStore, root string) *agent.Runner {
 	// Load the project settings layer once; both hooks (P11.c) and the verify
 	// command (P11.b) are sourced from it.
-	set := settings.Load(cfg.Workspace.Root, userHome(), os.Stderr)
+	set := settings.Load(root, userHome(), os.Stderr)
 
 	// Assign the hook runner only when non-nil, so an absent config stays a nil
 	// interface (not a typed-nil that would defeat the loop's nil-safe check).
@@ -54,7 +54,7 @@ func BuildRunner(cfg app.Config, mc app.ModelConfig, provider model.Provider, re
 	var hook agent.ToolHook
 	if cfg.Profile.AllowsSubprocess() {
 		allHooks := append(append([]hooks.Hook(nil), cfg.Hooks...), set.Hooks...)
-		if hr := hooks.New(allHooks, cfg.Workspace.Root); hr != nil {
+		if hr := hooks.New(allHooks, root); hr != nil {
 			hook = hr
 		}
 	}
@@ -82,14 +82,14 @@ func BuildRunner(cfg app.Config, mc app.ModelConfig, provider model.Provider, re
 		RemindHypothesis: true,
 		// Verify command resolution (P11.b): the settings layer's verify block wins,
 		// else the config.yaml legacy value; "auto" detects from the workspace.
-		VerifyCommand: settings.ResolveVerifyFrom(set, cfg.Workspace.Root, cfg.Agent.VerifyCommand),
+		VerifyCommand: settings.ResolveVerifyFrom(set, root, cfg.Agent.VerifyCommand),
 		PlanTools:     tools.Subset(registry, PlanModeToolNames...),
 		Hook:          hook,
 		Compactor:     BuildCompactor(cfg, mc, provider),
 		// Tier-0 pruning shares the compactor's verbatim-tail budget (P12.c).
 		CompactKeepTokens: cfg.CompactKeepTokens(mc),
 		Emitter:           emitter,
-		WorkspaceRoot:     cfg.Workspace.Root,
+		WorkspaceRoot:     root,
 		// Client-tool lease (0 = loop's built-in 2-minute default). Raised by
 		// deployments whose client tools run long (e.g. DreamAI media generation).
 		ClientToolTimeout: time.Duration(cfg.Agent.ClientToolTimeoutSeconds) * time.Second,

@@ -133,7 +133,8 @@ func newGoalEngine(cfg app.Config, mc app.ModelConfig, runner *agent.Runner, ses
 	checker := &goal.LLMChecker{Provider: checkerProvider, Model: checkerMC.Model}
 	engine, err = goal.NewEngine(sess, store, runner, checker)
 	if engine != nil {
-		engine.DiffFunc = makeDiffFunc(cfg.Workspace.Root) // anti-gaming: judge sees every change
+		root, _ := os.Getwd()
+		engine.DiffFunc = makeDiffFunc(root) // anti-gaming: judge sees every change
 	}
 	return engine, checkerMC.Model == mc.Model, err
 }

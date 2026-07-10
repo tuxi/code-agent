@@ -47,7 +47,6 @@ type Config struct {
 	// credential name ("default", "deepseek", "github").
 	Credentials  map[string]map[string]CredentialConfig `yaml:"credentials"`
 	Agent        AgentConfig                 `yaml:"agent"`
-	Workspace    WorkspaceConfig             `yaml:"workspace"`
 	Provider     ProviderConfig              `yaml:"provider"`
 
 	// Currency is the display symbol for cost reporting (the price fields are in
@@ -255,10 +254,6 @@ func (c AgentConfig) ToolAllowed(name string) bool {
 	return false
 }
 
-type WorkspaceConfig struct {
-	Root string `yaml:"root"`
-}
-
 // PermissionsConfig holds tool-name glob patterns that pre-approve or deny tool
 // calls without a prompt, in Claude Code's `permissions` style. Patterns match a
 // tool's model-facing name (e.g. "mcp__github__*", "mcp__db__query", or a
@@ -362,7 +357,6 @@ func LoadConfig(path string) (Config, error) {
 func LoadConfigBytes(data []byte) (Config, error) {
 	cfg := Config{
 		Agent:     AgentConfig{MaxSteps: 8},
-		Workspace: WorkspaceConfig{Root: "."},
 	}
 
 	if len(data) > 0 {
@@ -452,10 +446,6 @@ func LoadConfigBytes(data []byte) (Config, error) {
 	if cfg.Currency == "" {
 		cfg.Currency = "$"
 	}
-	if cfg.Workspace.Root == "" {
-		cfg.Workspace.Root = "."
-	}
-
 	if _, ok := cfg.Models[cfg.DefaultModel]; !ok {
 		return Config{}, fmt.Errorf("default_model %q is not defined under models", cfg.DefaultModel)
 	}

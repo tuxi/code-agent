@@ -65,10 +65,6 @@ type WorkspaceRegistry struct {
 	// endpoints can resolve which store to query.
 	sessionWorkspaces map[string]*WorkspaceInstance
 
-	// defaultRoot is the server's configured default workspace (cfg.Workspace.Root),
-	// used as a fallback when Get receives an empty workspacePath.
-	defaultRoot string
-
 	// globalSkillsDir is the optional user-level skills directory. Passed to
 	// skills.Load as the first (global) dir; project-local skills override it.
 	globalSkillsDir string
@@ -83,11 +79,14 @@ type WorkspaceRegistry struct {
 // must call Close() to shut down all per-workspace stores (and MCP managers, when
 // enabled). globalSkillsDir is the optional user-level skills directory (shared
 // across workspaces); see app.Config.
-func NewWorkspaceRegistry(defaultRoot, globalSkillsDir string) *WorkspaceRegistry {
+//
+// Get returns an error when workspacePath is empty — there is no default/false
+// workspace. The daemon (codeagentd) requires every conversation to declare its
+// workspace_path; the CLI (codeagent) always passes os.Getwd() as the workspace.
+func NewWorkspaceRegistry(globalSkillsDir string) *WorkspaceRegistry {
 	return &WorkspaceRegistry{
 		instances:         make(map[string]*WorkspaceInstance),
 		sessionWorkspaces: make(map[string]*WorkspaceInstance),
-		defaultRoot:       defaultRoot,
 		globalSkillsDir:   globalSkillsDir,
 	}
 }
@@ -115,18 +114,18 @@ func (wr *WorkspaceRegistry) EnableMCP(ctx context.Context, base *tools.Registry
 }
 
 // Get returns the WorkspaceInstance for the given path, creating it on first access.
-// If workspacePath is empty, it falls back to the server's default workspace. The
-// returned instance is safe for concurrent use (immutable after creation).
+// workspacePath is required — empty returns an error (there is no default workspace
+// in daemon mode; the CLI always passes os.Getwd()). The returned instance is safe
+// for concurrent use (immutable after creation).
 func (wr *WorkspaceRegistry) Get(workspacePath string) (*WorkspaceInstance, error) {
-	root := workspacePath
-	if root == "" {
-		root = wr.defaultRoot
+	if workspacePath == "" {
+		return nil, fmt.Errorf("workspace_registry: workspace_path is required")
 	}
-	abs, err := filepath.Abs(root)
+	abs, err := filepath.Abs(workspacePath)
 	if err != nil {
-		return nil, fmt.Errorf("workspace_registry: abs(%q): %w", root, err)
+		return nil, fmt.Errorf("workspace_registry: abs(%q): %w", workspacePath, err)
 	}
-	root = abs
+	root := abs
 
 	wr.mu.Lock()
 	inst, ok := wr.instances[root]
@@ -199,29 +198,59 @@ func (inst *WorkspaceInstance) initMCP(mc *workspaceMCP) {
 	inst.ToolReg = reg
 }
 
-// Prompts implements server.PromptService by delegating to the DEFAULT
-// workspace's MCP manager. The /v1/prompts endpoint carries no workspace
-// context yet, so this preserves the single-workspace serve behavior (CLI
-// serve, embedded host) verbatim; true per-workspace prompts need a wire
-// change (follow-up — see docs/code-agent-workspace-mcp-solution.md §4.4).
+// Prompts implements server.PromptService by collecting MCP prompts across ALL
+// active workspace instances. The /v1/prompts endpoint carries no workspace
+// context on the wire yet, so prompts from every workspace are returned —
+// duplicates (same server+name) are deduplicated (first workspace wins).
+// Per-workspace prompts need a wire protocol change.
 func (wr *WorkspaceRegistry) Prompts() []mcp.PromptSpec {
-	inst, err := wr.Get("")
-	if err != nil || inst.MCPMgr == nil {
-		return nil
+	wr.mu.Lock()
+	instances := make(map[string]*WorkspaceInstance, len(wr.instances))
+	for k, v := range wr.instances {
+		instances[k] = v
 	}
-	return inst.MCPMgr.Prompts()
+	wr.mu.Unlock()
+
+	seen := make(map[string]bool)
+	var all []mcp.PromptSpec
+	for _, inst := range instances {
+		if inst.MCPMgr == nil {
+			continue
+		}
+		for _, p := range inst.MCPMgr.Prompts() {
+			if seen[p.Command] {
+				continue
+			}
+			seen[p.Command] = true
+			all = append(all, p)
+		}
+	}
+	return all
 }
 
-// RenderPrompt implements server.PromptService; see Prompts for scoping.
+// RenderPrompt implements server.PromptService. It searches all active
+// workspace instances for the given command; the first MCP manager that
+// carries it renders the prompt. Returns an error when no active workspace
+// has a matching prompt.
 func (wr *WorkspaceRegistry) RenderPrompt(ctx context.Context, command string, args []string) (string, error) {
-	inst, err := wr.Get("")
-	if err != nil {
-		return "", err
+	wr.mu.Lock()
+	instances := make(map[string]*WorkspaceInstance, len(wr.instances))
+	for k, v := range wr.instances {
+		instances[k] = v
 	}
-	if inst.MCPMgr == nil {
-		return "", fmt.Errorf("no MCP prompts available in the default workspace")
+	wr.mu.Unlock()
+
+	for _, inst := range instances {
+		if inst.MCPMgr == nil {
+			continue
+		}
+		for _, p := range inst.MCPMgr.Prompts() {
+			if p.Command == command {
+				return inst.MCPMgr.RenderPrompt(ctx, command, args)
+			}
+		}
 	}
-	return inst.MCPMgr.RenderPrompt(ctx, command, args)
+	return "", fmt.Errorf("no active workspace has prompt %q", command)
 }
 
 // RecordSession records the session→workspace mapping.
