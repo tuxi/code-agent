@@ -82,13 +82,19 @@ func run() error {
 	defer cancel()
 
 	home, _ := os.UserHomeDir()
-	daemonDir := filepath.Join(home, ".codeagent", "daemon")
 	reposDir := filepath.Join(home, ".codeagent", "repos")
 
-	// Open the daemon's own store for global telemetry (listing all conversations
-	// across all workspaces). The per-workspace stores are opened by
-	// WorkspaceRegistry separately.
-	telemetryStore, err := runtime.OpenStore(daemonDir)
+	// The daemon's global telemetry store uses CWD as its identity key. This
+	// means codeagentd launched from /path/to/project-a naturally isolates its
+	// sessions from codeagentd launched from /path/to/project-b — the same
+	// per-project hashing that the store has always used. Before Phase 3 the
+	// daemon passed cfg.Workspace.Root (= ".") which resolved to the same CWD.
+	// After Phase 3 (cfg.Workspace removed) we pass CWD explicitly.
+	//
+	// The clone-target directory is the only path that MUST be CWD-independent:
+	// reposDir lives under ~/.codeagent, not under any project.
+	cwd, _ := os.Getwd()
+	telemetryStore, err := runtime.OpenStore(cwd)
 	if err != nil {
 		return err
 	}
@@ -153,7 +159,7 @@ func run() error {
 		_ = srv.Close()
 	}()
 
-	fmt.Printf("codeagentd serve — http://%s  (model: %s, repos: %s, data: %s)\n", addr, mc.Model, reposDir, daemonDir)
+	fmt.Printf("codeagentd serve — http://%s  (model: %s, cwd: %s, repos: %s)\n", addr, mc.Model, cwd, reposDir)
 	fmt.Println("  GET  /healthz")
 	fmt.Println("  GET  /v1/conversations")
 	fmt.Println("  POST  /v1/conversations            {\"workspace_path\":\"...\"}  -> {\"id\":\"...\"}")

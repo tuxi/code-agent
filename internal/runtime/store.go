@@ -125,6 +125,33 @@ var storeBaseDir string
 // $HOME/.codeagent default.
 func SetStoreBaseDir(dir string) { storeBaseDir = dir }
 
+// MigrateStore copies the session database from oldRoot to newRoot when the new
+// store does not yet exist and the old one does. It is a one-shot migration for
+// the daemon telemetry store: after config.yaml.workspace was deleted (Phase 3),
+// the daemon store root changed from "." (CWD) to a fixed path under
+// ~/.codeagent/daemon, and existing sessions must be carried over.
+func MigrateStore(newRoot, oldRoot string) error {
+	newPath, err := storePath(newRoot)
+	if err != nil {
+		return err
+	}
+	oldPath, err := storePath(oldRoot)
+	if err != nil {
+		return err
+	}
+	if _, err := os.Stat(newPath); err == nil {
+		return nil // new store already exists — nothing to migrate
+	}
+	if _, err := os.Stat(oldPath); os.IsNotExist(err) {
+		return nil // no old store to migrate from
+	}
+	if err := os.MkdirAll(filepath.Dir(newPath), 0o755); err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "[store] migrating sessions from %s → %s\n", oldPath, newPath)
+	return copyDB(oldPath, newPath)
+}
+
 // dbSidecars are the WAL-mode auxiliary files SQLite keeps beside the main DB.
 // Since v1.2 the store runs in WAL (see sqlite.Store.open), so every copy / move /
 // quarantine of the DB must carry these too: a main file without its -wal drops
