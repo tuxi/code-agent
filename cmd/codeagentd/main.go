@@ -141,8 +141,9 @@ func run() error {
 		ServerName:      "codeagentd/" + mc.Model,
 		Capabilities:    defaultCapabilities,
 		WorkspaceRoot:   reposDir,
-		Granter:         rb.Rules(),
-		Prompts:         wsReg, // default workspace's MCP prompts; per-workspace needs a wire change
+		Granter:           rb.Rules(),
+		WorkspaceReloader: wsReg.ReloadWorkspace,
+		Prompts:           wsReg,
 		CredentialStore: executor.SetSessionCredential,
 	})
 

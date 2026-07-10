@@ -289,13 +289,14 @@ func TestMuxCreateAcceptsEmptyBody(t *testing.T) {
 	srv := httptest.NewServer(newTestMux(repo, &fakeEventStore{}))
 	defer srv.Close()
 
+	// workspace_path is required (Phase 3). An empty body → 400.
 	resp, err := http.Post(srv.URL+"/v1/conversations", "application/json", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusCreated {
-		t.Errorf("create with empty body status = %d, want 201", resp.StatusCode)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("create with empty body status = %d, want 400 (workspace_path required)", resp.StatusCode)
 	}
 }
 
@@ -304,8 +305,9 @@ func TestMuxDelete(t *testing.T) {
 	srv := httptest.NewServer(newTestMux(repo, &fakeEventStore{}))
 	defer srv.Close()
 
-	// Create then delete.
-	resp, _ := http.Post(srv.URL+"/v1/conversations", "application/json", nil)
+	// Create then delete — must include workspace_path.
+	resp, _ := http.Post(srv.URL+"/v1/conversations", "application/json",
+		strings.NewReader(`{"workspace_path":"/tmp/test"}`))
 	var ref ConversationRef
 	decodeResponse(t, resp, &ref)
 	resp.Body.Close()

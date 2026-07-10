@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"code-agent/internal/app"
 	"code-agent/internal/mcp"
@@ -41,6 +42,20 @@ type WorkspaceInstance struct {
 	// holding the registry lock that long would stall every other workspace and the
 	// event-reader endpoints.
 	mcpOnce sync.Once
+
+	// mcpCfg stores the EnableMCP parameters for this instance so hot-reload
+	// (Phase 2b) can re-resolve .mcp.json without consulting the registry.
+	mcpCfg *workspaceMCP
+
+	// mcpMTime records the latest mod-time of .mcp.json/.mcp.local.json at the
+	// last connection or reload. ServeRunBuilder.Build checks it per-turn.
+	mcpMTime time.Time
+
+	// mu serialises hot-reload against concurrent reads of MCPMgr/ToolReg/mcpMTime.
+	mu sync.RWMutex
+
+	// lastAccess feeds idle pruning (Phase 2a). Updated on every Get().
+	lastAccess time.Time
 }
 
 // workspaceMCP carries everything buildInstance needs to resolve and connect a
@@ -138,6 +153,7 @@ func (wr *WorkspaceRegistry) Get(workspacePath string) (*WorkspaceInstance, erro
 		}
 		wr.instances[root] = inst
 	}
+	inst.lastAccess = time.Now()
 	mcpCfg = wr.mcp
 	wr.mu.Unlock()
 
@@ -196,6 +212,8 @@ func (inst *WorkspaceInstance) initMCP(mc *workspaceMCP) {
 	}
 	inst.MCPMgr = mgr
 	inst.ToolReg = reg
+	inst.mcpCfg = mc
+	inst.mcpMTime = latestMCPFileTime(inst.RootPath)
 }
 
 // Prompts implements server.PromptService by collecting MCP prompts across ALL
@@ -270,6 +288,134 @@ func (wr *WorkspaceRegistry) SessionEvents(ctx context.Context, sessionID string
 		return nil, nil
 	}
 	return inst.Store.SessionEvents(ctx, sessionID)
+}
+
+// ── Phase 2b: hot-reload ──────────────────────────────────────────────
+
+// latestMCPFileTime returns the most recent modification time of .mcp.json
+// and .mcp.local.json in root. A missing file contributes the zero time.
+func latestMCPFileTime(root string) time.Time {
+	var latest time.Time
+	for _, name := range []string{".mcp.json", ".mcp.local.json"} {
+		if fi, err := os.Stat(filepath.Join(root, name)); err == nil {
+			if t := fi.ModTime(); t.After(latest) {
+				latest = t
+			}
+		}
+	}
+	return latest
+}
+
+// CheckReloadMCP reports true when the workspace's .mcp.json or
+// .mcp.local.json have been modified since the last connection or reload.
+func (inst *WorkspaceInstance) CheckReloadMCP() bool {
+	inst.mu.RLock()
+	last := inst.mcpMTime
+	inst.mu.RUnlock()
+	if last.IsZero() {
+		return false
+	}
+	return latestMCPFileTime(inst.RootPath).After(last)
+}
+
+// ReloadMCP re-reads the workspace .mcp.json, tears down stale servers,
+// starts new ones, and atomically swaps ToolReg. On failure the previous
+// state stays intact; in-flight turns see the old registry until they end.
+func (inst *WorkspaceInstance) ReloadMCP() (changed bool) {
+	mc := inst.mcpCfg
+	if mc == nil {
+		return false
+	}
+	inst.mu.Lock()
+	defer inst.mu.Unlock()
+
+	newTime := latestMCPFileTime(inst.RootPath)
+	if !newTime.After(inst.mcpMTime) {
+		return false
+	}
+
+	resolved, err := mcp.ResolveDesktop(inst.RootPath, mc.inheritClaude)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[workspace] %s: .mcp.json reload error: %v\n", inst.RootPath, err)
+		return false
+	}
+	servers := mcp.Merge(mcp.Config{Servers: mc.injected}, resolved).Servers
+	if !mc.cfg.Profile.AllowsSubprocess() {
+		servers = mcp.RemoteServers(servers)
+	}
+
+	newMgr := mcp.NewManager(McpTraceWriter())
+	if len(servers) > 0 {
+		if err := newMgr.Connect(mc.ctx, servers); err != nil {
+			fmt.Fprintf(os.Stderr, "[workspace] %s: MCP reload connect: %v\n", inst.RootPath, err)
+			newMgr.Close()
+			return false
+		}
+	}
+	if s := newMgr.Summary(); s != "" {
+		fmt.Fprintln(os.Stderr, s)
+	}
+
+	newReg := mc.base.Clone()
+	for _, tool := range newMgr.Tools() {
+		if !mc.cfg.Agent.ToolAllowed(tool.Name()) {
+			continue
+		}
+		if err := newReg.Register(tool); err != nil {
+			fmt.Fprintf(os.Stderr, "[workspace] %s: skip MCP tool %s on reload: %v\n", inst.RootPath, tool.Name(), err)
+		}
+	}
+
+	oldMgr := inst.MCPMgr
+	inst.MCPMgr = newMgr
+	inst.ToolReg = newReg
+	inst.mcpMTime = newTime
+	if oldMgr != nil {
+		oldMgr.Close()
+	}
+	fmt.Fprintf(os.Stderr, "[workspace] %s: MCP reloaded (%d servers)\n", inst.RootPath, len(servers))
+	return true
+}
+
+// ── Phase 2a: idle prune ─────────────────────────────────────────────
+
+// PruneIdle closes MCP managers for workspaces whose last Get() was more
+// than maxAge ago. Stores and instances are NOT evicted — only subprocess
+// resources are released. A subsequent Get() reconnects on demand.
+func (wr *WorkspaceRegistry) PruneIdle(maxAge time.Duration) {
+	wr.mu.Lock()
+	defer wr.mu.Unlock()
+	cutoff := time.Now().Add(-maxAge)
+	for root, inst := range wr.instances {
+		if inst.lastAccess.Before(cutoff) && inst.MCPMgr != nil {
+			inst.MCPMgr.Close()
+			inst.MCPMgr = nil
+			inst.ToolReg = nil
+			inst.mcpCfg = nil
+			inst.mcpMTime = time.Time{}
+			inst.mcpOnce = sync.Once{}
+			fmt.Fprintf(os.Stderr, "[workspace] %s: MCP pruned (idle)\n", root)
+		}
+	}
+}
+
+// ReloadWorkspace triggers an explicit MCP reload for the named workspace.
+// It is a no-op when the workspace is not loaded or has no MCP enabled.
+func (wr *WorkspaceRegistry) ReloadWorkspace(workspacePath string) error {
+	abs, err := filepath.Abs(workspacePath)
+	if err != nil {
+		return err
+	}
+	wr.mu.Lock()
+	inst, ok := wr.instances[abs]
+	wr.mu.Unlock()
+	if !ok {
+		return fmt.Errorf("workspace_registry: workspace not loaded: %s", abs)
+	}
+	if !inst.ReloadMCP() {
+		return fmt.Errorf("workspace_registry: MCP reload for %s: no change or not enabled", abs)
+	}
+	return nil
 }
 
 // Close closes every per-workspace store and MCP manager.

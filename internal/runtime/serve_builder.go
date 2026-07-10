@@ -126,6 +126,10 @@ func (b *ServeRunBuilder) Build(ctx conversation.RuntimeContext) conversation.Tu
 	toolReg := b.ToolReg
 	if inst, err := b.WSReg.Get(workspacePath); err == nil {
 		skillReg = inst.SkillReg
+		// Hot-reload .mcp.json changes before every turn (Phase 2b).
+		if inst.CheckReloadMCP() {
+			inst.ReloadMCP()
+		}
 		if inst.ToolReg != nil {
 			toolReg = inst.ToolReg
 		}

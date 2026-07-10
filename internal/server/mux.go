@@ -149,6 +149,9 @@ type MuxOptions struct {
 	// store (the same one the loop's allowlist reads). Nil disables persistence, so
 	// an "always" over the wire is treated as a one-time allow.
 	Granter PermissionGranter
+	// WorkspaceReloader reloads MCP servers for a given workspace. Nil disables
+	// the POST /v1/workspaces/{path}/mcp/reload endpoint (returns 404).
+	WorkspaceReloader func(workspacePath string) error
 	// Prompts serves GET /v1/prompts and renders invoke_prompt. Nil disables MCP
 	// prompts on the wire (the endpoint returns an empty list; invoke is a no-op).
 	Prompts PromptService
@@ -521,6 +524,19 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 		// and the approver is garbage-collected.
 		ws.RemoveApprover(id)
 		if err := repo.Delete(r.Context(), id); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+
+	mux.HandleFunc("POST /v1/workspaces/{path}/mcp/reload", func(w http.ResponseWriter, r *http.Request) {
+		if opts.WorkspaceReloader == nil {
+			http.Error(w, "MCP reload not available", http.StatusNotFound)
+			return
+		}
+		if err := opts.WorkspaceReloader(r.PathValue("path")); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}

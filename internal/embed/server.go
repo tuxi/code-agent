@@ -425,6 +425,7 @@ func Assemble(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider 
 		Capabilities:  defaultCapabilities,
 		WorkspaceRoot: workspaceDir,
 		Granter:       rb.Rules(),
+		WorkspaceReloader: wsReg.ReloadWorkspace,
 		Prompts:       wsReg, // default workspace's MCP prompts; per-workspace needs a wire change
 		// Wire the WS auth layer into the TurnExecutor's per-session credential
 		// store. When a client connects with Authorization: Bearer <jwt>, the JWT
