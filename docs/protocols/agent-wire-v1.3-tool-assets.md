@@ -179,9 +179,16 @@ MCP text blocks remain part of `observation`. MCP image/audio/resource blocks
 still render as placeholders in `observation`, but Phase 1 preserves derived UI
 metadata through `output.kind = "mcp_content"` and `assets[]`.
 
-Binary payloads are not transferred in Phase 1. Image/audio assets carry a
+Inline MCP image/audio payloads are not inlined into `observation` or wire JSON.
+When a workspace is available, the runtime materializes those bytes into a
+workspace-scoped runtime asset file and the resulting asset can be served through
+the Runtime Asset Read API `blob` endpoint. Image/audio assets still carry a
 runtime-local `mcp://...` URI plus MIME type and byte count metadata. Resource
-links and embedded resources carry their original URI.
+links and embedded resources carry their original URI. If a ResourceLink points
+at the same artifact as a just-returned inline media block, the runtime may emit
+it as an alias of the already materialized media asset. If no inline media block
+is available, the runtime may call MCP `resources/read` during tool execution and
+materialize returned binary `Blob` contents into the same asset flow.
 
 MCP-derived assets should include `metadata.source = "mcp"` and
 `metadata.mcp_type` with the original MCP content block kind, such as `image`,

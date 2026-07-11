@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"os"
 	"strings"
 	"testing"
 
@@ -18,11 +19,27 @@ type fakeCaller struct {
 	gotParams *mcpsdk.CallToolParams
 	res       *mcpsdk.CallToolResult
 	err       error
+	readBy    map[string]*mcpsdk.ReadResourceResult
+	readErr   error
 }
 
 func (f *fakeCaller) CallTool(_ context.Context, p *mcpsdk.CallToolParams) (*mcpsdk.CallToolResult, error) {
 	f.gotParams = p
 	return f.res, f.err
+}
+
+func (f *fakeCaller) ReadResource(_ context.Context, p *mcpsdk.ReadResourceParams) (*mcpsdk.ReadResourceResult, error) {
+	if f.readErr != nil {
+		return nil, f.readErr
+	}
+	if f.readBy == nil {
+		return nil, errors.New("resource not found")
+	}
+	res := f.readBy[p.URI]
+	if res == nil {
+		return nil, errors.New("resource not found")
+	}
+	return res, nil
 }
 
 func newTestTool(c toolCaller) *remoteTool {
@@ -66,6 +83,7 @@ func TestExecuteSuccess(t *testing.T) {
 }
 
 func TestExecutePreservesNonTextAssets(t *testing.T) {
+	root := t.TempDir()
 	c := &fakeCaller{res: &mcpsdk.CallToolResult{
 		Content: []mcpsdk.Content{
 			&mcpsdk.TextContent{Text: "before"},
@@ -73,7 +91,7 @@ func TestExecutePreservesNonTextAssets(t *testing.T) {
 		},
 	}}
 	got, err := newTestTool(c).Execute(context.Background(), tools.ExecutionContext{
-		WorkspaceRoot: "/Users/x/project",
+		WorkspaceRoot: root,
 		TurnID:        "turn_1",
 		CallID:        "call_2",
 	}, json.RawMessage(`{}`))
@@ -86,11 +104,56 @@ func TestExecutePreservesNonTextAssets(t *testing.T) {
 	if len(got.Assets) != 1 {
 		t.Fatalf("assets = %d, want 1", len(got.Assets))
 	}
-	if got.Assets[0].Kind != "image" || got.Assets[0].MIMEType != "image/png" || got.Assets[0].WorkspaceID != "project-local" {
+	if got.Assets[0].Kind != "image" || got.Assets[0].MIMEType != "image/png" || got.Assets[0].WorkspaceID == "" {
 		t.Fatalf("asset = %+v", got.Assets[0])
+	}
+	if got.Assets[0].WorkspaceRelativePath == "" || got.Assets[0].AbsolutePath == "" || got.Assets[0].Metadata["materialized"] != "true" {
+		t.Fatalf("asset was not materialized: %+v", got.Assets[0])
 	}
 	if len(got.Output) == 0 || !strings.Contains(string(got.Output), `"kind":"mcp_content"`) {
 		t.Fatalf("output = %s, want mcp_content", got.Output)
+	}
+}
+
+func TestExecuteMaterializesResourceLinkViaReadResource(t *testing.T) {
+	root := t.TempDir()
+	uri := "desktop-control://artifacts/artifact_123"
+	c := &fakeCaller{
+		res: &mcpsdk.CallToolResult{
+			Content: []mcpsdk.Content{
+				&mcpsdk.ResourceLink{URI: uri, MIMEType: "image/png"},
+			},
+		},
+		readBy: map[string]*mcpsdk.ReadResourceResult{
+			uri: {Contents: []*mcpsdk.ResourceContents{
+				{URI: uri, MIMEType: "image/png", Blob: []byte("png-bytes")},
+			}},
+		},
+	}
+	got, err := newTestTool(c).Execute(context.Background(), tools.ExecutionContext{
+		WorkspaceRoot: root,
+		TurnID:        "turn_1",
+		CallID:        "call_2",
+	}, json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got.Assets) != 1 {
+		t.Fatalf("assets = %d, want 1", len(got.Assets))
+	}
+	ref := got.Assets[0]
+	if ref.Kind != "image" || ref.URI != uri || ref.MIMEType != "image/png" {
+		t.Fatalf("asset = %+v", ref)
+	}
+	if ref.WorkspaceRelativePath == "" || ref.AbsolutePath == "" || ref.Metadata["resource_read"] != "true" {
+		t.Fatalf("resource link was not materialized: %+v", ref)
+	}
+	data, err := os.ReadFile(ref.AbsolutePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "png-bytes" {
+		t.Fatalf("materialized bytes = %q", data)
 	}
 }
 

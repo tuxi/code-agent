@@ -105,6 +105,25 @@ func TestAnnotateDirectoryAndListedFiles(t *testing.T) {
 	}
 }
 
+func TestAnnotateMediaURI(t *testing.T) {
+	uri := "desktop-control://artifacts/artifact_123"
+	got := annotateTextWithAssets("临时路径: "+uri, []assets.Ref{{
+		ID:       "asset_image_alias",
+		Kind:     "image",
+		URI:      uri,
+		MIMEType: "image/png",
+		Metadata: map[string]string{
+			"materialized": "true",
+		},
+	}})
+	if len(got) != 1 {
+		t.Fatalf("annotations = %+v, want one", got)
+	}
+	if got[0].Text != uri || got[0].AssetID != "asset_image_alias" || got[0].Kind != "image" {
+		t.Fatalf("annotation = %+v", got[0])
+	}
+}
+
 func TestAnnotateLineMentionsWhenTurnHasOneFile(t *testing.T) {
 	text := "`HTMLBuilder` 只在 **一个文件** 中被引用：\n\n" +
 		"**`CodePractice.playground/Pages/01-SwiftDeepDive.xcplaygroundpage/Contents.swift`**\n\n" +

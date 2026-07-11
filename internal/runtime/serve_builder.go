@@ -99,7 +99,6 @@ func (b *ServeRunBuilder) Build(ctx conversation.RuntimeContext) conversation.Tu
 		p, err := BuildProvider(mc, b.Cfg.Provider, ctx.Credential)
 		if err == nil {
 			provider = p
-			fmt.Fprintf(os.Stderr, "[auth] builder: using per-session credential for model %q\n", mc.Name)
 		} else {
 			fmt.Fprintf(os.Stderr, "[auth] builder: failed to build per-session provider: %v\n", err)
 		}
@@ -109,11 +108,7 @@ func (b *ServeRunBuilder) Build(ctx conversation.RuntimeContext) conversation.Tu
 		p, err := BuildProvider(mc, b.Cfg.Provider, nil)
 		if err == nil {
 			provider = p
-			fmt.Fprintf(os.Stderr, "[auth] builder: using per-turn model %q (no session credential)\n", mc.Name)
 		}
-	} else {
-		fmt.Fprintf(os.Stderr, "[auth] builder: using base provider (ctx.Credential=%v, mc.Credential.IsZero=%v)\n",
-			ctx.Credential != nil, mc.Credential.IsZero())
 	}
 
 	// Resolve skills AND tools for the session's workspace. The workspace instance

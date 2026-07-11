@@ -136,8 +136,6 @@ func (h *WSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				target: {Type: credential.Bearer, Secret: token},
 			}
 			h.CredentialStore(sessionID, resolver)
-			fmt.Fprintf(os.Stderr, "[auth] ws: stored credential for session %s (target: %s, token len: %d)\n",
-				sessionID, target.String(), len(token))
 		} else {
 			fmt.Fprintf(os.Stderr, "[auth] ws: no Authorization header for session %s\n", sessionID)
 		}

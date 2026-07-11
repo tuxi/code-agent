@@ -79,12 +79,18 @@ func (t *remoteTool) Execute(ctx context.Context, ec tools.ExecutionContext, inp
 		return tools.ToolResult{}, fmt.Errorf("mcp: protocol error: %s: %w", t.label, err)
 	}
 
+	var resourceReader resourceReadCaller
+	if rr, ok := t.caller.(resourceReadCaller); ok {
+		resourceReader = rr
+	}
 	rendered := renderContentAssets(res.Content, contentAssetContext{
-		Server:        t.server,
-		Tool:          t.remoteName,
-		WorkspaceRoot: ec.WorkspaceRoot,
-		TurnID:        ec.TurnID,
-		CallID:        ec.CallID,
+		Server:         t.server,
+		Tool:           t.remoteName,
+		WorkspaceRoot:  ec.WorkspaceRoot,
+		TurnID:         ec.TurnID,
+		CallID:         ec.CallID,
+		Context:        ctx,
+		ResourceReader: resourceReader,
 	})
 	text := rendered.Text
 	fmt.Fprintf(t.log, "[mcp] result %s isError=%t bytes=%d\n", t.label, res.IsError, len(text))

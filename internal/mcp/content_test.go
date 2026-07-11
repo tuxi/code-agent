@@ -2,6 +2,8 @@ package mcp
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -78,6 +80,72 @@ func TestRenderNonTextAssets(t *testing.T) {
 	}
 	if out.Kind != "mcp_content" || len(out.Items) != 2 || out.Items[0].AssetID != got.Assets[0].ID {
 		t.Fatalf("output = %+v, assets = %+v", out, got.Assets)
+	}
+}
+
+func TestRenderInlineImageMaterializesBlob(t *testing.T) {
+	root := t.TempDir()
+	data := []byte{0x89, 'P', 'N', 'G'}
+	got := renderContentAssets([]mcpsdk.Content{
+		&mcpsdk.ImageContent{MIMEType: "image/png", Data: data},
+	}, contentAssetContext{
+		Server:        "desktop_control",
+		Tool:          "screenshot_capture",
+		WorkspaceRoot: root,
+		TurnID:        "turn_1",
+		CallID:        "call_2",
+	})
+	if len(got.Assets) != 1 {
+		t.Fatalf("assets = %d, want 1", len(got.Assets))
+	}
+	ref := got.Assets[0]
+	if ref.Kind != "image" || ref.MIMEType != "image/png" {
+		t.Fatalf("asset = %+v", ref)
+	}
+	if ref.WorkspaceRelativePath == "" || ref.AbsolutePath == "" || ref.Metadata["materialized"] != "true" {
+		t.Fatalf("asset was not materialized: %+v", ref)
+	}
+	if !strings.HasPrefix(filepath.ToSlash(ref.WorkspaceRelativePath), ".codeagent/assets/mcp/turn_1/call_2/") {
+		t.Fatalf("workspace_relative_path = %q", ref.WorkspaceRelativePath)
+	}
+	onDisk, err := os.ReadFile(ref.AbsolutePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(onDisk) != string(data) {
+		t.Fatalf("materialized bytes = %v, want %v", onDisk, data)
+	}
+}
+
+func TestDesktopControlResourceLinkAliasesMaterializedImage(t *testing.T) {
+	root := t.TempDir()
+	artifactURI := "desktop-control://artifacts/artifact_123"
+	got := renderContentAssets([]mcpsdk.Content{
+		&mcpsdk.ImageContent{MIMEType: "image/png", Data: []byte("png-bytes")},
+		&mcpsdk.ResourceLink{URI: artifactURI},
+	}, contentAssetContext{
+		Server:        "desktop_control",
+		Tool:          "screenshot_capture",
+		WorkspaceRoot: root,
+		TurnID:        "turn_1",
+		CallID:        "call_2",
+	})
+	if len(got.Assets) != 2 {
+		t.Fatalf("assets = %d, want 2", len(got.Assets))
+	}
+	image := got.Assets[0]
+	link := got.Assets[1]
+	if image.Kind != "image" || image.WorkspaceRelativePath == "" {
+		t.Fatalf("image asset = %+v", image)
+	}
+	if link.Kind != "image" || link.URI != artifactURI || link.MIMEType != "image/png" {
+		t.Fatalf("resource link alias = %+v", link)
+	}
+	if link.WorkspaceRelativePath != image.WorkspaceRelativePath || link.AbsolutePath != image.AbsolutePath {
+		t.Fatalf("resource link did not reuse materialized blob: image=%+v link=%+v", image, link)
+	}
+	if link.Metadata["alias_of"] != image.ID || link.Metadata["materialized"] != "true" {
+		t.Fatalf("resource link alias metadata = %+v", link.Metadata)
 	}
 }
 

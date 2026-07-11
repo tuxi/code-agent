@@ -142,6 +142,9 @@ func annotationCandidates(refs []assets.Ref) []textAnnotationCandidate {
 		case "url":
 			add(ref, ref.URI)
 			add(ref, ref.DisplayName)
+		case "image", "audio", "video", "pdf":
+			add(ref, ref.URI)
+			add(ref, ref.DisplayName)
 		default:
 			// Avoid broad symbol-name annotation in prose. Symbols become clickable
 			// through their tool cards today; assistant-text annotation can grow a

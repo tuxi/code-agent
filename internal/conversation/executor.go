@@ -7,9 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"fmt"
-	"os"
-
 	"code-agent/internal/agent"
 	"code-agent/internal/credential"
 	"code-agent/internal/model"
@@ -73,30 +70,13 @@ func (e *TurnExecutor) SetSessionCredential(sessionID string, cred credential.Re
 	e.sessionCredsMu.Lock()
 	e.sessionCreds[sessionID] = cred
 	e.sessionCredsMu.Unlock()
-	fmt.Fprintf(os.Stderr, "[auth] executor: stored credential for session %s (%d total stored)\n",
-		sessionID, len(e.sessionCreds))
 }
 
 // sessionCredential returns the stored credential for a session, or nil.
 func (e *TurnExecutor) sessionCredential(sessionID string) credential.Resolver {
 	e.sessionCredsMu.RLock()
 	defer e.sessionCredsMu.RUnlock()
-	c := e.sessionCreds[sessionID]
-	if c != nil {
-		fmt.Fprintf(os.Stderr, "[auth] executor: found credential for session %s\n", sessionID)
-	} else {
-		fmt.Fprintf(os.Stderr, "[auth] executor: NO credential for session %s (%d stored: %v)\n",
-			sessionID, len(e.sessionCreds), e.sessionIDs())
-	}
-	return c
-}
-
-func (e *TurnExecutor) sessionIDs() []string {
-	ids := make([]string, 0, len(e.sessionCreds))
-	for id := range e.sessionCreds {
-		ids = append(ids, id)
-	}
-	return ids
+	return e.sessionCreds[sessionID]
 }
 
 // Execute drives one turn to completion against the session identified by

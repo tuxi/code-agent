@@ -16,7 +16,7 @@ type(scope): short summary
 
 body — what and why, not implementation diary
 
-footer(s) — BREAKING CHANGE, issue refs, Co-Authored-By
+footer(s) — BREAKING CHANGE, issue refs
 ```
 
 ### Types
@@ -74,7 +74,6 @@ without reading the diff. Use bullet points for multiple changes.
   type/scope as shorthand: `feat(api)!: remove /v1/legacy endpoint`
 - `Refs: #123` — references an issue
 - `Closes: #123` — closes an issue
-- `Co-Authored-By: Claude ...` — **required for this project**, matches existing
   commit style (see `git log`)
 
 ### Breaking Changes
@@ -195,12 +194,6 @@ These apply to THIS repository (code-agent):
 
 - **Work on a branch**, do not commit to `main` directly. Create a feature
   branch first if you are on `main`.
-- **End every commit message with:**
-  ```
-  Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
-  ```
-  Check `git log -5 --format="%H %s%n%b"` to confirm the exact format if
-  unsure.
 - **Match the existing style.** This project uses lowercase subjects, scopes
   in parentheses, and detailed bullet-point bodies. Match the density and
   voice of the last 10 commits.
@@ -216,7 +209,6 @@ feat(assets): blob endpoint with range support + MIME-driven asset kinds
 - AssetPreviewResponse gains Metadata field...
 - Tests: binary preview metadata, blob range request (206)...
 
-Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
 ```
 
 Good — single-purpose with concise body:
