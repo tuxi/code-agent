@@ -1,7 +1,9 @@
 package runtime
 
 import (
+	"net/url"
 	"os"
+	"strings"
 	"time"
 
 	"code-agent/internal/agent"
@@ -67,7 +69,7 @@ func BuildRunner(cfg app.Config, mc app.ModelConfig, provider model.Provider, re
 	// Grants into it), so a nil store just leaves the approver unchanged.
 	approver = approve.Allowlisted(rules, approver)
 
-	return &agent.Runner{
+	runner := &agent.Runner{
 		Model:            provider,
 		ModelName:        mc.Model,
 		Temperature:      mc.Temperature,
@@ -94,4 +96,20 @@ func BuildRunner(cfg app.Config, mc app.ModelConfig, provider model.Provider, re
 		// deployments whose client tools run long (e.g. DreamAI media generation).
 		ClientToolTimeout: time.Duration(cfg.Agent.ClientToolTimeoutSeconds) * time.Second,
 	}
+	// Asset upload is a Gateway-only capability. Direct OpenAI-compatible and
+	// Ollama models must never receive Gateway asset references by accident.
+	if isGatewayModelEndpoint(mc.BaseURL) {
+		if uploader, ok := provider.(model.AssetUploader); ok {
+			runner.AssetUploader = uploader
+		}
+	}
+	return runner
+}
+
+func isGatewayModelEndpoint(baseURL string) bool {
+	u, err := url.Parse(baseURL)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	return strings.HasSuffix(strings.TrimSuffix(u.Path, "/"), "/api/v1/agent")
 }

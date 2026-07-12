@@ -105,6 +105,9 @@ func TestRenderInlineImageMaterializesBlob(t *testing.T) {
 	if ref.WorkspaceRelativePath == "" || ref.AbsolutePath == "" || ref.Metadata["materialized"] != "true" {
 		t.Fatalf("asset was not materialized: %+v", ref)
 	}
+	if ref.Metadata["sha256"] == "" {
+		t.Fatalf("materialized asset is missing sha256: %+v", ref.Metadata)
+	}
 	if !strings.HasPrefix(filepath.ToSlash(ref.WorkspaceRelativePath), ".codeagent/assets/mcp/turn_1/call_2/") {
 		t.Fatalf("workspace_relative_path = %q", ref.WorkspaceRelativePath)
 	}

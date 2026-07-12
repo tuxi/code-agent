@@ -32,13 +32,18 @@ func sampleSession() *session.Session {
 			{Role: model.RoleAssistant, ToolCalls: []model.ToolCall{
 				{ID: "a", Type: "function", Function: model.FunctionCall{Name: "read_file", Arguments: `{"path":"loop.go"}`}},
 			}},
-			{Role: model.RoleTool, ToolCallID: "a", Content: "package agent"},
+			{Role: model.RoleTool, ToolCallID: "a", Content: "package agent", Assets: []model.GatewayAssetRef{{
+				AssetID: 42, SHA256: "abc", Kind: "image", MIMEType: "image/png", Filename: "screenshot.png",
+			}}},
 			{Role: model.RoleAssistant, Content: "it drives the loop"},
 		},
 		Compactions: []session.CompactionStats{
 			{BeforeTokens: 90000, AfterTokens: 27000, SavedTokens: 63000, CompressionRatio: 0.7, SummaryChars: 1800, CompactedAt: now},
 		},
-		PromptTokens:     27000,
+		PromptTokens: 27000,
+		GatewayAssetCache: map[string]model.GatewayAssetRef{
+			"abc": {AssetID: 42, SHA256: "abc", Kind: "image", MIMEType: "image/png", Filename: "screenshot.png"},
+		},
 		ContextWindow:    128000,
 		CompactThreshold: 89600,
 		CreatedAt:        now,
@@ -75,9 +80,15 @@ func TestStoreRoundTrip(t *testing.T) {
 	if got.Messages[3].ToolCallID != "a" {
 		t.Fatalf("tool_call_id lost: %+v", got.Messages[3])
 	}
+	if len(got.Messages[3].Assets) != 1 || got.Messages[3].Assets[0].AssetID != 42 || got.Messages[3].Assets[0].SHA256 != "abc" {
+		t.Fatalf("gateway assets lost: %+v", got.Messages[3].Assets)
+	}
 
 	if len(got.Compactions) != 1 || got.Compactions[0].SavedTokens != 63000 {
 		t.Fatalf("compaction trace lost: %+v", got.Compactions)
+	}
+	if got.GatewayAssetCache["abc"].AssetID != 42 {
+		t.Fatalf("gateway asset cache lost: %+v", got.GatewayAssetCache)
 	}
 }
 

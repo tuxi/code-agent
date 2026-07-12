@@ -5,6 +5,7 @@ import (
 
 	"code-agent/internal/agent"
 	"code-agent/internal/credential"
+	"code-agent/internal/model"
 	"code-agent/internal/session"
 )
 
@@ -15,6 +16,11 @@ type TurnRunner interface {
 	// ResumeTurn continues an interrupted turn from persisted history without
 	// appending a new user message (v1.2 §3.2).
 	ResumeTurn(ctx context.Context, sess *session.Session) (agent.TurnResult, error)
+}
+
+// AssetTurnRunner is optional so alternate/legacy runners remain compatible.
+type AssetTurnRunner interface {
+	RunTurnWithAssets(ctx context.Context, sess *session.Session, userInput string, assets []model.GatewayAssetRef) (agent.TurnResult, error)
 }
 
 // RuntimeContext is the parameter bundle for RunBuilder.Build. It collects

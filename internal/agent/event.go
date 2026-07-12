@@ -161,6 +161,11 @@ type Event struct {
 
 	// Set when a step errored.
 	Err string
+
+	// ErrorCode classifies a terminal turn failure for hosts. It is deliberately
+	// an open string set: transports expose it as error.code, while clients use
+	// unknown values as a generic failure.
+	ErrorCode string
 }
 
 // Emitter receives loop events. Implementations render (REPL), stream (live UI),

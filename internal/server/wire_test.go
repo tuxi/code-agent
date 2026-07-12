@@ -237,6 +237,33 @@ func TestElapsedIsMilliseconds(t *testing.T) {
 	}
 }
 
+func TestTurnFailedUsesStructuredError(t *testing.T) {
+	frame, err := Encode(agent.Event{
+		Kind: agent.EventTurnFailed, At: fixedAt, SessionID: "sess_1", TurnID: "turn_42",
+		ErrorCode: "auth_expired", Err: "model api error: status=401",
+	}, "id", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got struct {
+		Kind   string `json:"kind"`
+		TurnID string `json:"turn_id"`
+		Error  struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(frame, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Kind != "turn_failed" || got.TurnID != "turn_42" {
+		t.Fatalf("lifecycle header = %+v", got)
+	}
+	if got.Error.Code != "auth_expired" || got.Error.Message != "model api error: status=401" {
+		t.Fatalf("structured error = %+v", got.Error)
+	}
+}
+
 // TestToolArgsAreStructured guards the second dangerous decision: tool_args is an
 // embedded JSON object, and stays valid JSON even when the args are not JSON.
 func TestToolArgsAreStructured(t *testing.T) {

@@ -2,6 +2,8 @@ package mcp
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"mime"
@@ -282,6 +284,8 @@ func materializeInlineAsset(ctx contentAssetContext, ref *assets.Ref, data []byt
 	}
 	ref.Metadata["materialized"] = "true"
 	ref.Metadata["materialized_path"] = rel
+	sum := sha256.Sum256(data)
+	ref.Metadata["sha256"] = hex.EncodeToString(sum[:])
 }
 
 func extensionForMIME(mimeType string) string {

@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"code-agent/internal/agent"
+	"code-agent/internal/model"
 )
 
 // TransportSession is a thin adapter that satisfies server.Session (Subscriber
@@ -28,6 +29,12 @@ func (s *TransportSession) Subscribe() (<-chan agent.Event, func()) {
 // SendMessage drives one turn. Satisfies server.CommandTarget.
 func (s *TransportSession) SendMessage(ctx context.Context, text string, model string) (agent.TurnResult, error) {
 	return s.ex.Execute(ctx, s.id, text, model)
+}
+
+// SendMessageWithAssets is the asset-first command-plane extension. It leaves
+// the legacy CommandTarget method untouched for older clients.
+func (s *TransportSession) SendMessageWithAssets(ctx context.Context, text, modelName string, assets []model.GatewayAssetRef) (agent.TurnResult, error) {
+	return s.ex.ExecuteWithAssets(ctx, s.id, text, modelName, assets)
 }
 
 // Cancel stops the in-flight turn. Satisfies server.CommandTarget.

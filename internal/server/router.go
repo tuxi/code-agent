@@ -6,6 +6,7 @@ import (
 
 	"code-agent/internal/agent"
 	"code-agent/internal/approve"
+	"code-agent/internal/model"
 )
 
 // CommandTarget is the command plane: the actions a client triggers on a session.
@@ -18,6 +19,12 @@ type CommandTarget interface {
 	SendMessage(ctx context.Context, text string, model string) (agent.TurnResult, error)
 	Cancel()
 	RegisterTools(tools []agent.ClientToolDef)
+}
+
+// AssetMessageTarget is the optional asset-first extension of CommandTarget.
+// Kept separate so pre-v1.4 hosts continue to satisfy CommandTarget unchanged.
+type AssetMessageTarget interface {
+	SendMessageWithAssets(ctx context.Context, text, model string, assets []model.GatewayAssetRef) (agent.TurnResult, error)
 }
 
 // ApprovalResolver is the control plane: deliver a client's approval verdict to
@@ -89,8 +96,13 @@ func (r Router) Route(ctx context.Context, data []byte) {
 				// Same detachment as send_message: the turn must survive this
 				// connection closing.
 				turnCtx := context.WithoutCancel(ctx)
-				model := m.Model
-				go func() { _, _ = r.Commands.SendMessage(turnCtx, m.Text, model) }()
+				modelName := m.Model
+				if withAssets, ok := r.Commands.(AssetMessageTarget); ok && len(m.Assets) > 0 {
+					assets := append([]model.GatewayAssetRef(nil), m.Assets...)
+					go func() { _, _ = withAssets.SendMessageWithAssets(turnCtx, m.Text, modelName, assets) }()
+				} else {
+					go func() { _, _ = r.Commands.SendMessage(turnCtx, m.Text, modelName) }()
+				}
 			}
 		case "tool_result":
 			if m.ToolResult != nil && r.ToolResults != nil {

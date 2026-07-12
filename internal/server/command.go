@@ -5,6 +5,7 @@ import (
 
 	"code-agent/internal/agent"
 	"code-agent/internal/assetref"
+	"code-agent/internal/model"
 )
 
 // Command-plane messages (client -> server): they trigger an action on a session
@@ -56,11 +57,12 @@ type RegisterTools struct {
 // the v1 send_message / cancel_turn flat types. The Router dispatches by Kind.
 // See docs/protocols/agent-wire-v1.1-client-tool-execution.md §1.
 type AgentInput struct {
-	Type       string      `json:"type"`                  // always "agent_input"
-	Kind       string      `json:"kind"`                  // "text" | "tool_result" | "command" | "system"
-	Text       string      `json:"text,omitempty"`        // kind="text" | "command"
-	Model      string      `json:"model,omitempty"`       // optional: model profile name to use this turn
-	ToolResult *ToolResult `json:"tool_result,omitempty"` // kind="tool_result"
+	Type       string                  `json:"type"`                  // always "agent_input"
+	Kind       string                  `json:"kind"`                  // "text" | "tool_result" | "command" | "system"
+	Text       string                  `json:"text,omitempty"`        // kind="text" | "command"
+	Model      string                  `json:"model,omitempty"`       // optional: model profile name to use this turn
+	Assets     []model.GatewayAssetRef `json:"assets,omitempty"`      // kind="text": Gateway-owned user asset refs
+	ToolResult *ToolResult             `json:"tool_result,omitempty"` // kind="tool_result"
 	// kind="system" fields (v1.1 parses but stubs out the semantics):
 	Command      string `json:"command,omitempty"`
 	CommandKey   string `json:"command_key,omitempty"`

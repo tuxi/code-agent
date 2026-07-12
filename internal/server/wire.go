@@ -68,7 +68,15 @@ type wireEvent struct {
 	// a start failure / signal kill).
 	ExitCode int `json:"exit_code,omitempty"`
 
-	Err string `json:"err,omitempty"`
+	Err   string     `json:"err,omitempty"`
+	Error *wireError `json:"error,omitempty"`
+}
+
+// wireError is the structured terminal error defined by runtime-event-contract-v1.
+// `err` remains populated for older clients during the transition.
+type wireError struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
 }
 
 // rfc3339Millis is the timestamp format on the wire: RFC3339 with millisecond
@@ -110,6 +118,9 @@ func toWire(e agent.Event) wireEvent {
 		Ineffective:     e.Ineffective,
 		ExitCode:        e.ExitCode,
 		Err:             e.Err,
+	}
+	if e.Kind == agent.EventTurnFailed && e.Err != "" {
+		w.Error = &wireError{Code: e.ErrorCode, Message: e.Err}
 	}
 	// Duration goes out as milliseconds, never Go's default nanoseconds (§3.2).
 	if e.Elapsed > 0 {

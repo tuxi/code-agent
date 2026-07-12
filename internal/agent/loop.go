@@ -7,10 +7,15 @@ import (
 	"code-agent/internal/session"
 	"code-agent/internal/tools"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"os"
+	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -146,6 +151,11 @@ type Runner struct {
 	// for REPL/TUI, from cfg.Workspace.Root.
 	WorkspaceRoot string
 
+	// AssetUploader turns locally materialized screenshot files into
+	// Gateway-owned references. Nil leaves non-Gateway executions unchanged.
+	AssetUploader    model.AssetUploader
+	assetUploadCache map[string]model.GatewayAssetRef
+
 	// Correlation IDs stamped onto every emitted event. Set per RunTurn (which is
 	// sequential on a Runner), so an event always carries which session and turn
 	// produced it.
@@ -205,6 +215,9 @@ func (r *Runner) emit(e Event) {
 // produced and the tool steps taken to get there. The conversation itself lives
 // on the Session, which accumulates across turns.
 type TurnResult struct {
+	// TurnID identifies this execution in the event stream. The lifecycle layer
+	// uses it to emit a terminal event after the runner has returned an error.
+	TurnID       string
 	Final        string
 	Steps        []Step
 	PromptTokens int
@@ -277,6 +290,123 @@ func normalizeToolAssets(refs []assets.Ref, workspaceRoot, turnID, callID string
 	return out
 }
 
+// gatewayScreenshotAssets converts a desktop-control screenshot into a
+// Gateway-owned reference. It deliberately runs only for screenshot_capture:
+// user-supplied image assets are preserved by the message path but do not gain
+// implicit visual semantics until that product workflow is defined.
+func (r *Runner) gatewayScreenshotAssets(ctx context.Context, sess *session.Session, toolName string, refs []assets.Ref) ([]model.GatewayAssetRef, string) {
+	if r.AssetUploader == nil || !isScreenshotCapture(toolName) {
+		return nil, ""
+	}
+	var out []model.GatewayAssetRef
+	for i := range refs {
+		ref := &refs[i]
+		if !strings.HasPrefix(strings.ToLower(ref.MIMEType), "image/") || ref.AbsolutePath == "" {
+			continue
+		}
+		localPath, err := r.safeWorkspaceAssetPath(ref.AbsolutePath)
+		if err != nil {
+			return out, "[asset_unavailable] screenshot asset is outside the workspace."
+		}
+		sha, size, err := fileSHA256(localPath)
+		if err != nil {
+			return out, "[asset_unavailable] screenshot asset could not be prepared for Gateway."
+		}
+		scope := "gateway:unknown"
+		if scoped, ok := r.AssetUploader.(model.AssetUploadScoper); ok {
+			scope = scoped.AssetUploadScope(ctx)
+		}
+		cacheKey := scope + ":" + ref.ID + ":" + sha
+		contentKey := scope + ":" + sha
+		if sess != nil && sess.GatewayAssetCache != nil {
+			if cached, ok := sess.GatewayAssetCache[cacheKey]; ok {
+				out = append(out, cached)
+				continue
+			}
+			if cached, ok := sess.GatewayAssetCache[contentKey]; ok {
+				out = append(out, cached)
+				continue
+			}
+		}
+		if r.assetUploadCache != nil {
+			if cached, ok := r.assetUploadCache[cacheKey]; ok {
+				out = append(out, cached)
+				continue
+			}
+		}
+		filename := filepath.Base(localPath)
+		gatewayRef, err := r.AssetUploader.UploadAsset(ctx, model.AssetUpload{
+			Path: localPath, AssetClass: "agent_screenshot", AssetKind: "image", BusinessType: "agent_screenshot",
+			Filename: filename, MIMEType: ref.MIMEType, SizeBytes: size, SHA256: sha,
+		})
+		if err != nil {
+			return out, "[asset_unavailable] screenshot upload to Gateway failed."
+		}
+		if r.assetUploadCache == nil {
+			r.assetUploadCache = make(map[string]model.GatewayAssetRef)
+		}
+		r.assetUploadCache[cacheKey] = gatewayRef
+		if sess != nil {
+			if sess.GatewayAssetCache == nil {
+				sess.GatewayAssetCache = make(map[string]model.GatewayAssetRef)
+			}
+			sess.GatewayAssetCache[cacheKey] = gatewayRef
+			sess.GatewayAssetCache[contentKey] = gatewayRef
+		}
+		if ref.Metadata == nil {
+			ref.Metadata = map[string]string{}
+		}
+		ref.Metadata["gateway_asset_id"] = strconv.FormatInt(gatewayRef.AssetID, 10)
+		ref.Metadata["gateway_sha256"] = gatewayRef.SHA256
+		out = append(out, gatewayRef)
+	}
+	if len(out) == 0 {
+		return nil, "[asset_unavailable] screenshot contained no uploadable image asset."
+	}
+	return out, ""
+}
+
+func isScreenshotCapture(toolName string) bool {
+	return toolName == "screenshot_capture" || strings.HasSuffix(toolName, "__screenshot_capture")
+}
+
+func fileSHA256(path string) (string, int64, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return "", 0, err
+	}
+	defer file.Close()
+	hash := sha256.New()
+	n, err := io.Copy(hash, file)
+	if err != nil {
+		return "", 0, err
+	}
+	return fmt.Sprintf("%x", hash.Sum(nil)), n, nil
+}
+
+func (r *Runner) safeWorkspaceAssetPath(raw string) (string, error) {
+	if r.WorkspaceRoot == "" {
+		return "", fmt.Errorf("workspace root is required")
+	}
+	logicalRoot, err := filepath.Abs(r.WorkspaceRoot)
+	if err != nil {
+		return "", err
+	}
+	path, err := filepath.Abs(raw)
+	if err != nil || (path != logicalRoot && !strings.HasPrefix(path, logicalRoot+string(filepath.Separator))) {
+		return "", fmt.Errorf("asset path escapes workspace")
+	}
+	physicalRoot, err := filepath.EvalSymlinks(logicalRoot)
+	if err != nil {
+		return "", err
+	}
+	path, err = filepath.EvalSymlinks(path)
+	if err != nil || (path != physicalRoot && !strings.HasPrefix(path, physicalRoot+string(filepath.Separator))) {
+		return "", fmt.Errorf("asset path escapes workspace through symlink")
+	}
+	return path, nil
+}
+
 // RunTurn runs one turn of the agent against a persistent session: it appends
 // the user's input to the session history, then drives the uniform loop —
 // call the model (with tool schemas); if it returns no tool calls, that text is
@@ -287,6 +417,12 @@ func normalizeToolAssets(refs []assets.Ref, workspaceRoot, turnID, callID string
 // full history. The loop contains no per-tool logic and no decision state
 // machine: the model owns control flow, the runtime executes and gates tools.
 func (r *Runner) RunTurn(ctx context.Context, sess *session.Session, userInput string) (TurnResult, error) {
+	return r.RunTurnWithAssets(ctx, sess, userInput, nil)
+}
+
+// RunTurnWithAssets carries already-uploaded, Gateway-owned user assets without
+// reading their bytes or URLs in the Runtime.
+func (r *Runner) RunTurnWithAssets(ctx context.Context, sess *session.Session, userInput string, gatewayAssets []model.GatewayAssetRef) (TurnResult, error) {
 	if r.Model == nil {
 		return TurnResult{}, errors.New("missing model provider")
 	}
@@ -305,6 +441,7 @@ func (r *Runner) RunTurn(ctx context.Context, sess *session.Session, userInput s
 	sess.Messages = append(sess.Messages, model.Message{
 		Role:    model.RoleUser,
 		Content: userInput,
+		Assets:  gatewayAssets,
 	})
 	sess.UpdatedAt = time.Now()
 	r.emit(Event{Kind: EventTurnStarted, Text: userInput})
@@ -349,7 +486,7 @@ func (r *Runner) ResumeTurn(ctx context.Context, sess *session.Session) (TurnRes
 // appends the user message first) and ResumeTurn (which does not), so both paths
 // execute identical control flow.
 func (r *Runner) drive(ctx context.Context, sess *session.Session) (TurnResult, error) {
-	var turn TurnResult
+	turn := TurnResult{TurnID: r.emitTurnID}
 
 	// Reflection (P4.3) per-turn state: at most one self-check pass, and the
 	// ephemeral nudge to apply on the next request once it fires.

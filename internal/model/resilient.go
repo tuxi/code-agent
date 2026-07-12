@@ -47,6 +47,24 @@ type ResilientProvider struct {
 	sleep func(time.Duration)
 }
 
+// UploadAsset forwards the Gateway asset lifecycle without applying model-call
+// retries. Init/complete are idempotency-bound by Gateway's upload_id; callers
+// decide whether a failed screenshot should be retried or reported to the model.
+func (p *ResilientProvider) UploadAsset(ctx context.Context, upload AssetUpload) (GatewayAssetRef, error) {
+	uploader, ok := p.Inner.(AssetUploader)
+	if !ok {
+		return GatewayAssetRef{}, errors.New("provider does not support gateway asset uploads")
+	}
+	return uploader.UploadAsset(ctx, upload)
+}
+
+func (p *ResilientProvider) AssetUploadScope(ctx context.Context) string {
+	if scoped, ok := p.Inner.(AssetUploadScoper); ok {
+		return scoped.AssetUploadScope(ctx)
+	}
+	return "gateway:unknown"
+}
+
 func (p *ResilientProvider) Complete(ctx context.Context, req Request) (resp Response, err error) {
 	if p.Inner == nil {
 		return Response{}, errors.New("resilient provider: nil inner provider")

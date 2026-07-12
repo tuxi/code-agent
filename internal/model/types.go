@@ -36,6 +36,10 @@ type Message struct {
 	Role    Role   `json:"role"`
 	Content string `json:"content"`
 
+	// Assets are Gateway-owned, ownership-checked asset references. They contain
+	// neither bytes nor OSS URLs and are safe to persist with the message.
+	Assets []GatewayAssetRef `json:"assets,omitempty"`
+
 	// ToolCalls is set on assistant messages when the model decides to call one
 	// or more tools. It must be echoed back unchanged in the next request.
 	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
@@ -43,6 +47,17 @@ type Message struct {
 	// ToolCallID is set on tool-result messages (Role == RoleTool) to bind the
 	// result to the assistant tool call it answers.
 	ToolCallID string `json:"tool_call_id,omitempty"`
+}
+
+// GatewayAssetRef is the minimal asset-first contract sent to Agent Gateway.
+// It is intentionally distinct from assetref.Ref, which is a local Runtime/UI
+// index and can contain paths or previews that must never reach Gateway.
+type GatewayAssetRef struct {
+	AssetID  int64  `json:"asset_id"`
+	SHA256   string `json:"sha256,omitempty"`
+	Kind     string `json:"kind"`
+	MIMEType string `json:"mime_type"`
+	Filename string `json:"filename"`
 }
 
 // ToolCall is a single function call the model requested.

@@ -2,10 +2,59 @@ package model
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 )
+
+// TestOpenAICompatibleProviderSendsGatewayAssetRefs verifies the asset-first
+// Gateway contract: only a small reference enters the chat request, never image
+// bytes, a data URL, an OSS URL, or a local path.
+func TestOpenAICompatibleProviderSendsGatewayAssetRefs(t *testing.T) {
+	var request map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"I received the screenshot"}}]}`))
+	}))
+	defer srv.Close()
+
+	p := NewOpenAICompatibleProviderWithKey(srv.URL, "key")
+	_, err := p.Complete(context.Background(), Request{Model: "vision-test", Messages: []Message{{
+		Role:    RoleTool,
+		Content: "Screenshot captured.",
+		Assets: []GatewayAssetRef{{
+			AssetID:  12345,
+			SHA256:   "abc123",
+			Kind:     "image",
+			MIMEType: "image/png",
+			Filename: "screenshot.png",
+		}},
+	}}})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+
+	messages, ok := request["messages"].([]any)
+	if !ok || len(messages) != 1 {
+		t.Fatalf("messages = %#v, want one message", request["messages"])
+	}
+	message := messages[0].(map[string]any)
+	assets, ok := message["assets"].([]any)
+	if !ok || len(assets) != 1 {
+		t.Fatalf("assets = %#v, want one asset ref", message["assets"])
+	}
+	asset := assets[0].(map[string]any)
+	if asset["asset_id"] != float64(12345) || asset["mime_type"] != "image/png" {
+		t.Fatalf("asset = %#v, want Gateway asset ref", asset)
+	}
+	encoded, _ := json.Marshal(request)
+	if string(encoded) == "" || string(encoded) == "png-test-bytes" {
+		t.Fatalf("request unexpectedly contains binary content: %s", encoded)
+	}
+}
 
 func TestIsLocalBaseURL(t *testing.T) {
 	tests := []struct {

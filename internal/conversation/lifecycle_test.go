@@ -2,6 +2,7 @@ package conversation
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -14,11 +15,13 @@ import (
 // scriptRunner returns a preset outcome and records which method ran.
 type scriptRunner struct {
 	resumeErr error
+	runErr    error
+	turnID    string
 	ranResume bool
 }
 
 func (r *scriptRunner) RunTurn(ctx context.Context, sess *session.Session, input string) (agent.TurnResult, error) {
-	return agent.TurnResult{}, nil
+	return agent.TurnResult{TurnID: r.turnID}, r.runErr
 }
 func (r *scriptRunner) ResumeTurn(ctx context.Context, sess *session.Session) (agent.TurnResult, error) {
 	r.ranResume = true
@@ -92,6 +95,43 @@ func TestResume_NonRetryableFails(t *testing.T) {
 	_, _ = ex.Resume(context.Background(), "s1")
 	if got := repo.sessions["s1"].TurnStatus(); got != session.TurnStatusFailed {
 		t.Errorf("status=%q want failed (non-retryable)", got)
+	}
+}
+
+func TestFreshTurn401EmitsStructuredTurnFailed(t *testing.T) {
+	repo := newFakeRepo()
+	sess := &session.Session{
+		ID:       "s1",
+		Messages: []model.Message{{Role: model.RoleUser, Content: "check commit"}},
+		Metadata: map[string]any{},
+	}
+	repo.sessions[sess.ID] = sess
+	events := &fakeEventStore{}
+	runner := &scriptRunner{
+		runErr: &model.APIError{StatusCode: 401, Body: `{"msg":"missing token"}`},
+		turnID: "turn_42",
+	}
+	ex := NewTurnExecutor(repo, events, NewActiveTurnRegistry(), NewSubscriptionManager(), &scriptBuilder{runner: runner})
+
+	if _, err := ex.ExecuteWithSession(context.Background(), sess, "check commit", ""); err == nil {
+		t.Fatal("ExecuteWithSession succeeded, want model error")
+	}
+	if got := sess.TurnStatus(); got != session.TurnStatusFailed {
+		t.Fatalf("status=%q want failed", got)
+	}
+	if len(events.records) != 1 {
+		t.Fatalf("persisted events=%d want 1", len(events.records))
+	}
+	got := events.records[0]
+	if got.Kind != string(agent.EventTurnFailed) || got.TurnID != "turn_42" {
+		t.Fatalf("event kind/turn = %q/%q, want turn_failed/turn_42", got.Kind, got.TurnID)
+	}
+	var payload agent.Event
+	if err := json.Unmarshal(got.Payload, &payload); err != nil {
+		t.Fatalf("decode event: %v", err)
+	}
+	if payload.ErrorCode != "auth_expired" || payload.Err == "" {
+		t.Fatalf("failure payload = %+v, want auth_expired and message", payload)
 	}
 }
 

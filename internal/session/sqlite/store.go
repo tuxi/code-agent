@@ -58,6 +58,7 @@ CREATE TABLE IF NOT EXISTS sessions (
 	created_at        TEXT,
 	updated_at        TEXT,
 	metadata          TEXT
+	,gateway_assets   TEXT
 );
 CREATE TABLE IF NOT EXISTS messages (
 	session_id   TEXT,
@@ -66,6 +67,7 @@ CREATE TABLE IF NOT EXISTS messages (
 	content      TEXT,
 	tool_calls   TEXT,
 	tool_call_id TEXT,
+	assets       TEXT,
 	PRIMARY KEY (session_id, seq)
 );
 CREATE TABLE IF NOT EXISTS compactions (
@@ -147,6 +149,8 @@ func (s *Store) open() error {
 		`ALTER TABLE sessions ADD COLUMN workspace_rel TEXT`,
 		`ALTER TABLE sessions ADD COLUMN workspace_ext_id TEXT`,
 		`ALTER TABLE sessions ADD COLUMN name TEXT`,
+		`ALTER TABLE sessions ADD COLUMN gateway_assets TEXT`,
+		`ALTER TABLE messages ADD COLUMN assets TEXT`,
 		// v2: re-index session_events by at for chronological ordering.
 		// The original index was on (session_id, id); rebuild on (session_id, at).
 		`DROP INDEX IF EXISTS idx_session_events_session`,
@@ -209,18 +213,27 @@ func (s *Store) save(ctx context.Context, sess *session.Session) error {
 		}
 		metaJSON = string(b)
 	}
+	cacheJSON := ""
+	if len(sess.GatewayAssetCache) > 0 {
+		b, err := json.Marshal(sess.GatewayAssetCache)
+		if err != nil {
+			return fmt.Errorf("marshal gateway asset cache: %w", err)
+		}
+		cacheJSON = string(b)
+	}
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO sessions (id, model, summary, prompt_tokens, context_window, compact_threshold, workspace_path, workspace_root, workspace_rel, workspace_ext_id, name, created_at, updated_at, metadata)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO sessions (id, model, summary, prompt_tokens, context_window, compact_threshold, workspace_path, workspace_root, workspace_rel, workspace_ext_id, name, created_at, updated_at, metadata, gateway_assets)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			model=excluded.model, summary=excluded.summary, prompt_tokens=excluded.prompt_tokens,
 			context_window=excluded.context_window, compact_threshold=excluded.compact_threshold,
 			workspace_path=excluded.workspace_path, workspace_root=excluded.workspace_root,
 			workspace_rel=excluded.workspace_rel, workspace_ext_id=excluded.workspace_ext_id,
-			name=excluded.name, updated_at=excluded.updated_at, metadata=excluded.metadata`,
+			name=excluded.name, updated_at=excluded.updated_at, metadata=excluded.metadata,
+			gateway_assets=excluded.gateway_assets`,
 		sess.ID, sess.Model, sess.Summary, sess.PromptTokens, sess.ContextWindow, sess.CompactThreshold,
 		sess.WorkspacePath, sess.Workspace.Root, sess.Workspace.Rel, sess.Workspace.ExtID,
-		sess.Name, formatTime(sess.CreatedAt), formatTime(sess.UpdatedAt), metaJSON); err != nil {
+		sess.Name, formatTime(sess.CreatedAt), formatTime(sess.UpdatedAt), metaJSON, cacheJSON); err != nil {
 		return fmt.Errorf("save session row: %w", err)
 	}
 
@@ -236,10 +249,18 @@ func (s *Store) save(ctx context.Context, sess *session.Session) error {
 			}
 			toolCalls = string(b)
 		}
+		assetRefs := ""
+		if len(m.Assets) > 0 {
+			b, err := json.Marshal(m.Assets)
+			if err != nil {
+				return fmt.Errorf("marshal message assets: %w", err)
+			}
+			assetRefs = string(b)
+		}
 		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO messages (session_id, seq, role, content, tool_calls, tool_call_id)
-			VALUES (?, ?, ?, ?, ?, ?)`,
-			sess.ID, i, string(m.Role), m.Content, toolCalls, m.ToolCallID); err != nil {
+			INSERT INTO messages (session_id, seq, role, content, tool_calls, tool_call_id, assets)
+			VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			sess.ID, i, string(m.Role), m.Content, toolCalls, m.ToolCallID, assetRefs); err != nil {
 			return fmt.Errorf("save message %d: %w", i, err)
 		}
 	}
@@ -262,16 +283,16 @@ func (s *Store) save(ctx context.Context, sess *session.Session) error {
 
 func (s *Store) Load(ctx context.Context, id string) (*session.Session, error) {
 	var sess session.Session
-	var createdAt, updatedAt, metaJSON, name string
+	var createdAt, updatedAt, metaJSON, cacheJSON, name string
 	err := s.db.QueryRowContext(ctx, `
 		SELECT id, model, summary, prompt_tokens, context_window, compact_threshold, COALESCE(workspace_path, ''),
 		       COALESCE(workspace_root, ''), COALESCE(workspace_rel, ''), COALESCE(workspace_ext_id, ''),
-		       COALESCE(name, ''), created_at, updated_at, COALESCE(metadata, '')
+		       COALESCE(name, ''), created_at, updated_at, COALESCE(metadata, ''), COALESCE(gateway_assets, '')
 		FROM sessions WHERE id=?`, id).
 		Scan(&sess.ID, &sess.Model, &sess.Summary, &sess.PromptTokens, &sess.ContextWindow,
 			&sess.CompactThreshold, &sess.WorkspacePath,
 			&sess.Workspace.Root, &sess.Workspace.Rel, &sess.Workspace.ExtID,
-			&name, &createdAt, &updatedAt, &metaJSON)
+			&name, &createdAt, &updatedAt, &metaJSON, &cacheJSON)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf("session %q not found", id)
 	}
@@ -289,22 +310,32 @@ func (s *Store) Load(ctx context.Context, id string) (*session.Session, error) {
 			return nil, fmt.Errorf("unmarshal metadata: %w", err)
 		}
 	}
+	if cacheJSON != "" {
+		if err := json.Unmarshal([]byte(cacheJSON), &sess.GatewayAssetCache); err != nil {
+			return nil, fmt.Errorf("unmarshal gateway asset cache: %w", err)
+		}
+	}
 
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT role, content, tool_calls, tool_call_id FROM messages WHERE session_id=? ORDER BY seq`, id)
+		SELECT role, content, tool_calls, tool_call_id, COALESCE(assets, '') FROM messages WHERE session_id=? ORDER BY seq`, id)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var role, content, toolCalls, toolCallID string
-		if err := rows.Scan(&role, &content, &toolCalls, &toolCallID); err != nil {
+		var role, content, toolCalls, toolCallID, assetRefs string
+		if err := rows.Scan(&role, &content, &toolCalls, &toolCallID, &assetRefs); err != nil {
 			return nil, err
 		}
 		m := model.Message{Role: model.Role(role), Content: content, ToolCallID: toolCallID}
 		if toolCalls != "" {
 			if err := json.Unmarshal([]byte(toolCalls), &m.ToolCalls); err != nil {
 				return nil, fmt.Errorf("unmarshal tool_calls: %w", err)
+			}
+		}
+		if assetRefs != "" {
+			if err := json.Unmarshal([]byte(assetRefs), &m.Assets); err != nil {
+				return nil, fmt.Errorf("unmarshal message assets: %w", err)
 			}
 		}
 		sess.Messages = append(sess.Messages, m)

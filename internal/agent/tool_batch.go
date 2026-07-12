@@ -155,7 +155,7 @@ func (r *Runner) executeToolBatch(
 		}
 
 		for k := range group {
-			r.commitToolResult(sess, turn, turnAssets, group[k], results[k])
+			r.commitToolResult(ctx, sess, turn, turnAssets, group[k], results[k])
 		}
 	}
 	return nil
@@ -271,7 +271,7 @@ func (r *Runner) runToolCall(ctx context.Context, p toolCallPlan) toolCallResult
 // commitToolResult finalizes one call on the main goroutine, in model order:
 // skill/todo telemetry, Observation enrichment, the Step, asset normalization,
 // the ToolFinished event, and the tool-result message.
-func (r *Runner) commitToolResult(sess *session.Session, turn *TurnResult, turnAssets *[]assets.Ref, p toolCallPlan, res toolCallResult) {
+func (r *Runner) commitToolResult(ctx context.Context, sess *session.Session, turn *TurnResult, turnAssets *[]assets.Ref, p toolCallPlan, res toolCallResult) {
 	observation := res.observation
 	step := p.step
 	step.Error = res.stepError
@@ -313,6 +313,12 @@ func (r *Runner) commitToolResult(sess *session.Session, turn *TurnResult, turnA
 	step.FinishedAt = time.Now()
 	turn.Steps = append(turn.Steps, step)
 	assetRefs := normalizeToolAssets(res.assetRefs, r.WorkspaceRoot, r.emitTurnID, p.call.ID)
+	gatewayAssets, assetNote := r.gatewayScreenshotAssets(ctx, sess, p.call.Function.Name, assetRefs)
+	if assetNote != "" {
+		observation += "\n" + assetNote
+		step.Observation = observation
+		turn.Steps[len(turn.Steps)-1].Observation = observation
+	}
 	*turnAssets = append(*turnAssets, assetRefs...)
 
 	r.emit(Event{
@@ -331,6 +337,7 @@ func (r *Runner) commitToolResult(sess *session.Session, turn *TurnResult, turnA
 		Role:       model.RoleTool,
 		ToolCallID: p.call.ID,
 		Content:    observation,
+		Assets:     gatewayAssets,
 	})
 	sess.UpdatedAt = time.Now()
 }

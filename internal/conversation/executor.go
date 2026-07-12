@@ -84,19 +84,33 @@ func (e *TurnExecutor) sessionCredential(sessionID string) credential.Resolver {
 // builds a fresh Runner, runs, saves, and releases the slot.
 // model is the optional model profile name; empty means "use the server default".
 func (e *TurnExecutor) Execute(ctx context.Context, sessionID string, input string, model string) (agent.TurnResult, error) {
+	return e.ExecuteWithAssets(ctx, sessionID, input, model, nil)
+}
+
+// ExecuteWithAssets carries Gateway-owned user asset references into the next
+// turn. The caller owns validation of their source; Gateway validates ownership
+// again when it receives the chat request.
+func (e *TurnExecutor) ExecuteWithAssets(ctx context.Context, sessionID string, input string, model string, assets []model.GatewayAssetRef) (agent.TurnResult, error) {
 	sess, err := e.repo.Load(ctx, sessionID)
 	if err != nil {
 		return agent.TurnResult{}, err
 	}
-	return e.ExecuteWithSession(ctx, sess, input, model)
+	return e.ExecuteWithSessionAssets(ctx, sess, input, model, assets)
 }
 
 // ExecuteWithSession runs a turn against an already-loaded session — the REPL
 // and TUI path, where the caller holds a session handle across turns.
 // model is the optional model profile name; empty means "use the server default".
 func (e *TurnExecutor) ExecuteWithSession(parentCtx context.Context, sess *session.Session, input string, model string) (agent.TurnResult, error) {
+	return e.ExecuteWithSessionAssets(parentCtx, sess, input, model, nil)
+}
+
+func (e *TurnExecutor) ExecuteWithSessionAssets(parentCtx context.Context, sess *session.Session, input string, model string, assets []model.GatewayAssetRef) (agent.TurnResult, error) {
 	res, runErr := e.driveTurn(parentCtx, sess, model,
 		func(ctx context.Context, runner TurnRunner) (agent.TurnResult, error) {
+			if assetRunner, ok := runner.(AssetTurnRunner); ok {
+				return assetRunner.RunTurnWithAssets(ctx, sess, input, assets)
+			}
 			return runner.RunTurn(ctx, sess, input)
 		},
 		e.recordRunStatus,
@@ -202,7 +216,7 @@ func (e *TurnExecutor) driveTurn(
 	// 5. Record the terminal status BEFORE the save, then emit the lifecycle event
 	//    so a client sees paused/failed transitions.
 	recordStatus(sess, runErr)
-	e.emitLifecycle(pub, sess)
+	e.emitLifecycle(pub, sess, res.TurnID, runErr)
 
 	// 6. Save — always, even on error/cancel. The cancel-mid-batch fill + running
 	//    marker keep the persisted history consistent and resumable. WithoutCancel
@@ -223,17 +237,22 @@ const maxResumeAttempts = 5
 
 // recordRunStatus sets the terminal turn_status for a fresh turn: done on success
 // or user stop, paused only when the turn was cancelled by an app suspend (so the
-// host can auto-continue it).
+// host can auto-continue it), and failed for every genuine runtime error.
 func (e *TurnExecutor) recordRunStatus(sess *session.Session, runErr error) {
 	switch {
 	case runErr == nil:
 		sess.SetTurnStatus(session.TurnStatusDone)
 	case errors.Is(runErr, context.Canceled) && e.active.WasSuspended(sess.ID):
 		sess.MarkPaused(time.Now())
-	default:
-		// User stop or a turn error: the partial history is saved, but this is not a
-		// candidate for automatic resume — the user drives the next step.
+	case errors.Is(runErr, context.Canceled):
+		// Explicit cancel_turn is terminal on the client already and does not
+		// require a lifecycle event from the server.
 		sess.SetTurnStatus(session.TurnStatusDone)
+	default:
+		// A model/runtime failure must be observable as a terminal lifecycle
+		// event; otherwise a client that has a running tool card never receives
+		// the signal needed to stop its spinner.
+		sess.SetTurnStatus(session.TurnStatusFailed)
 	}
 }
 
@@ -264,7 +283,7 @@ func (e *TurnExecutor) recordResumeStatus(sess *session.Session, runErr error) {
 // emitLifecycle publishes the paused/failed lifecycle event matching the session's
 // just-recorded terminal status, so a connected client updates its label. A done
 // turn already emitted turn_finished from the loop, so nothing is published here.
-func (e *TurnExecutor) emitLifecycle(pub agent.Emitter, sess *session.Session) {
+func (e *TurnExecutor) emitLifecycle(pub agent.Emitter, sess *session.Session, turnID string, runErr error) {
 	var kind agent.EventKind
 	switch sess.TurnStatus() {
 	case session.TurnStatusPaused:
@@ -274,7 +293,27 @@ func (e *TurnExecutor) emitLifecycle(pub agent.Emitter, sess *session.Session) {
 	default:
 		return
 	}
-	pub.Emit(agent.Event{Kind: kind, SessionID: sess.ID, At: time.Now()})
+	event := agent.Event{Kind: kind, SessionID: sess.ID, TurnID: turnID, At: time.Now()}
+	if kind == agent.EventTurnFailed {
+		event.Err = errString(runErr)
+		event.ErrorCode = lifecycleErrorCode(runErr)
+	}
+	pub.Emit(event)
+}
+
+func lifecycleErrorCode(err error) string {
+	var apiErr *model.APIError
+	if errors.As(err, &apiErr) && apiErr.StatusCode == 401 {
+		return "auth_expired"
+	}
+	return "request_failed"
+}
+
+func errString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
 
 // SuspendAll cancels every in-flight turn as an app suspend and awaits their

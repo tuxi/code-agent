@@ -35,6 +35,10 @@ type OpenAICompatibleProvider struct {
 	// APIKey is the static API key, used when Credential is nil.
 	// Deprecated: set Credential + CredentialTarget instead.
 	APIKey string
+
+	// ObjectUploader is optional test wiring for Gateway asset uploads. Nil uses
+	// an Aliyun STS direct uploader; it is never used for ordinary chat calls.
+	ObjectUploader GatewayObjectUploader
 }
 
 // NewOpenAICompatibleProvider creates a provider that resolves credentials

@@ -502,6 +502,33 @@ Content-Type: application/json
 | `tools` | array | | 工具定义数组 |
 | `stream` | bool | | 是否 SSE 流式返回，默认 `false` |
 
+#### 4.1.1 Asset-first message extension
+
+`messages[]` 可选携带 `assets`。客户端与 Code-Agent **只传资产引用，不传 OSS
+签名 URL 或文件字节**；Gateway 校验归属后才为下游服务生成短期 URL。
+
+```json
+{
+  "role": "tool",
+  "tool_call_id": "call_screenshot",
+  "content": "Screenshot captured.",
+  "assets": [{
+    "asset_id": 12345,
+    "sha256": "optional-sha256-binding",
+    "kind": "image",
+    "mime_type": "image/png",
+    "filename": "screenshot.png"
+  }]
+}
+```
+
+当该 tool result 对应 `screenshot_capture` 时，Gateway 执行
+`vision_then_reason`：图片仅发往配置的 VLM；其受限 JSON 观察结果追加到**同一条**
+tool result 后，再调用文本推理模型。不会在 `assistant.tool_calls` 和对应 `tool`
+消息之间插入消息，DeepSeek 也不会收到原始图片。VLM 失败时追加
+`visual_observation.status`（`image_unavailable`、`image_unsupported` 或
+`vision_failed`），不会伪造观察结果。
+
 ### 4.2 非流式响应
 
 ```json
@@ -696,6 +723,50 @@ Authorization: Bearer <access_token>
 > **设计原则：** `category`、`recommended_for`、`available` 均由 Gateway 控制。未来模型增删、推荐场景变更，客户端不需要升级。
 >
 > **`billing_factor` 语义：** 不是价格（价格是 estimated_cost），而是 quota 消耗权重。1 input token × input_billing_factor + 1 output token × output_billing_factor = 消耗的 billing units。此字段不绑定具体模型定价，同一模型降价时只改内部 cost 计算，不影响用户 Quota 消耗速度。
+
+### 5.2 模型选择的责任归属
+
+```
+                    ┌─────────────────────────┐
+                    │    Agent Gateway         │
+                    │                          │
+                    │  GET /agent/models       │
+                    │  → default_model (提示)   │
+                    │  → available 模型列表      │
+                    │                          │
+                    │  Gateway 不记住用户偏好    │
+                    └──────────┬───────────────┘
+                               │
+              ┌────────────────┴────────────────┐
+              │                                 │
+         AgentKit (Swift)                CLI / Runtime
+              │                                 │
+    ┌─────────┴──────────┐              ┌───────┴──────────┐
+    │ 调用 GET /models    │              │ 不调 GET /models  │
+    │ 本地存储 last_model │              │ 只接收 model 参数  │
+    │ 传给 Runtime        │              │ POST /chat 时带上 │
+    └────────────────────┘              └──────────────────┘
+```
+
+**规则：**
+
+| 职责 | Gateway | AgentKit | Runtime |
+|------|:------:|:--------:|:-------:|
+| 提供可用模型列表 | ✅ | — | — |
+| 提供 `default_model`（首次提示） | ✅ | — | — |
+| 调用 `GET /agent/models` | — | ✅ | ❌ |
+| 记住用户上次选择的模型 | — | ✅ | — |
+| 发送 `model` 字段到 `/chat` | — | — | ✅ |
+
+**对齐主流 Agent 设计：**
+
+| 产品 | 模型列表来源 | 选择记忆 |
+|------|------------|---------|
+| **Claude Code** | Anthropic API | 本地 `settings.json` → `preferredModel` |
+| **Codex** | OpenAI `GET /models` | 本地 `config.toml` → `model` |
+| **Agent Gateway** | Gateway `GET /agent/models` | AgentKit `UserDefaults` → `last_model` |
+
+> **关键原则：Gateway 是无状态的。** 它不追踪"用户上次用了哪个模型"。`default_model` 字段是一个全局默认值（当前是 `"deepseek-v4-pro"`），仅在用户首次使用时作为提示。用户切换模型后，由 AgentKit 本地持久化该偏好。
 
 ---
 

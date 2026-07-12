@@ -39,6 +39,11 @@ type Session struct {
 
 	Messages []model.Message
 	Metadata map[string]any
+	// GatewayAssetCache maps a content hash (and optional local asset identity)
+	// to an ownership-bound Gateway asset reference. It persists no bytes, STS,
+	// OSS URL, or local path, allowing a resumed session to avoid re-uploading an
+	// unchanged screenshot under the same authenticated Gateway session.
+	GatewayAssetCache map[string]model.GatewayAssetRef
 
 	// Summary is the running LLM-generated digest of conversation turns that have
 	// been compacted out of Messages. It is empty until the first summarizing
