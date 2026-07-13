@@ -55,3 +55,9 @@ type ConversationRepository interface {
 	// Close releases resources (e.g. the underlying SQLite connection).
 	Close() error
 }
+
+// ReservedConversationRepository is the optional creation extension used by
+// managed worktree provisioning. The caller owns the stable id reservation.
+type ReservedConversationRepository interface {
+	CreateWithID(ctx context.Context, id, workspacePath, workspaceExtID string) (*session.Session, error)
+}

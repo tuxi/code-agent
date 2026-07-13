@@ -75,11 +75,20 @@ func NewSQLiteRepository(store session.SessionStore, contextWindow, compactThres
 }
 
 func (r *sqliteRepository) Create(ctx context.Context, workspacePath, workspaceExtID string) (*session.Session, error) {
+	return r.create(ctx, "", workspacePath, workspaceExtID)
+}
+
+func (r *sqliteRepository) CreateWithID(ctx context.Context, id, workspacePath, workspaceExtID string) (*session.Session, error) {
+	return r.create(ctx, id, workspacePath, workspaceExtID)
+}
+
+func (r *sqliteRepository) create(ctx context.Context, id, workspacePath, workspaceExtID string) (*session.Session, error) {
 	skillsIdx := ""
 	if r.getSkillsIndex != nil {
 		skillsIdx = r.getSkillsIndex(workspacePath)
 	}
 	sess, err := session.NewBuilder(workspacePath).
+		WithID(id).
 		WithBudget(r.contextWindow, r.compactThreshold).
 		WithSkillsIndex(skillsIdx).
 		Build()
@@ -218,6 +227,7 @@ func (r *sqliteRepository) Close() error {
 
 // Compile-time check: sqliteRepository satisfies ConversationRepository.
 var _ ConversationRepository = (*sqliteRepository)(nil)
+var _ ReservedConversationRepository = (*sqliteRepository)(nil)
 
 // StoreEventAdapter wraps a session.EventStore as a ConversationEventStore by
 // delegating Append → RecordEvent and Replay → SessionEvents. This is the

@@ -18,12 +18,14 @@ const (
 // (string / float64) because Metadata is persisted as a JSON blob alongside the
 // session — the same mechanism turn_seq already uses.
 const (
-	MetaTurnStatus      = "turn_status"
-	MetaPausedAt        = "paused_at"        // unix seconds (float64 in the map)
-	MetaResumeAttempts  = "resume_attempts"  // consecutive failed resumes (float64)
-	MetaExecutionPolicy = "execution_policy" // shared_workspace | isolated_worktree | read_only
-	MetaWorkspaceID     = "workspace_id"
-	MetaBaseWorkspaceID = "base_workspace_id"
+	MetaTurnStatus       = "turn_status"
+	MetaPausedAt         = "paused_at"        // unix seconds (float64 in the map)
+	MetaResumeAttempts   = "resume_attempts"  // consecutive failed resumes (float64)
+	MetaExecutionPolicy  = "execution_policy" // shared_workspace | isolated_worktree | read_only
+	MetaWorkspaceID      = "workspace_id"
+	MetaBaseWorkspaceID  = "base_workspace_id"
+	MetaManagedWorktree  = "managed_worktree"
+	MetaWorktreeWarnings = "worktree_warnings"
 )
 
 const (

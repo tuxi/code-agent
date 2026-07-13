@@ -15,9 +15,11 @@ import (
 	"code-agent/internal/assetref"
 	"code-agent/internal/conversation"
 	"code-agent/internal/credential"
+	"code-agent/internal/managedworktree"
 	"code-agent/internal/mcp"
 	"code-agent/internal/repos"
 	"code-agent/internal/session"
+	"code-agent/internal/worktree"
 
 	"github.com/coder/websocket"
 )
@@ -208,6 +210,9 @@ type MuxOptions struct {
 	// endpoints. It intentionally defaults to all false until scheduler and
 	// workspace isolation are fully installed.
 	RuntimeCapabilities RuntimeCapabilities
+	// ManagedWorktrees provisions explicitly requested Runtime-owned checkouts.
+	// Nil keeps managed creation fail-closed.
+	ManagedWorktrees *managedworktree.Manager
 }
 
 // RuntimeCapabilities is the explicit concurrency handshake consumed by
@@ -511,11 +516,31 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 		var req CreateConversationRequest
 		_ = json.NewDecoder(r.Body).Decode(&req)
 		if req.Worktree != nil && req.Worktree.Managed {
-			writeManagedWorktreeError(w, r, http.StatusNotImplemented, managedWorktreeErrorResponse{
-				Code:            "managed_worktree_not_supported",
-				Message:         "managed worktree provisioning is not enabled",
-				ClientRequestID: req.ClientRequestID,
+			if req.ExecutionPolicy != session.ExecutionPolicyIsolatedWorktree {
+				writeManagedWorktreeError(w, r, http.StatusBadRequest, managedWorktreeErrorResponse{Code: managedworktree.CodeNotRequested, Message: "managed worktree requires execution_policy=isolated_worktree", ClientRequestID: req.ClientRequestID})
+				return
+			}
+			if opts.ManagedWorktrees == nil {
+				writeManagedWorktreeError(w, r, http.StatusNotImplemented, managedWorktreeErrorResponse{
+					Code:            "managed_worktree_not_supported",
+					Message:         "managed worktree provisioning is not enabled",
+					ClientRequestID: req.ClientRequestID,
+				})
+				return
+			}
+			result, err := opts.ManagedWorktrees.Create(r.Context(), managedworktree.CreateRequest{
+				ClientRequestID:     req.ClientRequestID,
+				SourceWorkspacePath: req.WorkspacePath,
+				SourceWorkspaceID:   req.WorkspaceID,
+				BaseWorkspaceID:     req.BaseWorkspaceID,
+				SuggestedName:       req.Worktree.SuggestedName,
+				BaseRef:             worktree.BaseRef(req.Worktree.BaseRef),
 			})
+			if err != nil {
+				writeManagedCreateError(w, r, err)
+				return
+			}
+			writeJSON(w, r, http.StatusCreated, managedConversationRef(result))
 			return
 		}
 
@@ -870,6 +895,42 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 
 func writeManagedWorktreeError(w http.ResponseWriter, r *http.Request, status int, detail managedWorktreeErrorResponse) {
 	Result(w, r, status, status*100, detail.Message, detail)
+}
+
+func writeManagedCreateError(w http.ResponseWriter, r *http.Request, err error) {
+	var managedErr *managedworktree.Error
+	if !errors.As(err, &managedErr) {
+		writeManagedWorktreeError(w, r, http.StatusInternalServerError, managedWorktreeErrorResponse{Code: managedworktree.CodeProvisionFailed, Message: "managed worktree provisioning failed"})
+		return
+	}
+	status := http.StatusUnprocessableEntity
+	switch managedErr.Code {
+	case "invalid_request", managedworktree.CodeNotRequested:
+		status = http.StatusBadRequest
+	case managedworktree.CodeNameConflict, managedworktree.CodePathConflict, managedworktree.CodeBranchConflict:
+		status = http.StatusConflict
+	case managedworktree.CodeNotGitRepository:
+		status = http.StatusBadRequest
+	}
+	writeManagedWorktreeError(w, r, status, managedWorktreeErrorResponse{
+		Code: managedErr.Code, Message: managedErr.Message,
+		ClientRequestID: managedErr.ClientRequestID, SessionID: managedErr.SessionID,
+	})
+}
+
+func managedConversationRef(result managedworktree.CreateResult) ConversationRef {
+	warnings := make([]APIWarning, 0, len(result.Warnings))
+	for _, warning := range result.Warnings {
+		warnings = append(warnings, APIWarning{Code: warning.Code, Message: warning.Message})
+	}
+	return ConversationRef{
+		ID: result.Session.ID, WorkspacePath: result.Record.WorktreePath,
+		Workspace:       workspaceDTO(result.Record.WorktreePath),
+		ExecutionPolicy: session.ExecutionPolicyIsolatedWorktree,
+		WorkspaceID:     result.Record.CheckoutWorkspaceID, BaseWorkspaceID: result.Record.BaseWorkspaceID,
+		Worktree: &ManagedWorktreeDTO{Managed: true, Name: result.Record.Name, Branch: result.Record.Branch, BaseRef: string(result.Record.BaseRef), State: string(result.Record.State)},
+		Warnings: warnings,
+	}
 }
 
 // loadEvents fetches a session's recorded events from the EventStore and resolves

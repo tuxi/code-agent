@@ -29,6 +29,7 @@ const (
 
 type Builder struct {
 	WorkspaceRoot string
+	SessionID     string
 
 	ContextWindow    int
 	CompactThreshold int
@@ -43,6 +44,14 @@ type Builder struct {
 	// its own short, strict instructions in place of the full interactive-agent
 	// prompt. Project memory and the skills index, if present, are still appended.
 	SystemPrompt string
+}
+
+// WithID installs a pre-reserved durable identity. Managed worktree creation
+// uses it so the reservation, checkout and conversation share one id across
+// retries and process restarts.
+func (b *Builder) WithID(id string) *Builder {
+	b.SessionID = id
+	return b
 }
 
 func NewBuilder(workspaceRoot string) *Builder {
@@ -103,8 +112,12 @@ func (b *Builder) Build() (*Session, error) {
 	// (or is resumed days later). The agent loop appends today's date ephemerally
 	// on every model call instead (agent.withCurrentDate).
 	now := time.Now()
+	id := b.SessionID
+	if id == "" {
+		id = NewID()
+	}
 	return &Session{
-		ID: newSessionID(),
+		ID: id,
 		Messages: []model.Message{
 			{Role: model.RoleSystem, Content: systemContent},
 		},
@@ -119,7 +132,7 @@ func (b *Builder) Build() (*Session, error) {
 // newSessionID returns a sortable, human-readable, collision-resistant id:
 // a UTC timestamp prefix for at-a-glance ordering plus random hex for
 // uniqueness within the same second.
-func newSessionID() string {
+func NewID() string {
 	var b [4]byte
 	_, _ = rand.Read(b[:])
 	return time.Now().UTC().Format("20060102-150405") + "-" + hex.EncodeToString(b[:])

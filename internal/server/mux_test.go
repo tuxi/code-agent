@@ -44,6 +44,19 @@ func (r *fakeConversationRepo) Create(ctx context.Context, workspacePath, worksp
 	return s, nil
 }
 
+func (r *fakeConversationRepo) CreateWithID(ctx context.Context, id, workspacePath, workspaceExtID string) (*session.Session, error) {
+	s, err := r.Create(ctx, workspacePath, workspaceExtID)
+	if err != nil {
+		return nil, err
+	}
+	r.mu.Lock()
+	delete(r.sessions, s.ID)
+	s.ID = id
+	r.sessions[id] = s
+	r.mu.Unlock()
+	return s, nil
+}
+
 func (r *fakeConversationRepo) Rebind(ctx context.Context, id, absPath string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()

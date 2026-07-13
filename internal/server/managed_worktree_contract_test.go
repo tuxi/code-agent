@@ -5,7 +5,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
+
+	"code-agent/internal/managedworktree"
+	"code-agent/internal/session"
 )
 
 func TestManagedWorktreeProtocolFixtures(t *testing.T) {
@@ -44,6 +50,22 @@ func TestManagedWorktreeRequestFailsClosedBeforeProvisionerWiring(t *testing.T) 
 	}
 	if len(repo.sessions) != 0 {
 		t.Fatalf("managed request created a session before provisioning: %+v", repo.sessions)
+	}
+}
+
+func TestSharedConversationWithProvisionerHasNoGitSideEffects(t *testing.T) {
+	root := t.TempDir()
+	repo := newFakeConversationRepo()
+	manager := managedworktree.New(session.NewMemoryStore(), repo)
+	body := `{"workspace_path":` + strconv.Quote(root) + `,"execution_policy":"shared_workspace"}`
+	recorder := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/conversations", strings.NewReader(body))
+	NewMux(repo, &fakeEventStore{}, nil, MuxOptions{ManagedWorktrees: manager}).ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if _, err := os.Stat(filepath.Join(root, ".codeagent")); !os.IsNotExist(err) {
+		t.Fatalf("shared create touched Git/worktree state: %v", err)
 	}
 }
 
