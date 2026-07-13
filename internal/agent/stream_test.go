@@ -89,6 +89,14 @@ func TestThinkingPersistedWhenStreamFails(t *testing.T) {
 	if thinkAt == -1 || finishAt == -1 || thinkAt > finishAt {
 		t.Fatalf("expected thinking before model_finished, got kinds %v", kinds)
 	}
+	// model_finished only pairs the invocation. The executor will publish this
+	// same error once as turn_failed, so putting it here would duplicate the
+	// user-visible failure in persisted event history.
+	for _, event := range em.events {
+		if event.Kind == EventModelFinished && event.Err != "" {
+			t.Fatalf("model_finished Err = %q, want empty terminal-pairing event", event.Err)
+		}
+	}
 }
 
 func TestNoTokenDeltasWhenStreamDisabled(t *testing.T) {

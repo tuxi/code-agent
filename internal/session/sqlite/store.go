@@ -59,6 +59,7 @@ CREATE TABLE IF NOT EXISTS sessions (
 	updated_at        TEXT,
 	metadata          TEXT
 	,gateway_assets   TEXT
+	,reference_ledger TEXT
 );
 CREATE TABLE IF NOT EXISTS messages (
 	session_id   TEXT,
@@ -150,6 +151,7 @@ func (s *Store) open() error {
 		`ALTER TABLE sessions ADD COLUMN workspace_ext_id TEXT`,
 		`ALTER TABLE sessions ADD COLUMN name TEXT`,
 		`ALTER TABLE sessions ADD COLUMN gateway_assets TEXT`,
+		`ALTER TABLE sessions ADD COLUMN reference_ledger TEXT`,
 		`ALTER TABLE messages ADD COLUMN assets TEXT`,
 		// v2: re-index session_events by at for chronological ordering.
 		// The original index was on (session_id, id); rebuild on (session_id, at).
@@ -221,19 +223,27 @@ func (s *Store) save(ctx context.Context, sess *session.Session) error {
 		}
 		cacheJSON = string(b)
 	}
+	ledgerJSON := ""
+	if len(sess.ReferenceLedger) > 0 {
+		b, err := json.Marshal(sess.ReferenceLedger)
+		if err != nil {
+			return fmt.Errorf("marshal reference ledger: %w", err)
+		}
+		ledgerJSON = string(b)
+	}
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO sessions (id, model, summary, prompt_tokens, context_window, compact_threshold, workspace_path, workspace_root, workspace_rel, workspace_ext_id, name, created_at, updated_at, metadata, gateway_assets)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO sessions (id, model, summary, prompt_tokens, context_window, compact_threshold, workspace_path, workspace_root, workspace_rel, workspace_ext_id, name, created_at, updated_at, metadata, gateway_assets, reference_ledger)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			model=excluded.model, summary=excluded.summary, prompt_tokens=excluded.prompt_tokens,
 			context_window=excluded.context_window, compact_threshold=excluded.compact_threshold,
 			workspace_path=excluded.workspace_path, workspace_root=excluded.workspace_root,
 			workspace_rel=excluded.workspace_rel, workspace_ext_id=excluded.workspace_ext_id,
 			name=excluded.name, updated_at=excluded.updated_at, metadata=excluded.metadata,
-			gateway_assets=excluded.gateway_assets`,
+			gateway_assets=excluded.gateway_assets, reference_ledger=excluded.reference_ledger`,
 		sess.ID, sess.Model, sess.Summary, sess.PromptTokens, sess.ContextWindow, sess.CompactThreshold,
 		sess.WorkspacePath, sess.Workspace.Root, sess.Workspace.Rel, sess.Workspace.ExtID,
-		sess.Name, formatTime(sess.CreatedAt), formatTime(sess.UpdatedAt), metaJSON, cacheJSON); err != nil {
+		sess.Name, formatTime(sess.CreatedAt), formatTime(sess.UpdatedAt), metaJSON, cacheJSON, ledgerJSON); err != nil {
 		return fmt.Errorf("save session row: %w", err)
 	}
 
@@ -283,16 +293,16 @@ func (s *Store) save(ctx context.Context, sess *session.Session) error {
 
 func (s *Store) Load(ctx context.Context, id string) (*session.Session, error) {
 	var sess session.Session
-	var createdAt, updatedAt, metaJSON, cacheJSON, name string
+	var createdAt, updatedAt, metaJSON, cacheJSON, ledgerJSON, name string
 	err := s.db.QueryRowContext(ctx, `
 		SELECT id, model, summary, prompt_tokens, context_window, compact_threshold, COALESCE(workspace_path, ''),
 		       COALESCE(workspace_root, ''), COALESCE(workspace_rel, ''), COALESCE(workspace_ext_id, ''),
-		       COALESCE(name, ''), created_at, updated_at, COALESCE(metadata, ''), COALESCE(gateway_assets, '')
+		       COALESCE(name, ''), created_at, updated_at, COALESCE(metadata, ''), COALESCE(gateway_assets, ''), COALESCE(reference_ledger, '')
 		FROM sessions WHERE id=?`, id).
 		Scan(&sess.ID, &sess.Model, &sess.Summary, &sess.PromptTokens, &sess.ContextWindow,
 			&sess.CompactThreshold, &sess.WorkspacePath,
 			&sess.Workspace.Root, &sess.Workspace.Rel, &sess.Workspace.ExtID,
-			&name, &createdAt, &updatedAt, &metaJSON, &cacheJSON)
+			&name, &createdAt, &updatedAt, &metaJSON, &cacheJSON, &ledgerJSON)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf("session %q not found", id)
 	}
@@ -313,6 +323,11 @@ func (s *Store) Load(ctx context.Context, id string) (*session.Session, error) {
 	if cacheJSON != "" {
 		if err := json.Unmarshal([]byte(cacheJSON), &sess.GatewayAssetCache); err != nil {
 			return nil, fmt.Errorf("unmarshal gateway asset cache: %w", err)
+		}
+	}
+	if ledgerJSON != "" {
+		if err := json.Unmarshal([]byte(ledgerJSON), &sess.ReferenceLedger); err != nil {
+			return nil, fmt.Errorf("unmarshal reference ledger: %w", err)
 		}
 	}
 

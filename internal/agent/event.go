@@ -143,9 +143,12 @@ type Event struct {
 	Todos []tools.Todo
 
 	// Model / thinking.
-	Text         string        // reasoning text (Thinking) or final answer (TurnFinished)
-	PromptTokens int           // ModelFinished
-	Elapsed      time.Duration // ModelFinished: how long the model call took (P3.8 uses this)
+	Text             string        // reasoning text (Thinking) or final answer (TurnFinished)
+	PromptTokens     int           // ModelFinished: current invocation context size
+	CompletionTokens int           // ModelFinished: current invocation output
+	TotalTokens      int           // ModelFinished: current invocation provider total
+	BillingUnits     int64         // ModelFinished: current invocation Gateway Usage Units
+	Elapsed          time.Duration // ModelFinished: how long the model call took (P3.8 uses this)
 
 	// Compaction (Compacted / ContextPruned). AfterTokens == 0 means "just
 	// compacted, size not yet measured"; > 0 means the next model call measured

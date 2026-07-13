@@ -2,6 +2,7 @@ package session
 
 import (
 	"code-agent/internal/model"
+	"code-agent/internal/reference"
 	"time"
 )
 
@@ -44,6 +45,11 @@ type Session struct {
 	// OSS URL, or local path, allowing a resumed session to avoid re-uploading an
 	// unchanged screenshot under the same authenticated Gateway session.
 	GatewayAssetCache map[string]model.GatewayAssetRef
+
+	// ReferenceLedger holds session-scoped opaque MCP values. The model only
+	// sees their $ref handles; raw values are restored solely to resolve a later
+	// tool call in this same session.
+	ReferenceLedger []reference.Entry
 
 	// Summary is the running LLM-generated digest of conversation turns that have
 	// been compacted out of Messages. It is empty until the first summarizing

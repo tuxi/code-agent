@@ -98,7 +98,8 @@ func cases() map[string]wireCase {
 		"model_finished": {ev: agent.Event{
 			Kind: agent.EventModelFinished, At: fixedAt,
 			SessionID: "sess_root", TurnID: "turn_7",
-			PromptTokens: 4096, Elapsed: 731 * time.Millisecond,
+			PromptTokens: 4096, CompletionTokens: 128, TotalTokens: 4224,
+			BillingUnits: 4480, Elapsed: 731 * time.Millisecond,
 		}},
 		"todo_updated": {ev: agent.Event{
 			Kind: agent.EventTodoUpdated, At: fixedAt,

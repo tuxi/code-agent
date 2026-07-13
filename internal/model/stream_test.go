@@ -3,6 +3,7 @@ package model
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -51,14 +52,67 @@ func TestCompleteStreamParsesTextToolCallsAndUsage(t *testing.T) {
 	}
 }
 
+func TestCompleteStreamReturnsGatewaySSEError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"error\":{\"message\":\"upstream rejected tool call\",\"type\":\"upstream_error\",\"code\":\"upstream_error\"}}\n\n"))
+	}))
+	defer srv.Close()
+
+	p := NewOpenAICompatibleProviderWithKey(srv.URL, "key")
+	_, err := p.CompleteStream(context.Background(), Request{Model: "m"}, nil)
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("want APIError, got %T: %v", err, err)
+	}
+	if apiErr.StatusCode != http.StatusBadGateway || apiErr.Type != "upstream_error" || apiErr.Code != "upstream_error" || apiErr.Message != "upstream rejected tool call" {
+		t.Fatalf("APIError = %+v", apiErr)
+	}
+}
+
+func TestCompletePreservesGatewayQuotaErrorCode(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":{"message":"daily allowance exhausted","type":"quota_exceeded","code":"quota_exceeded"}}`))
+	}))
+	defer srv.Close()
+
+	p := NewOpenAICompatibleProviderWithKey(srv.URL, "key")
+	_, err := p.Complete(context.Background(), Request{Model: "m"})
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("want APIError, got %T: %v", err, err)
+	}
+	if apiErr.StatusCode != http.StatusTooManyRequests || apiErr.Type != "quota_exceeded" || apiErr.Code != "quota_exceeded" {
+		t.Fatalf("APIError = %+v", apiErr)
+	}
+}
+
+func TestCompleteStreamRequiresDoneMarker(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n"))
+	}))
+	defer srv.Close()
+
+	p := NewOpenAICompatibleProviderWithKey(srv.URL, "key")
+	_, err := p.CompleteStream(context.Background(), Request{Model: "m"}, nil)
+	if err == nil || !strings.Contains(err.Error(), "before [DONE]") {
+		t.Fatalf("error = %v, want missing DONE error", err)
+	}
+}
+
 // fakeStreamProvider implements both Complete and CompleteStream so the resilient
 // wrapper's fallback can be exercised.
 type fakeStreamProvider struct {
-	streamErr    error
-	completeResp Response
+	streamErr     error
+	completeResp  Response
+	completeCalls int
 }
 
 func (f *fakeStreamProvider) Complete(context.Context, Request) (Response, error) {
+	f.completeCalls++
 	return f.completeResp, nil
 }
 func (f *fakeStreamProvider) CompleteStream(_ context.Context, _ Request, onText func(string)) (Response, error) {
@@ -91,5 +145,23 @@ func TestResilientCompleteStreamHappyPath(t *testing.T) {
 	}
 	if got != "streamed" || resp.Content != "streamed" {
 		t.Fatalf("stream path: deltas=%q resp=%q", got, resp.Content)
+	}
+}
+
+func TestResilientCompleteStreamDoesNotFallbackForGatewayQuota(t *testing.T) {
+	inner := &fakeStreamProvider{streamErr: &APIError{
+		StatusCode: http.StatusTooManyRequests,
+		Code:       "quota_exceeded",
+		Message:    "daily allowance exhausted",
+	}}
+	p := &ResilientProvider{Inner: inner, LogWriter: io.Discard}
+
+	_, err := p.CompleteStream(context.Background(), Request{Model: "m"}, func(string) {})
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.Code != "quota_exceeded" {
+		t.Fatalf("want quota_exceeded APIError, got %v", err)
+	}
+	if inner.completeCalls != 0 {
+		t.Fatalf("Complete calls = %d, want 0 (quota must not fall back)", inner.completeCalls)
 	}
 }

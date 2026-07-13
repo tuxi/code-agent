@@ -279,6 +279,129 @@ func TestParallelCancelLeavesBalancedHistory(t *testing.T) {
 	}
 }
 
+type referenceProducerTool struct{}
+
+func (referenceProducerTool) Name() string        { return "snapshot" }
+func (referenceProducerTool) Description() string { return "creates a snapshot" }
+func (referenceProducerTool) InputSchema() json.RawMessage {
+	return tools.Object(nil).JSON()
+}
+func (referenceProducerTool) Execute(_ context.Context, _ tools.ExecutionContext, _ json.RawMessage) (tools.ToolResult, error) {
+	return tools.ToolResult{
+		Content: "snapshotID=snapshot_secret_7c1d",
+		Output:  json.RawMessage(`{"snapshotID":"snapshot_secret_7c1d","references":[{"pointer":"/snapshotID","kind":"snapshot"}]}`),
+	}, nil
+}
+
+type referenceConsumerTool struct{ input json.RawMessage }
+
+func (t *referenceConsumerTool) Name() string        { return "find" }
+func (t *referenceConsumerTool) Description() string { return "uses a snapshot" }
+func (t *referenceConsumerTool) InputSchema() json.RawMessage {
+	return json.RawMessage(`{"type":"object","x-codeagent-reference-inputs":[{"pointer":"/snapshotID","kind":"snapshot","mode":"handle_only"}]}`)
+}
+func (t *referenceConsumerTool) Execute(_ context.Context, _ tools.ExecutionContext, input json.RawMessage) (tools.ToolResult, error) {
+	t.input = append(t.input[:0], input...)
+	return tools.ToolResult{Content: "found"}, nil
+}
+
+func TestReferenceLedgerRedactsToolResultAndResolvesBeforeExecution(t *testing.T) {
+	consumer := &referenceConsumerTool{}
+	reg := tools.NewRegistry()
+	for _, tool := range []tools.Tool{referenceProducerTool{}, consumer} {
+		if err := reg.Register(tool); err != nil {
+			t.Fatal(err)
+		}
+	}
+	provider := &scriptedProvider{responses: []model.Response{
+		{ToolCalls: []model.ToolCall{{ID: "snapshot-call", Type: "function", Function: model.FunctionCall{Name: "snapshot", Arguments: "{}"}}}, FinishReason: "tool_calls"},
+		{ToolCalls: []model.ToolCall{{ID: "find-call", Type: "function", Function: model.FunctionCall{Name: "find", Arguments: `{"snapshotID":"$ref:ref_0001"}`}}}, FinishReason: "tool_calls"},
+		{Content: "done", FinishReason: "stop"},
+	}}
+	sess := newSession()
+	sess.ID = "session-a"
+	runner := &Runner{Model: provider, Tools: reg, MaxSteps: 4}
+	if _, err := runner.RunTurn(context.Background(), sess, "test refs"); err != nil {
+		t.Fatal(err)
+	}
+	if string(consumer.input) != `{"snapshotID":"snapshot_secret_7c1d"}` {
+		t.Fatalf("wire input = %s", consumer.input)
+	}
+	if len(sess.ReferenceLedger) != 1 || sess.ReferenceLedger[0].RawValue != "snapshot_secret_7c1d" {
+		t.Fatalf("ledger = %+v", sess.ReferenceLedger)
+	}
+	for _, message := range sess.Messages {
+		if message.Role == model.RoleTool && strings.Contains(message.Content, "snapshot_secret_7c1d") {
+			t.Fatalf("opaque value leaked to model transcript: %q", message.Content)
+		}
+	}
+}
+
+func TestReferenceLedgerBlocksGuessedOpaqueValue(t *testing.T) {
+	consumer := &referenceConsumerTool{}
+	reg := tools.NewRegistry()
+	if err := reg.Register(consumer); err != nil {
+		t.Fatal(err)
+	}
+	provider := &scriptedProvider{responses: []model.Response{
+		{ToolCalls: []model.ToolCall{{ID: "find-call", Type: "function", Function: model.FunctionCall{Name: "find", Arguments: `{"snapshotID":"snapshot_guessed"}`}}}, FinishReason: "tool_calls"},
+		{Content: "done", FinishReason: "stop"},
+	}}
+	runner := &Runner{Model: provider, Tools: reg, MaxSteps: 3}
+	if _, err := runner.RunTurn(context.Background(), newSession(), "test refs"); err != nil {
+		t.Fatal(err)
+	}
+	if len(consumer.input) != 0 {
+		t.Fatalf("tool ran with guessed opaque value: %s", consumer.input)
+	}
+	for _, message := range provider.lastMessages {
+		if message.Role == model.RoleTool && !strings.Contains(message.Content, "reference_handle_required") {
+			t.Fatalf("tool result = %q, want stable reference error", message.Content)
+		}
+	}
+}
+
+// countingClientWaiter proves malformed handles are rejected by the Runtime
+// before a strict-client MCP bridge is ever asked to execute the call.
+type countingClientWaiter struct{ calls int }
+
+func (w *countingClientWaiter) Wait(_ context.Context, _ string, _ time.Duration) (ToolCallResult, error) {
+	w.calls++
+	return ToolCallResult{Content: "unexpected client execution"}, nil
+}
+func (w *countingClientWaiter) Deliver(string, ToolCallResult) {}
+func (w *countingClientWaiter) CancelAll()                     {}
+
+func TestReferenceLedgerBlocksGuessedOpaqueValueBeforeClientExecution(t *testing.T) {
+	reg := tools.NewRegistry()
+	proxy := tools.NewClientProxyTool("mcp__desktop_control__ui_find", "find UI", json.RawMessage(`{
+		"type":"object",
+		"x-codeagent-reference-inputs":[{"pointer":"/snapshotID","kind":"snapshot","mode":"handle_only"}]
+	}`))
+	if err := reg.Register(proxy); err != nil {
+		t.Fatal(err)
+	}
+	waiter := &countingClientWaiter{}
+	provider := &scriptedProvider{responses: []model.Response{
+		{ToolCalls: []model.ToolCall{{ID: "find-call", Type: "function", Function: model.FunctionCall{
+			Name: "mcp__desktop_control__ui_find", Arguments: `{"snapshotID":"2"}`,
+		}}}, FinishReason: "tool_calls"},
+		{Content: "done", FinishReason: "stop"},
+	}}
+	runner := &Runner{Model: provider, Tools: reg, ClientWaiter: waiter, MaxSteps: 3}
+	if _, err := runner.RunTurn(context.Background(), newSession(), "find something"); err != nil {
+		t.Fatal(err)
+	}
+	if waiter.calls != 0 {
+		t.Fatalf("client tool execution calls = %d, want 0", waiter.calls)
+	}
+	for _, message := range provider.lastMessages {
+		if message.Role == model.RoleTool && !strings.Contains(message.Content, "reference_handle_required") {
+			t.Fatalf("tool result = %q, want stable reference error", message.Content)
+		}
+	}
+}
+
 // cancelOnRun is a read-only tool that cancels a context when it executes.
 type cancelOnRun struct {
 	name   string

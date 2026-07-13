@@ -9,8 +9,12 @@ import "fmt"
 type APIError struct {
 	StatusCode int
 	Type       string
-	Message    string
-	Body       string
+	// Code is the provider's stable, machine-readable error classification.
+	// Gateway uses quota_exceeded for a user's exhausted allowance; it is not
+	// equivalent to a transient upstream HTTP 429.
+	Code    string
+	Message string
+	Body    string
 }
 
 func (e *APIError) Error() string {

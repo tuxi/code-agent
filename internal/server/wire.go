@@ -25,6 +25,8 @@ type wireEvent struct {
 	SessionID       string `json:"session_id,omitempty"`
 	ParentSessionID string `json:"parent_session_id,omitempty"`
 	TurnID          string `json:"turn_id,omitempty"`
+	RequestID       string `json:"request_id,omitempty"`
+	QueuePosition   int    `json:"queue_position,omitempty"`
 	InvocationID    string `json:"invocation_id,omitempty"`
 	// Seq is the per-session monotonic event sequence (v1.2 §4). A client records
 	// the highest seq it has seen and, on reconnect, requests
@@ -51,9 +53,12 @@ type wireEvent struct {
 	Todos []tools.Todo `json:"todos,omitempty"`
 
 	// Model / thinking.
-	Text         string `json:"text,omitempty"`
-	PromptTokens int    `json:"prompt_tokens,omitempty"`
-	ElapsedMS    int64  `json:"elapsed_ms,omitempty"`
+	Text             string `json:"text,omitempty"`
+	PromptTokens     int    `json:"prompt_tokens,omitempty"`
+	CompletionTokens int    `json:"completion_tokens,omitempty"`
+	TotalTokens      int    `json:"total_tokens,omitempty"`
+	BillingUnits     int64  `json:"billing_units,omitempty"`
+	ElapsedMS        int64  `json:"elapsed_ms,omitempty"`
 
 	// Compaction.
 	BeforeTokens int     `json:"before_tokens,omitempty"`
@@ -88,36 +93,41 @@ const rfc3339Millis = "2006-01-02T15:04:05.000Z07:00"
 // identity), which keeps this function deterministic for golden tests.
 func toWire(e agent.Event) wireEvent {
 	w := wireEvent{
-		Kind:            string(e.Kind),
-		At:              e.At.UTC().Format(rfc3339Millis),
-		SessionID:       e.SessionID,
-		TurnID:          e.TurnID,
-		InvocationID:    e.InvocationID,
-		Seq:             e.Seq,
-		CallID:          e.CallID,
-		Step:            e.Step,
-		ToolName:        e.ToolName,
-		ToolArgs:        toWireArgs(e.ToolArgs),
-		Observation:     e.Observation,
-		Output:          e.Output,
-		Assets:          e.Assets,
-		TextAnnotations: e.TextAnnotations,
-		Chunk:           e.Chunk,
-		Failure:         e.Failure,
-		SkillVersion:    e.Version,
-		SkillSource:     e.SkillSource,
-		Executor:        e.Executor,
-		Todos:           e.Todos,
-		Text:            e.Text,
-		PromptTokens:    e.PromptTokens,
-		BeforeTokens:    e.BeforeTokens,
-		AfterTokens:     e.AfterTokens,
-		SavedTokens:     e.SavedTokens,
-		SummaryChars:    e.SummaryChars,
-		Ratio:           e.Ratio,
-		Ineffective:     e.Ineffective,
-		ExitCode:        e.ExitCode,
-		Err:             e.Err,
+		Kind:             string(e.Kind),
+		At:               e.At.UTC().Format(rfc3339Millis),
+		SessionID:        e.SessionID,
+		TurnID:           e.TurnID,
+		RequestID:        e.RequestID,
+		QueuePosition:    e.QueuePosition,
+		InvocationID:     e.InvocationID,
+		Seq:              e.Seq,
+		CallID:           e.CallID,
+		Step:             e.Step,
+		ToolName:         e.ToolName,
+		ToolArgs:         toWireArgs(e.ToolArgs),
+		Observation:      e.Observation,
+		Output:           e.Output,
+		Assets:           e.Assets,
+		TextAnnotations:  e.TextAnnotations,
+		Chunk:            e.Chunk,
+		Failure:          e.Failure,
+		SkillVersion:     e.Version,
+		SkillSource:      e.SkillSource,
+		Executor:         e.Executor,
+		Todos:            e.Todos,
+		Text:             e.Text,
+		PromptTokens:     e.PromptTokens,
+		CompletionTokens: e.CompletionTokens,
+		TotalTokens:      e.TotalTokens,
+		BillingUnits:     e.BillingUnits,
+		BeforeTokens:     e.BeforeTokens,
+		AfterTokens:      e.AfterTokens,
+		SavedTokens:      e.SavedTokens,
+		SummaryChars:     e.SummaryChars,
+		Ratio:            e.Ratio,
+		Ineffective:      e.Ineffective,
+		ExitCode:         e.ExitCode,
+		Err:              e.Err,
 	}
 	if e.Kind == agent.EventTurnFailed && e.Err != "" {
 		w.Error = &wireError{Code: e.ErrorCode, Message: e.Err}

@@ -6,9 +6,10 @@ import (
 )
 
 type Usage struct {
-	PromptTokens     int `json:"prompt_tokens"`
-	CompletionTokens int `json:"completion_tokens"`
-	TotalTokens      int `json:"total_tokens"`
+	PromptTokens     int   `json:"prompt_tokens"`
+	CompletionTokens int   `json:"completion_tokens"`
+	TotalTokens      int   `json:"total_tokens"`
+	BillingUnits     int64 `json:"billing_units,omitempty"`
 
 	// CachedPromptTokens is the portion of PromptTokens served from the provider's
 	// prompt cache (a stable prefix billed at a lower rate). Parsed per-provider by
@@ -92,6 +93,10 @@ type ToolFunction struct {
 }
 
 type Request struct {
+	// SessionID and ExecutionID are Gateway correlation identifiers. They are
+	// carried on the request envelope, never inserted into model-visible text.
+	SessionID   string    `json:"session_id,omitempty"`
+	ExecutionID string    `json:"execution_id,omitempty"`
 	Messages    []Message `json:"messages"`
 	Model       string    `json:"model"`
 	Temperature float64   `json:"temperature,omitempty"`

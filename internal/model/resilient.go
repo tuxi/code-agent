@@ -187,6 +187,12 @@ func (p *ResilientProvider) CompleteStream(ctx context.Context, req Request, onT
 	if ctx.Err() != nil { // caller canceled — terminal, no fallback work
 		return Response{}, ctx.Err()
 	}
+	// A Gateway user-quota error cannot be repaired by switching from stream to
+	// non-stream. Returning it directly avoids one needless second request (and
+	// any configured retry budget) after the allowance is known to be exhausted.
+	if isQuotaExceeded(err) {
+		return Response{}, err
+	}
 	p.logf("[provider] stream failed: %s — falling back to non-streamed retry\n", errorClass(err))
 	return p.Complete(ctx, req)
 }
@@ -274,6 +280,12 @@ func isRetryable(err error) bool {
 
 	var apiErr *APIError
 	if errors.As(err, &apiErr) {
+		// Gateway's user quota exhaustion uses HTTP 429, but no amount of
+		// backoff can change that user's allowance before reset. Keep ordinary
+		// upstream 429s retryable.
+		if isQuotaExceeded(err) {
+			return false
+		}
 		switch apiErr.StatusCode {
 		case http.StatusRequestTimeout, // 408
 			http.StatusTooManyRequests,     // 429
@@ -298,4 +310,9 @@ func isRetryable(err error) bool {
 		return true
 	}
 	return false
+}
+
+func isQuotaExceeded(err error) bool {
+	var apiErr *APIError
+	return errors.As(err, &apiErr) && (apiErr.Code == "quota_exceeded" || apiErr.Type == "quota_exceeded")
 }

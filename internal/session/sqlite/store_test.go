@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"code-agent/internal/model"
+	"code-agent/internal/reference"
 	"code-agent/internal/session"
 )
 
@@ -44,6 +45,7 @@ func sampleSession() *session.Session {
 		GatewayAssetCache: map[string]model.GatewayAssetRef{
 			"abc": {AssetID: 42, SHA256: "abc", Kind: "image", MIMEType: "image/png", Filename: "screenshot.png"},
 		},
+		ReferenceLedger:  []reference.Entry{{Handle: "ref_0001", RawValue: "snapshot_hidden", Kind: "snapshot", SessionID: "20260616-101500-deadbeef", Scope: "session", CreatedAt: now, ExpiresAt: now.Add(time.Minute)}},
 		ContextWindow:    128000,
 		CompactThreshold: 89600,
 		CreatedAt:        now,
@@ -89,6 +91,17 @@ func TestStoreRoundTrip(t *testing.T) {
 	}
 	if got.GatewayAssetCache["abc"].AssetID != 42 {
 		t.Fatalf("gateway asset cache lost: %+v", got.GatewayAssetCache)
+	}
+	if len(got.ReferenceLedger) != 1 || got.ReferenceLedger[0].RawValue != "snapshot_hidden" {
+		t.Fatalf("reference ledger lost: %+v", got.ReferenceLedger)
+	}
+	resolved, err := reference.ResolveInput(
+		[]byte(`{"snapshotID":"$ref:ref_0001"}`),
+		[]byte(`{"x-codeagent-reference-inputs":[{"pointer":"/snapshotID","kind":"snapshot","mode":"handle_only"}]}`),
+		got.ReferenceLedger, got.ID, time.Now(),
+	)
+	if err != nil || string(resolved) != `{"snapshotID":"snapshot_hidden"}` {
+		t.Fatalf("restored reference did not resolve: %s, %v", resolved, err)
 	}
 }
 

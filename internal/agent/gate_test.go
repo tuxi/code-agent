@@ -18,11 +18,13 @@ type scriptedProvider struct {
 	calls        int
 	lastMessages []model.Message
 	lastTools    []model.ToolDefinition
+	lastRequest  model.Request
 }
 
 func (p *scriptedProvider) Complete(_ context.Context, req model.Request) (model.Response, error) {
 	p.lastMessages = req.Messages
 	p.lastTools = req.Tools
+	p.lastRequest = req
 	r := p.responses[p.calls]
 	p.calls++
 	return r, nil

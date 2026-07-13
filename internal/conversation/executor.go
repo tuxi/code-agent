@@ -356,8 +356,13 @@ func (e *TurnExecutor) emitLifecycle(pub agent.Emitter, sess *session.Session, t
 
 func lifecycleErrorCode(err error) string {
 	var apiErr *model.APIError
-	if errors.As(err, &apiErr) && apiErr.StatusCode == 401 {
-		return "auth_expired"
+	if errors.As(err, &apiErr) {
+		if apiErr.Code == "quota_exceeded" || apiErr.Type == "quota_exceeded" {
+			return "quota_exceeded"
+		}
+		if apiErr.StatusCode == 401 {
+			return "auth_expired"
+		}
 	}
 	return "request_failed"
 }

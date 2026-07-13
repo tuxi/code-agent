@@ -366,7 +366,24 @@ func (r *Runner) gatewayScreenshotAssets(ctx context.Context, sess *session.Sess
 	if len(out) == 0 {
 		return nil, "[asset_unavailable] screenshot contained no uploadable image asset."
 	}
-	return out, ""
+	return deduplicateGatewayAssets(out), ""
+}
+
+func deduplicateGatewayAssets(refs []model.GatewayAssetRef) []model.GatewayAssetRef {
+	if len(refs) < 2 {
+		return refs
+	}
+	seen := make(map[string]bool, len(refs))
+	out := make([]model.GatewayAssetRef, 0, len(refs))
+	for _, ref := range refs {
+		key := strconv.FormatInt(ref.AssetID, 10) + "\x00" + ref.SHA256
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, ref)
+	}
+	return out
 }
 
 func isScreenshotCapture(toolName string) bool {
@@ -622,20 +639,17 @@ func (r *Runner) drive(ctx context.Context, sess *session.Session) (TurnResult, 
 		}
 		// Always emit ModelFinished, even on error: it pairs with ModelStarted, so
 		// a live renderer's "Thinking…" ticker is always stopped (no leaked timer).
-		// A context cancellation is an intentional interruption (Ctrl-C, or an iOS
-		// Suspend that aborted the in-flight request), NOT a model failure — surface
-		// no error for it, or the client shows a spurious "context canceled" on an
-		// otherwise-resumable turn. The turn_paused lifecycle event is the real
-		// signal. Genuine model errors are reported as before.
-		emitErr := err
-		if errors.Is(err, context.Canceled) {
-			emitErr = nil
-		}
+		// Errors that return from this call always terminate the turn. Keep this
+		// pairing event error-free: the executor emits the same failure once as
+		// turn_failed, the authoritative terminal event. Putting Err on both
+		// events creates two persisted, user-visible copies of one failure.
 		r.emit(Event{
-			Kind:         EventModelFinished,
-			PromptTokens: resp.Usage.PromptTokens,
-			Elapsed:      time.Since(modelStart),
-			Err:          errString(emitErr),
+			Kind:             EventModelFinished,
+			PromptTokens:     resp.Usage.PromptTokens,
+			CompletionTokens: resp.Usage.CompletionTokens,
+			TotalTokens:      resp.Usage.TotalTokens,
+			BillingUnits:     resp.Usage.BillingUnits,
+			Elapsed:          time.Since(modelStart),
 		})
 		if err != nil {
 			return turn, err
@@ -966,6 +980,7 @@ func (r *Runner) finalAnswerAfterLimit(ctx context.Context, sess *session.Sessio
 		Content: stepLimitNudge,
 	})
 
+	r.emitInvocationID = newInvocationID()
 	r.emit(Event{Kind: EventModelStarted})
 	start := time.Now()
 	resp, err := r.complete(ctx, model.Request{
@@ -974,7 +989,7 @@ func (r *Runner) finalAnswerAfterLimit(ctx context.Context, sess *session.Sessio
 		Messages:    msgs,
 		// No Tools: the model must answer with text, not request more tools.
 	}, nil)
-	r.emit(Event{Kind: EventModelFinished, PromptTokens: resp.Usage.PromptTokens, Elapsed: time.Since(start), Err: errString(err)})
+	r.emit(Event{Kind: EventModelFinished, PromptTokens: resp.Usage.PromptTokens, CompletionTokens: resp.Usage.CompletionTokens, TotalTokens: resp.Usage.TotalTokens, BillingUnits: resp.Usage.BillingUnits, Elapsed: time.Since(start), Err: errString(err)})
 	tok := resp.Usage.PromptTokens + resp.Usage.CompletionTokens
 	// A leaked tool-call markup (deepseek, when forced to answer with no tools) is
 	// not an answer — don't show the user noise or persist it; fall back cleanly.
@@ -1072,7 +1087,9 @@ func (r *Runner) complete(ctx context.Context, req model.Request, streamed *stri
 	// Every model call goes through here, so this is the one place the current
 	// date is injected — the main loop, the step-limit answer, and subagents all
 	// get it without each call site remembering to.
-	req.Messages = withCurrentDate(req.Messages, time.Now())
+	req.Messages = withCurrentDate(withReferenceProtocol(req.Messages), time.Now())
+	req.SessionID = r.emitSessionID
+	req.ExecutionID = r.emitInvocationID
 	if r.Stream {
 		if sp, ok := r.Model.(model.StreamingProvider); ok {
 			return sp.CompleteStream(ctx, req, func(delta string) {

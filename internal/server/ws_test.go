@@ -20,6 +20,34 @@ type testSession struct {
 	hub *testHub
 }
 
+func TestWSHandlerReusesClientToolWaiterPerSession(t *testing.T) {
+	h := &WSHandler{}
+	first := h.ensureToolWaiter("session_a")
+	if got := h.ensureToolWaiter("session_a"); got != first {
+		t.Fatal("same session received a replacement waiter on reconnect")
+	}
+	if other := h.ensureToolWaiter("session_b"); other == first {
+		t.Fatal("different sessions shared a client-tool waiter")
+	}
+
+	result := make(chan agent.ToolCallResult, 1)
+	go func() {
+		got, _ := first.Wait(context.Background(), "call_1", time.Second)
+		result <- got
+	}()
+	time.Sleep(20 * time.Millisecond) // wait for the broker to register call_1
+	// Deliver through the waiter recovered by a simulated reconnect.
+	h.ensureToolWaiter("session_a").Deliver("call_1", agent.ToolCallResult{Subtype: "result", Content: "done"})
+	select {
+	case got := <-result:
+		if got.Content != "done" {
+			t.Fatalf("result = %+v", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("pending client tool did not survive reconnect")
+	}
+}
+
 func (s *testSession) Subscribe() (<-chan agent.Event, func()) {
 	return s.hub.subscribe()
 }

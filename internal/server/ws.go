@@ -95,8 +95,9 @@ type WSHandler struct {
 	CredentialStore func(sessionID string, cred credential.Resolver)
 
 	// Session-scoped approvers that survive connection changes. Keyed by session ID.
-	mu        sync.Mutex
-	approvers map[string]*RemoteApprover
+	mu          sync.Mutex
+	approvers   map[string]*RemoteApprover
+	toolWaiters map[string]*RemoteToolResultWaiter
 }
 
 func (h *WSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -152,14 +153,14 @@ func (h *WSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	sess.SetApprover(approver)
 	sess.SetPlanApprover(approver)
 
-	// v1.1: wire a RemoteToolResultWaiter so client-executed tools can deliver
-	// results back into the blocked agent loop.
-	waiter := NewRemoteToolResultWaiter()
+	// Client-tool waiting belongs to a session, not to this WebSocket. A page
+	// switch/reconnect must not turn an otherwise recoverable tool request into
+	// "connection lost". The newly attached channel becomes the delivery path
+	// through normal event replay while the same waiter keeps the blocked turn.
+	waiter := h.ensureToolWaiter(sessionID)
 	sess.SetClientToolWaiter(waiter)
 
 	defer func() {
-		waiter.CancelAll()            // wake all pending Wait calls on disconnect
-		sess.SetClientToolWaiter(nil) // restore nil (no client to execute tools)
 		// Clear the sink so future sends don't target a dead connection, but
 		// do NOT close the approver or replace it with deny-all. Pending
 		// approvals stay registered — the agent loop keeps blocking until
@@ -209,6 +210,23 @@ func (h *WSHandler) ensureApprover(sessionID string, sink FrameSink) *RemoteAppr
 	return ra
 }
 
+// ensureToolWaiter returns the session-owned client-tool broker. Pending calls
+// survive connection replacement and are re-sent by the session's normal event
+// replay path after the next attach.
+func (h *WSHandler) ensureToolWaiter(sessionID string) *RemoteToolResultWaiter {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.toolWaiters == nil {
+		h.toolWaiters = make(map[string]*RemoteToolResultWaiter)
+	}
+	w, ok := h.toolWaiters[sessionID]
+	if !ok {
+		w = NewRemoteToolResultWaiter()
+		h.toolWaiters[sessionID] = w
+	}
+	return w
+}
+
 // RemoveApprover closes and removes the session-scoped approver for sessionID.
 // Called on conversation deletion so blocked turns wake to a denial and the
 // approver is garbage-collected.
@@ -218,9 +236,16 @@ func (h *WSHandler) RemoveApprover(sessionID string) {
 	if ok {
 		delete(h.approvers, sessionID)
 	}
+	w, wok := h.toolWaiters[sessionID]
+	if wok {
+		delete(h.toolWaiters, sessionID)
+	}
 	h.mu.Unlock()
 	if ok {
 		ra.Close()
+	}
+	if wok {
+		w.CancelAll()
 	}
 }
 

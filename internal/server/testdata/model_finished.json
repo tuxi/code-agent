@@ -5,5 +5,8 @@
   "session_id": "sess_root",
   "turn_id": "turn_7",
   "prompt_tokens": 4096,
+  "completion_tokens": 128,
+  "total_tokens": 4224,
+  "billing_units": 4480,
   "elapsed_ms": 731
 }

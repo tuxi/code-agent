@@ -33,9 +33,11 @@ func (t fakeScreenshotTool) InputSchema() json.RawMessage {
 	return json.RawMessage(`{"type":"object"}`)
 }
 func (t fakeScreenshotTool) Execute(context.Context, tools.ExecutionContext, json.RawMessage) (tools.ToolResult, error) {
-	return tools.ToolResult{Content: "Screenshot captured.", Assets: []assets.Ref{{
-		ID: "local_screenshot", Kind: "image", MIMEType: "image/png", AbsolutePath: t.path,
-	}}}, nil
+	return tools.ToolResult{Content: "Screenshot captured.", Assets: []assets.Ref{
+		{ID: "local_screenshot_image", Kind: "image", MIMEType: "image/png", AbsolutePath: t.path},
+		// desktop-control returns an ImageContent plus an aliased ResourceLink.
+		{ID: "local_screenshot_resource", Kind: "image", MIMEType: "image/png", AbsolutePath: t.path},
+	}}, nil
 }
 
 func TestScreenshotUploadsThenSendsGatewayAssetReference(t *testing.T) {
@@ -63,6 +65,9 @@ func TestScreenshotUploadsThenSendsGatewayAssetReference(t *testing.T) {
 		if message.Role == model.RoleTool && message.ToolCallID == "call_screenshot" {
 			if len(message.Assets) != 1 || message.Assets[0].AssetID != 42 {
 				t.Fatalf("tool assets = %+v", message.Assets)
+			}
+			if provider.lastRequest.SessionID != "session" || provider.lastRequest.ExecutionID == "" {
+				t.Fatalf("gateway correlation missing: %+v", provider.lastRequest)
 			}
 			return
 		}

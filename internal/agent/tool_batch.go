@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
 	"code-agent/internal/assetref"
 	"code-agent/internal/model"
+	"code-agent/internal/reference"
 	"code-agent/internal/session"
 	"code-agent/internal/tools"
 )
@@ -29,7 +31,9 @@ func (r *Runner) maxParallelTools() int {
 // execution phase stays pure.
 type toolCallPlan struct {
 	call             model.ToolCall
-	input            json.RawMessage
+	input            json.RawMessage // model-facing input; safe for approval and events
+	wireInput        json.RawMessage // resolved immediately before MCP/local execution
+	referenceErr     error
 	step             Step
 	tool             tools.Tool
 	known            bool
@@ -99,6 +103,16 @@ func (r *Runner) executeToolBatch(
 				ToolInput: input,
 				StartedAt: time.Now(),
 			},
+		}
+		var schema json.RawMessage
+		if known {
+			schema = tool.InputSchema()
+		}
+		p.wireInput, p.referenceErr = reference.ResolveInput(input, schema, sess.ReferenceLedger, sess.ID, time.Now())
+		if p.referenceErr != nil {
+			// Retain model-provided input for events/approval. The call becomes a
+			// normal tool-result error instead of ever reaching the MCP server.
+			p.wireInput = input
 		}
 		if call.Function.Name == webSearchToolName {
 			*webSearches++
@@ -194,8 +208,8 @@ func (r *Runner) runToolCall(ctx context.Context, p toolCallPlan) toolCallResult
 	// Pre-tool hook (8.5): a configured command may block the call. Only
 	// consulted for a real tool, so an unknown call still reports plainly.
 	var blockReason string
-	if p.valid && p.executor != "client" {
-		blockReason = r.preHookBlock(ctx, p.call.Function.Name, p.input)
+	if p.valid && p.executor != "client" && p.referenceErr == nil {
+		blockReason = r.preHookBlock(ctx, p.call.Function.Name, p.wireInput)
 	}
 
 	// Inspect (P0): tool-specific static safety validation. Runs after the
@@ -203,9 +217,9 @@ func (r *Runner) runToolCall(ctx context.Context, p toolCallPlan) toolCallResult
 	// analysis, no I/O, no human prompt. Mirrors Claude Code's
 	// tool.validateInput() stage. Tools that don't implement Inspector skip
 	// this with zero overhead.
-	if p.valid && p.executor != "client" && blockReason == "" {
+	if p.valid && p.executor != "client" && blockReason == "" && p.referenceErr == nil {
 		if inspector, ok := p.tool.(tools.Inspector); ok {
-			if err := inspector.Inspect(p.input, r.WorkspaceRoot); err != nil {
+			if err := inspector.Inspect(p.wireInput, r.WorkspaceRoot); err != nil {
 				blockReason = "blocked: " + err.Error()
 			}
 		}
@@ -218,6 +232,8 @@ func (r *Runner) runToolCall(ctx context.Context, p toolCallPlan) toolCallResult
 	switch {
 	case !p.valid:
 		execErr = fmt.Errorf("unknown tool: %s", p.call.Function.Name)
+	case p.referenceErr != nil:
+		execErr = p.referenceErr
 	case p.webSearchOrdinal > 0 && p.webSearchOrdinal > r.maxWebSearches():
 		observation = fmt.Sprintf(
 			"Search budget reached: %d web searches already this turn (limit %d). "+
@@ -226,7 +242,7 @@ func (r *Runner) runToolCall(ctx context.Context, p toolCallPlan) toolCallResult
 			p.webSearchOrdinal-1, r.maxWebSearches())
 	case blockReason != "":
 		observation = "The tool call was blocked. " + blockReason
-	case tools.HasSideEffectsFor(p.tool, p.input) && r.approve(p.call.Function.Name, p.input) != VerdictAllow:
+	case tools.HasSideEffectsFor(p.tool, p.wireInput) && r.approve(p.call.Function.Name, p.input) != VerdictAllow:
 		observation = "The tool call was not approved. No changes were made."
 	case p.executor == "client":
 		result, waitErr := r.ClientWaiter.Wait(ctx, p.call.ID, r.clientToolTimeout())
@@ -241,14 +257,14 @@ func (r *Runner) runToolCall(ctx context.Context, p toolCallPlan) toolCallResult
 		}
 	default:
 		var toolResult tools.ToolResult
-		toolResult, execErr = r.executeTool(ctx, p.tool, p.call.ID, p.input)
+		toolResult, execErr = r.executeTool(ctx, p.tool, p.call.ID, p.wireInput)
 		if execErr == nil {
 			observation = toolResult.Content
 			output = toolResult.Output
 			assetRefs = toolResult.Assets
 			// Post-tool hook (8.5): react to the change (format/lint). It runs the
 			// configured command but does not alter the result in v1.
-			r.postHook(ctx, p.call.Function.Name, p.input, observation)
+			r.postHook(ctx, p.call.Function.Name, p.wireInput, observation)
 		}
 	}
 	if execErr != nil {
@@ -273,6 +289,16 @@ func (r *Runner) runToolCall(ctx context.Context, p toolCallPlan) toolCallResult
 // the ToolFinished event, and the tool-result message.
 func (r *Runner) commitToolResult(ctx context.Context, sess *session.Session, turn *TurnResult, turnAssets *[]assets.Ref, p toolCallPlan, res toolCallResult) {
 	observation := res.observation
+	// A compliant MCP tool puts descriptors in its original structuredContent.
+	// Register them before observation/compaction so no opaque MCP identifier
+	// reaches the model transcript. Output remains raw for standard hosts and
+	// AgentKit's Timeline.
+	if entries, substitutions := reference.Register(res.output, sess.ReferenceLedger, sess.ID, p.call.ID, time.Now()); substitutions != nil {
+		sess.ReferenceLedger = entries
+		for raw, handle := range substitutions {
+			observation = strings.ReplaceAll(observation, raw, handle)
+		}
+	}
 	step := p.step
 	step.Error = res.stepError
 

@@ -32,6 +32,29 @@ type scriptBuilder struct{ runner TurnRunner }
 
 func (b *scriptBuilder) Build(ctx RuntimeContext) TurnRunner { return b.runner }
 
+// terminalFailureBuilder emits the invocation-pairing event exactly as Runner
+// does, then returns a terminal model error for TurnExecutor to publish as
+// turn_failed. It exercises the persisted event boundary between both layers.
+type terminalFailureBuilder struct{ err error }
+
+func (b *terminalFailureBuilder) Build(ctx RuntimeContext) TurnRunner {
+	return &terminalFailureRunner{pub: ctx.Publisher, err: b.err}
+}
+
+type terminalFailureRunner struct {
+	pub agent.Emitter
+	err error
+}
+
+func (r *terminalFailureRunner) RunTurn(_ context.Context, sess *session.Session, _ string) (agent.TurnResult, error) {
+	r.pub.Emit(agent.Event{Kind: agent.EventModelFinished, SessionID: sess.ID, TurnID: "turn_42"})
+	return agent.TurnResult{TurnID: "turn_42"}, r.err
+}
+
+func (r *terminalFailureRunner) ResumeTurn(context.Context, *session.Session) (agent.TurnResult, error) {
+	return agent.TurnResult{}, nil
+}
+
 func newExecutorWith(repo *fakeRepo, runner TurnRunner) *TurnExecutor {
 	return NewTurnExecutor(repo, &fakeEventStore{}, NewActiveTurnRegistry(), NewSubscriptionManager(), &scriptBuilder{runner: runner})
 }
@@ -119,12 +142,12 @@ func TestFreshTurn401EmitsStructuredTurnFailed(t *testing.T) {
 	if got := sess.TurnStatus(); got != session.TurnStatusFailed {
 		t.Fatalf("status=%q want failed", got)
 	}
-	if len(events.records) != 1 {
-		t.Fatalf("persisted events=%d want 1", len(events.records))
+	if len(events.records) != 2 {
+		t.Fatalf("persisted events=%d want turn_accepted + turn_failed", len(events.records))
 	}
-	got := events.records[0]
-	if got.Kind != string(agent.EventTurnFailed) || got.TurnID != "turn_42" {
-		t.Fatalf("event kind/turn = %q/%q, want turn_failed/turn_42", got.Kind, got.TurnID)
+	accepted, got := events.records[0], events.records[1]
+	if accepted.Kind != string(agent.EventTurnAccepted) || got.Kind != string(agent.EventTurnFailed) || accepted.TurnID == "" || got.TurnID != accepted.TurnID {
+		t.Fatalf("events = %q/%q and %q/%q, want same accepted/failed turn id", accepted.Kind, accepted.TurnID, got.Kind, got.TurnID)
 	}
 	var payload agent.Event
 	if err := json.Unmarshal(got.Payload, &payload); err != nil {
@@ -132,6 +155,66 @@ func TestFreshTurn401EmitsStructuredTurnFailed(t *testing.T) {
 	}
 	if payload.ErrorCode != "auth_expired" || payload.Err == "" {
 		t.Fatalf("failure payload = %+v, want auth_expired and message", payload)
+	}
+}
+
+func TestLifecycleErrorCode(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"gateway quota", &model.APIError{StatusCode: 429, Code: "quota_exceeded"}, "quota_exceeded"},
+		{"gateway quota type fallback", &model.APIError{StatusCode: 429, Type: "quota_exceeded"}, "quota_exceeded"},
+		{"gateway auth", &model.APIError{StatusCode: 401}, "auth_expired"},
+		{"generic", errors.New("boom"), "request_failed"},
+	}
+	for _, tc := range cases {
+		if got := lifecycleErrorCode(tc.err); got != tc.want {
+			t.Errorf("%s: lifecycleErrorCode() = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestQuotaFailurePublishesOneDisplayError(t *testing.T) {
+	repo := newFakeRepo()
+	sess := &session.Session{
+		ID:       "s1",
+		Messages: []model.Message{{Role: model.RoleUser, Content: "check commit"}},
+		Metadata: map[string]any{},
+	}
+	repo.sessions[sess.ID] = sess
+	events := &fakeEventStore{}
+	ex := NewTurnExecutor(
+		repo, events, NewActiveTurnRegistry(), NewSubscriptionManager(),
+		&terminalFailureBuilder{err: &model.APIError{
+			StatusCode: 429, Code: "quota_exceeded", Message: "daily allowance exhausted",
+		}},
+	)
+
+	_, _ = ex.ExecuteWithSession(context.Background(), sess, "check commit", "")
+	if len(events.records) != 3 {
+		t.Fatalf("persisted events = %d, want turn_accepted + model_finished + turn_failed", len(events.records))
+	}
+
+	var modelFinished, turnFailed agent.Event
+	for _, record := range events.records {
+		var event agent.Event
+		if err := json.Unmarshal(record.Payload, &event); err != nil {
+			t.Fatalf("decode %s: %v", record.Kind, err)
+		}
+		switch event.Kind {
+		case agent.EventModelFinished:
+			modelFinished = event
+		case agent.EventTurnFailed:
+			turnFailed = event
+		}
+	}
+	if modelFinished.Err != "" {
+		t.Fatalf("model_finished Err = %q, want empty", modelFinished.Err)
+	}
+	if turnFailed.Err == "" || turnFailed.ErrorCode != "quota_exceeded" {
+		t.Fatalf("turn_failed = %+v, want quota error once", turnFailed)
 	}
 }
 

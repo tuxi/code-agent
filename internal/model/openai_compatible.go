@@ -103,6 +103,8 @@ func defaultHTTPClient() *http.Client {
 }
 
 type chatCompletionRequest struct {
+	SessionID     string           `json:"session_id,omitempty"`
+	ExecutionID   string           `json:"execution_id,omitempty"`
 	Model         string           `json:"model"`
 	Messages      []Message        `json:"messages"`
 	Temperature   float64          `json:"temperature,omitempty"`
@@ -127,24 +129,32 @@ type chatCompletionResponse struct {
 		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
 	Usage struct {
-		PromptTokens     int `json:"prompt_tokens"`
-		CompletionTokens int `json:"completion_tokens"`
-		TotalTokens      int `json:"total_tokens"`
+		PromptTokens     int   `json:"prompt_tokens"`
+		CompletionTokens int   `json:"completion_tokens"`
+		TotalTokens      int   `json:"total_tokens"`
+		BillingUnits     int64 `json:"billing_units"`
 		// Cached-input accounting, reported under different keys per provider:
 		PromptCacheHitTokens int `json:"prompt_cache_hit_tokens"` // deepseek
 		PromptTokensDetails  struct {
 			CachedTokens int `json:"cached_tokens"` // openai-style
 		} `json:"prompt_tokens_details"`
 	} `json:"usage"`
-	Error *struct {
-		Message string `json:"message"`
-		Type    string `json:"type"`
-		Code    any    `json:"code"`
-	} `json:"error,omitempty"`
+	Error *openAIErrorPayload `json:"error,omitempty"`
+}
+
+type openAIErrorPayload struct {
+	Message string `json:"message"`
+	Type    string `json:"type"`
+	Code    any    `json:"code"`
 }
 
 // streamChunk is one SSE delta in an OpenAI-compatible streaming response.
 type streamChunk struct {
+	// Error is emitted by an OpenAI-compatible gateway when the upstream request
+	// failed after the HTTP response had already switched to SSE. It must not be
+	// ignored as an empty chunk: doing so turns a failed turn into an empty
+	// turn_finished event at the runtime layer.
+	Error   *openAIErrorPayload `json:"error,omitempty"`
 	Choices []struct {
 		Delta struct {
 			Content   string `json:"content"`
@@ -161,10 +171,11 @@ type streamChunk struct {
 		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
 	Usage *struct {
-		PromptTokens         int `json:"prompt_tokens"`
-		CompletionTokens     int `json:"completion_tokens"`
-		TotalTokens          int `json:"total_tokens"`
-		PromptCacheHitTokens int `json:"prompt_cache_hit_tokens"`
+		PromptTokens         int   `json:"prompt_tokens"`
+		CompletionTokens     int   `json:"completion_tokens"`
+		TotalTokens          int   `json:"total_tokens"`
+		BillingUnits         int64 `json:"billing_units"`
+		PromptCacheHitTokens int   `json:"prompt_cache_hit_tokens"`
 		PromptTokensDetails  struct {
 			CachedTokens int `json:"cached_tokens"`
 		} `json:"prompt_tokens_details"`
@@ -239,6 +250,7 @@ func (p *OpenAICompatibleProvider) CompleteStream(ctx context.Context, req Reque
 	}
 
 	data, err := json.Marshal(chatCompletionRequest{
+		SessionID: req.SessionID, ExecutionID: req.ExecutionID,
 		Model: req.Model, Messages: req.Messages, Temperature: req.Temperature,
 		Tools: req.Tools, ToolChoice: req.ToolChoice,
 		Stream: true, StreamOptions: &streamOptions{IncludeUsage: true},
@@ -265,7 +277,7 @@ func (p *OpenAICompatibleProvider) CompleteStream(ctx context.Context, req Reque
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		raw, _ := io.ReadAll(resp.Body)
-		return Response{}, &APIError{StatusCode: resp.StatusCode, Body: string(raw)}
+		return Response{}, apiErrorFromBody(resp.StatusCode, raw)
 	}
 
 	var content strings.Builder
@@ -273,6 +285,7 @@ func (p *OpenAICompatibleProvider) CompleteStream(ctx context.Context, req Reque
 	var order []int
 	var finishReason string
 	var usage Usage
+	sawDone := false
 
 	sc := bufio.NewScanner(resp.Body)
 	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024) // SSE lines can be large
@@ -283,18 +296,36 @@ func (p *OpenAICompatibleProvider) CompleteStream(ctx context.Context, req Reque
 		}
 		payload := strings.TrimSpace(line[len("data:"):])
 		if payload == "[DONE]" {
+			sawDone = true
 			break
 		}
 		var chunk streamChunk
 		if json.Unmarshal([]byte(payload), &chunk) != nil {
 			continue // tolerate keep-alives / partial lines
 		}
+		if chunk.Error != nil {
+			message := chunk.Error.Message
+			if message == "" {
+				message = "model stream returned an error: " + payload
+			}
+			// An SSE response is already HTTP 200, so the original upstream
+			// status is unavailable here. Treat a gateway-delivered stream error
+			// as a bad gateway; this preserves APIError-based retry policy and,
+			// most importantly, prevents an empty successful response.
+			return Response{}, &APIError{
+				StatusCode: http.StatusBadGateway,
+				Type:       chunk.Error.Type,
+				Code:       errorCode(chunk.Error.Code),
+				Message:    message,
+				Body:       payload,
+			}
+		}
 		if u := chunk.Usage; u != nil {
 			cached := u.PromptCacheHitTokens
 			if cached == 0 {
 				cached = u.PromptTokensDetails.CachedTokens
 			}
-			usage = Usage{PromptTokens: u.PromptTokens, CompletionTokens: u.CompletionTokens, TotalTokens: u.TotalTokens, CachedPromptTokens: cached}
+			usage = Usage{PromptTokens: u.PromptTokens, CompletionTokens: u.CompletionTokens, TotalTokens: u.TotalTokens, CachedPromptTokens: cached, BillingUnits: u.BillingUnits}
 		}
 		if len(chunk.Choices) == 0 {
 			continue
@@ -328,6 +359,12 @@ func (p *OpenAICompatibleProvider) CompleteStream(ctx context.Context, req Reque
 	if err := sc.Err(); err != nil {
 		return Response{}, err
 	}
+	if !sawDone {
+		if err := ctx.Err(); err != nil {
+			return Response{}, err
+		}
+		return Response{}, fmt.Errorf("model stream ended before [DONE]")
+	}
 
 	toolCalls := make([]ToolCall, 0, len(order))
 	for _, idx := range order {
@@ -353,6 +390,8 @@ func (p *OpenAICompatibleProvider) Complete(ctx context.Context, req Request) (R
 	// Non-Gateway providers reject empty models at the API level.
 
 	body := chatCompletionRequest{
+		SessionID:   req.SessionID,
+		ExecutionID: req.ExecutionID,
 		Model:       req.Model,
 		Messages:    req.Messages,
 		Temperature: req.Temperature,
@@ -396,13 +435,7 @@ func (p *OpenAICompatibleProvider) Complete(ctx context.Context, req Request) (R
 	// "decode response" failure. Parse the structured error best-effort for a
 	// better message.
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		apiErr := &APIError{StatusCode: resp.StatusCode, Body: string(raw)}
-		var decoded chatCompletionResponse
-		if json.Unmarshal(raw, &decoded) == nil && decoded.Error != nil {
-			apiErr.Type = decoded.Error.Type
-			apiErr.Message = decoded.Error.Message
-		}
-		return Response{}, apiErr
+		return Response{}, apiErrorFromBody(resp.StatusCode, raw)
 	}
 
 	var decoded chatCompletionResponse
@@ -430,8 +463,32 @@ func (p *OpenAICompatibleProvider) Complete(ctx context.Context, req Request) (R
 			PromptTokens:       decoded.Usage.PromptTokens,
 			CompletionTokens:   decoded.Usage.CompletionTokens,
 			TotalTokens:        decoded.Usage.TotalTokens,
+			BillingUnits:       decoded.Usage.BillingUnits,
 			CachedPromptTokens: cached,
 		},
 		Raw: raw,
 	}, nil
+}
+
+// apiErrorFromBody preserves OpenAI-compatible structured error fields for the
+// retry policy. The raw body is retained for providers that use a different
+// error shape or return non-JSON error pages.
+func apiErrorFromBody(statusCode int, raw []byte) *APIError {
+	apiErr := &APIError{StatusCode: statusCode, Body: string(raw)}
+	var decoded struct {
+		Error *openAIErrorPayload `json:"error"`
+	}
+	if json.Unmarshal(raw, &decoded) == nil && decoded.Error != nil {
+		apiErr.Type = decoded.Error.Type
+		apiErr.Code = errorCode(decoded.Error.Code)
+		apiErr.Message = decoded.Error.Message
+	}
+	return apiErr
+}
+
+func errorCode(value any) string {
+	if value == nil {
+		return ""
+	}
+	return fmt.Sprint(value)
 }

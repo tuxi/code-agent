@@ -84,7 +84,9 @@ func (r *fakeConversationRepo) List(ctx context.Context) ([]session.Meta, error)
 	defer r.mu.Unlock()
 	var out []session.Meta
 	for _, s := range r.sessions {
-		out = append(out, session.Meta{ID: s.ID, WorkspacePath: s.WorkspacePath})
+		out = append(out, session.Meta{
+			ID: s.ID, WorkspacePath: s.WorkspacePath, TurnStatus: s.TurnStatus(), UpdatedAt: s.UpdatedAt,
+		})
 	}
 	return out, nil
 }
@@ -154,6 +156,44 @@ func storedEvent(ev agent.Event) session.EventRecord {
 // is skipped.
 func newTestMux(repo conversation.ConversationRepository, events conversation.ConversationEventStore) http.Handler {
 	return NewMux(repo, events, nil, MuxOptions{})
+}
+
+func TestMuxRuntimeCapabilitiesAndActivity(t *testing.T) {
+	repo := newFakeConversationRepo()
+	running := &session.Session{ID: "running", WorkspacePath: "/tmp/a", UpdatedAt: time.Date(2026, 7, 13, 8, 0, 0, 0, time.UTC)}
+	running.SetTurnStatus(session.TurnStatusRunning)
+	done := &session.Session{ID: "done", WorkspacePath: "/tmp/b"}
+	done.SetTurnStatus(session.TurnStatusDone)
+	repo.sessions[running.ID] = running
+	repo.sessions[done.ID] = done
+
+	h := NewMux(repo, &fakeEventStore{}, nil, MuxOptions{RuntimeCapabilities: RuntimeCapabilities{
+		SessionScopedClientTools: true,
+		ActivitySnapshot:         true,
+		MaxConcurrentTurns:       1,
+	}})
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/v1/runtime/capabilities")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var caps runtimeCapabilitiesResponse
+	decodeResponse(t, resp, &caps)
+	if caps.Capabilities.MultiSessionExecution || !caps.Capabilities.SessionScopedClientTools || caps.Capabilities.MaxConcurrentTurns != 1 {
+		t.Fatalf("capabilities = %+v", caps.Capabilities)
+	}
+
+	resp, err = http.Get(srv.URL + "/v1/activity")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var activity activityResponse
+	decodeResponse(t, resp, &activity)
+	if len(activity.Sessions) != 1 || activity.Sessions[0].SessionID != "running" || activity.Sessions[0].State != session.TurnStatusRunning {
+		t.Fatalf("activity = %+v", activity.Sessions)
+	}
 }
 
 // TestMuxRebindFlow walks the host's Phase-1 attach contract: create an external

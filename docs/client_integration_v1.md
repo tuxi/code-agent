@@ -175,7 +175,7 @@ v1 只含 user/assistant；工具/系统消息的全量保真属于 P1-B。
 |---|---|---|
 | `turn_started` | `text` | 用户输入（这一轮的起点） |
 | `model_started` | — | 即将调模型 |
-| `model_finished` | `prompt_tokens` `elapsed_ms` `err` | 模型返回（`elapsed_ms` 是毫秒） |
+| `model_finished` | `prompt_tokens` `completion_tokens` `total_tokens` `billing_units` `elapsed_ms` `err` | 模型返回（单次 invocation）；客户端按 turn 累加 total/Units，prompt 仅表示当前上下文。 |
 | `token_delta` | `text` | **流式文本增量**，高频、不持久化；累加成助手回复 |
 | `thinking` | `text` | 推理文本 |
 | `tool_started` | `call_id` `step` `tool_name` `tool_args` | 工具开始（`tool_args` 是**结构化 JSON 对象**） |

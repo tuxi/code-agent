@@ -79,6 +79,20 @@ func TestResilientNonRetryableStopsImmediately(t *testing.T) {
 	}
 }
 
+func TestResilientGatewayQuotaExceededStopsImmediately(t *testing.T) {
+	inner := &fakeInner{errs: []error{&APIError{StatusCode: 429, Code: "quota_exceeded", Message: "daily allowance exhausted"}}}
+	p := &ResilientProvider{Inner: inner, MaxRetries: 5, sleep: noSleep(), LogWriter: io.Discard}
+
+	_, err := p.Complete(context.Background(), Request{})
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.Code != "quota_exceeded" {
+		t.Fatalf("want quota_exceeded APIError, got %v", err)
+	}
+	if inner.calls != 1 {
+		t.Fatalf("calls = %d, want 1 (quota must not retry)", inner.calls)
+	}
+}
+
 func TestResilientExhaustsRetries(t *testing.T) {
 	inner := &fakeInner{errs: []error{timeoutErr{}, timeoutErr{}, timeoutErr{}}}
 	p := &ResilientProvider{Inner: inner, MaxRetries: 2, sleep: noSleep(), LogWriter: io.Discard}
@@ -155,6 +169,7 @@ func TestIsRetryableClassification(t *testing.T) {
 		want bool
 	}{
 		{"429", &APIError{StatusCode: 429}, true},
+		{"gateway quota exceeded", &APIError{StatusCode: 429, Code: "quota_exceeded"}, false},
 		{"500", &APIError{StatusCode: 500}, true},
 		{"502", &APIError{StatusCode: 502}, true},
 		{"503", &APIError{StatusCode: 503}, true},

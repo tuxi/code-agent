@@ -22,7 +22,7 @@ func TestOpenAICompatibleProviderSendsGatewayAssetRefs(t *testing.T) {
 	defer srv.Close()
 
 	p := NewOpenAICompatibleProviderWithKey(srv.URL, "key")
-	_, err := p.Complete(context.Background(), Request{Model: "vision-test", Messages: []Message{{
+	_, err := p.Complete(context.Background(), Request{SessionID: "sess_1", ExecutionID: "exec_1", Model: "vision-test", Messages: []Message{{
 		Role:    RoleTool,
 		Content: "Screenshot captured.",
 		Assets: []GatewayAssetRef{{
@@ -42,6 +42,9 @@ func TestOpenAICompatibleProviderSendsGatewayAssetRefs(t *testing.T) {
 		t.Fatalf("messages = %#v, want one message", request["messages"])
 	}
 	message := messages[0].(map[string]any)
+	if request["session_id"] != "sess_1" || request["execution_id"] != "exec_1" {
+		t.Fatalf("request correlation = session:%#v execution:%#v", request["session_id"], request["execution_id"])
+	}
 	assets, ok := message["assets"].([]any)
 	if !ok || len(assets) != 1 {
 		t.Fatalf("assets = %#v, want one asset ref", message["assets"])
