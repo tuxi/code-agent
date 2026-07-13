@@ -10,9 +10,23 @@ import (
 	"time"
 
 	"code-agent/internal/agent"
+	"code-agent/internal/approve"
 
 	"github.com/coder/websocket"
 )
+
+type controlTestSink struct{ id string }
+
+func (s *controlTestSink) Send([]byte) error { return nil }
+
+type controlApprovalTarget struct{ calls int }
+
+func (t *controlApprovalTarget) Resolve(string, bool)                          { t.calls++ }
+func (t *controlApprovalTarget) ResolveTool(string, bool, bool, approve.Scope) { t.calls++ }
+
+type controlToolTarget struct{ calls int }
+
+func (t *controlToolTarget) Deliver(string, agent.ToolCallResult) { t.calls++ }
 
 // testSession is a minimal server.Session used by WS tests. It wraps a simple
 // in-process subscription hub — no conversation package dependency.
@@ -45,6 +59,47 @@ func TestWSHandlerReusesClientToolWaiterPerSession(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("pending client tool did not survive reconnect")
+	}
+}
+
+func TestWSHandlerLatestConnectionOwnsSessionControl(t *testing.T) {
+	h := &WSHandler{}
+	firstSink := &controlTestSink{id: "first"}
+	approver, waiter, firstRevision := h.claimSessionControl("session", firstSink)
+	secondSink := &controlTestSink{id: "second"}
+	_, _, secondRevision := h.claimSessionControl("session", secondSink)
+	if secondRevision <= firstRevision {
+		t.Fatalf("revisions first=%d second=%d", firstRevision, secondRevision)
+	}
+
+	approvalTarget := &controlApprovalTarget{}
+	oldApproval := revisionApprovalResolver{handler: h, sessionID: "session", revision: firstRevision, target: approvalTarget}
+	newApproval := revisionApprovalResolver{handler: h, sessionID: "session", revision: secondRevision, target: approvalTarget}
+	oldApproval.Resolve("approval", true)
+	newApproval.ResolveTool("approval", true, false, approve.ScopeUser)
+	if approvalTarget.calls != 1 {
+		t.Fatalf("approval deliveries=%d want only current owner", approvalTarget.calls)
+	}
+
+	toolTarget := &controlToolTarget{}
+	oldTool := revisionToolResultResolver{handler: h, sessionID: "session", revision: firstRevision, target: toolTarget}
+	newTool := revisionToolResultResolver{handler: h, sessionID: "session", revision: secondRevision, target: toolTarget}
+	oldTool.Deliver("call", agent.ToolCallResult{Content: "stale"})
+	newTool.Deliver("call", agent.ToolCallResult{Content: "current"})
+	if toolTarget.calls != 1 {
+		t.Fatalf("tool deliveries=%d want only current owner", toolTarget.calls)
+	}
+
+	// A late disconnect from the old socket must not clear the replacement sink.
+	h.releaseSessionControl("session", firstRevision, approver)
+	approver.mu.Lock()
+	gotSink := approver.sink
+	approver.mu.Unlock()
+	if gotSink != secondSink {
+		t.Fatal("old connection cleared or replaced the current control sink")
+	}
+	if h.ensureToolWaiter("session") != waiter {
+		t.Fatal("control claim replaced the session tool broker")
 	}
 }
 

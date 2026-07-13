@@ -27,6 +27,17 @@ type AssetMessageTarget interface {
 	SendMessageWithAssets(ctx context.Context, text, model string, assets []model.GatewayAssetRef) (agent.TurnResult, error)
 }
 
+// RequestMessageTarget is the idempotent turn-starting extension. Legacy
+// transports continue through CommandTarget; AgentInput clients should provide a
+// stable request_id and use this path.
+type RequestMessageTarget interface {
+	SendMessageWithRequestID(ctx context.Context, requestID, text, model string) (agent.TurnResult, error)
+}
+
+type RequestAssetMessageTarget interface {
+	SendMessageWithRequestIDAndAssets(ctx context.Context, requestID, text, model string, assets []model.GatewayAssetRef) (agent.TurnResult, error)
+}
+
 // ApprovalResolver is the control plane: deliver a client's approval verdict to
 // the blocked Approve call. *RemoteApprover satisfies it. Resolve carries a plain
 // approve/deny (plan approvals, legacy tool responses); ResolveTool carries a tool
@@ -97,7 +108,14 @@ func (r Router) Route(ctx context.Context, data []byte) {
 				// connection closing.
 				turnCtx := context.WithoutCancel(ctx)
 				modelName := m.Model
-				if withAssets, ok := r.Commands.(AssetMessageTarget); ok && len(m.Assets) > 0 {
+				if withRequestAssets, ok := r.Commands.(RequestAssetMessageTarget); ok && m.RequestID != "" && len(m.Assets) > 0 {
+					assets := append([]model.GatewayAssetRef(nil), m.Assets...)
+					go func() {
+						_, _ = withRequestAssets.SendMessageWithRequestIDAndAssets(turnCtx, m.RequestID, m.Text, modelName, assets)
+					}()
+				} else if withRequest, ok := r.Commands.(RequestMessageTarget); ok && m.RequestID != "" && len(m.Assets) == 0 {
+					go func() { _, _ = withRequest.SendMessageWithRequestID(turnCtx, m.RequestID, m.Text, modelName) }()
+				} else if withAssets, ok := r.Commands.(AssetMessageTarget); ok && len(m.Assets) > 0 {
 					assets := append([]model.GatewayAssetRef(nil), m.Assets...)
 					go func() { _, _ = withAssets.SendMessageWithAssets(turnCtx, m.Text, modelName, assets) }()
 				} else {

@@ -136,6 +136,8 @@ func run() error {
 	subs := conversation.NewSubscriptionManager()
 	rb := runtime.NewServeRunBuilder(cfg, mc, provider, toolReg, wsReg, planRef)
 	executor := conversation.NewTurnExecutor(repo, eventStore, active, subs, rb)
+	maxConcurrentTurns := cfg.RuntimeMaxConcurrentTurns()
+	executor.SetTurnScheduler(conversation.NewTurnScheduler(maxConcurrentTurns))
 	executor.SetTitleGenerator(conversation.NewLLMTitleGenerator(provider, mc.Model))
 	// Job bracket events reach the owning conversation's live subscribers (P8.7
 	// §8.4-2) — persisted copies are already handled inside the sink.
@@ -144,13 +146,20 @@ func run() error {
 	}
 
 	handler := server.NewMux(repo, eventStore, executor, server.MuxOptions{
-		ServerName:      "codeagentd/" + mc.Model,
-		Capabilities:    defaultCapabilities,
-		WorkspaceRoot:   reposDir,
+		ServerName:        "codeagentd/" + mc.Model,
+		Capabilities:      defaultCapabilities,
+		WorkspaceRoot:     reposDir,
 		Granter:           rb.Rules(),
 		WorkspaceReloader: wsReg.ReloadWorkspace,
 		Prompts:           wsReg,
-		CredentialStore: executor.SetSessionCredential,
+		CredentialStore:   executor.SetSessionCredential,
+		RuntimeCapabilities: server.RuntimeCapabilities{
+			MultiSessionExecution:    false,
+			SessionScopedClientTools: true,
+			ActivitySnapshot:         true,
+			WorkspaceExecutionPolicy: true,
+			MaxConcurrentTurns:       maxConcurrentTurns,
+		},
 	})
 
 	srv := &http.Server{Addr: addr, Handler: handler}

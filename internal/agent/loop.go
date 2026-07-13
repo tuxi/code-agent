@@ -221,6 +221,7 @@ type TurnResult struct {
 	// TurnID identifies this execution in the event stream. The lifecycle layer
 	// uses it to emit a terminal event after the runner has returned an error.
 	TurnID       string
+	Deduplicated bool // true when request_id resolved to an already accepted turn
 	Final        string
 	Steps        []Step
 	PromptTokens int

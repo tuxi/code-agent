@@ -97,6 +97,10 @@ type Options struct {
 	// canonically Library/Application Support. Empty => fall back to WorkspaceDir;
 	// if that is also empty, the desktop $HOME default is used.
 	DataDir string
+
+	// MaxConcurrentTurns overrides runtime.max_concurrent_turns when positive.
+	// Zero keeps the config value, whose safe default is one.
+	MaxConcurrentTurns int
 }
 
 // Runtime is the set of live components Assemble builds that the lifecycle verbs
@@ -305,6 +309,9 @@ func StartServer(ctx context.Context, opt Options) (*Handle, error) {
 	}()
 
 	workspaceDir := opt.WorkspaceDir
+	if opt.MaxConcurrentTurns > 0 {
+		cfg.Runtime.MaxConcurrentTurns = opt.MaxConcurrentTurns
+	}
 	handler, rt, closers, err := Assemble(srvCtx, cfg, mc, provider, workspaceDir)
 	if err != nil {
 		return nil, err
@@ -413,6 +420,8 @@ func Assemble(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider 
 	subs := conversation.NewSubscriptionManager()
 	rb := runtime.NewServeRunBuilder(cfg, mc, provider, toolReg, wsReg, planRef)
 	executor := conversation.NewTurnExecutor(repo, eventStore, active, subs, rb)
+	maxConcurrentTurns := cfg.RuntimeMaxConcurrentTurns()
+	executor.SetTurnScheduler(conversation.NewTurnScheduler(maxConcurrentTurns))
 	executor.SetTitleGenerator(conversation.NewLLMTitleGenerator(provider, mc.Model))
 	// Job bracket events reach the owning conversation's live subscribers (P8.7
 	// §8.4-2) — persisted copies are already handled inside the sink.
@@ -421,17 +430,24 @@ func Assemble(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider 
 	}
 
 	handler := server.NewMux(repo, eventStore, executor, server.MuxOptions{
-		ServerName:    "codeagent/" + mc.Model,
-		Capabilities:  defaultCapabilities,
-		WorkspaceRoot: workspaceDir,
-		Granter:       rb.Rules(),
+		ServerName:        "codeagent/" + mc.Model,
+		Capabilities:      defaultCapabilities,
+		WorkspaceRoot:     workspaceDir,
+		Granter:           rb.Rules(),
 		WorkspaceReloader: wsReg.ReloadWorkspace,
-		Prompts:       wsReg, // default workspace's MCP prompts; per-workspace needs a wire change
+		Prompts:           wsReg, // default workspace's MCP prompts; per-workspace needs a wire change
 		// Wire the WS auth layer into the TurnExecutor's per-session credential
 		// store. When a client connects with Authorization: Bearer <jwt>, the JWT
 		// flows: WS upgrade → CredentialStore → TurnExecutor → RuntimeContext →
 		// ServeRunBuilder.Build() → model provider → Gateway.
 		CredentialStore: executor.SetSessionCredential,
+		RuntimeCapabilities: server.RuntimeCapabilities{
+			MultiSessionExecution:    false,
+			SessionScopedClientTools: true,
+			ActivitySnapshot:         true,
+			WorkspaceExecutionPolicy: true,
+			MaxConcurrentTurns:       maxConcurrentTurns,
+		},
 	})
 	rt := &Runtime{Executor: executor, Builder: rb, Repo: repo}
 	return handler, rt, closers, nil

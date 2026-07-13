@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -177,6 +179,15 @@ type schedulerBlockingRunner struct {
 	release   <-chan struct{}
 }
 
+type requestCountingBuilder struct {
+	builds atomic.Int32
+}
+
+func (b *requestCountingBuilder) Build(RuntimeContext) TurnRunner {
+	b.builds.Add(1)
+	return &stubRunner{}
+}
+
 func (r *schedulerBlockingRunner) RunTurn(ctx context.Context, _ *session.Session, _ string) (agent.TurnResult, error) {
 	r.started <- r.sessionID
 	select {
@@ -343,6 +354,105 @@ func TestTurnExecutor_QueuesSameWorkspaceAndCancelsQueuedTurn(t *testing.T) {
 	close(release)
 	if err := assertReady(t, firstDone); err != nil {
 		t.Fatalf("first turn error = %v", err)
+	}
+}
+
+func TestTurnExecutor_RequestIDIsIdempotentAcrossRestart(t *testing.T) {
+	repo := newFakeRepo()
+	repo.sessions["s"] = &session.Session{ID: "s", WorkspacePath: "/work/s", Metadata: map[string]any{}}
+	events := &fakeEventStore{}
+	firstBuilder := &requestCountingBuilder{}
+	firstExecutor := NewTurnExecutor(repo, events, NewActiveTurnRegistry(), NewSubscriptionManager(), firstBuilder)
+
+	first, err := firstExecutor.ExecuteWithRequestID(context.Background(), "s", "request-1", "hello", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	duplicate, err := firstExecutor.ExecuteWithRequestID(context.Background(), "s", "request-1", "hello", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.TurnID == "" || duplicate.TurnID != first.TurnID || !duplicate.Deduplicated {
+		t.Fatalf("first=%+v duplicate=%+v", first, duplicate)
+	}
+	if firstBuilder.builds.Load() != 1 {
+		t.Fatalf("builds=%d want 1", firstBuilder.builds.Load())
+	}
+
+	restartedBuilder := &requestCountingBuilder{}
+	restarted := NewTurnExecutor(repo, events, NewActiveTurnRegistry(), NewSubscriptionManager(), restartedBuilder)
+	afterRestart, err := restarted.ExecuteWithRequestID(context.Background(), "s", "request-1", "hello", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterRestart.TurnID != first.TurnID || !afterRestart.Deduplicated || restartedBuilder.builds.Load() != 0 {
+		t.Fatalf("after restart=%+v builds=%d", afterRestart, restartedBuilder.builds.Load())
+	}
+
+	accepted := 0
+	for _, record := range events.records {
+		if record.Kind != string(agent.EventTurnAccepted) {
+			continue
+		}
+		accepted++
+		var event agent.Event
+		if err := json.Unmarshal(record.Payload, &event); err != nil {
+			t.Fatal(err)
+		}
+		if event.RequestID != "request-1" || event.TurnID != first.TurnID {
+			t.Fatalf("accepted event=%+v", event)
+		}
+	}
+	if accepted != 1 {
+		t.Fatalf("turn_accepted count=%d want 1", accepted)
+	}
+}
+
+func TestTurnExecutor_ConcurrentDuplicateRequestIDBuildsOneTurn(t *testing.T) {
+	repo := newFakeRepo()
+	repo.sessions["s"] = &session.Session{ID: "s", WorkspacePath: "/work/s", Metadata: map[string]any{}}
+	events := &fakeEventStore{}
+	builder := &requestCountingBuilder{}
+	executor := NewTurnExecutor(repo, events, NewActiveTurnRegistry(), NewSubscriptionManager(), builder)
+
+	start := make(chan struct{})
+	results := make(chan agent.TurnResult, 2)
+	errs := make(chan error, 2)
+	var wg sync.WaitGroup
+	for range 2 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			result, err := executor.ExecuteWithRequestID(context.Background(), "s", "same-request", "hello", "")
+			results <- result
+			errs <- err
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(results)
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	var turnID string
+	deduplicated := 0
+	for result := range results {
+		if turnID == "" {
+			turnID = result.TurnID
+		}
+		if result.TurnID != turnID {
+			t.Fatalf("turn ids differ: %q vs %q", turnID, result.TurnID)
+		}
+		if result.Deduplicated {
+			deduplicated++
+		}
+	}
+	if turnID == "" || deduplicated != 1 || builder.builds.Load() != 1 {
+		t.Fatalf("turn=%q deduplicated=%d builds=%d", turnID, deduplicated, builder.builds.Load())
 	}
 }
 

@@ -9,6 +9,8 @@ import (
 	"sync"
 	"time"
 
+	"code-agent/internal/agent"
+	"code-agent/internal/approve"
 	"code-agent/internal/credential"
 
 	"github.com/coder/websocket"
@@ -98,6 +100,10 @@ type WSHandler struct {
 	mu          sync.Mutex
 	approvers   map[string]*RemoteApprover
 	toolWaiters map[string]*RemoteToolResultWaiter
+	// controlRevisions implements latest-connection-wins ownership. Inbound
+	// approval and client-tool responses are accepted only from the WebSocket
+	// revision that most recently claimed this session.
+	controlRevisions map[string]uint64
 }
 
 func (h *WSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -148,7 +154,7 @@ func (h *WSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// this creates a new one; on a reconnect after a page switch this returns the
 	// existing approver (still holding pending requests, if any) and re-sends
 	// them over the new sink.
-	approver := h.ensureApprover(sessionID, sink)
+	approver, waiter, controlRevision := h.claimSessionControl(sessionID, sink)
 
 	sess.SetApprover(approver)
 	sess.SetPlanApprover(approver)
@@ -157,7 +163,6 @@ func (h *WSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// switch/reconnect must not turn an otherwise recoverable tool request into
 	// "connection lost". The newly attached channel becomes the delivery path
 	// through normal event replay while the same waiter keeps the blocked turn.
-	waiter := h.ensureToolWaiter(sessionID)
 	sess.SetClientToolWaiter(waiter)
 
 	defer func() {
@@ -165,12 +170,17 @@ func (h *WSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// do NOT close the approver or replace it with deny-all. Pending
 		// approvals stay registered — the agent loop keeps blocking until
 		// the user reconnects and responds, or the timeout fires.
-		approver.ClearSink()
+		h.releaseSessionControl(sessionID, controlRevision, approver)
 	}()
 
 	// Inbound command/control routing is transport-agnostic (see Router); this read
 	// loop owns only the WS read and disconnect detection.
-	router := Router{Commands: sess, Approvals: approver, ToolResults: waiter, Prompts: h.Prompts}
+	router := Router{
+		Commands:    sess,
+		Approvals:   revisionApprovalResolver{handler: h, sessionID: sessionID, revision: controlRevision, target: approver},
+		ToolResults: revisionToolResultResolver{handler: h, sessionID: sessionID, revision: controlRevision, target: waiter},
+		Prompts:     h.Prompts,
+	}
 	go func() {
 		defer cancel()
 		for {
@@ -191,22 +201,88 @@ func (h *WSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	conn.Close(websocket.StatusInternalError, "stream error")
 }
 
-// ensureApprover returns the session-scoped RemoteApprover for sessionID,
-// creating one on first use. On a reconnect it calls UpdateSink to re-send any
-// pending approval requests over the new connection.
-func (h *WSHandler) ensureApprover(sessionID string, sink FrameSink) *RemoteApprover {
+// claimSessionControl atomically installs a new sink and advances the session's
+// ownership revision. The most recently connected WebSocket wins.
+func (h *WSHandler) claimSessionControl(sessionID string, sink FrameSink) (*RemoteApprover, *RemoteToolResultWaiter, uint64) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.approvers == nil {
 		h.approvers = make(map[string]*RemoteApprover)
 	}
-	ra, ok := h.approvers[sessionID]
-	if !ok {
-		ra = NewRemoteApprover(sink, h.approvalTimeout(), h.Granter)
-		h.approvers[sessionID] = ra
-	} else {
-		ra.UpdateSink(sink)
+	if h.toolWaiters == nil {
+		h.toolWaiters = make(map[string]*RemoteToolResultWaiter)
 	}
+	if h.controlRevisions == nil {
+		h.controlRevisions = make(map[string]uint64)
+	}
+	approver, ok := h.approvers[sessionID]
+	if !ok {
+		approver = NewRemoteApprover(sink, h.approvalTimeout(), h.Granter)
+		h.approvers[sessionID] = approver
+	} else {
+		approver.UpdateSink(sink)
+	}
+	waiter, ok := h.toolWaiters[sessionID]
+	if !ok {
+		waiter = NewRemoteToolResultWaiter()
+		h.toolWaiters[sessionID] = waiter
+	}
+	h.controlRevisions[sessionID]++
+	return approver, waiter, h.controlRevisions[sessionID]
+}
+
+func (h *WSHandler) ownsSessionControl(sessionID string, revision uint64) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return revision != 0 && h.controlRevisions[sessionID] == revision
+}
+
+func (h *WSHandler) releaseSessionControl(sessionID string, revision uint64, approver *RemoteApprover) {
+	h.mu.Lock()
+	current := h.controlRevisions[sessionID] == revision
+	if current {
+		approver.ClearSink()
+	}
+	h.mu.Unlock()
+}
+
+type revisionApprovalResolver struct {
+	handler   *WSHandler
+	sessionID string
+	revision  uint64
+	target    ApprovalResolver
+}
+
+func (r revisionApprovalResolver) Resolve(id string, approved bool) {
+	if r.handler.ownsSessionControl(r.sessionID, r.revision) {
+		r.target.Resolve(id, approved)
+	}
+}
+
+func (r revisionApprovalResolver) ResolveTool(id string, approved, always bool, scope approve.Scope) {
+	if r.handler.ownsSessionControl(r.sessionID, r.revision) {
+		r.target.ResolveTool(id, approved, always, scope)
+	}
+}
+
+type revisionToolResultResolver struct {
+	handler   *WSHandler
+	sessionID string
+	revision  uint64
+	target    ToolResultResolver
+}
+
+func (r revisionToolResultResolver) Deliver(callID string, result agent.ToolCallResult) {
+	if r.handler.ownsSessionControl(r.sessionID, r.revision) {
+		r.target.Deliver(callID, result)
+	}
+}
+
+// ensureApprover returns the session-scoped RemoteApprover for sessionID,
+// creating one on first use. On a reconnect it calls UpdateSink to re-send any
+// pending approval requests over the new connection.
+func (h *WSHandler) ensureApprover(sessionID string, sink FrameSink) *RemoteApprover {
+	ra, _, _ := h.claimSessionControl(sessionID, sink)
 	return ra
 }
 
@@ -240,6 +316,7 @@ func (h *WSHandler) RemoveApprover(sessionID string) {
 	if wok {
 		delete(h.toolWaiters, sessionID)
 	}
+	delete(h.controlRevisions, sessionID)
 	h.mu.Unlock()
 	if ok {
 		ra.Close()

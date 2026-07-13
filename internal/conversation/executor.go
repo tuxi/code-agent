@@ -33,6 +33,9 @@ type TurnExecutor struct {
 	// the limit only after advertising the matching runtime capabilities.
 	scheduler *TurnScheduler
 
+	requestMu     sync.Mutex
+	requestClaims map[string]string // sessionID + NUL + requestID -> accepted turnID
+
 	// sessionCreds stores per-session credential resolvers, set by the handler
 	// layer at WS upgrade time from the Authorization header. Server mode only;
 	// embedded mode uses the injected StaticResolver instead.
@@ -58,13 +61,14 @@ func (e *TurnExecutor) SetTitleGenerator(g TitleGenerator) {
 // NewTurnExecutor wires the execution pipeline.
 func NewTurnExecutor(repo ConversationRepository, events ConversationEventStore, active *ActiveTurnRegistry, subs *SubscriptionManager, rb RunBuilder) *TurnExecutor {
 	return &TurnExecutor{
-		repo:         repo,
-		events:       events,
-		active:       active,
-		subs:         subs,
-		rb:           rb,
-		scheduler:    NewTurnScheduler(1),
-		sessionCreds: make(map[string]credential.Resolver),
+		repo:          repo,
+		events:        events,
+		active:        active,
+		subs:          subs,
+		rb:            rb,
+		scheduler:     NewTurnScheduler(1),
+		requestClaims: make(map[string]string),
+		sessionCreds:  make(map[string]credential.Resolver),
 	}
 }
 
@@ -103,15 +107,23 @@ func (e *TurnExecutor) Execute(ctx context.Context, sessionID string, input stri
 	return e.ExecuteWithAssets(ctx, sessionID, input, model, nil)
 }
 
+func (e *TurnExecutor) ExecuteWithRequestID(ctx context.Context, sessionID, requestID, input, modelName string) (agent.TurnResult, error) {
+	return e.ExecuteWithRequestIDAndAssets(ctx, sessionID, requestID, input, modelName, nil)
+}
+
 // ExecuteWithAssets carries Gateway-owned user asset references into the next
 // turn. The caller owns validation of their source; Gateway validates ownership
 // again when it receives the chat request.
 func (e *TurnExecutor) ExecuteWithAssets(ctx context.Context, sessionID string, input string, model string, assets []model.GatewayAssetRef) (agent.TurnResult, error) {
+	return e.ExecuteWithRequestIDAndAssets(ctx, sessionID, "", input, model, assets)
+}
+
+func (e *TurnExecutor) ExecuteWithRequestIDAndAssets(ctx context.Context, sessionID, requestID, input, modelName string, assets []model.GatewayAssetRef) (agent.TurnResult, error) {
 	sess, err := e.repo.Load(ctx, sessionID)
 	if err != nil {
 		return agent.TurnResult{}, err
 	}
-	return e.ExecuteWithSessionAssets(ctx, sess, input, model, assets)
+	return e.executeWithSessionAssets(ctx, sess, requestID, input, modelName, assets)
 }
 
 // ExecuteWithSession runs a turn against an already-loaded session — the REPL
@@ -122,7 +134,11 @@ func (e *TurnExecutor) ExecuteWithSession(parentCtx context.Context, sess *sessi
 }
 
 func (e *TurnExecutor) ExecuteWithSessionAssets(parentCtx context.Context, sess *session.Session, input string, model string, assets []model.GatewayAssetRef) (agent.TurnResult, error) {
-	res, runErr := e.driveTurn(parentCtx, sess, model,
+	return e.executeWithSessionAssets(parentCtx, sess, "", input, model, assets)
+}
+
+func (e *TurnExecutor) executeWithSessionAssets(parentCtx context.Context, sess *session.Session, requestID, input, modelName string, assets []model.GatewayAssetRef) (agent.TurnResult, error) {
+	res, runErr := e.driveTurn(parentCtx, sess, requestID, modelName,
 		func(ctx context.Context, runner TurnRunner) (agent.TurnResult, error) {
 			if assetRunner, ok := runner.(AssetTurnRunner); ok {
 				return assetRunner.RunTurnWithAssets(ctx, sess, input, assets)
@@ -131,6 +147,9 @@ func (e *TurnExecutor) ExecuteWithSessionAssets(parentCtx context.Context, sess 
 		},
 		e.recordRunStatus,
 	)
+	if res.Deduplicated {
+		return res, runErr
+	}
 
 	// Auto-name: set an initial truncation-based name on the first turn, then fire
 	// async LLM title generation if configured. Only the fresh-input path names;
@@ -170,7 +189,7 @@ func (e *TurnExecutor) Resume(parentCtx context.Context, sessionID string) (agen
 	if sess.TurnStatus() != session.TurnStatusPaused {
 		return agent.TurnResult{}, nil
 	}
-	return e.driveTurn(parentCtx, sess, "",
+	return e.driveTurn(parentCtx, sess, "", "",
 		func(ctx context.Context, runner TurnRunner) (agent.TurnResult, error) {
 			return runner.ResumeTurn(ctx, sess)
 		},
@@ -186,6 +205,7 @@ func (e *TurnExecutor) Resume(parentCtx context.Context, sessionID string) (agen
 func (e *TurnExecutor) driveTurn(
 	parentCtx context.Context,
 	sess *session.Session,
+	requestID string,
 	model string,
 	run func(ctx context.Context, runner TurnRunner) (agent.TurnResult, error),
 	recordStatus func(sess *session.Session, runErr error),
@@ -195,7 +215,9 @@ func (e *TurnExecutor) driveTurn(
 	// so reconnecting clients see one complete lifecycle rather than a silent gap.
 	turnID := e.scheduler.ReserveTurnID()
 	pub := &sequencingEmitter{ctx: context.WithoutCancel(parentCtx), events: e.events, live: e.subs.Emitter(sess.ID)}
-	pub.Emit(agent.Event{Kind: agent.EventTurnAccepted, SessionID: sess.ID, TurnID: turnID})
+	if existingTurnID, duplicate := e.claimRequest(parentCtx, sess.ID, requestID, turnID, pub); duplicate {
+		return agent.TurnResult{TurnID: existingTurnID, Deduplicated: true}, nil
+	}
 
 	// 2. Wait for the process/session/workspace execution permits before claiming
 	// the active-turn slot. This makes a second turn in the same conversation a
@@ -270,6 +292,34 @@ func (e *TurnExecutor) driveTurn(
 	}
 
 	return res, runErr
+}
+
+func (e *TurnExecutor) claimRequest(ctx context.Context, sessionID, requestID, proposedTurnID string, pub agent.Emitter) (string, bool) {
+	if requestID == "" {
+		pub.Emit(agent.Event{Kind: agent.EventTurnAccepted, SessionID: sessionID, TurnID: proposedTurnID})
+		return proposedTurnID, false
+	}
+	key := sessionID + "\x00" + requestID
+	e.requestMu.Lock()
+	defer e.requestMu.Unlock()
+	if turnID := e.requestClaims[key]; turnID != "" {
+		return turnID, true
+	}
+	if records, err := e.events.Replay(ctx, sessionID); err == nil {
+		for _, record := range records {
+			if record.Kind != string(agent.EventTurnAccepted) {
+				continue
+			}
+			var event agent.Event
+			if json.Unmarshal(record.Payload, &event) == nil && event.RequestID == requestID && event.TurnID != "" {
+				e.requestClaims[key] = event.TurnID
+				return event.TurnID, true
+			}
+		}
+	}
+	e.requestClaims[key] = proposedTurnID
+	pub.Emit(agent.Event{Kind: agent.EventTurnAccepted, SessionID: sessionID, TurnID: proposedTurnID, RequestID: requestID})
+	return proposedTurnID, false
 }
 
 func workspaceExecutionMode(policy string) WorkspaceExecutionMode {

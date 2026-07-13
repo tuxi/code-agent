@@ -40,14 +40,15 @@ const (
 )
 
 type Config struct {
-	DefaultModel string                      `yaml:"default_model"`
-	Models       map[string]ModelConfig      `yaml:"models"`
+	DefaultModel string                 `yaml:"default_model"`
+	Models       map[string]ModelConfig `yaml:"models"`
 	// Credentials maps namespace → name → config. The outer key is the
 	// credential namespace ("gateway", "llm", "mcp"); the inner key is the
 	// credential name ("default", "deepseek", "github").
-	Credentials  map[string]map[string]CredentialConfig `yaml:"credentials"`
-	Agent        AgentConfig                 `yaml:"agent"`
-	Provider     ProviderConfig              `yaml:"provider"`
+	Credentials map[string]map[string]CredentialConfig `yaml:"credentials"`
+	Agent       AgentConfig                            `yaml:"agent"`
+	Provider    ProviderConfig                         `yaml:"provider"`
+	Runtime     RuntimeConfig                          `yaml:"runtime"`
 
 	// Currency is the display symbol for cost reporting (the price fields are in
 	// this unit). Defaults to "$".
@@ -97,6 +98,19 @@ type Config struct {
 	// that can spawn subprocesses and reach the whole filesystem; Sandboxed is for
 	// embedded hosts like iOS. See Profile.
 	Profile Profile `yaml:"-"`
+}
+
+// RuntimeConfig controls process-wide turn admission. A non-positive value is
+// normalized to one so older configs retain the safe FIFO behavior.
+type RuntimeConfig struct {
+	MaxConcurrentTurns int `yaml:"max_concurrent_turns"`
+}
+
+func (c Config) RuntimeMaxConcurrentTurns() int {
+	if c.Runtime.MaxConcurrentTurns < 1 {
+		return 1
+	}
+	return c.Runtime.MaxConcurrentTurns
 }
 
 // Profile is the platform capability set the runtime assembles for. The default
@@ -358,7 +372,7 @@ func LoadConfig(path string) (Config, error) {
 // than from a file path, since the app sandbox has no fixed config.yaml.
 func LoadConfigBytes(data []byte) (Config, error) {
 	cfg := Config{
-		Agent:     AgentConfig{MaxSteps: 8},
+		Agent: AgentConfig{MaxSteps: 8},
 	}
 
 	if len(data) > 0 {

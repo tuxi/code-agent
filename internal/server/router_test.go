@@ -28,6 +28,17 @@ type fakeCommands struct {
 	canceled chan struct{}
 }
 
+type requestCommands struct {
+	*fakeCommands
+	requestIDs chan string
+}
+
+func (f *requestCommands) SendMessageWithRequestID(_ context.Context, requestID, text, _ string) (agent.TurnResult, error) {
+	f.requestIDs <- requestID
+	f.text <- text
+	return agent.TurnResult{}, nil
+}
+
 func newFakeCommands() *fakeCommands {
 	return &fakeCommands{text: make(chan string, 1), canceled: make(chan struct{}, 1)}
 }
@@ -196,6 +207,23 @@ func TestRouterAgentInputText(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("agent_input text did not reach the command target")
+	}
+}
+
+func TestRouterAgentInputRoutesRequestID(t *testing.T) {
+	cmds := &requestCommands{fakeCommands: newFakeCommands(), requestIDs: make(chan string, 1)}
+	r := Router{Commands: cmds}
+	r.Route(context.Background(), []byte(`{"type":"agent_input","kind":"text","request_id":"req-42","text":"once"}`))
+	select {
+	case got := <-cmds.requestIDs:
+		if got != "req-42" {
+			t.Fatalf("request_id=%q", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("request-aware command target was not called")
+	}
+	if got := <-cmds.text; got != "once" {
+		t.Fatalf("text=%q", got)
 	}
 }
 

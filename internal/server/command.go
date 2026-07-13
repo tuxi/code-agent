@@ -59,6 +59,7 @@ type RegisterTools struct {
 type AgentInput struct {
 	Type       string                  `json:"type"`                  // always "agent_input"
 	Kind       string                  `json:"kind"`                  // "text" | "tool_result" | "command" | "system"
+	RequestID  string                  `json:"request_id,omitempty"`  // stable client idempotency key for a turn-starting input
 	Text       string                  `json:"text,omitempty"`        // kind="text" | "command"
 	Model      string                  `json:"model,omitempty"`       // optional: model profile name to use this turn
 	Assets     []model.GatewayAssetRef `json:"assets,omitempty"`      // kind="text": Gateway-owned user asset refs
