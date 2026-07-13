@@ -14,6 +14,7 @@ import (
 	"code-agent/internal/assetref"
 	"code-agent/internal/conversation"
 	"code-agent/internal/session"
+	"code-agent/internal/workspace"
 )
 
 const (
@@ -255,26 +256,14 @@ func resolveAssetPath(ref assets.Ref, workspaceRoot string) (string, error) {
 	default:
 		return "", assetHTTPError{status: http.StatusBadRequest, message: "asset has no file path"}
 	}
-	if !pathInsideRoot(candidate, root) {
+	if err := workspace.ValidatePath(root, candidate); err != nil {
 		return "", assetHTTPError{status: http.StatusForbidden, message: "asset path escapes workspace"}
 	}
 	return candidate, nil
 }
 
 func pathInsideRoot(path, root string) bool {
-	cleanPath := filepath.Clean(path)
-	cleanRoot := filepath.Clean(root)
-	if evaluatedRoot, err := filepath.EvalSymlinks(cleanRoot); err == nil {
-		cleanRoot = evaluatedRoot
-	}
-	if evaluatedPath, err := filepath.EvalSymlinks(cleanPath); err == nil {
-		cleanPath = evaluatedPath
-	}
-	rel, err := filepath.Rel(cleanRoot, cleanPath)
-	if err != nil {
-		return false
-	}
-	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
+	return workspace.ValidatePath(root, path) == nil
 }
 
 func isTextAsset(mimeType string) bool {

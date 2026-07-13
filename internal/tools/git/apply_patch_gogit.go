@@ -136,7 +136,7 @@ func safeJoinWorkspace(rootAbs, rel string) (string, bool) {
 	if err != nil {
 		return "", false
 	}
-	if !workspace.IsSubPath(rootAbs, abs) {
+	if err := workspace.ValidatePath(rootAbs, abs); err != nil {
 		return "", false
 	}
 	return abs, true

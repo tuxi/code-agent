@@ -2,6 +2,7 @@ package git
 
 import (
 	"code-agent/internal/tools"
+	"code-agent/internal/workspace"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -49,6 +50,14 @@ func (t *GitStatusTool) Execute(ctx context.Context, ec tools.ExecutionContext, 
 	st, err := wt.Status()
 	if err != nil {
 		return tools.ToolResult{}, err
+	}
+	// go-git does not read the Git common-dir info/exclude used by linked
+	// worktrees consistently. Enforce the Runtime boundary in the projection as
+	// well, so status from a base checkout cannot enumerate managed checkouts.
+	for path := range st {
+		if workspace.ShouldSkipPath(rootAbs, filepath.Join(rootAbs, filepath.FromSlash(path))) {
+			delete(st, path)
+		}
 	}
 
 	var b strings.Builder

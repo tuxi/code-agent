@@ -514,7 +514,7 @@ func outsideWorkspaceRead(args []string, rootAbs string) string {
 		if !ok {
 			continue
 		}
-		if !workspace.IsSubPath(rootAbs, target) {
+		if err := workspace.ValidatePath(rootAbs, target); err != nil {
 			return fmt.Sprintf("refused: %s may only read paths inside the workspace; use project tools for workspace files and respect user-scoped read limits", args[0])
 		}
 	}
@@ -538,6 +538,12 @@ func commandPathTarget(arg, rootAbs string) (string, bool) {
 		return filepath.Clean(arg), true
 	}
 	clean := filepath.Clean(arg)
+	// Relative paths normally need no containment check, but the base
+	// workspace's managed-worktree subtree is an explicit isolation boundary.
+	// Resolve it here so direct read commands cannot bypass list/read tools.
+	if target := filepath.Join(rootAbs, clean); workspace.ShouldSkipPath(rootAbs, target) {
+		return target, true
+	}
 	if clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
 		target, err := filepath.Abs(filepath.Join(rootAbs, clean))
 		if err != nil {

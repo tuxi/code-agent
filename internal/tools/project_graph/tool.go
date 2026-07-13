@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"code-agent/internal/assetref"
 	"code-agent/internal/tools"
+	"code-agent/internal/workspace"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -150,6 +151,7 @@ func (t *ProjectGraphTool) findSymbol(ctx context.Context, root string, ec tools
 	if symbols == nil {
 		symbols = []Symbol{}
 	}
+	symbols = filterSymbolsForWorkspace(root, symbols)
 	realErrs := filterRealErrors(errs)
 	if len(symbols) == 0 && len(realErrs) > 0 {
 		return tools.ToolResult{}, fmt.Errorf("find_symbol returned no results, but some backends failed: %s. Specify 'language' to restrict to a single backend.", strings.Join(realErrs, "; "))
@@ -180,6 +182,7 @@ func (t *ProjectGraphTool) findReferences(ctx context.Context, root string, ec t
 	if refs == nil {
 		refs = []Reference{}
 	}
+	refs = filterReferencesForWorkspace(root, refs)
 	// When no results were found and at least one backend returned a real
 	// (non-stub) error, surface the error so the agent doesn't silently
 	// interpret "indexing failed" as "no references exist".
@@ -226,6 +229,8 @@ func (t *ProjectGraphTool) renameCheck(ctx context.Context, root string, in proj
 			collisions = append(collisions, c...)
 		}
 	}
+	refs = filterReferencesForWorkspace(root, refs)
+	collisions = filterSymbolsForWorkspace(root, collisions)
 
 	files := map[string]struct{}{}
 	for _, r := range refs {
@@ -249,6 +254,34 @@ func (t *ProjectGraphTool) renameCheck(ctx context.Context, root string, in proj
 		Warnings:      warnings,
 	}
 	return jsonResult(check)
+}
+
+func filterSymbolsForWorkspace(root string, symbols []Symbol) []Symbol {
+	out := symbols[:0]
+	for _, symbol := range symbols {
+		if workspaceResultAllowed(root, symbol.File) {
+			out = append(out, symbol)
+		}
+	}
+	return out
+}
+
+func filterReferencesForWorkspace(root string, refs []Reference) []Reference {
+	out := refs[:0]
+	for _, ref := range refs {
+		if workspaceResultAllowed(root, ref.File) {
+			out = append(out, ref)
+		}
+	}
+	return out
+}
+
+func workspaceResultAllowed(root, path string) bool {
+	target := path
+	if !filepath.IsAbs(target) {
+		target = filepath.Join(root, filepath.FromSlash(target))
+	}
+	return workspace.ValidatePath(root, target) == nil
 }
 
 // selectAdapters resolves which backends to query. With an explicit language it

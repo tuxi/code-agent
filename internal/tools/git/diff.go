@@ -97,7 +97,7 @@ func (t *DiffTool) Execute(ctx context.Context, ec tools.ExecutionContext, input
 		if err != nil {
 			return tools.ToolResult{}, err
 		}
-		if !workspace.IsSubPath(rootAbs, targetAbs) {
+		if err := workspace.ValidatePath(rootAbs, targetAbs); err != nil {
 			return tools.ToolResult{}, fmt.Errorf("path escapes workspace: %s", in.Path)
 		}
 		in.Path = filepath.ToSlash(cleanPath)

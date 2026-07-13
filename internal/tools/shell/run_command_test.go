@@ -82,7 +82,7 @@ func TestRunCommandHintIsTailored(t *testing.T) {
 		command  string
 		wantHint string
 	}{
-		{"cd cmd/foo && go vet", "path"},  // cd → "pass a path"
+		{"cd cmd/foo && go vet", "path"}, // cd → "pass a path"
 	}
 	for _, c := range cases {
 		if got := shellOperatorHint(c.command); !strings.Contains(got, c.wantHint) {
@@ -134,6 +134,27 @@ func TestRunCommandRefusesReadPathOutsideWorkspace(t *testing.T) {
 	}
 	if r.Stdout != "" {
 		t.Fatalf("stdout = %q, want empty because outside file must not be read", r.Stdout)
+	}
+}
+
+func TestRunCommandRefusesManagedWorktreeReadFromBaseWorkspace(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, ".codeagent", "worktrees", "other", "secret.txt")
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, []byte("nope"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	tool := NewRunCommandTool()
+	res, err := tool.Execute(context.Background(), tools.ExecutionContext{WorkspaceRoot: root}, json.RawMessage(`{"command":"cat .codeagent/worktrees/other/secret.txt"}`))
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	r := decodeResult(t, res.Content)
+	if r.ExitCode != -1 || r.Stdout != "" {
+		t.Fatalf("result=%+v, want managed worktree read refusal", r)
 	}
 }
 

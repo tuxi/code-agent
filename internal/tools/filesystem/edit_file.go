@@ -88,7 +88,7 @@ func (t *EditFileTool) Execute(ctx context.Context, ec tools.ExecutionContext, i
 	if err != nil {
 		return tools.ToolResult{}, err
 	}
-	if !workspace.IsSubPath(rootAbs, targetAbs) {
+	if err := workspace.ValidatePath(rootAbs, targetAbs); err != nil {
 		return tools.ToolResult{}, fmt.Errorf("path escapes workspace: %s", in.Path)
 	}
 

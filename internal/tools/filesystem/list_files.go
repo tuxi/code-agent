@@ -88,7 +88,7 @@ func (l *ListFilesTool) Execute(ctx context.Context, ec tools.ExecutionContext, 
 	if err != nil {
 		return tools.ToolResult{}, err
 	}
-	if !workspace.IsSubPath(rootAbs, targetAbs) {
+	if err := workspace.ValidatePath(rootAbs, targetAbs); err != nil {
 		return tools.ToolResult{}, fmt.Errorf("path escapes workspace: %s", in.Path)
 	}
 	info, err := os.Stat(targetAbs)
@@ -120,6 +120,12 @@ func (l *ListFilesTool) Execute(ctx context.Context, ec tools.ExecutionContext, 
 			}
 		}
 		name := d.Name()
+		if workspace.ShouldSkipPath(rootAbs, path) {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
 		if workspace.ShouldSkipName(name) {
 			if d.IsDir() {
 				return filepath.SkipDir

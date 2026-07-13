@@ -114,6 +114,14 @@ func TestTurnScheduler_SerializesSamePathMisdeclaredAsIsolated(t *testing.T) {
 	releaseB()
 }
 
+func TestWorkspaceLeaseKeyCaseFoldsEquivalentPaths(t *testing.T) {
+	a := workspaceLeaseKey(TurnScheduleRequest{WorkspacePath: "/Repo/Worktree"})
+	b := workspaceLeaseKey(TurnScheduleRequest{WorkspacePath: "/repo/worktree"})
+	if a != b {
+		t.Fatalf("case variant lease keys differ: %q != %q", a, b)
+	}
+}
+
 func TestWorkspaceLeaseKeyResolvesSymlinks(t *testing.T) {
 	realPath := t.TempDir()
 	linkPath := filepath.Join(t.TempDir(), "workspace-link")

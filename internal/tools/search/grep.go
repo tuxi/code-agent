@@ -95,7 +95,7 @@ func (g *GrepTool) Execute(ctx context.Context, ec tools.ExecutionContext, input
 		return tools.ToolResult{}, err
 	}
 
-	if !workspace.IsSubPath(rootAbs, targetAbs) {
+	if err := workspace.ValidatePath(rootAbs, targetAbs); err != nil {
 		return tools.ToolResult{}, fmt.Errorf("path escapes workspace: %s", in.Path)
 	}
 
@@ -121,7 +121,7 @@ func (g *GrepTool) Execute(ctx context.Context, ec tools.ExecutionContext, input
 				return filepath.SkipDir
 			}
 
-			if workspace.ShouldSkipName(d.Name()) {
+			if workspace.ShouldSkipPath(rootAbs, path) || workspace.ShouldSkipName(d.Name()) {
 				if d.IsDir() {
 					return filepath.SkipDir
 				}

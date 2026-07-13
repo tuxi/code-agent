@@ -1,6 +1,7 @@
 package projectgraph
 
 import (
+	"code-agent/internal/workspace"
 	"context"
 	"encoding/json"
 	"errors"
@@ -634,6 +635,12 @@ func walkSwiftFiles(root string, fn func(absPath string) error) error {
 			return nil // skip unreadable entries
 		}
 		base := d.Name()
+		if workspace.ShouldSkipPath(root, path) {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
 		if d.IsDir() {
 			if base == "" {
 				return nil

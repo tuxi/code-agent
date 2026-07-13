@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"code-agent/internal/workspace"
 )
 
 // WorkspaceExecutionMode describes the isolation a turn has while it is
@@ -320,11 +322,10 @@ func workspaceLeaseKey(req TurnScheduleRequest) string {
 	if path == "" {
 		return "default"
 	}
-	if abs, err := filepath.Abs(path); err == nil {
-		path = abs
+	if canonical, err := workspace.CanonicalPath(path); err == nil {
+		path = canonical
 	}
-	if real, err := filepath.EvalSymlinks(path); err == nil {
-		path = real
-	}
-	return filepath.Clean(path)
+	// Case-folding is conservative on case-sensitive volumes and closes the
+	// macOS case-variant lease bypass on the common default filesystem.
+	return strings.ToLower(path)
 }

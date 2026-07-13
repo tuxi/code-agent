@@ -142,7 +142,7 @@ func (a *AutoApprover) insideWorkspace(path string) bool {
 	if err != nil {
 		return false
 	}
-	return workspace.IsSubPath(a.root, target)
+	return workspace.ValidatePath(a.root, target) == nil
 }
 
 // decodePath pulls the "path" field from a tool input. edit_file and create_file

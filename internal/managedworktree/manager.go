@@ -13,6 +13,7 @@ import (
 	"unicode"
 
 	"code-agent/internal/session"
+	"code-agent/internal/workspace"
 	"code-agent/internal/worktree"
 )
 
@@ -23,6 +24,8 @@ const (
 	CodeNameConflict       = "worktree_name_conflict"
 	CodePathConflict       = "worktree_path_conflict"
 	CodeBranchConflict     = "worktree_branch_conflict"
+	CodeNestedNotAllowed   = "worktree_nested_not_allowed"
+	CodeEscapeDetected     = "worktree_escape_detected"
 	CodeProvisionFailed    = "worktree_provision_failed"
 	CodeMissing            = "worktree_missing"
 )
@@ -129,6 +132,14 @@ func (m *Manager) createLocked(ctx context.Context, req CreateRequest) (CreateRe
 	if err != nil {
 		return CreateResult{}, m.err(req, CodeNotGitRepository, "Git project root is not available", "", err)
 	}
+	gitDir, gitDirErr := gitDirPath(ctx, m.git, projectRoot)
+	commonDir, commonErr := gitCommonDir(ctx, m.git, projectRoot)
+	if gitDirErr != nil || commonErr != nil {
+		return CreateResult{}, m.err(req, CodeNotGitRepository, "Git repository identity could not be resolved", "", errors.Join(gitDirErr, commonErr))
+	}
+	if !workspace.SamePath(gitDir, commonDir) {
+		return CreateResult{}, m.err(req, CodeNestedNotAllowed, "cannot create a managed worktree from another managed worktree", "", nil)
+	}
 	baseCommit, err := m.resolveBaseCommit(ctx, projectRoot, req.BaseRef)
 	if err != nil {
 		return CreateResult{}, m.err(req, CodeBaseRefUnavailable, "requested base ref is unavailable", "", err)
@@ -139,6 +150,9 @@ func (m *Manager) createLocked(ctx context.Context, req CreateRequest) (CreateRe
 	name := slug(req.SuggestedName) + "-" + shortID
 	branch := "codeagent/" + name
 	target := filepath.Join(projectRoot, ".codeagent", "worktrees", name)
+	if err := workspace.ValidateManagedTarget(projectRoot, target); err != nil {
+		return CreateResult{}, m.err(req, CodeEscapeDetected, "managed worktree target escapes the configured root", "", err)
+	}
 	now := m.now().UTC()
 	candidate := worktree.Record{
 		SessionID:           sessionID,
@@ -207,6 +221,9 @@ func (m *Manager) createLocked(ctx context.Context, req CreateRequest) (CreateRe
 }
 
 func (m *Manager) provision(ctx context.Context, projectRoot string, record worktree.Record) error {
+	if err := workspace.ValidateManagedTarget(projectRoot, record.WorktreePath); err != nil {
+		return m.recordErr(record, CodeEscapeDetected, "managed worktree target escapes the configured root", err)
+	}
 	if _, err := os.Lstat(record.WorktreePath); err == nil {
 		return m.recordErr(record, CodePathConflict, "managed worktree path already exists", nil)
 	} else if !os.IsNotExist(err) {
@@ -214,6 +231,13 @@ func (m *Manager) provision(ctx context.Context, projectRoot string, record work
 	}
 	if _, err := m.git.Run(ctx, projectRoot, "show-ref", "--verify", "--quiet", "refs/heads/"+record.Branch); err == nil {
 		return m.recordErr(record, CodeBranchConflict, "managed worktree branch already exists", nil)
+	}
+	common, err := gitCommonDir(ctx, m.git, projectRoot)
+	if err != nil {
+		return m.recordErr(record, CodeProvisionFailed, "source Git common dir could not be resolved", err)
+	}
+	if err := ensureLocalExclude(common); err != nil {
+		return m.recordErr(record, CodeProvisionFailed, "managed worktree root could not be added to local Git exclude", err)
 	}
 	if err := os.MkdirAll(filepath.Dir(record.WorktreePath), 0o755); err != nil {
 		return m.recordErr(record, CodeProvisionFailed, "managed worktree root could not be created", err)
@@ -225,18 +249,48 @@ func (m *Manager) provision(ctx context.Context, projectRoot string, record work
 	if err != nil {
 		return m.recordErr(record, CodeProvisionFailed, "created worktree path is not accessible", err)
 	}
-	if target != filepath.Clean(record.WorktreePath) {
-		return m.recordErr(record, "worktree_escape_detected", "created worktree resolved outside its reserved path", nil)
-	}
-	sourceCommon, err := gitCommonDir(ctx, m.git, projectRoot)
-	if err != nil {
-		return m.recordErr(record, CodeProvisionFailed, "source Git common dir could not be resolved", err)
+	if !workspace.SamePath(target, record.WorktreePath) {
+		return m.recordErr(record, CodeEscapeDetected, "created worktree resolved outside its reserved path", nil)
 	}
 	targetCommon, err := gitCommonDir(ctx, m.git, target)
-	if err != nil || sourceCommon != targetCommon {
+	if err != nil || !workspace.SamePath(common, targetCommon) {
 		return m.recordErr(record, CodeProvisionFailed, "created worktree does not belong to the source repository", err)
 	}
 	return nil
+}
+
+var excludeMu sync.Mutex
+
+func ensureLocalExclude(commonDir string) error {
+	excludeMu.Lock()
+	defer excludeMu.Unlock()
+	infoDir := filepath.Join(commonDir, "info")
+	if err := os.MkdirAll(infoDir, 0o755); err != nil {
+		return err
+	}
+	path := filepath.Join(infoDir, "exclude")
+	data, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	const pattern = "/.codeagent/worktrees/"
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.TrimSpace(line) == pattern {
+			return nil
+		}
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	if len(data) > 0 && data[len(data)-1] != '\n' {
+		if _, err := f.WriteString("\n"); err != nil {
+			return err
+		}
+	}
+	_, err = f.WriteString(pattern + "\n")
+	return err
 }
 
 func (m *Manager) resolveBaseCommit(ctx context.Context, root string, baseRef worktree.BaseRef) (string, error) {
@@ -362,6 +416,17 @@ func gitCommonDir(ctx context.Context, git gitRunner, root string) (string, erro
 		common = filepath.Join(root, common)
 	}
 	return canonicalExistingDir(common)
+}
+
+func gitDirPath(ctx context.Context, git gitRunner, root string) (string, error) {
+	dir, err := git.Run(ctx, root, "rev-parse", "--git-dir")
+	if err != nil {
+		return "", err
+	}
+	if !filepath.IsAbs(dir) {
+		dir = filepath.Join(root, dir)
+	}
+	return canonicalExistingDir(dir)
 }
 
 func shortID(sessionID string) string {

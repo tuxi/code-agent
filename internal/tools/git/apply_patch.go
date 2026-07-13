@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/bluekeyes/go-gitdiff/gitdiff"
 )
 
 type ApplyPatchTool struct {
@@ -92,6 +94,11 @@ func (t *ApplyPatchTool) Execute(ctx context.Context, ec tools.ExecutionContext,
 	if err != nil {
 		return tools.ToolResult{}, err
 	}
+	if err := validatePatchPaths(rootAbs, patch); err != nil {
+		return tools.ToolResult{
+			Content: "Patch did not apply; no files were changed.\n\n" + err.Error(),
+		}, nil
+	}
 
 	msg, ok, err := t.backend.Apply(ctx, rootAbs, patch)
 	if err != nil {
@@ -103,6 +110,27 @@ func (t *ApplyPatchTool) Execute(ctx context.Context, ec tools.ExecutionContext,
 		}, nil
 	}
 	return tools.ToolResult{Content: "Patch applied successfully."}, nil
+}
+
+// validatePatchPaths applies the workspace boundary before selecting a patch
+// backend. In particular, the desktop git-apply backend must not be able to
+// write into another managed checkout nested under a base workspace.
+func validatePatchPaths(rootAbs, patch string) error {
+	files, _, err := gitdiff.Parse(strings.NewReader(patch))
+	if err != nil {
+		return fmt.Errorf("failed to parse patch: %w", err)
+	}
+	for _, file := range files {
+		for _, name := range []string{stripPatchPrefix(file.OldName), stripPatchPrefix(file.NewName)} {
+			if name == "" {
+				continue
+			}
+			if _, ok := safeJoinWorkspace(rootAbs, name); !ok {
+				return fmt.Errorf("patch path escapes workspace boundary: %s", name)
+			}
+		}
+	}
+	return nil
 }
 
 // execApplier applies patches via the git binary. It is the desktop backend.

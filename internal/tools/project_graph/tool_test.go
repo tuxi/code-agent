@@ -90,6 +90,24 @@ func TestFindReferences(t *testing.T) {
 	}
 }
 
+func TestProjectGraphFiltersManagedWorktreeResults(t *testing.T) {
+	tool := toolWith(fakeAdapter{
+		lang: "go", avail: true,
+		symbols: []Symbol{
+			{Name: "Target", File: "main.go", Line: 1},
+			{Name: "Target", File: ".codeagent/worktrees/other/private.go", Line: 2},
+		},
+	})
+	content := run(t, tool, `{"action":"find_symbol","query":"Target"}`)
+	var symbols []Symbol
+	if err := json.Unmarshal([]byte(content), &symbols); err != nil {
+		t.Fatal(err)
+	}
+	if len(symbols) != 1 || symbols[0].File != "main.go" {
+		t.Fatalf("symbols=%+v", symbols)
+	}
+}
+
 func TestRenameCheckSafe(t *testing.T) {
 	// from has references across two files; to does not yet exist => safe.
 	tool := toolWith(fakeAdapter{
