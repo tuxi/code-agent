@@ -13,14 +13,27 @@ func TestWaiterDeliverUnblocksWait(t *testing.T) {
 	w := NewRemoteToolResultWaiter()
 
 	result := agent.ToolCallResult{Subtype: "result", Content: "done", IsError: false}
-
-	// Deliver from another goroutine after a short delay.
+	resultCh := make(chan agent.ToolCallResult, 1)
+	errCh := make(chan error, 1)
 	go func() {
-		time.Sleep(50 * time.Millisecond)
-		w.Deliver("call_1", result)
+		got, err := w.Wait(context.Background(), "call_1", 5*time.Second)
+		resultCh <- got
+		errCh <- err
 	}()
-
-	got, err := w.Wait(context.Background(), "call_1", 5*time.Second)
+	deadline := time.Now().Add(time.Second)
+	for w.PendingCount() != 1 {
+		if time.Now().After(deadline) {
+			t.Fatal("client tool call did not become pending")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	w.Deliver("call_1", result)
+	if got := w.PendingCount(); got != 0 {
+		t.Fatalf("pending after delivery=%d want 0", got)
+	}
+	w.Deliver("call_1", result) // duplicate is ignored
+	got := <-resultCh
+	err := <-errCh
 	if err != nil {
 		t.Fatalf("Wait returned error: %v", err)
 	}

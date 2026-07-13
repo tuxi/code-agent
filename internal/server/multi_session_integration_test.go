@@ -2,6 +2,8 @@ package server
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
@@ -14,6 +16,29 @@ import (
 
 	"github.com/coder/websocket"
 )
+
+type approvalAttentionBuilder struct{}
+
+func (approvalAttentionBuilder) Build(rc conversation.RuntimeContext) conversation.TurnRunner {
+	return &approvalAttentionRunner{rc: rc}
+}
+
+type approvalAttentionRunner struct {
+	rc conversation.RuntimeContext
+}
+
+func (r *approvalAttentionRunner) RunTurn(_ context.Context, sess *session.Session, _ string) (agent.TurnResult, error) {
+	r.rc.Publisher.Emit(agent.Event{Kind: agent.EventTurnStarted, SessionID: sess.ID, TurnID: r.rc.TurnID})
+	if r.rc.Approver.Approve("run_command", json.RawMessage(`{"command":"true"}`)) != agent.VerdictAllow {
+		return agent.TurnResult{TurnID: r.rc.TurnID}, context.Canceled
+	}
+	r.rc.Publisher.Emit(agent.Event{Kind: agent.EventTurnFinished, SessionID: sess.ID, TurnID: r.rc.TurnID, Text: "done"})
+	return agent.TurnResult{TurnID: r.rc.TurnID, Final: "done"}, nil
+}
+
+func (r *approvalAttentionRunner) ResumeTurn(ctx context.Context, sess *session.Session) (agent.TurnResult, error) {
+	return r.RunTurn(ctx, sess, "")
+}
 
 type multiSessionRunBuilder struct {
 	started chan string
@@ -151,6 +176,63 @@ func TestMultiSessionWebSocketQueuesAndCancelsSharedWorkspace(t *testing.T) {
 		t.Fatalf("turn_cancelled count=%d", cancelledCount)
 	}
 	builder.finish("a")
+}
+
+func TestMultiSessionActivityReportsBackgroundApprovalAndTerminal(t *testing.T) {
+	repo := newFakeConversationRepo()
+	repo.sessions["background"] = &session.Session{ID: "background", WorkspacePath: "/workspace/background", Metadata: map[string]any{}}
+	events := &fakeEventStore{}
+	executor := conversation.NewTurnExecutor(repo, events, conversation.NewActiveTurnRegistry(), conversation.NewSubscriptionManager(), approvalAttentionBuilder{})
+	executor.SetTurnScheduler(conversation.NewTurnScheduler(2))
+	srv := httptest.NewServer(NewMux(repo, events, executor, MuxOptions{
+		Accept:              &websocket.AcceptOptions{InsecureSkipVerify: true},
+		RuntimeCapabilities: ConfiguredRuntimeCapabilities(2),
+	}))
+	defer srv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	conn := dialConversation(t, ctx, srv.URL, "background")
+	defer conn.CloseNow()
+	wsWriteJSON(t, ctx, conn, map[string]any{"type": "agent_input", "kind": "text", "request_id": "req-attention", "text": "approve"})
+
+	var approvalID string
+	for approvalID == "" {
+		frame := readFrame(t, ctx, conn)
+		if frame["type"] == "approval_request" {
+			approvalID, _ = frame["id"].(string)
+		}
+	}
+	activity := fetchActivity(t, srv.URL)
+	if len(activity.Sessions) != 1 || activity.Sessions[0].State != "waiting_approval" || activity.Sessions[0].PendingApprovalCount != 1 || activity.Sessions[0].ActiveTurnID == "" {
+		t.Fatalf("pending approval activity=%+v", activity.Sessions)
+	}
+	activeTurnID := activity.Sessions[0].ActiveTurnID
+
+	wsWriteJSON(t, ctx, conn, map[string]any{"type": "approval_response", "id": approvalID, "approved": true})
+	readUntilKind(t, ctx, conn, string(agent.EventTurnFinished))
+	deadline := time.Now().Add(time.Second)
+	for len(executor.Activity()) != 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("turn did not leave scheduler after terminal")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	activity = fetchActivity(t, srv.URL)
+	if len(activity.Sessions) != 1 || activity.Sessions[0].PendingApprovalCount != 0 || activity.Sessions[0].State != "idle" || activity.Sessions[0].LatestTerminal == nil || activity.Sessions[0].LatestTerminal.TurnID != activeTurnID || activity.Sessions[0].LatestTerminal.Kind != string(agent.EventTurnFinished) || activity.Sessions[0].LatestTerminal.Sequence == 0 {
+		t.Fatalf("terminal activity=%+v", activity.Sessions)
+	}
+}
+
+func fetchActivity(t *testing.T, serverURL string) activityResponse {
+	t.Helper()
+	resp, err := http.Get(serverURL + "/v1/activity")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var activity activityResponse
+	decodeResponse(t, resp, &activity)
+	return activity
 }
 
 func dialConversation(t *testing.T, ctx context.Context, serverURL, sessionID string) *websocket.Conn {

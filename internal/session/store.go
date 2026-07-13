@@ -24,7 +24,8 @@ type SessionStore interface {
 // EventStore is the optional event-log persistence port. It records and replays
 // agent events (the P7 EventStore — the raw, replayable runtime stream).
 // Consumers that don't need timeline replay or event search can provide a no-op
-// implementation. Best-effort by convention: a write failure must not fail a run.
+// implementation. Non-terminal records are best-effort; Runtime attention
+// requires terminal writes to be durable and observable.
 type EventStore interface {
 	// RecordEvent appends one agent event to the per-session event log and returns
 	// the monotonic seq assigned to it (the rowid), so the live emitter can stamp
@@ -95,6 +96,36 @@ type EventRecord struct {
 	Kind      string
 	At        time.Time
 	Payload   json.RawMessage
+}
+
+// EventAttention is the durable event-log head for one session. LastSequence
+// advances for every persisted event; LatestTerminal advances only for the
+// authoritative turn terminal kinds (turn_finished, turn_failed,
+// turn_cancelled). Runtime attention is a projection of these facts plus live
+// scheduler and broker state.
+type EventAttention struct {
+	SessionID      string
+	LastSequence   int64
+	LatestEvent    *EventRecord
+	LatestTerminal *EventRecord
+}
+
+// EventAttentionSnapshot is a cursor-bounded view of durable session heads.
+// LastSequence is store-wide and monotonic. Sessions contains only heads whose
+// last sequence is greater than the requested cursor; a zero cursor requests a
+// complete baseline.
+type EventAttentionSnapshot struct {
+	LastSequence int64
+	Sessions     []EventAttention
+}
+
+// EventAttentionStore is an optional event-store extension used by the global
+// activity endpoint. It is kept separate from EventStore so third-party event
+// backends remain source-compatible until they opt in. A Runtime must not
+// advertise session_attention_snapshot_v1 unless its configured backend
+// implements this interface.
+type EventAttentionStore interface {
+	SessionEventAttention(ctx context.Context, sinceSequence int64) (EventAttentionSnapshot, error)
 }
 
 // RequestRecord is one persisted model request (across its retry attempts) for

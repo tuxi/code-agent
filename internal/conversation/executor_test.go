@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -119,6 +120,18 @@ type ctxCheckingEventStore struct {
 func (s *ctxCheckingEventStore) Append(ctx context.Context, e session.EventRecord) (int64, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err
+	}
+	return s.fakeEventStore.Append(ctx, e)
+}
+
+type failingTerminalEventStore struct {
+	fakeEventStore
+	failKind agent.EventKind
+}
+
+func (s *failingTerminalEventStore) Append(ctx context.Context, e session.EventRecord) (int64, error) {
+	if e.Kind == string(s.failKind) {
+		return 0, errors.New("event store unavailable")
 	}
 	return s.fakeEventStore.Append(ctx, e)
 }
@@ -354,6 +367,82 @@ func TestTurnExecutor_QueuesSameWorkspaceAndCancelsQueuedTurn(t *testing.T) {
 	close(release)
 	if err := assertReady(t, firstDone); err != nil {
 		t.Fatalf("first turn error = %v", err)
+	}
+}
+
+func TestTurnExecutor_RunningCancelPersistsExactlyOneTerminal(t *testing.T) {
+	repo := newFakeRepo()
+	repo.sessions["running"] = &session.Session{ID: "running", WorkspacePath: "/work/running", Metadata: map[string]any{}}
+	events := &fakeEventStore{}
+	started := make(chan string, 1)
+	release := make(chan struct{})
+	exec := NewTurnExecutor(repo, events, NewActiveTurnRegistry(), NewSubscriptionManager(), &schedulerBlockingRunBuilder{started: started, release: release})
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := exec.Execute(context.Background(), "running", "work", "")
+		done <- err
+	}()
+	if got := assertReady(t, started); got != "running" {
+		t.Fatalf("started=%q", got)
+	}
+	exec.Cancel("running")
+	if err := assertReady(t, done); !errors.Is(err, context.Canceled) {
+		t.Fatalf("run error=%v want context.Canceled", err)
+	}
+	exec.Cancel("running") // repeated stop after terminal is a no-op
+
+	cancelled := 0
+	for _, record := range events.records {
+		if record.Kind == string(agent.EventTurnCancelled) {
+			cancelled++
+		}
+	}
+	if cancelled != 1 {
+		t.Fatalf("turn_cancelled count=%d records=%+v", cancelled, events.records)
+	}
+}
+
+func TestTurnExecutor_TerminalPersistenceFailureIsObservable(t *testing.T) {
+	repo := newFakeRepo()
+	repo.sessions["s"] = &session.Session{ID: "s", WorkspacePath: "/work/s", Metadata: map[string]any{}}
+	events := &failingTerminalEventStore{failKind: agent.EventTurnFinished}
+	subs := NewSubscriptionManager()
+	stream, unsubscribe := subs.Subscribe("s")
+	defer unsubscribe()
+	builder := &funcRunBuilder{fn: func(rc RuntimeContext) {
+		rc.Publisher.Emit(agent.Event{Kind: agent.EventTurnFinished, SessionID: rc.Session.ID, TurnID: rc.TurnID, Text: "done"})
+	}}
+	exec := NewTurnExecutor(repo, events, NewActiveTurnRegistry(), subs, builder)
+
+	_, err := exec.Execute(context.Background(), "s", "work", "")
+	if err == nil || !strings.Contains(err.Error(), "persist turn_finished") {
+		t.Fatalf("error=%v want terminal persistence failure", err)
+	}
+	if repo.sessions["s"].TurnStatus() != session.TurnStatusFailed {
+		t.Fatalf("turn status=%q want failed", repo.sessions["s"].TurnStatus())
+	}
+	for _, record := range events.records {
+		if record.Kind == string(agent.EventTurnFinished) {
+			t.Fatalf("unpersisted turn_finished appeared in durable records: %+v", events.records)
+		}
+	}
+	foundFailed := false
+	for {
+		select {
+		case event := <-stream:
+			if event.Kind == agent.EventTurnFinished && event.Seq == 0 {
+				t.Fatal("unpersisted terminal was forwarded live")
+			}
+			if event.Kind == agent.EventTurnFailed {
+				foundFailed = true
+			}
+		default:
+			if !foundFailed {
+				t.Fatal("persisted turn_failed was not forwarded live")
+			}
+			return
+		}
 	}
 }
 

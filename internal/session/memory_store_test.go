@@ -331,6 +331,46 @@ func TestMemoryStoreRecentEventsByKind(t *testing.T) {
 	}
 }
 
+func TestMemoryStoreSessionEventAttention(t *testing.T) {
+	store := NewMemoryStore()
+	ctx := context.Background()
+	base := time.Date(2026, 7, 13, 12, 0, 0, 0, time.UTC)
+	for _, record := range []EventRecord{
+		{SessionID: "a", TurnID: "turn_1", Kind: "turn_finished", At: base},
+		{SessionID: "a", TurnID: "turn_2", Kind: "turn_started", At: base.Add(time.Second)},
+		{SessionID: "b", TurnID: "turn_3", Kind: "turn_paused", At: base.Add(2 * time.Second)},
+		{SessionID: "b", TurnID: "turn_3", Kind: "turn_cancelled", At: base.Add(3 * time.Second)},
+	} {
+		if _, err := store.RecordEvent(ctx, record); err != nil {
+			t.Fatal(err)
+		}
+	}
+	snapshot, err := store.SessionEventAttention(ctx, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	heads := snapshot.Sessions
+	if snapshot.LastSequence != 4 {
+		t.Fatalf("cursor=%d want 4", snapshot.LastSequence)
+	}
+	if len(heads) != 2 {
+		t.Fatalf("heads=%+v", heads)
+	}
+	if heads[0].SessionID != "a" || heads[0].LastSequence != 2 || heads[0].LatestEvent == nil || heads[0].LatestEvent.TurnID != "turn_2" || heads[0].LatestTerminal == nil || heads[0].LatestTerminal.TurnID != "turn_1" {
+		t.Fatalf("a head=%+v", heads[0])
+	}
+	if heads[1].LatestTerminal == nil || heads[1].LatestTerminal.Kind != "turn_cancelled" || heads[1].LatestTerminal.Seq != 4 {
+		t.Fatalf("b head=%+v", heads[1])
+	}
+	delta, err := store.SessionEventAttention(ctx, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if delta.LastSequence != 4 || len(delta.Sessions) != 1 || delta.Sessions[0].SessionID != "b" {
+		t.Fatalf("delta=%+v", delta)
+	}
+}
+
 func TestMemoryStoreProviderStats(t *testing.T) {
 	store := newMemStore(t)
 	ctx := context.Background()

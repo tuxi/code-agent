@@ -79,3 +79,24 @@ type Session struct {
 func (s *Session) IsEmpty() bool {
 	return len(s.Messages) <= 1
 }
+
+// RemoveEmptyAssistantNoOps removes legacy assistant messages that contain
+// neither text nor tool calls. They cannot be sent to OpenAI-compatible
+// providers and are not part of a tool-call/result pairing, so removing them
+// repairs a corrupted session without changing tool protocol semantics.
+func (s *Session) RemoveEmptyAssistantNoOps() int {
+	if len(s.Messages) == 0 {
+		return 0
+	}
+	kept := s.Messages[:0]
+	removed := 0
+	for _, message := range s.Messages {
+		if message.IsEmptyAssistantNoOp() {
+			removed++
+			continue
+		}
+		kept = append(kept, message)
+	}
+	s.Messages = kept
+	return removed
+}

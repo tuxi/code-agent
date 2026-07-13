@@ -74,6 +74,11 @@ func (w *RemoteToolResultWaiter) Wait(ctx context.Context, callID string, leaseT
 func (w *RemoteToolResultWaiter) Deliver(callID string, result agent.ToolCallResult) {
 	w.mu.Lock()
 	pc, ok := w.pending[callID]
+	if ok {
+		// A valid result resolves the broker entry before waking Wait so activity
+		// cannot continue reporting a stale client-tool block.
+		delete(w.pending, callID)
+	}
 	w.mu.Unlock()
 	if !ok {
 		return
@@ -83,6 +88,13 @@ func (w *RemoteToolResultWaiter) Deliver(callID string, result agent.ToolCallRes
 		return // Wait already returned; don't block the Deliver caller
 	case pc.ch <- result:
 	}
+}
+
+// PendingCount returns unresolved session-scoped client tool calls.
+func (w *RemoteToolResultWaiter) PendingCount() int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return len(w.pending)
 }
 
 // CancelAll wakes every pending Wait by closing their done channels. Each

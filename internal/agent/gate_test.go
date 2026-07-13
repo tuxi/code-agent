@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -19,6 +20,47 @@ type scriptedProvider struct {
 	lastMessages []model.Message
 	lastTools    []model.ToolDefinition
 	lastRequest  model.Request
+}
+
+func TestEmptyAssistantResponseFailsWithoutPersistingNoOp(t *testing.T) {
+	provider := &scriptedProvider{responses: []model.Response{{Content: "   ", FinishReason: "stop"}}}
+	sess := newSession()
+	runner := &Runner{Model: provider, Tools: tools.NewRegistry(), MaxSteps: 3}
+
+	_, err := runner.RunTurn(context.Background(), sess, "hello")
+	if !errors.Is(err, model.ErrEmptyAssistantResponse) {
+		t.Fatalf("RunTurn error = %v, want ErrEmptyAssistantResponse", err)
+	}
+	// The user turn remains for retry/audit, but no invalid empty assistant
+	// message is appended to poison the following provider request.
+	if len(sess.Messages) != 2 {
+		t.Fatalf("messages = %+v, want system + user only", sess.Messages)
+	}
+	if got := sess.Messages[1]; got.Role != model.RoleUser || got.Content != "hello" {
+		t.Fatalf("last message = %+v, want original user turn", got)
+	}
+}
+
+func TestLegacyEmptyAssistantNoOpIsRemovedBeforeNextRequest(t *testing.T) {
+	provider := &scriptedProvider{responses: []model.Response{{Content: "recovered", FinishReason: "stop"}}}
+	sess := newSession()
+	sess.Messages = append(sess.Messages,
+		model.Message{Role: model.RoleAssistant, Content: "", ToolCalls: nil},
+		model.Message{Role: model.RoleUser, Content: "previous request"},
+	)
+	runner := &Runner{Model: provider, Tools: tools.NewRegistry(), MaxSteps: 3}
+
+	if _, err := runner.RunTurn(context.Background(), sess, "next request"); err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+	if len(provider.lastMessages) == 0 || provider.lastMessages[0].Role != model.RoleSystem {
+		t.Fatalf("request messages = %+v", provider.lastMessages)
+	}
+	for _, message := range provider.lastMessages {
+		if message.IsEmptyAssistantNoOp() {
+			t.Fatalf("legacy no-op leaked into provider request: %+v", message)
+		}
+	}
 }
 
 func (p *scriptedProvider) Complete(_ context.Context, req model.Request) (model.Response, error) {

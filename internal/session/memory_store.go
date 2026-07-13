@@ -20,10 +20,11 @@ import (
 //
 // Compile-time checks.
 var (
-	_ Store          = (*MemoryStore)(nil)
-	_ SessionStore   = (*MemoryStore)(nil)
-	_ EventStore     = (*MemoryStore)(nil)
-	_ TelemetryStore = (*MemoryStore)(nil)
+	_ Store               = (*MemoryStore)(nil)
+	_ SessionStore        = (*MemoryStore)(nil)
+	_ EventStore          = (*MemoryStore)(nil)
+	_ EventAttentionStore = (*MemoryStore)(nil)
+	_ TelemetryStore      = (*MemoryStore)(nil)
 )
 
 type MemoryStore struct {
@@ -167,6 +168,47 @@ func (m *MemoryStore) RecentEventsByKind(_ context.Context, kind string, limit i
 		}
 	}
 	return out, nil
+}
+
+func (m *MemoryStore) SessionEventAttention(_ context.Context, sinceSequence int64) (EventAttentionSnapshot, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	bySession := make(map[string]*EventAttention)
+	for i := range m.events {
+		e := m.events[i]
+		head := bySession[e.SessionID]
+		if head == nil {
+			head = &EventAttention{SessionID: e.SessionID}
+			bySession[e.SessionID] = head
+		}
+		if e.Seq > head.LastSequence {
+			head.LastSequence = e.Seq
+			latest := e
+			head.LatestEvent = &latest
+		}
+		if isTerminalEventKind(e.Kind) && (head.LatestTerminal == nil || e.Seq > head.LatestTerminal.Seq) {
+			terminal := e
+			head.LatestTerminal = &terminal
+		}
+	}
+	out := make([]EventAttention, 0, len(bySession))
+	for _, head := range bySession {
+		if head.LastSequence > sinceSequence {
+			out = append(out, *head)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].SessionID < out[j].SessionID })
+	return EventAttentionSnapshot{LastSequence: m.eventSeq, Sessions: out}, nil
+}
+
+func isTerminalEventKind(kind string) bool {
+	switch kind {
+	case "turn_finished", "turn_failed", "turn_cancelled":
+		return true
+	default:
+		return false
+	}
 }
 
 // ── TelemetryStore ────────────────────────────────────────────────────────

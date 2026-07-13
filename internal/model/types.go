@@ -3,7 +3,14 @@ package model
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"strings"
 )
+
+// ErrEmptyAssistantResponse indicates that a provider ended a response without
+// either user-visible text or tool calls. Such a response cannot be represented
+// as a valid assistant message in OpenAI-compatible conversation history.
+var ErrEmptyAssistantResponse = errors.New("model returned an empty assistant response")
 
 type Usage struct {
 	PromptTokens     int   `json:"prompt_tokens"`
@@ -131,6 +138,25 @@ type Response struct {
 // HasToolCalls reports whether the model requested any tool execution.
 func (r Response) HasToolCalls() bool {
 	return len(r.ToolCalls) > 0
+}
+
+// ValidateAssistantTurn verifies that this response can safely be persisted as
+// an assistant message. Tool-only responses are valid, but a response with
+// neither text nor tool calls is an invalid no-op and must fail the turn rather
+// than poison the next provider request.
+func (r Response) ValidateAssistantTurn() error {
+	if strings.TrimSpace(r.Content) == "" && !r.HasToolCalls() {
+		return ErrEmptyAssistantResponse
+	}
+	return nil
+}
+
+// IsEmptyAssistantNoOp reports whether a persisted message is an assistant
+// no-op that OpenAI-compatible providers reject. It is intentionally limited to
+// assistant messages, so empty tool-call turns and empty tool results retain
+// their protocol semantics.
+func (m Message) IsEmptyAssistantNoOp() bool {
+	return m.Role == RoleAssistant && strings.TrimSpace(m.Content) == "" && len(m.ToolCalls) == 0
 }
 
 // AssistantMessage converts the response into the assistant message that must

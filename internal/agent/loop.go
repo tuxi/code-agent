@@ -460,6 +460,10 @@ func (r *Runner) RunTurnWithAssets(ctx context.Context, sess *session.Session, u
 		r.emitTurnID = nextSessionTurnID(sess)
 	}
 	r.emitInvocationID = "" // cleared each turn; set per model call
+	// Repair sessions written by older runtimes before appending a new user
+	// message. Empty assistant no-ops are invalid provider input but are never
+	// needed to preserve a tool-call/result pairing.
+	sess.RemoveEmptyAssistantNoOps()
 
 	// Append the user's turn to the persistent session history.
 	sess.Messages = append(sess.Messages, model.Message{
@@ -501,6 +505,7 @@ func (r *Runner) ResumeTurn(ctx context.Context, sess *session.Session) (TurnRes
 		r.emitTurnID = nextSessionTurnID(sess)
 	}
 	r.emitInvocationID = ""
+	sess.RemoveEmptyAssistantNoOps()
 
 	sess.UpdatedAt = time.Now()
 	r.emit(Event{Kind: EventTurnResumed})
@@ -653,6 +658,12 @@ func (r *Runner) drive(ctx context.Context, sess *session.Session) (TurnResult, 
 			Elapsed:          time.Since(modelStart),
 		})
 		if err != nil {
+			return turn, err
+		}
+		// A provider may end a successful HTTP/SSE exchange without emitting
+		// either text or tool calls. Never persist that no-op as an assistant
+		// message: OpenAI-compatible providers reject it on the next request.
+		if err := resp.ValidateAssistantTurn(); err != nil {
 			return turn, err
 		}
 

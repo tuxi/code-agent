@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -139,6 +140,7 @@ func (e *TurnExecutor) ExecuteWithSessionAssets(parentCtx context.Context, sess 
 
 func (e *TurnExecutor) executeWithSessionAssets(parentCtx context.Context, sess *session.Session, requestID, input, modelName string, assets []model.GatewayAssetRef) (agent.TurnResult, error) {
 	res, runErr := e.driveTurn(parentCtx, sess, requestID, modelName,
+		session.TurnStatusRunning,
 		func(ctx context.Context, runner TurnRunner) (agent.TurnResult, error) {
 			if assetRunner, ok := runner.(AssetTurnRunner); ok {
 				return assetRunner.RunTurnWithAssets(ctx, sess, input, assets)
@@ -189,7 +191,7 @@ func (e *TurnExecutor) Resume(parentCtx context.Context, sessionID string) (agen
 	if sess.TurnStatus() != session.TurnStatusPaused {
 		return agent.TurnResult{}, nil
 	}
-	return e.driveTurn(parentCtx, sess, "", "",
+	return e.driveTurn(parentCtx, sess, "", "", session.TurnStatusResuming,
 		func(ctx context.Context, runner TurnRunner) (agent.TurnResult, error) {
 			return runner.ResumeTurn(ctx, sess)
 		},
@@ -207,6 +209,7 @@ func (e *TurnExecutor) driveTurn(
 	sess *session.Session,
 	requestID string,
 	model string,
+	runningState string,
 	run func(ctx context.Context, runner TurnRunner) (agent.TurnResult, error),
 	recordStatus func(sess *session.Session, runErr error),
 ) (agent.TurnResult, error) {
@@ -228,14 +231,18 @@ func (e *TurnExecutor) driveTurn(
 		TurnID:        turnID,
 		WorkspacePath: sess.WorkspacePath,
 		Mode:          workspaceExecutionMode(sess.ExecutionPolicy()),
+		RunningState:  runningState,
 	}, func(position int) {
 		pub.Emit(agent.Event{Kind: agent.EventTurnQueued, SessionID: sess.ID, TurnID: turnID, QueuePosition: position})
 	})
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
 			pub.Emit(agent.Event{Kind: agent.EventTurnCancelled, SessionID: sess.ID, TurnID: turnID})
+			if persistErr := pub.terminalPersistenceError(); persistErr != nil {
+				return agent.TurnResult{TurnID: turnID}, errors.Join(err, persistErr)
+			}
 		}
-		return agent.TurnResult{}, err
+		return agent.TurnResult{TurnID: turnID}, err
 	}
 	defer release()
 
@@ -270,17 +277,26 @@ func (e *TurnExecutor) driveTurn(
 
 	// 5. Run, marking running while in flight so a mid-turn crash leaves a
 	//    detectable "interrupted" status (reconciled to paused on next start).
-	sess.SetTurnStatus(session.TurnStatusRunning)
+	sess.SetTurnStatus(runningState)
 	res, runErr := run(turnCtx, runner)
 	// The executor owns the accepted lifecycle identity. Alternate runners may
 	// return a legacy/generated id, but it must never split one turn's event
 	// stream into two correlations.
 	res.TurnID = turnID
+	// turn_finished is emitted by the loop. If its durable append failed, the
+	// turn cannot be reported as successfully complete; convert the outcome to a
+	// visible executor failure before choosing the terminal session status.
+	if persistErr := pub.terminalPersistenceError(); persistErr != nil {
+		runErr = errors.Join(runErr, persistErr)
+	}
 
 	// 6. Record the terminal status BEFORE the save, then emit the lifecycle event
 	//    so a client sees paused/failed transitions.
 	recordStatus(sess, runErr)
 	e.emitLifecycle(pub, sess, res.TurnID, runErr)
+	if persistErr := pub.terminalPersistenceError(); persistErr != nil && !errors.Is(runErr, persistErr) {
+		runErr = errors.Join(runErr, persistErr)
+	}
 
 	// 7. Save — always, even on error/cancel. The cancel-mid-batch fill + running
 	//    marker keep the persisted history consistent and resumable. WithoutCancel
@@ -348,8 +364,8 @@ func (e *TurnExecutor) recordRunStatus(sess *session.Session, runErr error) {
 	case errors.Is(runErr, context.Canceled) && e.active.WasSuspended(sess.ID):
 		sess.MarkPaused(time.Now())
 	case errors.Is(runErr, context.Canceled):
-		// Explicit cancel_turn is terminal on the client already and does not
-		// require a lifecycle event from the server.
+		// Explicit cancel_turn is terminal and emitLifecycle persists the matching
+		// turn_cancelled fact.
 		sess.SetTurnStatus(session.TurnStatusDone)
 	default:
 		// A model/runtime failure must be observable as a terminal lifecycle
@@ -368,10 +384,14 @@ func (e *TurnExecutor) recordResumeStatus(sess *session.Session, runErr error) {
 	case runErr == nil:
 		sess.SetTurnStatus(session.TurnStatusDone)
 		sess.ClearResumeAttempts()
-	case errors.Is(runErr, context.Canceled):
-		// The resume was interrupted (re-suspended, or the server torn down), not a
-		// genuine failure — stay paused for the next attempt, without counting it.
+	case errors.Is(runErr, context.Canceled) && e.active.WasSuspended(sess.ID):
+		// App suspension remains resumable.
 		sess.MarkPaused(time.Now())
+	case errors.Is(runErr, context.Canceled):
+		// An explicit stop while resuming has the same terminal cancellation
+		// semantics as a fresh running turn.
+		sess.SetTurnStatus(session.TurnStatusDone)
+		sess.ClearResumeAttempts()
 	case model.IsRetryable(runErr):
 		if sess.IncResumeAttempts() > maxResumeAttempts {
 			sess.SetTurnStatus(session.TurnStatusFailed)
@@ -383,9 +403,9 @@ func (e *TurnExecutor) recordResumeStatus(sess *session.Session, runErr error) {
 	}
 }
 
-// emitLifecycle publishes the paused/failed lifecycle event matching the session's
-// just-recorded terminal status, so a connected client updates its label. A done
-// turn already emitted turn_finished from the loop, so nothing is published here.
+// emitLifecycle publishes the executor-owned paused/failed/cancelled lifecycle
+// event matching the session's just-recorded status. A successful done turn
+// already emitted turn_finished from the loop.
 func (e *TurnExecutor) emitLifecycle(pub agent.Emitter, sess *session.Session, turnID string, runErr error) {
 	var kind agent.EventKind
 	switch sess.TurnStatus() {
@@ -393,6 +413,12 @@ func (e *TurnExecutor) emitLifecycle(pub agent.Emitter, sess *session.Session, t
 		kind = agent.EventTurnPaused
 	case session.TurnStatusFailed:
 		kind = agent.EventTurnFailed
+	case session.TurnStatusDone:
+		if errors.Is(runErr, context.Canceled) && !e.active.WasSuspended(sess.ID) {
+			kind = agent.EventTurnCancelled
+		} else {
+			return
+		}
 	default:
 		return
 	}
@@ -586,14 +612,17 @@ func (e *TurnExecutor) generateTitleAsync(sess *session.Session) {
 // sequencingEmitter persists each event to the ConversationEventStore — which
 // assigns its monotonic seq — then stamps that seq onto the event and forwards it
 // to the live subscriber sink, so a client's live seq is identical to the one the
-// replay path (ReplaySince) will report (v1.2 §4). Persistence is best-effort: a
-// marshal or write failure still forwards the event live (with seq 0) rather than
-// dropping it. Ephemeral token deltas are not persisted (too frequent) and carry
-// no seq; they are only forwarded live.
+// replay path (ReplaySince) will report (v1.2 §4). Non-terminal persistence
+// remains best-effort. Terminal persistence is authoritative: a failed append is
+// retained for the executor and the unsequenced terminal is not forwarded live.
+// Ephemeral token deltas are not persisted and carry no seq.
 type sequencingEmitter struct {
 	ctx    context.Context
 	events ConversationEventStore
 	live   agent.Emitter
+
+	mu          sync.Mutex
+	terminalErr error
 }
 
 func (s *sequencingEmitter) Emit(ev agent.Event) {
@@ -601,18 +630,49 @@ func (s *sequencingEmitter) Emit(ev agent.Event) {
 		s.live.Emit(ev)
 		return
 	}
+	if ev.At.IsZero() {
+		ev.At = time.Now()
+	}
 	// Marshal BEFORE stamping seq: the persisted payload must not carry seq (that
 	// lives in the rowid); replay re-stamps it from the row.
-	if payload, err := json.Marshal(ev); err == nil {
-		if seq, aerr := s.events.Append(s.ctx, session.EventRecord{
+	payload, err := json.Marshal(ev)
+	if err == nil {
+		var seq int64
+		seq, err = s.events.Append(s.ctx, session.EventRecord{
 			SessionID: ev.SessionID,
 			TurnID:    ev.TurnID,
 			Kind:      string(ev.Kind),
 			At:        ev.At,
 			Payload:   payload,
-		}); aerr == nil {
+		})
+		if err == nil {
 			ev.Seq = seq
 		}
 	}
+	if err != nil && isTerminalLifecycleEvent(ev.Kind) {
+		s.mu.Lock()
+		if s.terminalErr == nil {
+			s.terminalErr = fmt.Errorf("persist %s for session %s turn %s: %w", ev.Kind, ev.SessionID, ev.TurnID, err)
+		}
+		s.mu.Unlock()
+		// A terminal event without a durable sequence cannot be advertised as a
+		// reliable completion. The executor observes terminalErr and fails the run.
+		return
+	}
 	s.live.Emit(ev)
+}
+
+func (s *sequencingEmitter) terminalPersistenceError() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.terminalErr
+}
+
+func isTerminalLifecycleEvent(kind agent.EventKind) bool {
+	switch kind {
+	case agent.EventTurnFinished, agent.EventTurnFailed, agent.EventTurnCancelled:
+		return true
+	default:
+		return false
+	}
 }

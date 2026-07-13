@@ -117,6 +117,18 @@ type fakeEventStore struct {
 	seq  int64
 }
 
+type legacyEventStore struct{ base *fakeEventStore }
+
+func (s legacyEventStore) Append(ctx context.Context, e session.EventRecord) (int64, error) {
+	return s.base.Append(ctx, e)
+}
+func (s legacyEventStore) Replay(ctx context.Context, sessionID string) ([]session.EventRecord, error) {
+	return s.base.Replay(ctx, sessionID)
+}
+func (s legacyEventStore) ReplaySince(ctx context.Context, sessionID string, sinceSeq int64) ([]session.EventRecord, error) {
+	return s.base.ReplaySince(ctx, sessionID, sinceSeq)
+}
+
 func (s *fakeEventStore) Append(ctx context.Context, e session.EventRecord) (int64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -145,6 +157,38 @@ func (s *fakeEventStore) ReplaySince(ctx context.Context, sessionID string, sinc
 		}
 	}
 	return out, nil
+}
+
+func (s *fakeEventStore) Attention(_ context.Context, sinceSequence int64) (session.EventAttentionSnapshot, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []session.EventAttention
+	var cursor int64
+	for sessionID, records := range s.recs {
+		head := session.EventAttention{SessionID: sessionID}
+		for i := range records {
+			record := records[i]
+			if record.Seq > cursor {
+				cursor = record.Seq
+			}
+			if record.Seq > head.LastSequence {
+				head.LastSequence = record.Seq
+				latest := record
+				head.LatestEvent = &latest
+			}
+			switch record.Kind {
+			case string(agent.EventTurnFinished), string(agent.EventTurnFailed), string(agent.EventTurnCancelled):
+				if head.LatestTerminal == nil || record.Seq > head.LatestTerminal.Seq {
+					terminal := record
+					head.LatestTerminal = &terminal
+				}
+			}
+		}
+		if head.LastSequence > sinceSequence {
+			out = append(out, head)
+		}
+	}
+	return session.EventAttentionSnapshot{LastSequence: cursor, Sessions: out}, nil
 }
 
 func storedEvent(ev agent.Event) session.EventRecord {
@@ -191,7 +235,7 @@ func TestMuxRuntimeCapabilitiesAndActivity(t *testing.T) {
 	}
 	var activity activityResponse
 	decodeResponse(t, resp, &activity)
-	if len(activity.Sessions) != 1 || activity.Sessions[0].SessionID != "running" || activity.Sessions[0].State != session.TurnStatusRunning {
+	if len(activity.Sessions) != 1 || activity.Sessions[0].SessionID != "running" || activity.Sessions[0].State != session.TurnStatusPaused {
 		t.Fatalf("activity = %+v", activity.Sessions)
 	}
 }
@@ -202,8 +246,109 @@ func TestConfiguredRuntimeCapabilitiesEnableParallelOnlyAboveOne(t *testing.T) {
 		t.Fatalf("serial capabilities=%+v", serial)
 	}
 	parallel := ConfiguredRuntimeCapabilities(5)
-	if !parallel.MultiSessionExecution || !parallel.SessionScopedClientTools || !parallel.WorkspaceExecutionPolicy || !parallel.ActivitySnapshot || parallel.ManagedWorktree || parallel.MaxConcurrentTurns != 5 {
+	if !parallel.MultiSessionExecution || !parallel.SessionScopedClientTools || !parallel.WorkspaceExecutionPolicy || !parallel.ActivitySnapshot || !parallel.SessionAttentionSnapshot || !parallel.SessionAttentionDelta || parallel.ManagedWorktree || parallel.MaxConcurrentTurns != 5 {
 		t.Fatalf("parallel capabilities=%+v", parallel)
+	}
+}
+
+func TestMuxDowngradesAttentionCapabilityForLegacyEventStore(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/runtime/capabilities", nil)
+	NewMux(newFakeConversationRepo(), legacyEventStore{base: &fakeEventStore{}}, nil, MuxOptions{
+		RuntimeCapabilities: ConfiguredRuntimeCapabilities(2),
+	}).ServeHTTP(recorder, req)
+	var got runtimeCapabilitiesResponse
+	decodeResponse(t, recorder.Result(), &got)
+	if got.Capabilities.SessionAttentionSnapshot {
+		t.Fatalf("legacy event store advertised attention capability: %+v", got.Capabilities)
+	}
+	if !got.Capabilities.MultiSessionExecution {
+		t.Fatalf("attention downgrade changed execution capability: %+v", got.Capabilities)
+	}
+}
+
+func TestMuxActivityProjectsDurableTerminalWithoutOverwritingNewActiveTurn(t *testing.T) {
+	repo := newFakeConversationRepo()
+	oldTerminal := time.Date(2026, 7, 13, 11, 58, 0, 0, time.UTC)
+	newStarted := oldTerminal.Add(time.Minute)
+	current := &session.Session{ID: "current", WorkspacePath: "/tmp/current", UpdatedAt: newStarted}
+	current.SetTurnStatus(session.TurnStatusRunning)
+	stale := &session.Session{ID: "stale", WorkspacePath: "/tmp/stale", UpdatedAt: newStarted}
+	stale.SetTurnStatus(session.TurnStatusRunning)
+	repo.sessions[current.ID] = current
+	repo.sessions[stale.ID] = stale
+
+	events := &fakeEventStore{recs: map[string][]session.EventRecord{
+		"current": {
+			{Seq: 10, SessionID: "current", TurnID: "turn_old", Kind: string(agent.EventTurnFinished), At: oldTerminal},
+			{Seq: 11, SessionID: "current", TurnID: "turn_new", Kind: string(agent.EventTurnStarted), At: newStarted},
+		},
+		"stale": {
+			{Seq: 12, SessionID: "stale", TurnID: "turn_failed", Kind: string(agent.EventTurnFailed), At: newStarted},
+		},
+	}}
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/activity", nil)
+	recorder := httptest.NewRecorder()
+	NewMux(repo, events, nil, MuxOptions{RuntimeCapabilities: ConfiguredRuntimeCapabilities(2)}).ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var got activityResponse
+	decodeResponse(t, recorder.Result(), &got)
+	if got.GeneratedAt == "" || len(got.Sessions) != 2 {
+		t.Fatalf("activity=%+v", got)
+	}
+	byID := map[string]SessionActivity{}
+	for _, activity := range got.Sessions {
+		byID[activity.SessionID] = activity
+	}
+	if activity := byID["current"]; activity.ActiveTurnID != "turn_new" || activity.TurnID != "turn_new" || activity.State != "paused" || activity.LastSequence != 11 || activity.LatestTerminal == nil || activity.LatestTerminal.TurnID != "turn_old" {
+		t.Fatalf("current activity=%+v", activity)
+	}
+	if activity := byID["stale"]; activity.ActiveTurnID != "turn_failed" || activity.State != "failed" || activity.LatestTerminal == nil || activity.LatestTerminal.Sequence != 12 {
+		t.Fatalf("stale activity=%+v", activity)
+	}
+}
+
+func TestMuxActivityDeltaReturnsOnlyChangedHeadsAndRecoverableSessions(t *testing.T) {
+	repo := newFakeConversationRepo()
+	idle := &session.Session{ID: "idle", WorkspacePath: "/tmp/idle"}
+	idle.SetTurnStatus(session.TurnStatusDone)
+	orphaned := &session.Session{ID: "orphaned", WorkspacePath: "/tmp/orphaned"}
+	orphaned.SetTurnStatus(session.TurnStatusRunning)
+	repo.sessions[idle.ID] = idle
+	repo.sessions[orphaned.ID] = orphaned
+	events := &fakeEventStore{recs: map[string][]session.EventRecord{
+		"idle": {
+			{Seq: 2, SessionID: "idle", TurnID: "turn_old", Kind: string(agent.EventTurnFinished), At: time.Now()},
+		},
+		"orphaned": {
+			{Seq: 3, SessionID: "orphaned", TurnID: "turn_live", Kind: string(agent.EventTurnStarted), At: time.Now()},
+		},
+	}}
+	recorder := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/activity?since_sequence=3", nil)
+	NewMux(repo, events, nil, MuxOptions{RuntimeCapabilities: ConfiguredRuntimeCapabilities(2)}).ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var got activityResponse
+	decodeResponse(t, recorder.Result(), &got)
+	if !got.IsDelta || got.Cursor != 3 || len(got.Sessions) != 1 {
+		t.Fatalf("activity=%+v", got)
+	}
+	if activity := got.Sessions[0]; activity.SessionID != "orphaned" || activity.State != "paused" {
+		t.Fatalf("orphan activity=%+v", activity)
+	}
+}
+
+func TestMuxActivityRejectsInvalidCursor(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/activity?since_sequence=-1", nil)
+	newTestMux(newFakeConversationRepo(), &fakeEventStore{}).ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d want 400", recorder.Code)
 	}
 }
 

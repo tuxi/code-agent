@@ -29,6 +29,9 @@ type TurnScheduleRequest struct {
 	TurnID        string
 	WorkspacePath string
 	Mode          WorkspaceExecutionMode
+	// RunningState distinguishes a fresh running turn from a resumed turn.
+	// Empty defaults to "running" for compatibility with existing callers.
+	RunningState string
 }
 
 // SchedulerSnapshot is intentionally small and process-local. It is the basis
@@ -181,7 +184,11 @@ func (s *TurnScheduler) Activity() []ScheduledTurnActivity {
 	defer s.mu.Unlock()
 	activities := make([]ScheduledTurnActivity, 0, len(s.active)+len(s.pending))
 	for sessionID := range s.active {
-		activities = append(activities, ScheduledTurnActivity{SessionID: sessionID, TurnID: s.active[sessionID].req.TurnID, State: "running"})
+		state := s.active[sessionID].req.RunningState
+		if state == "" {
+			state = "running"
+		}
+		activities = append(activities, ScheduledTurnActivity{SessionID: sessionID, TurnID: s.active[sessionID].req.TurnID, State: state})
 	}
 	sort.Slice(activities, func(i, j int) bool { return activities[i].SessionID < activities[j].SessionID })
 	for position, w := range s.pending {

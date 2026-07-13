@@ -179,6 +179,8 @@ type RuntimeCapabilities struct {
 	MultiSessionExecution    bool `json:"multi_session_execution_v1"`
 	SessionScopedClientTools bool `json:"session_scoped_client_tools_v1"`
 	ActivitySnapshot         bool `json:"activity_snapshot_v1"`
+	SessionAttentionSnapshot bool `json:"session_attention_snapshot_v1"`
+	SessionAttentionDelta    bool `json:"session_attention_delta_v1"`
 	WorkspaceExecutionPolicy bool `json:"workspace_execution_policy_v1"`
 	ManagedWorktree          bool `json:"managed_worktree_v1"`
 	MaxConcurrentTurns       int  `json:"max_concurrent_turns"`
@@ -196,6 +198,8 @@ func ConfiguredRuntimeCapabilities(maxConcurrentTurns int) RuntimeCapabilities {
 		MultiSessionExecution:    maxConcurrentTurns > 1,
 		SessionScopedClientTools: true,
 		ActivitySnapshot:         true,
+		SessionAttentionSnapshot: true,
+		SessionAttentionDelta:    true,
 		WorkspaceExecutionPolicy: true,
 		ManagedWorktree:          false,
 		MaxConcurrentTurns:       maxConcurrentTurns,
@@ -206,19 +210,60 @@ type runtimeCapabilitiesResponse struct {
 	Capabilities RuntimeCapabilities `json:"capabilities"`
 }
 
-// SessionActivity is a point-in-time, session-scoped activity record. Queue and
-// pending-request fields stay omitted until the scheduler/broker can guarantee
-// their accuracy; clients must treat omitted as unknown, not zero.
+// SessionActivity is the merged scheduler, broker, lifecycle, and durable-event
+// projection for one session.
+type SessionTerminalActivity struct {
+	TurnID   string `json:"turn_id"`
+	Kind     string `json:"kind"`
+	Sequence int64  `json:"sequence"`
+	At       string `json:"at"`
+}
+
 type SessionActivity struct {
-	SessionID     string `json:"session_id"`
-	TurnID        string `json:"turn_id,omitempty"`
-	State         string `json:"state"`
-	QueuePosition int    `json:"queue_position,omitempty"`
-	UpdatedAt     string `json:"updated_at,omitempty"`
+	SessionID              string                   `json:"session_id"`
+	TurnID                 string                   `json:"turn_id,omitempty"`
+	ActiveTurnID           string                   `json:"active_turn_id,omitempty"`
+	State                  string                   `json:"state"`
+	QueuePosition          int                      `json:"queue_position"`
+	PendingApprovalCount   int                      `json:"pending_approval_count"`
+	PendingClientToolCount int                      `json:"pending_client_tool_count"`
+	LastSequence           int64                    `json:"last_sequence"`
+	LatestTerminal         *SessionTerminalActivity `json:"latest_terminal,omitempty"`
+	UpdatedAt              string                   `json:"updated_at,omitempty"`
 }
 
 type activityResponse struct {
-	Sessions []SessionActivity `json:"sessions"`
+	GeneratedAt string            `json:"generated_at"`
+	Cursor      int64             `json:"cursor"`
+	IsDelta     bool              `json:"is_delta"`
+	Sessions    []SessionActivity `json:"sessions"`
+}
+
+func terminalActivityState(kind string) string {
+	switch kind {
+	case string(agent.EventTurnFinished):
+		return "done"
+	case string(agent.EventTurnFailed):
+		return "failed"
+	case string(agent.EventTurnCancelled):
+		return "cancelled"
+	default:
+		return "idle"
+	}
+}
+
+func laterTimestamp(current string, candidate time.Time) string {
+	if candidate.IsZero() {
+		return current
+	}
+	if current == "" {
+		return candidate.UTC().Format(time.RFC3339Nano)
+	}
+	parsed, err := time.Parse(time.RFC3339Nano, current)
+	if err != nil || candidate.After(parsed) {
+		return candidate.UTC().Format(time.RFC3339Nano)
+	}
+	return current
 }
 
 // NewMux builds the HTTP surface of `codeagent serve`:
@@ -243,6 +288,19 @@ type activityResponse struct {
 // per connection, wrapping the executor — no permanent in-memory Conversation.
 func NewMux(repo conversation.ConversationRepository, eventStore conversation.ConversationEventStore, executor *conversation.TurnExecutor, opts MuxOptions) http.Handler {
 	mux := http.NewServeMux()
+	attentionStore, attentionSupported := eventStore.(conversation.ConversationAttentionStore)
+	if capability, ok := eventStore.(conversation.ConversationAttentionCapability); ok {
+		attentionSupported = attentionSupported && capability.SupportsAttentionSnapshot()
+	}
+	runtimeCapabilities := opts.RuntimeCapabilities
+	if !attentionSupported {
+		runtimeCapabilities.SessionAttentionSnapshot = false
+		runtimeCapabilities.SessionAttentionDelta = false
+	}
+	// Assigned below when the WebSocket routes are assembled. Activity handlers
+	// run only after NewMux returns, so the closure always sees the installed
+	// session-scoped broker.
+	var ws *WSHandler
 
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -250,24 +308,87 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 	})
 
 	mux.HandleFunc("GET /v1/runtime/capabilities", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, r, http.StatusOK, runtimeCapabilitiesResponse{Capabilities: opts.RuntimeCapabilities})
+		writeJSON(w, r, http.StatusOK, runtimeCapabilitiesResponse{Capabilities: runtimeCapabilities})
 	})
 
 	mux.HandleFunc("GET /v1/activity", func(w http.ResponseWriter, r *http.Request) {
+		generatedAt := time.Now().UTC()
+		sinceSequence := int64(0)
+		isDelta := false
+		if raw := r.URL.Query().Get("since_sequence"); raw != "" {
+			parsed, parseErr := strconv.ParseInt(raw, 10, 64)
+			if parseErr != nil || parsed < 0 {
+				http.Error(w, "since_sequence must be a non-negative integer", http.StatusBadRequest)
+				return
+			}
+			sinceSequence = parsed
+			isDelta = true
+		}
 		metas, err := repo.List(r.Context())
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		metaBySession := make(map[string]session.Meta, len(metas))
 		activityBySession := make(map[string]SessionActivity)
 		for _, meta := range metas {
+			metaBySession[meta.ID] = meta
 			switch meta.TurnStatus {
-			case session.TurnStatusRunning, session.TurnStatusResuming, session.TurnStatusPaused:
+			case session.TurnStatusRunning, session.TurnStatusResuming:
+				// Persisted running/resuming is a recovery checkpoint, not proof that
+				// this process still owns a goroutine. Only the scheduler overlay below
+				// may report live execution; otherwise surface a resumable pause.
+				activityBySession[meta.ID] = SessionActivity{
+					SessionID: meta.ID,
+					State:     session.TurnStatusPaused,
+					UpdatedAt: meta.UpdatedAt.UTC().Format(time.RFC3339Nano),
+				}
+			case session.TurnStatusPaused:
 				activityBySession[meta.ID] = SessionActivity{
 					SessionID: meta.ID,
 					State:     meta.TurnStatus,
-					UpdatedAt: meta.UpdatedAt.UTC().Format(time.RFC3339),
+					UpdatedAt: meta.UpdatedAt.UTC().Format(time.RFC3339Nano),
 				}
+			}
+		}
+
+		// Stable unread/completion facts come only from the persisted event log.
+		// NewMux downgrades the attention capability when the backend does not
+		// implement this optional projection.
+		cursor := int64(0)
+		if attentionSupported {
+			snapshot, attentionErr := attentionStore.Attention(r.Context(), sinceSequence)
+			if attentionErr != nil {
+				http.Error(w, attentionErr.Error(), http.StatusInternalServerError)
+				return
+			}
+			cursor = snapshot.LastSequence
+			for _, head := range snapshot.Sessions {
+				meta, exists := metaBySession[head.SessionID]
+				if !exists {
+					continue // exclude background-job event partitions
+				}
+				activity := activityBySession[head.SessionID]
+				activity.SessionID = head.SessionID
+				if activity.State == "" {
+					activity.State = "idle"
+				}
+				activity.LastSequence = head.LastSequence
+				if head.LatestEvent != nil && activity.ActiveTurnID == "" &&
+					(meta.TurnStatus == session.TurnStatusPaused || meta.TurnStatus == session.TurnStatusResuming || meta.TurnStatus == session.TurnStatusRunning) {
+					activity.ActiveTurnID = head.LatestEvent.TurnID
+					activity.TurnID = activity.ActiveTurnID
+				}
+				if head.LatestTerminal != nil {
+					activity.LatestTerminal = &SessionTerminalActivity{
+						TurnID:   head.LatestTerminal.TurnID,
+						Kind:     head.LatestTerminal.Kind,
+						Sequence: head.LatestTerminal.Seq,
+						At:       head.LatestTerminal.At.UTC().Format(time.RFC3339Nano),
+					}
+					activity.UpdatedAt = laterTimestamp(activity.UpdatedAt, head.LatestTerminal.At)
+				}
+				activityBySession[head.SessionID] = activity
 			}
 		}
 		// Scheduler state wins over persisted lifecycle state: it can report a
@@ -278,17 +399,52 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 				activity := activityBySession[live.SessionID]
 				activity.SessionID = live.SessionID
 				activity.TurnID = live.TurnID
+				activity.ActiveTurnID = live.TurnID
 				activity.State = live.State
 				activity.QueuePosition = live.QueuePosition
+				activity.UpdatedAt = generatedAt.Format(time.RFC3339Nano)
 				activityBySession[live.SessionID] = activity
+			}
+		}
+		if ws != nil {
+			for sessionID, broker := range ws.BrokerAttention() {
+				if _, exists := metaBySession[sessionID]; !exists {
+					continue
+				}
+				activity := activityBySession[sessionID]
+				activity.SessionID = sessionID
+				activity.PendingApprovalCount = broker.PendingApprovalCount
+				activity.PendingClientToolCount = broker.PendingClientToolCount
+				activity.UpdatedAt = generatedAt.Format(time.RFC3339Nano)
+				activityBySession[sessionID] = activity
 			}
 		}
 		activities := make([]SessionActivity, 0, len(activityBySession))
 		for _, activity := range activityBySession {
+			// Broker waits outrank scheduler state. Client tools are blocking but do
+			// not imply that a human approval notification is needed.
+			switch {
+			case activity.PendingApprovalCount > 0:
+				activity.State = "waiting_approval"
+			case activity.PendingClientToolCount > 0:
+				activity.State = "waiting_client_tool"
+			case activity.State == "":
+				activity.State = "idle"
+			}
+			activity.TurnID = activity.ActiveTurnID // migration alias
+			if activity.LatestTerminal != nil && activity.ActiveTurnID != "" && activity.LatestTerminal.TurnID == activity.ActiveTurnID {
+				activity.State = terminalActivityState(activity.LatestTerminal.Kind)
+				activity.QueuePosition = 0
+			}
 			activities = append(activities, activity)
 		}
 		sort.Slice(activities, func(i, j int) bool { return activities[i].SessionID < activities[j].SessionID })
-		writeJSON(w, r, http.StatusOK, activityResponse{Sessions: activities})
+		writeJSON(w, r, http.StatusOK, activityResponse{
+			GeneratedAt: generatedAt.Format(time.RFC3339Nano),
+			Cursor:      cursor,
+			IsDelta:     isDelta && attentionSupported,
+			Sessions:    activities,
+		})
 	})
 
 	// ---- v1 CRUD: all read from Repository (SQLite) ----
@@ -479,7 +635,7 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 		}
 		return conversation.NewTransportSession(id, executor), nil
 	}
-	ws := &WSHandler{
+	ws = &WSHandler{
 		Resolve:         wsResolve,
 		ServerName:      opts.ServerName,
 		Capabilities:    opts.Capabilities,

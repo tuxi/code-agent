@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"code-agent/internal/approve"
 	"code-agent/internal/agent"
+	"code-agent/internal/approve"
 )
 
 // waitApprovalID polls the sink for the approval_request frame and returns its id.
@@ -35,7 +35,16 @@ func TestRemoteApproverResolveApproves(t *testing.T) {
 	got := make(chan agent.Verdict, 1)
 	go func() { got <- a.Approve("run_command", json.RawMessage(`{"command":"x"}`)) }()
 
-	a.Resolve(waitApprovalID(t, sink), true)
+	id := waitApprovalID(t, sink)
+	if got := a.PendingCount(); got != 1 {
+		t.Fatalf("pending before resolve=%d want 1", got)
+	}
+	a.Resolve(id, true)
+	if got := a.PendingCount(); got != 0 {
+		t.Fatalf("pending after accepted verdict=%d want 0", got)
+	}
+	// A duplicate verdict is ignored and cannot recreate attention.
+	a.Resolve(id, false)
 
 	select {
 	case v := <-got:

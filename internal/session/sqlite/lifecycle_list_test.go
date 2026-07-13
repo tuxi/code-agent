@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"context"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -85,6 +86,54 @@ func TestSessionEventsSeqAndSince(t *testing.T) {
 	}
 	if len(since) != 2 || since[0].Seq != seqs[1] || since[1].Seq != seqs[2] {
 		t.Fatalf("SessionEventsSince(%d) = %v, want tail %v", seqs[0], seqField(since), seqs[1:])
+	}
+}
+
+func TestSessionEventAttentionSurvivesReopen(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "attention.db")
+	store, err := New(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	base := time.Date(2026, 7, 13, 12, 0, 0, 0, time.UTC)
+	for _, record := range []session.EventRecord{
+		{SessionID: "a", TurnID: "turn_old", Kind: "turn_failed", At: base},
+		{SessionID: "a", TurnID: "turn_new", Kind: "turn_started", At: base.Add(time.Second)},
+		{SessionID: "b", TurnID: "turn_b", Kind: "turn_paused", At: base.Add(2 * time.Second)},
+	} {
+		if _, err := store.RecordEvent(ctx, record); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = New(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	snapshot, err := store.SessionEventAttention(ctx, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	heads := snapshot.Sessions
+	if snapshot.LastSequence != 3 {
+		t.Fatalf("cursor=%d want 3", snapshot.LastSequence)
+	}
+	if len(heads) != 2 || heads[0].LastSequence != 2 || heads[0].LatestEvent == nil || heads[0].LatestEvent.TurnID != "turn_new" || heads[0].LatestTerminal == nil || heads[0].LatestTerminal.TurnID != "turn_old" {
+		t.Fatalf("heads=%+v", heads)
+	}
+	if heads[1].LatestTerminal != nil {
+		t.Fatalf("turn_paused must not be terminal: %+v", heads[1])
+	}
+	delta, err := store.SessionEventAttention(ctx, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if delta.LastSequence != 3 || len(delta.Sessions) != 1 || delta.Sessions[0].SessionID != "b" {
+		t.Fatalf("delta=%+v", delta)
 	}
 }
 

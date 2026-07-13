@@ -239,5 +239,20 @@ func (a *StoreEventAdapter) ReplaySince(ctx context.Context, sessionID string, s
 	return a.Store.SessionEventsSince(ctx, sessionID, sinceSeq)
 }
 
+func (a *StoreEventAdapter) Attention(ctx context.Context, sinceSequence int64) (session.EventAttentionSnapshot, error) {
+	store, ok := a.Store.(session.EventAttentionStore)
+	if !ok {
+		return session.EventAttentionSnapshot{}, fmt.Errorf("event store does not support session attention snapshots")
+	}
+	return store.SessionEventAttention(ctx, sinceSequence)
+}
+
+func (a *StoreEventAdapter) SupportsAttentionSnapshot() bool {
+	_, ok := a.Store.(session.EventAttentionStore)
+	return ok
+}
+
 // Compile-time check.
 var _ ConversationEventStore = (*StoreEventAdapter)(nil)
+var _ ConversationAttentionStore = (*StoreEventAdapter)(nil)
+var _ ConversationAttentionCapability = (*StoreEventAdapter)(nil)

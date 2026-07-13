@@ -22,10 +22,11 @@ import (
 //
 // Compile-time checks: Store satisfies all storage interfaces.
 var (
-	_ session.Store          = (*Store)(nil)
-	_ session.SessionStore   = (*Store)(nil)
-	_ session.EventStore     = (*Store)(nil)
-	_ session.TelemetryStore = (*Store)(nil)
+	_ session.Store               = (*Store)(nil)
+	_ session.SessionStore        = (*Store)(nil)
+	_ session.EventStore          = (*Store)(nil)
+	_ session.EventAttentionStore = (*Store)(nil)
+	_ session.TelemetryStore      = (*Store)(nil)
 )
 
 type Store struct {
@@ -556,6 +557,103 @@ func (s *Store) RecentEventsByKind(ctx context.Context, kind string, limit int) 
 		out = append(out, e)
 	}
 	return out, rows.Err()
+}
+
+// SessionEventAttention returns a cursor-bounded durable head projection. The
+// terminal subquery deliberately excludes turn_paused: a paused turn remains
+// active and resumable.
+func (s *Store) SessionEventAttention(ctx context.Context, sinceSequence int64) (session.EventAttentionSnapshot, error) {
+	if sinceSequence < 0 {
+		sinceSequence = 0
+	}
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return session.EventAttentionSnapshot{}, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var cursor int64
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(id), 0) FROM session_events`).Scan(&cursor); err != nil {
+		return session.EventAttentionSnapshot{}, err
+	}
+	rows, err := tx.QueryContext(ctx, `
+		WITH changed_sessions AS (
+			SELECT DISTINCT session_id
+			FROM session_events
+			WHERE id > ? AND id <= ?
+		), heads AS (
+			SELECT e.session_id, MAX(e.id) AS last_sequence
+			FROM session_events e
+			JOIN changed_sessions c ON c.session_id = e.session_id
+			WHERE e.id <= ?
+			GROUP BY e.session_id
+		), terminal_heads AS (
+			SELECT e.session_id, MAX(e.id) AS terminal_sequence
+			FROM session_events e
+			JOIN changed_sessions c ON c.session_id = e.session_id
+			WHERE e.id <= ? AND e.kind IN ('turn_finished', 'turn_failed', 'turn_cancelled')
+			GROUP BY e.session_id
+		)
+		SELECT h.session_id, h.last_sequence,
+		       latest.id, latest.turn_id, latest.kind, latest.at, COALESCE(latest.payload, ''),
+		       t.id, t.turn_id, t.kind, t.at, COALESCE(t.payload, '')
+		FROM heads h
+		JOIN session_events latest ON latest.id = h.last_sequence
+		LEFT JOIN terminal_heads th ON th.session_id = h.session_id
+		LEFT JOIN session_events t ON t.id = th.terminal_sequence
+		ORDER BY h.session_id ASC`, sinceSequence, cursor, cursor, cursor)
+	if err != nil {
+		return session.EventAttentionSnapshot{}, err
+	}
+	defer rows.Close()
+
+	var out []session.EventAttention
+	for rows.Next() {
+		var head session.EventAttention
+		var latestSeq int64
+		var latestTurnID, latestKind, latestAt, latestPayload string
+		var seq sql.NullInt64
+		var turnID, kind, at, payload sql.NullString
+		if err := rows.Scan(
+			&head.SessionID, &head.LastSequence,
+			&latestSeq, &latestTurnID, &latestKind, &latestAt, &latestPayload,
+			&seq, &turnID, &kind, &at, &payload,
+		); err != nil {
+			return session.EventAttentionSnapshot{}, err
+		}
+		latest := session.EventRecord{
+			Seq:       latestSeq,
+			SessionID: head.SessionID,
+			TurnID:    latestTurnID,
+			Kind:      latestKind,
+			At:        parseTime(latestAt),
+		}
+		if latestPayload != "" {
+			latest.Payload = json.RawMessage(latestPayload)
+		}
+		head.LatestEvent = &latest
+		if seq.Valid {
+			record := session.EventRecord{
+				Seq:       seq.Int64,
+				SessionID: head.SessionID,
+				TurnID:    turnID.String,
+				Kind:      kind.String,
+				At:        parseTime(at.String),
+			}
+			if payload.String != "" {
+				record.Payload = json.RawMessage(payload.String)
+			}
+			head.LatestTerminal = &record
+		}
+		out = append(out, head)
+	}
+	if err := rows.Err(); err != nil {
+		return session.EventAttentionSnapshot{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return session.EventAttentionSnapshot{}, err
+	}
+	return session.EventAttentionSnapshot{LastSequence: cursor, Sessions: out}, nil
 }
 
 func (s *Store) TokenUsageByModel(ctx context.Context) ([]session.ModelUsage, error) {

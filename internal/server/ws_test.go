@@ -103,6 +103,61 @@ func TestWSHandlerLatestConnectionOwnsSessionControl(t *testing.T) {
 	}
 }
 
+func TestWSHandlerAttentionRejectsStaleControlResults(t *testing.T) {
+	h := &WSHandler{}
+	firstSink := &syncSink{}
+	approver, waiter, firstRevision := h.claimSessionControl("session", firstSink)
+
+	verdict := make(chan agent.Verdict, 1)
+	go func() { verdict <- approver.Approve("run_command", json.RawMessage(`{"command":"true"}`)) }()
+	approvalID := waitApprovalID(t, firstSink)
+	if got := h.BrokerAttention()["session"].PendingApprovalCount; got != 1 {
+		t.Fatalf("approval attention=%d want 1", got)
+	}
+
+	secondSink := &syncSink{}
+	_, _, secondRevision := h.claimSessionControl("session", secondSink)
+	staleApproval := revisionApprovalResolver{handler: h, sessionID: "session", revision: firstRevision, target: approver}
+	currentApproval := revisionApprovalResolver{handler: h, sessionID: "session", revision: secondRevision, target: approver}
+	staleApproval.Resolve(approvalID, true)
+	if got := h.BrokerAttention()["session"].PendingApprovalCount; got != 1 {
+		t.Fatalf("stale verdict changed approval attention to %d", got)
+	}
+	currentApproval.Resolve(approvalID, true)
+	if got := h.BrokerAttention()["session"].PendingApprovalCount; got != 0 {
+		t.Fatalf("current verdict left approval attention=%d", got)
+	}
+	if got := <-verdict; got != agent.VerdictAllow {
+		t.Fatalf("verdict=%v", got)
+	}
+
+	toolResult := make(chan agent.ToolCallResult, 1)
+	go func() {
+		got, _ := waiter.Wait(context.Background(), "call", time.Second)
+		toolResult <- got
+	}()
+	deadline := time.Now().Add(time.Second)
+	for h.BrokerAttention()["session"].PendingClientToolCount != 1 {
+		if time.Now().After(deadline) {
+			t.Fatal("client tool did not become pending")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	staleTool := revisionToolResultResolver{handler: h, sessionID: "session", revision: firstRevision, target: waiter}
+	currentTool := revisionToolResultResolver{handler: h, sessionID: "session", revision: secondRevision, target: waiter}
+	staleTool.Deliver("call", agent.ToolCallResult{Content: "stale"})
+	if got := h.BrokerAttention()["session"].PendingClientToolCount; got != 1 {
+		t.Fatalf("stale tool result changed attention to %d", got)
+	}
+	currentTool.Deliver("call", agent.ToolCallResult{Content: "current"})
+	if got := h.BrokerAttention()["session"].PendingClientToolCount; got != 0 {
+		t.Fatalf("current tool result left attention=%d", got)
+	}
+	if got := <-toolResult; got.Content != "current" {
+		t.Fatalf("tool result=%+v", got)
+	}
+}
+
 func (s *testSession) Subscribe() (<-chan agent.Event, func()) {
 	return s.hub.subscribe()
 }

@@ -132,9 +132,9 @@ func (a *RemoteApprover) Approve(toolName string, input json.RawMessage) agent.V
 			}
 		}
 		if res.approved {
-				return agent.VerdictAllow
-			}
-			return agent.VerdictDeny
+			return agent.VerdictAllow
+		}
+		return agent.VerdictDeny
 	case <-deadline:
 		return agent.VerdictDeny // no answer in time: deny
 	}
@@ -155,6 +155,12 @@ func (a *RemoteApprover) ResolveTool(id string, approved, always bool, scope app
 func (a *RemoteApprover) deliver(id string, res outcome) {
 	a.mu.Lock()
 	req, ok := a.pending[id]
+	if ok {
+		// Resolution becomes visible to the attention snapshot before the blocked
+		// goroutine is woken. Removing under the same lock also makes duplicate
+		// verdicts harmless.
+		delete(a.pending, id)
+	}
 	a.mu.Unlock()
 	if ok {
 		select {
@@ -162,6 +168,14 @@ func (a *RemoteApprover) deliver(id string, res outcome) {
 		default:
 		}
 	}
+}
+
+// PendingCount returns the number of unresolved approval requests. It is an
+// attention fact only; request arguments remain on the session channel.
+func (a *RemoteApprover) PendingCount() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return len(a.pending)
 }
 
 func scopeLabel(s approve.Scope) string {

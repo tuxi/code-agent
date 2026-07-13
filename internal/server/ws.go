@@ -106,6 +106,38 @@ type WSHandler struct {
 	controlRevisions map[string]uint64
 }
 
+// SessionBrokerAttention is the count-only projection used by /v1/activity.
+// Approval/tool payloads stay on their directed session channel.
+type SessionBrokerAttention struct {
+	PendingApprovalCount   int
+	PendingClientToolCount int
+}
+
+// BrokerAttention returns unresolved broker work by session. Resolved entries
+// have already been removed before their waiting goroutines are awakened.
+func (h *WSHandler) BrokerAttention() map[string]SessionBrokerAttention {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	out := make(map[string]SessionBrokerAttention)
+	for sessionID, approver := range h.approvers {
+		count := approver.PendingCount()
+		if count > 0 {
+			entry := out[sessionID]
+			entry.PendingApprovalCount = count
+			out[sessionID] = entry
+		}
+	}
+	for sessionID, waiter := range h.toolWaiters {
+		count := waiter.PendingCount()
+		if count > 0 {
+			entry := out[sessionID]
+			entry.PendingClientToolCount = count
+			out[sessionID] = entry
+		}
+	}
+	return out
+}
+
 func (h *WSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	sess, err := h.Resolve(r)
 	if err != nil {
