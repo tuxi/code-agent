@@ -2,6 +2,8 @@ package conversation
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -89,6 +91,40 @@ func TestTurnScheduler_AllowsIsolatedWorktreesFromSameBase(t *testing.T) {
 	}()
 	releaseB := assertReady(t, acquired)
 	releaseB()
+}
+
+func TestTurnScheduler_SerializesSamePathMisdeclaredAsIsolated(t *testing.T) {
+	s := NewTurnScheduler(2)
+	releaseA, err := s.Acquire(context.Background(), TurnScheduleRequest{SessionID: "a", WorkspacePath: "/repo/worktrees/same", Mode: IsolatedWorktree})
+	if err != nil {
+		t.Fatal(err)
+	}
+	acquired := make(chan func(), 1)
+	go func() {
+		release, err := s.Acquire(context.Background(), TurnScheduleRequest{SessionID: "b", WorkspacePath: "/repo/worktrees/same", Mode: IsolatedWorktree})
+		if err != nil {
+			t.Errorf("second acquire: %v", err)
+			return
+		}
+		acquired <- release
+	}()
+	assertNotReady(t, acquired)
+	releaseA()
+	releaseB := assertReady(t, acquired)
+	releaseB()
+}
+
+func TestWorkspaceLeaseKeyResolvesSymlinks(t *testing.T) {
+	realPath := t.TempDir()
+	linkPath := filepath.Join(t.TempDir(), "workspace-link")
+	if err := os.Symlink(realPath, linkPath); err != nil {
+		t.Fatal(err)
+	}
+	realKey := workspaceLeaseKey(TurnScheduleRequest{WorkspacePath: realPath})
+	linkKey := workspaceLeaseKey(TurnScheduleRequest{WorkspacePath: linkPath, Mode: IsolatedWorktree})
+	if realKey != linkKey {
+		t.Fatalf("real key %q != symlink key %q", realKey, linkKey)
+	}
 }
 
 func TestTurnScheduler_CancelQueuedTurn(t *testing.T) {

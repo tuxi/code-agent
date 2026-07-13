@@ -146,20 +146,14 @@ func run() error {
 	}
 
 	handler := server.NewMux(repo, eventStore, executor, server.MuxOptions{
-		ServerName:        "codeagentd/" + mc.Model,
-		Capabilities:      defaultCapabilities,
-		WorkspaceRoot:     reposDir,
-		Granter:           rb.Rules(),
-		WorkspaceReloader: wsReg.ReloadWorkspace,
-		Prompts:           wsReg,
-		CredentialStore:   executor.SetSessionCredential,
-		RuntimeCapabilities: server.RuntimeCapabilities{
-			MultiSessionExecution:    false,
-			SessionScopedClientTools: true,
-			ActivitySnapshot:         true,
-			WorkspaceExecutionPolicy: true,
-			MaxConcurrentTurns:       maxConcurrentTurns,
-		},
+		ServerName:          "codeagentd/" + mc.Model,
+		Capabilities:        defaultCapabilities,
+		WorkspaceRoot:       reposDir,
+		Granter:             rb.Rules(),
+		WorkspaceReloader:   wsReg.ReloadWorkspace,
+		Prompts:             wsReg,
+		CredentialStore:     executor.SetSessionCredential,
+		RuntimeCapabilities: server.ConfiguredRuntimeCapabilities(maxConcurrentTurns),
 	})
 
 	srv := &http.Server{Addr: addr, Handler: handler}

@@ -49,7 +49,7 @@ type ScheduledTurnActivity struct {
 
 // TurnScheduler admits turns fairly across sessions. It enforces three rules:
 // one running turn per session, a process-wide concurrency limit, and an
-// exclusive lease for a shared workspace. It owns no goroutines: callers wait
+// exclusive lease for every normalized execution path. It owns no goroutines: callers wait
 // in Acquire, making cancellation and shutdown deterministic.
 type TurnScheduler struct {
 	mu sync.Mutex
@@ -306,18 +306,18 @@ func (s *TurnScheduler) removePendingLocked(target *scheduledTurn) {
 }
 
 func workspaceLeaseKey(req TurnScheduleRequest) string {
-	// A read-only turn still shares a mutable checkout with another turn, so it
-	// keeps the conservative lease. Only a separately provisioned worktree may
-	// execute without contending on the source workspace.
-	if req.Mode == IsolatedWorktree {
-		return ""
-	}
+	// Policy describes how a path was supplied; it never grants permission for
+	// two turns to use the same directory concurrently. Distinct worktree paths
+	// naturally produce distinct keys and can run in parallel.
 	path := req.WorkspacePath
 	if path == "" {
 		return "default"
 	}
 	if abs, err := filepath.Abs(path); err == nil {
 		path = abs
+	}
+	if real, err := filepath.EvalSymlinks(path); err == nil {
+		path = real
 	}
 	return filepath.Clean(path)
 }

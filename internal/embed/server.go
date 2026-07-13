@@ -440,14 +440,8 @@ func Assemble(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider 
 		// store. When a client connects with Authorization: Bearer <jwt>, the JWT
 		// flows: WS upgrade → CredentialStore → TurnExecutor → RuntimeContext →
 		// ServeRunBuilder.Build() → model provider → Gateway.
-		CredentialStore: executor.SetSessionCredential,
-		RuntimeCapabilities: server.RuntimeCapabilities{
-			MultiSessionExecution:    false,
-			SessionScopedClientTools: true,
-			ActivitySnapshot:         true,
-			WorkspaceExecutionPolicy: true,
-			MaxConcurrentTurns:       maxConcurrentTurns,
-		},
+		CredentialStore:     executor.SetSessionCredential,
+		RuntimeCapabilities: server.ConfiguredRuntimeCapabilities(maxConcurrentTurns),
 	})
 	rt := &Runtime{Executor: executor, Builder: rb, Repo: repo}
 	return handler, rt, closers, nil

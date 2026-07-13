@@ -180,8 +180,26 @@ type RuntimeCapabilities struct {
 	SessionScopedClientTools bool `json:"session_scoped_client_tools_v1"`
 	ActivitySnapshot         bool `json:"activity_snapshot_v1"`
 	WorkspaceExecutionPolicy bool `json:"workspace_execution_policy_v1"`
+	ManagedWorktree          bool `json:"managed_worktree_v1"`
 	MaxConcurrentTurns       int  `json:"max_concurrent_turns"`
 	MaxConnectedSessions     int  `json:"max_connected_sessions"`
+}
+
+// ConfiguredRuntimeCapabilities derives advertised guarantees from the same
+// effective scheduler limit used by the executor. Managed worktree provisioning
+// remains a separate capability and is intentionally false.
+func ConfiguredRuntimeCapabilities(maxConcurrentTurns int) RuntimeCapabilities {
+	if maxConcurrentTurns < 1 {
+		maxConcurrentTurns = 1
+	}
+	return RuntimeCapabilities{
+		MultiSessionExecution:    maxConcurrentTurns > 1,
+		SessionScopedClientTools: true,
+		ActivitySnapshot:         true,
+		WorkspaceExecutionPolicy: true,
+		ManagedWorktree:          false,
+		MaxConcurrentTurns:       maxConcurrentTurns,
+	}
 }
 
 type runtimeCapabilitiesResponse struct {

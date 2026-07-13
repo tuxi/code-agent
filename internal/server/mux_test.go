@@ -196,6 +196,17 @@ func TestMuxRuntimeCapabilitiesAndActivity(t *testing.T) {
 	}
 }
 
+func TestConfiguredRuntimeCapabilitiesEnableParallelOnlyAboveOne(t *testing.T) {
+	serial := ConfiguredRuntimeCapabilities(1)
+	if serial.MultiSessionExecution || serial.MaxConcurrentTurns != 1 {
+		t.Fatalf("serial capabilities=%+v", serial)
+	}
+	parallel := ConfiguredRuntimeCapabilities(5)
+	if !parallel.MultiSessionExecution || !parallel.SessionScopedClientTools || !parallel.WorkspaceExecutionPolicy || !parallel.ActivitySnapshot || parallel.ManagedWorktree || parallel.MaxConcurrentTurns != 5 {
+		t.Fatalf("parallel capabilities=%+v", parallel)
+	}
+}
+
 // TestMuxRebindFlow walks the host's Phase-1 attach contract: create an external
 // conversation with a bookmark ext_id, see needs_rebind=true + workspace_ref in
 // detail, POST the fresh path to /rebind, then see needs_rebind=false.
