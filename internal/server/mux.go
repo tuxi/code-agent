@@ -42,13 +42,41 @@ func statusForCloneCode(code string) int {
 // for a workspace outside the launch workspaceDir (an iOS security-scoped-bookmark
 // id); empty for workspace-local paths and on desktop. See spec §6.1.
 type CreateConversationRequest struct {
-	WorkspacePath  string `json:"workspace_path,omitempty"`
-	WorkspaceExtID string `json:"workspace_ext_id,omitempty"`
+	ClientRequestID string `json:"client_request_id,omitempty"`
+	WorkspacePath   string `json:"workspace_path,omitempty"`
+	WorkspaceExtID  string `json:"workspace_ext_id,omitempty"`
 	// ExecutionPolicy controls Runtime workspace leasing. isolated_worktree
 	// requires workspace_path to already identify the session's own worktree.
-	ExecutionPolicy string `json:"execution_policy,omitempty"`
-	WorkspaceID     string `json:"workspace_id,omitempty"`
-	BaseWorkspaceID string `json:"base_workspace_id,omitempty"`
+	ExecutionPolicy string                        `json:"execution_policy,omitempty"`
+	WorkspaceID     string                        `json:"workspace_id,omitempty"`
+	BaseWorkspaceID string                        `json:"base_workspace_id,omitempty"`
+	Worktree        *ManagedWorktreeCreateRequest `json:"worktree,omitempty"`
+}
+
+type ManagedWorktreeCreateRequest struct {
+	Managed       bool   `json:"managed"`
+	SuggestedName string `json:"suggested_name,omitempty"`
+	BaseRef       string `json:"base_ref,omitempty"`
+}
+
+type ManagedWorktreeDTO struct {
+	Managed bool   `json:"managed"`
+	Name    string `json:"name,omitempty"`
+	Branch  string `json:"branch,omitempty"`
+	BaseRef string `json:"base_ref,omitempty"`
+	State   string `json:"state"`
+}
+
+type APIWarning struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
+type managedWorktreeErrorResponse struct {
+	Code            string `json:"code"`
+	Message         string `json:"message"`
+	ClientRequestID string `json:"client_request_id,omitempty"`
+	SessionID       string `json:"session_id,omitempty"`
 }
 
 // RebindRequest is the POST /v1/conversations/{id}/rebind body: the host re-supplies
@@ -103,12 +131,17 @@ type cloneErrorResponse struct {
 // list interrupted sessions and render a "continue" entry — a paused status with
 // paused_at (unix seconds) marks a turn the host may resume.
 type ConversationRef struct {
-	ID            string        `json:"id"`
-	WorkspacePath string        `json:"workspace_path"`
-	Workspace     *WorkspaceDTO `json:"workspace,omitempty"`
-	Name          string        `json:"name,omitempty"`
-	TurnStatus    string        `json:"turn_status,omitempty"`
-	PausedAt      int64         `json:"paused_at,omitempty"`
+	ID              string              `json:"id"`
+	WorkspacePath   string              `json:"workspace_path"`
+	Workspace       *WorkspaceDTO       `json:"workspace,omitempty"`
+	Name            string              `json:"name,omitempty"`
+	TurnStatus      string              `json:"turn_status,omitempty"`
+	PausedAt        int64               `json:"paused_at,omitempty"`
+	ExecutionPolicy string              `json:"execution_policy,omitempty"`
+	WorkspaceID     string              `json:"workspace_id,omitempty"`
+	BaseWorkspaceID string              `json:"base_workspace_id,omitempty"`
+	Worktree        *ManagedWorktreeDTO `json:"worktree,omitempty"`
+	Warnings        []APIWarning        `json:"warnings,omitempty"`
 }
 
 // ConversationDetail is GET /v1/conversations/{id}. Counts and timestamps are
@@ -116,16 +149,21 @@ type ConversationRef struct {
 // metadata (identity, not an event). workspace_ref + needs_rebind let an iOS host
 // re-anchor an external workspace before opening the stream (spec §6.2bis/§6.3).
 type ConversationDetail struct {
-	ID            string           `json:"id"`
-	WorkspacePath string           `json:"workspace_path"`
-	Workspace     *WorkspaceDTO    `json:"workspace,omitempty"`
-	WorkspaceRef  *WorkspaceRefDTO `json:"workspace_ref,omitempty"`
-	NeedsRebind   bool             `json:"needs_rebind,omitempty"`
-	Name          string           `json:"name,omitempty"`
-	TurnCount     int              `json:"turn_count"`
-	MessageCount  int              `json:"message_count"`
-	CreatedAt     string           `json:"created_at,omitempty"`
-	UpdatedAt     string           `json:"updated_at,omitempty"`
+	ID              string              `json:"id"`
+	WorkspacePath   string              `json:"workspace_path"`
+	Workspace       *WorkspaceDTO       `json:"workspace,omitempty"`
+	WorkspaceRef    *WorkspaceRefDTO    `json:"workspace_ref,omitempty"`
+	NeedsRebind     bool                `json:"needs_rebind,omitempty"`
+	Name            string              `json:"name,omitempty"`
+	TurnCount       int                 `json:"turn_count"`
+	MessageCount    int                 `json:"message_count"`
+	CreatedAt       string              `json:"created_at,omitempty"`
+	UpdatedAt       string              `json:"updated_at,omitempty"`
+	ExecutionPolicy string              `json:"execution_policy,omitempty"`
+	WorkspaceID     string              `json:"workspace_id,omitempty"`
+	BaseWorkspaceID string              `json:"base_workspace_id,omitempty"`
+	Worktree        *ManagedWorktreeDTO `json:"worktree,omitempty"`
+	Warnings        []APIWarning        `json:"warnings,omitempty"`
 }
 
 // MessageView is one entry of GET /v1/conversations/{id}/messages. v1 reconstructs
@@ -472,6 +510,14 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 	mux.HandleFunc("POST /v1/conversations", func(w http.ResponseWriter, r *http.Request) {
 		var req CreateConversationRequest
 		_ = json.NewDecoder(r.Body).Decode(&req)
+		if req.Worktree != nil && req.Worktree.Managed {
+			writeManagedWorktreeError(w, r, http.StatusNotImplemented, managedWorktreeErrorResponse{
+				Code:            "managed_worktree_not_supported",
+				Message:         "managed worktree provisioning is not enabled",
+				ClientRequestID: req.ClientRequestID,
+			})
+			return
+		}
 
 		if req.WorkspacePath == "" {
 			http.Error(w, `"workspace_path" is required`, http.StatusBadRequest)
@@ -820,6 +866,10 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 	})
 
 	return mux
+}
+
+func writeManagedWorktreeError(w http.ResponseWriter, r *http.Request, status int, detail managedWorktreeErrorResponse) {
+	Result(w, r, status, status*100, detail.Message, detail)
 }
 
 // loadEvents fetches a session's recorded events from the EventStore and resolves

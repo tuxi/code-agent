@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"code-agent/internal/model"
+	"code-agent/internal/worktree"
 )
 
 // MemoryStore is a pure in-memory implementation of Store. It is the
@@ -28,19 +29,21 @@ var (
 )
 
 type MemoryStore struct {
-	mu       sync.Mutex
-	sessions map[string]*Session // id → session (owned copy)
-	metas    []Meta              // ordered by UpdatedAt desc
-	events   []EventRecord       // all events, insertion order
-	eventSeq int64               // store-wide monotonic event seq (mirrors sqlite rowid)
-	requests []RequestRecord     // all requests, insertion order
-	closed   bool
+	mu        sync.Mutex
+	sessions  map[string]*Session        // id → session (owned copy)
+	metas     []Meta                     // ordered by UpdatedAt desc
+	events    []EventRecord              // all events, insertion order
+	eventSeq  int64                      // store-wide monotonic event seq (mirrors sqlite rowid)
+	requests  []RequestRecord            // all requests, insertion order
+	worktrees map[string]worktree.Record // client request id → managed worktree reservation
+	closed    bool
 }
 
 // NewMemoryStore returns an empty MemoryStore ready for use.
 func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{
-		sessions: make(map[string]*Session),
+		sessions:  make(map[string]*Session),
+		worktrees: make(map[string]worktree.Record),
 	}
 }
 
@@ -104,8 +107,62 @@ func (m *MemoryStore) Close() error {
 	m.metas = nil
 	m.events = nil
 	m.requests = nil
+	m.worktrees = nil
 	return nil
 }
+
+func (m *MemoryStore) ReserveWorktree(_ context.Context, record worktree.Record) (worktree.Record, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if existing, ok := m.worktrees[record.ClientRequestID]; ok {
+		return existing, false, nil
+	}
+	m.worktrees[record.ClientRequestID] = record
+	return record, true, nil
+}
+
+func (m *MemoryStore) WorktreeByClientRequestID(_ context.Context, requestID string) (worktree.Record, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if record, ok := m.worktrees[requestID]; ok {
+		return record, nil
+	}
+	return worktree.Record{}, worktree.ErrNotFound
+}
+
+func (m *MemoryStore) WorktreeBySessionID(_ context.Context, sessionID string) (worktree.Record, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, record := range m.worktrees {
+		if record.SessionID == sessionID {
+			return record, nil
+		}
+	}
+	return worktree.Record{}, worktree.ErrNotFound
+}
+
+func (m *MemoryStore) ListWorktrees(_ context.Context) ([]worktree.Record, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]worktree.Record, 0, len(m.worktrees))
+	for _, record := range m.worktrees {
+		out = append(out, record)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })
+	return out, nil
+}
+
+func (m *MemoryStore) UpdateWorktree(_ context.Context, record worktree.Record) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.worktrees[record.ClientRequestID]; !ok {
+		return worktree.ErrNotFound
+	}
+	m.worktrees[record.ClientRequestID] = record
+	return nil
+}
+
+var _ worktree.Store = (*MemoryStore)(nil)
 
 func (m *MemoryStore) UpdateName(_ context.Context, id string, name string) error {
 	m.mu.Lock()

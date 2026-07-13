@@ -1,0 +1,20 @@
+{
+  "id": "session_123",
+  "workspace_path": "/repo/AgentKit/.codeagent/worktrees/multi-session-cache-a31f",
+  "workspace_id": "checkout_a31f",
+  "base_workspace_id": "workspace_agentkit",
+  "execution_policy": "isolated_worktree",
+  "worktree": {
+    "managed": true,
+    "name": "multi-session-cache-a31f",
+    "branch": "codeagent/multi-session-cache-a31f",
+    "base_ref": "head",
+    "state": "ready"
+  },
+  "warnings": [
+    {
+      "code": "source_workspace_dirty",
+      "message": "Uncommitted and untracked files were not copied into the worktree."
+    }
+  ]
+}

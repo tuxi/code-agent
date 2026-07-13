@@ -11,6 +11,7 @@ import (
 
 	"code-agent/internal/model"
 	"code-agent/internal/session"
+	"code-agent/internal/worktree"
 
 	_ "modernc.org/sqlite" // pure-Go driver, registered as "sqlite" (no cgo)
 )
@@ -27,6 +28,7 @@ var (
 	_ session.EventStore          = (*Store)(nil)
 	_ session.EventAttentionStore = (*Store)(nil)
 	_ session.TelemetryStore      = (*Store)(nil)
+	_ worktree.Store              = (*Store)(nil)
 )
 
 type Store struct {
@@ -105,6 +107,26 @@ CREATE TABLE IF NOT EXISTS session_events (
 	at         TEXT,
 	payload    TEXT
 );
+CREATE TABLE IF NOT EXISTS managed_worktrees (
+    client_request_id      TEXT PRIMARY KEY,
+    session_id             TEXT NOT NULL UNIQUE,
+    base_workspace_id      TEXT,
+    source_workspace_id    TEXT,
+    checkout_workspace_id  TEXT NOT NULL UNIQUE,
+    source_workspace_path  TEXT NOT NULL,
+    worktree_path          TEXT NOT NULL UNIQUE,
+    name                   TEXT NOT NULL,
+    branch                 TEXT NOT NULL UNIQUE,
+    base_ref               TEXT NOT NULL,
+    base_commit            TEXT,
+    state                  TEXT NOT NULL,
+    last_error_code        TEXT,
+    last_error_message     TEXT,
+    remove_request_id      TEXT,
+    created_at             TEXT NOT NULL,
+    updated_at             TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_managed_worktrees_state ON managed_worktrees(state);
 CREATE INDEX IF NOT EXISTS idx_session_events_session ON session_events(session_id, at);`
 
 // open (re)opens the database at s.path and applies the idempotent migrations.
@@ -489,6 +511,115 @@ func (s *Store) RecordEvent(ctx context.Context, e session.EventRecord) (int64, 
 		return 0, err
 	}
 	return res.LastInsertId() // the rowid is the wire seq (v1.2 §4)
+}
+
+func (s *Store) ReserveWorktree(ctx context.Context, record worktree.Record) (worktree.Record, bool, error) {
+	res, err := s.db.ExecContext(ctx, `
+		INSERT INTO managed_worktrees (
+			client_request_id, session_id, base_workspace_id, source_workspace_id,
+			checkout_workspace_id, source_workspace_path, worktree_path, name, branch,
+			base_ref, base_commit, state, last_error_code, last_error_message,
+			remove_request_id, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(client_request_id) DO NOTHING`,
+		record.ClientRequestID, record.SessionID, record.BaseWorkspaceID, record.SourceWorkspaceID,
+		record.CheckoutWorkspaceID, record.SourceWorkspacePath, record.WorktreePath, record.Name, record.Branch,
+		string(record.BaseRef), record.BaseCommit, string(record.State), record.LastErrorCode, record.LastErrorMessage,
+		record.RemoveRequestID, formatTime(record.CreatedAt), formatTime(record.UpdatedAt))
+	if err != nil {
+		return worktree.Record{}, false, err
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return worktree.Record{}, false, err
+	}
+	if rows == 1 {
+		return record, true, nil
+	}
+	existing, err := s.WorktreeByClientRequestID(ctx, record.ClientRequestID)
+	return existing, false, err
+}
+
+func (s *Store) WorktreeByClientRequestID(ctx context.Context, requestID string) (worktree.Record, error) {
+	return scanWorktree(s.db.QueryRowContext(ctx, worktreeSelect+` WHERE client_request_id=?`, requestID))
+}
+
+func (s *Store) WorktreeBySessionID(ctx context.Context, sessionID string) (worktree.Record, error) {
+	return scanWorktree(s.db.QueryRowContext(ctx, worktreeSelect+` WHERE session_id=?`, sessionID))
+}
+
+func (s *Store) ListWorktrees(ctx context.Context) ([]worktree.Record, error) {
+	rows, err := s.db.QueryContext(ctx, worktreeSelect+` ORDER BY created_at ASC, client_request_id ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []worktree.Record
+	for rows.Next() {
+		record, err := scanWorktree(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, record)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) UpdateWorktree(ctx context.Context, record worktree.Record) error {
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE managed_worktrees SET
+			session_id=?, base_workspace_id=?, source_workspace_id=?, checkout_workspace_id=?,
+			source_workspace_path=?, worktree_path=?, name=?, branch=?, base_ref=?, base_commit=?,
+			state=?, last_error_code=?, last_error_message=?, remove_request_id=?, updated_at=?
+		WHERE client_request_id=?`,
+		record.SessionID, record.BaseWorkspaceID, record.SourceWorkspaceID, record.CheckoutWorkspaceID,
+		record.SourceWorkspacePath, record.WorktreePath, record.Name, record.Branch, string(record.BaseRef), record.BaseCommit,
+		string(record.State), record.LastErrorCode, record.LastErrorMessage, record.RemoveRequestID,
+		formatTime(record.UpdatedAt), record.ClientRequestID)
+	if err != nil {
+		return err
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows == 0 {
+		return worktree.ErrNotFound
+	}
+	return nil
+}
+
+const worktreeSelect = `
+	SELECT client_request_id, session_id, base_workspace_id, source_workspace_id,
+	       checkout_workspace_id, source_workspace_path, worktree_path, name, branch,
+	       base_ref, base_commit, state, last_error_code, last_error_message,
+	       remove_request_id, created_at, updated_at
+	FROM managed_worktrees`
+
+type worktreeScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanWorktree(row worktreeScanner) (worktree.Record, error) {
+	var record worktree.Record
+	var baseRef, state, createdAt, updatedAt string
+	err := row.Scan(
+		&record.ClientRequestID, &record.SessionID, &record.BaseWorkspaceID, &record.SourceWorkspaceID,
+		&record.CheckoutWorkspaceID, &record.SourceWorkspacePath, &record.WorktreePath, &record.Name, &record.Branch,
+		&baseRef, &record.BaseCommit, &state, &record.LastErrorCode, &record.LastErrorMessage,
+		&record.RemoveRequestID, &createdAt, &updatedAt,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return worktree.Record{}, worktree.ErrNotFound
+	}
+	if err != nil {
+		return worktree.Record{}, err
+	}
+	record.BaseRef = worktree.BaseRef(baseRef)
+	record.State = worktree.State(state)
+	record.CreatedAt = parseTime(createdAt)
+	record.UpdatedAt = parseTime(updatedAt)
+	return record, nil
 }
 
 func (s *Store) SessionEvents(ctx context.Context, sessionID string) ([]session.EventRecord, error) {

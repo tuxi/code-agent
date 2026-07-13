@@ -1,0 +1,12 @@
+{
+  "client_request_id": "create_01J2EXAMPLE",
+  "workspace_path": "/repo/AgentKit",
+  "workspace_id": "workspace_agentkit_main",
+  "base_workspace_id": "workspace_agentkit",
+  "execution_policy": "isolated_worktree",
+  "worktree": {
+    "managed": true,
+    "suggested_name": "multi-session-cache",
+    "base_ref": "head"
+  }
+}
