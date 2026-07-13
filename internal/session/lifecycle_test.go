@@ -38,3 +38,18 @@ func TestLifecycleHelpers(t *testing.T) {
 		t.Errorf("after clear attempts=%d want 0", s.ResumeAttempts())
 	}
 }
+
+func TestExecutionPolicyDefaultsToShared(t *testing.T) {
+	s := &Session{}
+	if got := s.ExecutionPolicy(); got != ExecutionPolicySharedWorkspace {
+		t.Fatalf("default policy = %q", got)
+	}
+	s.SetExecutionPolicy(ExecutionPolicyIsolatedWorktree)
+	if got := s.ExecutionPolicy(); got != ExecutionPolicyIsolatedWorktree {
+		t.Fatalf("policy = %q", got)
+	}
+	s.SetExecutionPolicy("unknown")
+	if got := s.ExecutionPolicy(); got != ExecutionPolicySharedWorkspace {
+		t.Fatalf("unknown policy = %q, want shared", got)
+	}
+}

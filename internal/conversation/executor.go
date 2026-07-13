@@ -28,6 +28,11 @@ type TurnExecutor struct {
 	subs   *SubscriptionManager
 	rb     RunBuilder
 
+	// scheduler is the process-wide admission controller. Its default is a
+	// single worker for backward-compatible FIFO behavior; deployments may raise
+	// the limit only after advertising the matching runtime capabilities.
+	scheduler *TurnScheduler
+
 	// sessionCreds stores per-session credential resolvers, set by the handler
 	// layer at WS upgrade time from the Authorization header. Server mode only;
 	// embedded mode uses the injected StaticResolver instead.
@@ -58,8 +63,19 @@ func NewTurnExecutor(repo ConversationRepository, events ConversationEventStore,
 		active:       active,
 		subs:         subs,
 		rb:           rb,
+		scheduler:    NewTurnScheduler(1),
 		sessionCreds: make(map[string]credential.Resolver),
 	}
+}
+
+// SetTurnScheduler replaces the admission controller. A nil value restores the
+// conservative one-at-a-time scheduler. It is intended for daemon wiring at
+// startup, before turns are accepted.
+func (e *TurnExecutor) SetTurnScheduler(s *TurnScheduler) {
+	if s == nil {
+		s = NewTurnScheduler(1)
+	}
+	e.scheduler = s
 }
 
 // SetSessionCredential stores a credential resolver for a session. It is called
@@ -174,7 +190,35 @@ func (e *TurnExecutor) driveTurn(
 	run func(ctx context.Context, runner TurnRunner) (agent.TurnResult, error),
 	recordStatus func(sess *session.Session, runErr error),
 ) (agent.TurnResult, error) {
-	// 1. Claim the turn (mutual exclusion).
+	// 1. Allocate the turn identity and publish acceptance before it can wait in
+	// the scheduler. These events are persisted even for a cancelled queued turn,
+	// so reconnecting clients see one complete lifecycle rather than a silent gap.
+	turnID := e.scheduler.ReserveTurnID()
+	pub := &sequencingEmitter{ctx: context.WithoutCancel(parentCtx), events: e.events, live: e.subs.Emitter(sess.ID)}
+	pub.Emit(agent.Event{Kind: agent.EventTurnAccepted, SessionID: sess.ID, TurnID: turnID})
+
+	// 2. Wait for the process/session/workspace execution permits before claiming
+	// the active-turn slot. This makes a second turn in the same conversation a
+	// queued operation rather than an ErrBusy race, and prevents concurrent
+	// mutation of a shared checkout.
+	release, err := e.scheduler.Acquire(parentCtx, TurnScheduleRequest{
+		SessionID:     sess.ID,
+		TurnID:        turnID,
+		WorkspacePath: sess.WorkspacePath,
+		Mode:          workspaceExecutionMode(sess.ExecutionPolicy()),
+	}, func(position int) {
+		pub.Emit(agent.Event{Kind: agent.EventTurnQueued, SessionID: sess.ID, TurnID: turnID, QueuePosition: position})
+	})
+	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			pub.Emit(agent.Event{Kind: agent.EventTurnCancelled, SessionID: sess.ID, TurnID: turnID})
+		}
+		return agent.TurnResult{}, err
+	}
+	defer release()
+
+	// 3. Claim the turn (mutual exclusion). This remains the authority for
+	// in-flight cancellation, approvals, and client-tool state.
 	turnCtx, cancel, err := e.active.BeginTurn(sess.ID, parentCtx)
 	if err != nil {
 		return agent.TurnResult{}, err
@@ -184,16 +228,10 @@ func (e *TurnExecutor) driveTurn(
 		e.active.FinishTurn(sess.ID)
 	}()
 
-	// 2. Assemble the publisher: persist each event (assigning its seq) then fan the
-	//    seq-stamped event out to live subscribers, so a client's live seq matches
-	//    what replay will report (v1.2 §4). WithoutCancel: events emitted after the
-	//    caller disconnects (or the turn is cancelled) must still land in the store,
-	//    or replay shows a tool started but never finished.
-	pub := &sequencingEmitter{ctx: context.WithoutCancel(parentCtx), events: e.events, live: e.subs.Emitter(sess.ID)}
-
-	// 3. Build a fresh turnRunner for this turn.
+	// 4. Build a fresh turnRunner for this turn.
 	rctx := RuntimeContext{
 		Session:      sess,
+		TurnID:       turnID,
 		Model:        model,
 		Publisher:    pub,
 		Approver:     e.active.Approver(sess.ID),
@@ -208,17 +246,21 @@ func (e *TurnExecutor) driveTurn(
 	}
 	runner := e.rb.Build(rctx)
 
-	// 4. Run, marking running while in flight so a mid-turn crash leaves a
+	// 5. Run, marking running while in flight so a mid-turn crash leaves a
 	//    detectable "interrupted" status (reconciled to paused on next start).
 	sess.SetTurnStatus(session.TurnStatusRunning)
 	res, runErr := run(turnCtx, runner)
+	// The executor owns the accepted lifecycle identity. Alternate runners may
+	// return a legacy/generated id, but it must never split one turn's event
+	// stream into two correlations.
+	res.TurnID = turnID
 
-	// 5. Record the terminal status BEFORE the save, then emit the lifecycle event
+	// 6. Record the terminal status BEFORE the save, then emit the lifecycle event
 	//    so a client sees paused/failed transitions.
 	recordStatus(sess, runErr)
 	e.emitLifecycle(pub, sess, res.TurnID, runErr)
 
-	// 6. Save — always, even on error/cancel. The cancel-mid-batch fill + running
+	// 7. Save — always, even on error/cancel. The cancel-mid-batch fill + running
 	//    marker keep the persisted history consistent and resumable. WithoutCancel
 	//    keeps the save from being aborted by the turn's (or caller's) cancellation.
 	if !sess.IsEmpty() {
@@ -228,6 +270,17 @@ func (e *TurnExecutor) driveTurn(
 	}
 
 	return res, runErr
+}
+
+func workspaceExecutionMode(policy string) WorkspaceExecutionMode {
+	switch policy {
+	case session.ExecutionPolicyIsolatedWorktree:
+		return IsolatedWorktree
+	case session.ExecutionPolicyReadOnly:
+		return ReadOnlyWorkspace
+	default:
+		return SharedWorkspace
+	}
 }
 
 // maxResumeAttempts caps consecutive failed resumes of one session before it is
@@ -350,7 +403,16 @@ func (e *TurnExecutor) ReconcileInterrupted(ctx context.Context) error {
 
 // Cancel stops the in-flight turn for a session at the next checkpoint.
 func (e *TurnExecutor) Cancel(sessionID string) {
+	if e.scheduler.Cancel(sessionID) {
+		return
+	}
 	e.active.Cancel(sessionID)
+}
+
+// Activity exposes the live scheduler projection for the HTTP activity
+// endpoint. Persisted lifecycle state remains available through Repository.List.
+func (e *TurnExecutor) Activity() []ScheduledTurnActivity {
+	return e.scheduler.Activity()
 }
 
 // repoCheckpointer persists the session mid-turn via the repository (v1.2 §2). It
@@ -396,6 +458,7 @@ func (e *TurnExecutor) RegisterTools(sessionID string, tools []agent.ClientToolD
 
 // Shutdown cancels all active turns and closes event buses.
 func (e *TurnExecutor) Shutdown() {
+	e.scheduler.Shutdown()
 	e.active.Shutdown()
 	e.subs.Shutdown()
 }

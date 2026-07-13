@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"net/http"
 	"path/filepath"
+	"sort"
 	"strconv"
+	"time"
 
 	"code-agent/internal/agent"
 	"code-agent/internal/assetref"
@@ -42,6 +44,11 @@ func statusForCloneCode(code string) int {
 type CreateConversationRequest struct {
 	WorkspacePath  string `json:"workspace_path,omitempty"`
 	WorkspaceExtID string `json:"workspace_ext_id,omitempty"`
+	// ExecutionPolicy controls Runtime workspace leasing. isolated_worktree
+	// requires workspace_path to already identify the session's own worktree.
+	ExecutionPolicy string `json:"execution_policy,omitempty"`
+	WorkspaceID     string `json:"workspace_id,omitempty"`
+	BaseWorkspaceID string `json:"base_workspace_id,omitempty"`
 }
 
 // RebindRequest is the POST /v1/conversations/{id}/rebind body: the host re-supplies
@@ -159,6 +166,41 @@ type MuxOptions struct {
 	// Authorization header at WS upgrade time. Nil means credentials come from
 	// the base provider (embedded/CLI modes).
 	CredentialStore func(sessionID string, cred credential.Resolver)
+	// RuntimeCapabilities describes execution guarantees, not merely supported
+	// endpoints. It intentionally defaults to all false until scheduler and
+	// workspace isolation are fully installed.
+	RuntimeCapabilities RuntimeCapabilities
+}
+
+// RuntimeCapabilities is the explicit concurrency handshake consumed by
+// multi-session clients. WebSocket hello capabilities remain a backwards-
+// compatible feature list; this endpoint is the source of truth for execution.
+type RuntimeCapabilities struct {
+	MultiSessionExecution    bool `json:"multi_session_execution_v1"`
+	SessionScopedClientTools bool `json:"session_scoped_client_tools_v1"`
+	ActivitySnapshot         bool `json:"activity_snapshot_v1"`
+	WorkspaceExecutionPolicy bool `json:"workspace_execution_policy_v1"`
+	MaxConcurrentTurns       int  `json:"max_concurrent_turns"`
+	MaxConnectedSessions     int  `json:"max_connected_sessions"`
+}
+
+type runtimeCapabilitiesResponse struct {
+	Capabilities RuntimeCapabilities `json:"capabilities"`
+}
+
+// SessionActivity is a point-in-time, session-scoped activity record. Queue and
+// pending-request fields stay omitted until the scheduler/broker can guarantee
+// their accuracy; clients must treat omitted as unknown, not zero.
+type SessionActivity struct {
+	SessionID     string `json:"session_id"`
+	TurnID        string `json:"turn_id,omitempty"`
+	State         string `json:"state"`
+	QueuePosition int    `json:"queue_position,omitempty"`
+	UpdatedAt     string `json:"updated_at,omitempty"`
+}
+
+type activityResponse struct {
+	Sessions []SessionActivity `json:"sessions"`
 }
 
 // NewMux builds the HTTP surface of `codeagent serve`:
@@ -189,6 +231,48 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 		_, _ = w.Write([]byte("ok"))
 	})
 
+	mux.HandleFunc("GET /v1/runtime/capabilities", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, r, http.StatusOK, runtimeCapabilitiesResponse{Capabilities: opts.RuntimeCapabilities})
+	})
+
+	mux.HandleFunc("GET /v1/activity", func(w http.ResponseWriter, r *http.Request) {
+		metas, err := repo.List(r.Context())
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		activityBySession := make(map[string]SessionActivity)
+		for _, meta := range metas {
+			switch meta.TurnStatus {
+			case session.TurnStatusRunning, session.TurnStatusResuming, session.TurnStatusPaused:
+				activityBySession[meta.ID] = SessionActivity{
+					SessionID: meta.ID,
+					State:     meta.TurnStatus,
+					UpdatedAt: meta.UpdatedAt.UTC().Format(time.RFC3339),
+				}
+			}
+		}
+		// Scheduler state wins over persisted lifecycle state: it can report a
+		// freshly queued/running turn before the first checkpoint reaches SQLite.
+		// Read-only/test muxes intentionally have no executor.
+		if executor != nil {
+			for _, live := range executor.Activity() {
+				activity := activityBySession[live.SessionID]
+				activity.SessionID = live.SessionID
+				activity.TurnID = live.TurnID
+				activity.State = live.State
+				activity.QueuePosition = live.QueuePosition
+				activityBySession[live.SessionID] = activity
+			}
+		}
+		activities := make([]SessionActivity, 0, len(activityBySession))
+		for _, activity := range activityBySession {
+			activities = append(activities, activity)
+		}
+		sort.Slice(activities, func(i, j int) bool { return activities[i].SessionID < activities[j].SessionID })
+		writeJSON(w, r, http.StatusOK, activityResponse{Sessions: activities})
+	})
+
 	// ---- v1 CRUD: all read from Repository (SQLite) ----
 
 	mux.HandleFunc("GET /v1/conversations", func(w http.ResponseWriter, r *http.Request) {
@@ -215,14 +299,33 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 		var req CreateConversationRequest
 		_ = json.NewDecoder(r.Body).Decode(&req)
 
-			if req.WorkspacePath == "" {
-				http.Error(w, `"workspace_path" is required`, http.StatusBadRequest)
-				return
-			}
+		if req.WorkspacePath == "" {
+			http.Error(w, `"workspace_path" is required`, http.StatusBadRequest)
+			return
+		}
+		if req.ExecutionPolicy != "" && req.ExecutionPolicy != session.ExecutionPolicySharedWorkspace && req.ExecutionPolicy != session.ExecutionPolicyIsolatedWorktree && req.ExecutionPolicy != session.ExecutionPolicyReadOnly {
+			http.Error(w, `"execution_policy" must be shared_workspace, isolated_worktree, or read_only`, http.StatusBadRequest)
+			return
+		}
 		sess, err := repo.Create(r.Context(), req.WorkspacePath, req.WorkspaceExtID)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
+		}
+		if req.ExecutionPolicy != "" || req.WorkspaceID != "" || req.BaseWorkspaceID != "" {
+			sess.SetExecutionPolicy(req.ExecutionPolicy)
+			if req.ExecutionPolicy == "" {
+				sess.SetExecutionPolicy(session.ExecutionPolicySharedWorkspace)
+			}
+			if sess.Metadata == nil {
+				sess.Metadata = map[string]any{}
+			}
+			sess.Metadata[session.MetaWorkspaceID] = req.WorkspaceID
+			sess.Metadata[session.MetaBaseWorkspaceID] = req.BaseWorkspaceID
+			if err := repo.Save(r.Context(), sess); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
 		}
 		writeJSON(w, r, http.StatusCreated, ConversationRef{
 			ID:            sess.ID,
@@ -529,7 +632,6 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 		}
 		w.WriteHeader(http.StatusNoContent)
 	})
-
 
 	mux.HandleFunc("POST /v1/workspaces/{path}/mcp/reload", func(w http.ResponseWriter, r *http.Request) {
 		if opts.WorkspaceReloader == nil {

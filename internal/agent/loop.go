@@ -162,6 +162,9 @@ type Runner struct {
 	emitSessionID    string
 	emitTurnID       string
 	emitInvocationID string // set at the start of each model call; stamped on all events
+	// ReservedTurnID is supplied by the transport when it accepted a queued turn.
+	// Empty preserves the standalone runner's persisted session sequence behavior.
+	ReservedTurnID string
 
 	// emitMu serializes r.emit so concurrent tool workers (P8.8) can't race the
 	// downstream emitter.
@@ -434,7 +437,10 @@ func (r *Runner) RunTurnWithAssets(ctx context.Context, sess *session.Session, u
 	}
 
 	r.emitSessionID = sess.ID
-	r.emitTurnID = nextSessionTurnID(sess)
+	r.emitTurnID = r.ReservedTurnID
+	if r.emitTurnID == "" {
+		r.emitTurnID = nextSessionTurnID(sess)
+	}
 	r.emitInvocationID = "" // cleared each turn; set per model call
 
 	// Append the user's turn to the persistent session history.
@@ -472,7 +478,10 @@ func (r *Runner) ResumeTurn(ctx context.Context, sess *session.Session) (TurnRes
 	// Continue under a fresh turn id: the paused turn's events are already
 	// persisted, and a new id keeps the resumed run's events unambiguous while
 	// still correlating to the same session.
-	r.emitTurnID = nextSessionTurnID(sess)
+	r.emitTurnID = r.ReservedTurnID
+	if r.emitTurnID == "" {
+		r.emitTurnID = nextSessionTurnID(sess)
+	}
 	r.emitInvocationID = ""
 
 	sess.UpdatedAt = time.Now()

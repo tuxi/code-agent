@@ -3,6 +3,7 @@ package runtime
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"sync"
 
 	"code-agent/internal/agent"
@@ -29,8 +30,6 @@ type ServeRunBuilder struct {
 	// falls back to this when the workspace has no MCP config or fails to resolve.
 	ToolReg *tools.Registry
 	WSReg   *WorkspaceRegistry
-	PlanRef *agent.RunnerRef // late-bound per-turn in Build()
-
 	// rules is the process-wide permission store, created once so a grant persists
 	// across turns. Interactive "Always allow" over the wire is not wired yet, but
 	// rules loaded from config + settings files are enforced here.
@@ -42,9 +41,9 @@ type ServeRunBuilder struct {
 }
 
 // NewServeRunBuilder constructs the builder with the initial model + provider.
-func NewServeRunBuilder(cfg app.Config, mc app.ModelConfig, provider model.Provider, toolReg *tools.Registry, wsReg *WorkspaceRegistry, planRef *agent.RunnerRef) *ServeRunBuilder {
+func NewServeRunBuilder(cfg app.Config, mc app.ModelConfig, provider model.Provider, toolReg *tools.Registry, wsReg *WorkspaceRegistry, _ *agent.RunnerRef) *ServeRunBuilder {
 	return &ServeRunBuilder{
-		Cfg: cfg, ToolReg: toolReg, WSReg: wsReg, PlanRef: planRef,
+		Cfg: cfg, ToolReg: toolReg, WSReg: wsReg,
 		// Pre-GA: RuleStore should be workspace-scoped via WorkspaceInstance.Rules
 		// (Phase 3). For now, seed from config permissions only — workspace-level
 		// persistence (scopeProjectLocal) resolves against the conversation's
@@ -130,13 +129,22 @@ func (b *ServeRunBuilder) Build(ctx conversation.RuntimeContext) conversation.Tu
 		}
 	}
 
-	runner := BuildRunner(b.Cfg, mc, provider, toolReg, skillReg, ctx.Approver, ctx.Publisher, b.rules, workspacePath)
+	// The base registry's plan tools carry a late-bound RunnerRef. They must be
+	// replaced in every turn-local clone: wiring the shared base reference here
+	// races concurrent sessions and can route A's plan operation into B's runner.
+	turnTools := toolReg.Clone()
+	planRef := &agent.RunnerRef{}
+	turnTools.Replace(agent.NewEnterPlanModeTool(planRef))
+	turnTools.Replace(agent.NewProposePlanTool(planRef, filepath.Join(workspacePath, ".codeagent", "plans")))
+
+	runner := BuildRunner(b.Cfg, mc, provider, turnTools, skillReg, ctx.Approver, ctx.Publisher, b.rules, workspacePath)
+	runner.ReservedTurnID = ctx.TurnID
 	if workspacePath != "" {
 		runner.WorkspaceRoot = workspacePath
 	}
 	// Merge client-registered tools into a per-turn clone so the shared registry stays unmodified.
 	if len(ctx.ClientTools) > 0 {
-		reg := toolReg.Clone()
+		reg := turnTools
 		for _, def := range ctx.ClientTools {
 			proxy := tools.NewClientProxyTool(def.Name, def.Description, def.InputSchema)
 			if err := reg.Register(proxy); err != nil {
@@ -145,8 +153,9 @@ func (b *ServeRunBuilder) Build(ctx conversation.RuntimeContext) conversation.Tu
 		}
 		runner.Tools = reg
 	}
-	// Wire the plan tools, plan approver, and client tool waiter to this per-turn runner.
-	b.PlanRef.R = runner
+	// Wire only this turn's plan tools, approver, and client tool waiter. No
+	// runner reference escapes the per-turn registry.
+	planRef.R = runner
 	runner.PlanApprover = ctx.PlanApprover
 	runner.ClientWaiter = ctx.ClientWaiter
 	runner.Checkpointer = ctx.Checkpointer // mid-turn crash-safety (v1.2 §2); nil in headless builds

@@ -18,10 +18,36 @@ const (
 // (string / float64) because Metadata is persisted as a JSON blob alongside the
 // session — the same mechanism turn_seq already uses.
 const (
-	MetaTurnStatus     = "turn_status"
-	MetaPausedAt       = "paused_at"       // unix seconds (float64 in the map)
-	MetaResumeAttempts = "resume_attempts" // consecutive failed resumes (float64)
+	MetaTurnStatus      = "turn_status"
+	MetaPausedAt        = "paused_at"        // unix seconds (float64 in the map)
+	MetaResumeAttempts  = "resume_attempts"  // consecutive failed resumes (float64)
+	MetaExecutionPolicy = "execution_policy" // shared_workspace | isolated_worktree | read_only
+	MetaWorkspaceID     = "workspace_id"
+	MetaBaseWorkspaceID = "base_workspace_id"
 )
+
+const (
+	ExecutionPolicySharedWorkspace  = "shared_workspace"
+	ExecutionPolicyIsolatedWorktree = "isolated_worktree"
+	ExecutionPolicyReadOnly         = "read_only"
+)
+
+// ExecutionPolicy returns the Runtime-enforced workspace mode. Older sessions
+// without metadata remain conservatively shared.
+func (s *Session) ExecutionPolicy() string {
+	if v, ok := s.Metadata[MetaExecutionPolicy].(string); ok {
+		switch v {
+		case ExecutionPolicySharedWorkspace, ExecutionPolicyIsolatedWorktree, ExecutionPolicyReadOnly:
+			return v
+		}
+	}
+	return ExecutionPolicySharedWorkspace
+}
+
+func (s *Session) SetExecutionPolicy(policy string) {
+	s.ensureMetadata()
+	s.Metadata[MetaExecutionPolicy] = policy
+}
 
 func (s *Session) ensureMetadata() {
 	if s.Metadata == nil {

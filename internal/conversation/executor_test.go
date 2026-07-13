@@ -2,7 +2,10 @@ package conversation
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"testing"
+	"time"
 
 	"code-agent/internal/agent"
 	"code-agent/internal/model"
@@ -159,6 +162,35 @@ type funcRunner struct {
 	fn func(rc RuntimeContext)
 }
 
+type schedulerBlockingRunBuilder struct {
+	started chan string
+	release <-chan struct{}
+}
+
+func (b *schedulerBlockingRunBuilder) Build(rc RuntimeContext) TurnRunner {
+	return &schedulerBlockingRunner{sessionID: rc.Session.ID, started: b.started, release: b.release}
+}
+
+type schedulerBlockingRunner struct {
+	sessionID string
+	started   chan string
+	release   <-chan struct{}
+}
+
+func (r *schedulerBlockingRunner) RunTurn(ctx context.Context, _ *session.Session, _ string) (agent.TurnResult, error) {
+	r.started <- r.sessionID
+	select {
+	case <-r.release:
+		return agent.TurnResult{}, nil
+	case <-ctx.Done():
+		return agent.TurnResult{}, ctx.Err()
+	}
+}
+
+func (r *schedulerBlockingRunner) ResumeTurn(ctx context.Context, sess *session.Session) (agent.TurnResult, error) {
+	return r.RunTurn(ctx, sess, "")
+}
+
 func (r *funcRunner) RunTurn(ctx context.Context, sess *session.Session, input string) (agent.TurnResult, error) {
 	r.fn(r.rc)
 	return agent.TurnResult{}, nil
@@ -260,6 +292,60 @@ func TestTurnExecutor_Execute_Concurrency(t *testing.T) {
 	active.FinishTurn("busy-session")
 }
 
+func TestTurnExecutor_QueuesSameWorkspaceAndCancelsQueuedTurn(t *testing.T) {
+	repo := newFakeRepo()
+	first := &session.Session{ID: "one", WorkspacePath: "/work/shared", Metadata: map[string]any{}}
+	second := &session.Session{ID: "two", WorkspacePath: "/work/shared", Metadata: map[string]any{}}
+	repo.sessions[first.ID] = first
+	repo.sessions[second.ID] = second
+
+	release := make(chan struct{})
+	started := make(chan string, 2)
+	exec := NewTurnExecutor(repo, &fakeEventStore{}, NewActiveTurnRegistry(), NewSubscriptionManager(), &schedulerBlockingRunBuilder{started: started, release: release})
+	exec.SetTurnScheduler(NewTurnScheduler(2))
+
+	firstDone := make(chan error, 1)
+	go func() { _, err := exec.Execute(context.Background(), first.ID, "first", ""); firstDone <- err }()
+	if got := assertReady(t, started); got != first.ID {
+		t.Fatalf("first started session = %q", got)
+	}
+
+	secondDone := make(chan error, 1)
+	go func() { _, err := exec.Execute(context.Background(), second.ID, "second", ""); secondDone <- err }()
+	deadline := time.Now().Add(time.Second)
+	for exec.scheduler.Snapshot().Queued != 1 {
+		if time.Now().After(deadline) {
+			t.Fatal("second turn was not queued behind shared workspace lease")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	exec.Cancel(second.ID)
+	if err := assertReady(t, secondDone); !errors.Is(err, context.Canceled) {
+		t.Fatalf("queued turn error = %v, want context.Canceled", err)
+	}
+	var secondEvents []agent.Event
+	for _, record := range exec.events.(*fakeEventStore).records {
+		if record.SessionID != second.ID {
+			continue
+		}
+		var event agent.Event
+		if err := json.Unmarshal(record.Payload, &event); err != nil {
+			t.Fatal(err)
+		}
+		secondEvents = append(secondEvents, event)
+	}
+	if len(secondEvents) != 3 || secondEvents[0].Kind != agent.EventTurnAccepted || secondEvents[1].Kind != agent.EventTurnQueued || secondEvents[2].Kind != agent.EventTurnCancelled || secondEvents[0].TurnID == "" || secondEvents[0].TurnID != secondEvents[1].TurnID || secondEvents[1].TurnID != secondEvents[2].TurnID {
+		t.Fatalf("queued cancellation events = %#v", secondEvents)
+	}
+	if secondEvents[1].QueuePosition != 1 {
+		t.Fatalf("queue position = %d, want 1", secondEvents[1].QueuePosition)
+	}
+	close(release)
+	if err := assertReady(t, firstDone); err != nil {
+		t.Fatalf("first turn error = %v", err)
+	}
+}
+
 func TestTurnExecutor_OnSaveError(t *testing.T) {
 	// Use a repo that fails on Save.
 	repo := &failingSaveRepo{fakeRepo: newFakeRepo()}
@@ -299,11 +385,11 @@ func TestTurnExecutor_PersistsEventsAfterCallerContextCanceled(t *testing.T) {
 		t.Fatalf("Execute: %v", err)
 	}
 
-	if len(events.records) != 1 {
-		t.Fatalf("got %d persisted events, want 1 (emit after caller cancel must still land)", len(events.records))
+	if len(events.records) != 2 {
+		t.Fatalf("got %d persisted events, want accepted + event after caller cancellation", len(events.records))
 	}
-	if events.records[0].Kind != string(agent.EventTurnFinished) {
-		t.Errorf("persisted kind = %q, want %q", events.records[0].Kind, agent.EventTurnFinished)
+	if events.records[0].Kind != string(agent.EventTurnAccepted) || events.records[1].Kind != string(agent.EventTurnFinished) {
+		t.Errorf("persisted kinds = %q, %q, want turn_accepted, turn_finished", events.records[0].Kind, events.records[1].Kind)
 	}
 }
 

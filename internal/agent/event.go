@@ -16,6 +16,8 @@ import (
 type EventKind string
 
 const (
+	EventTurnAccepted  EventKind = "turn_accepted"
+	EventTurnQueued    EventKind = "turn_queued"
 	EventTurnStarted   EventKind = "turn_started"
 	EventModelStarted  EventKind = "model_started"  // about to call the model
 	EventModelFinished EventKind = "model_finished" // model returned (carries latency)
@@ -45,9 +47,10 @@ const (
 	// when ResumeTurn re-enters the loop; TurnPaused/TurnFailed are emitted by the
 	// lifecycle layer (executor/embed) at the suspend and unrecoverable-resume
 	// boundaries.
-	EventTurnResumed EventKind = "turn_resumed"
-	EventTurnPaused  EventKind = "turn_paused"
-	EventTurnFailed  EventKind = "turn_failed"
+	EventTurnResumed   EventKind = "turn_resumed"
+	EventTurnPaused    EventKind = "turn_paused"
+	EventTurnFailed    EventKind = "turn_failed"
+	EventTurnCancelled EventKind = "turn_cancelled"
 
 	// Subagent delegation (8.3). A `task` tool call brackets a nested run on an
 	// isolated session with these events, so a renderer can present the delegation
@@ -90,8 +93,10 @@ type Event struct {
 	// Correlation IDs: which session and turn produced this event. A single
 	// console reads them as constant, but a multiplexed bus (concurrent runs, a
 	// web UI, DreamAI) needs them to keep streams from crossing.
-	SessionID string
-	TurnID    string
+	SessionID     string
+	TurnID        string
+	RequestID     string // client-generated idempotency/correlation key for agent_input
+	QueuePosition int    // EventTurnQueued: one-based scheduler position
 
 	// Seq is the monotonic per-store sequence number assigned when the event is
 	// persisted (v1.2 §4). It is 0 on the core path and stamped by the transport
