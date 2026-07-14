@@ -158,6 +158,32 @@ func TestRunCommandRefusesManagedWorktreeReadFromBaseWorkspace(t *testing.T) {
 	}
 }
 
+func TestRunCommandRefusesManagedWorktreeReadInCompoundShell(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, ".codeagent", "worktrees", "other", "secret.txt")
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, []byte("nope"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, command := range []string{
+		"cat .codeagent/worktrees/other/secret.txt | head",
+		`sh -c 'cat .codeagent/worktrees/other/secret.txt' && true`,
+	} {
+		tool := NewRunCommandTool()
+		input, _ := json.Marshal(runCommandInput{Command: command})
+		res, err := tool.Execute(context.Background(), tools.ExecutionContext{WorkspaceRoot: root}, input)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r := decodeResult(t, res.Content)
+		if r.ExitCode != -1 || r.Stdout != "" {
+			t.Fatalf("command=%q result=%+v, want refusal", command, r)
+		}
+	}
+}
+
 func TestRunCommandStreamCallbacks(t *testing.T) {
 	tool := NewRunCommandTool()
 

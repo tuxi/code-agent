@@ -6,8 +6,11 @@ import (
 	"strings"
 	"time"
 
+	"code-agent/internal/workspace"
+
 	gogit "github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/config"
+	"github.com/go-git/go-git/v5/plumbing/format/gitignore"
 	"github.com/go-git/go-git/v5/plumbing/object"
 )
 
@@ -33,6 +36,7 @@ func (c *gogitCommitter) Commit(ctx context.Context, rootAbs, msg string, all bo
 	if err != nil {
 		return res, "open worktree failed: " + err.Error(), err
 	}
+	wt.Excludes = append(wt.Excludes, gitignore.ParsePattern("/"+workspace.ManagedWorktreesRelativeRoot+"/", nil))
 
 	if all {
 		// AddWithOptions{All:true} stages modified, deleted, and new files, honoring

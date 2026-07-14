@@ -268,6 +268,11 @@ func (t *RunCommandTool) executeShell(ctx context.Context, ec tools.ExecutionCon
 	if err != nil {
 		return tools.ToolResult{}, err
 	}
+	if note := compoundWorkspaceRead(command, rootAbs, 0); note != "" {
+		return t.result(commandResult{
+			Command: command, ExitCode: -1, Decision: string(class.Decision), Note: note,
+		})
+	}
 
 	// Redirect target safety check (Phase B): extract > and >> targets and
 	// validate them against workspace boundaries and protected paths.
@@ -339,6 +344,32 @@ func (t *RunCommandTool) executeShell(ctx context.Context, ec tools.ExecutionCon
 	}
 
 	return t.result(res)
+}
+
+func compoundWorkspaceRead(command, rootAbs string, depth int) string {
+	if depth > 2 {
+		return "refused: nested shell command exceeds workspace boundary validation depth"
+	}
+	for _, subcommand := range sandbox.SplitCommands(command) {
+		args, err := sandbox.SplitArgs(subcommand)
+		if err != nil || len(args) == 0 {
+			continue
+		}
+		if note := outsideWorkspaceRead(args, rootAbs); note != "" {
+			return note
+		}
+		base := filepath.Base(args[0])
+		if base == "sh" || base == "bash" || base == "zsh" {
+			for i := 1; i+1 < len(args); i++ {
+				if args[i] == "-c" {
+					if note := compoundWorkspaceRead(args[i+1], rootAbs, depth+1); note != "" {
+						return note
+					}
+				}
+			}
+		}
+	}
+	return ""
 }
 
 // SideEffectsFor makes run_command's confirmation gate command-aware: allowed

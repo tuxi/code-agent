@@ -9,6 +9,8 @@ import (
 	"sort"
 	"strings"
 
+	"code-agent/internal/workspace"
+
 	gogit "github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/pmezard/go-difflib/difflib"
@@ -53,6 +55,9 @@ func (d *gogitDiffer) Diff(ctx context.Context, rootAbs string, in diffInput) (s
 	// optionally filtered to in.Path, sorted for deterministic output.
 	var paths []string
 	for p, st := range status {
+		if workspace.ShouldSkipPath(rootAbs, filepath.Join(rootAbs, filepath.FromSlash(p))) {
+			continue
+		}
 		if st.Staging == gogit.Untracked && st.Worktree == gogit.Untracked {
 			continue
 		}

@@ -255,6 +255,13 @@ func splitByOperators(command string) (subcommands []string, operators []string)
 	return subcommands, operators
 }
 
+// SplitCommands exposes the quote-aware command segmentation used by policy so
+// tool-level workspace guards can validate every command in a supported chain.
+func SplitCommands(command string) []string {
+	commands, _ := splitByOperators(command)
+	return commands
+}
+
 // classifyChain classifies a compound command by splitting on && / ; and
 // independently classifying each subcommand. The verdict is the strictest
 // across all subcommands: any Block → Block, any Confirm → Confirm,

@@ -93,3 +93,26 @@ func TestGoGitCommit_AllRespectsGitignore(t *testing.T) {
 		t.Errorf("staged should include kept.txt: %q", result.Staged)
 	}
 }
+
+func TestGoGitCommit_AllExcludesManagedWorktreeRoot(t *testing.T) {
+	dir := initTestRepo(t)
+	target := filepath.Join(dir, ".codeagent", "worktrees", "other", "secret.txt")
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, []byte("secret\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	input, _ := json.Marshal(gitCommitInput{Message: "must stay clean", All: true})
+	res, err := NewGitCommitToolGoGit().Execute(context.Background(), tools.ExecutionContext{WorkspaceRoot: dir}, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result gitCommitResult
+	if err := json.Unmarshal([]byte(res.Content), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.ExitCode == 0 || strings.Contains(result.Staged, ".codeagent/worktrees") {
+		t.Fatalf("managed worktree was staged: %+v", result)
+	}
+}
