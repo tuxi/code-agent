@@ -70,6 +70,10 @@ type Session struct {
 
 	CreatedAt time.Time
 	UpdatedAt time.Time
+	// ArchivedAt hides the conversation from the default list without deleting
+	// messages, events, unread sequence facts, or its managed worktree. Zero means
+	// the conversation is active in the normal list.
+	ArchivedAt time.Time
 }
 
 // IsEmpty reports whether the session has no conversation yet — only the initial

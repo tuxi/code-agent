@@ -21,11 +21,12 @@ import (
 //
 // Compile-time checks.
 var (
-	_ Store               = (*MemoryStore)(nil)
-	_ SessionStore        = (*MemoryStore)(nil)
-	_ EventStore          = (*MemoryStore)(nil)
-	_ EventAttentionStore = (*MemoryStore)(nil)
-	_ TelemetryStore      = (*MemoryStore)(nil)
+	_ Store                    = (*MemoryStore)(nil)
+	_ SessionStore             = (*MemoryStore)(nil)
+	_ EventStore               = (*MemoryStore)(nil)
+	_ EventAttentionStore      = (*MemoryStore)(nil)
+	_ TelemetryStore           = (*MemoryStore)(nil)
+	_ ConversationArchiveStore = (*MemoryStore)(nil)
 )
 
 type MemoryStore struct {
@@ -60,6 +61,12 @@ func (m *MemoryStore) Save(ctx context.Context, s *Session) error {
 	}
 	// Deep-copy so the caller can mutate the original without corrupting the store.
 	sess := deepCopySession(s)
+	// Archive state is mutated only through Archive/Restore. Preserve it across a
+	// stale whole-session save so an async title/checkpoint cannot unarchive a
+	// conversation after the archive operation has committed.
+	if existing, ok := m.sessions[sess.ID]; ok {
+		sess.ArchivedAt = existing.ArchivedAt
+	}
 	m.sessions[sess.ID] = sess
 	m.reindexMetas()
 	return nil
@@ -96,6 +103,36 @@ func (m *MemoryStore) Delete(_ context.Context, id string) error {
 		}
 	}
 	m.events = filtered
+	return nil
+}
+
+func (m *MemoryStore) Archive(_ context.Context, id string, at time.Time) (time.Time, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	sess, ok := m.sessions[id]
+	if !ok {
+		return time.Time{}, fmt.Errorf("session %q not found", id)
+	}
+	if !sess.ArchivedAt.IsZero() {
+		return sess.ArchivedAt, nil
+	}
+	if at.IsZero() {
+		at = time.Now().UTC()
+	}
+	sess.ArchivedAt = at.UTC()
+	m.reindexMetas()
+	return sess.ArchivedAt, nil
+}
+
+func (m *MemoryStore) Restore(_ context.Context, id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	sess, ok := m.sessions[id]
+	if !ok {
+		return fmt.Errorf("session %q not found", id)
+	}
+	sess.ArchivedAt = time.Time{}
+	m.reindexMetas()
 	return nil
 }
 
@@ -449,9 +486,13 @@ func (m *MemoryStore) reindexMetas() {
 			PromptTokens:  s.PromptTokens,
 			UpdatedAt:     s.UpdatedAt,
 			WorkspacePath: s.WorkspacePath,
+			Workspace:     s.Workspace,
 			Compactions:   compactions,
 			TotalSaved:    totalSaved,
 			LastCompacted: lastCompacted,
+			TurnStatus:    s.TurnStatus(),
+			PausedAt:      s.PausedAt(),
+			ArchivedAt:    s.ArchivedAt,
 		})
 	}
 	sort.Slice(m.metas, func(i, j int) bool {

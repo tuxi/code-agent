@@ -100,6 +100,11 @@ type conversationOperationErrorResponse struct {
 	State     string `json:"state,omitempty"`
 }
 
+type ConversationArchiveResponse struct {
+	ID         string `json:"id"`
+	ArchivedAt string `json:"archived_at,omitempty"`
+}
+
 // RebindRequest is the POST /v1/conversations/{id}/rebind body: the host re-supplies
 // the fresh absolute path of an external workspace for this launch. See spec §6.2bis.
 type RebindRequest struct {
@@ -158,6 +163,7 @@ type ConversationRef struct {
 	Name            string              `json:"name,omitempty"`
 	TurnStatus      string              `json:"turn_status,omitempty"`
 	PausedAt        int64               `json:"paused_at,omitempty"`
+	ArchivedAt      string              `json:"archived_at,omitempty"`
 	ExecutionPolicy string              `json:"execution_policy,omitempty"`
 	WorkspaceID     string              `json:"workspace_id,omitempty"`
 	BaseWorkspaceID string              `json:"base_workspace_id,omitempty"`
@@ -180,6 +186,7 @@ type ConversationDetail struct {
 	MessageCount    int                 `json:"message_count"`
 	CreatedAt       string              `json:"created_at,omitempty"`
 	UpdatedAt       string              `json:"updated_at,omitempty"`
+	ArchivedAt      string              `json:"archived_at,omitempty"`
 	ExecutionPolicy string              `json:"execution_policy,omitempty"`
 	WorkspaceID     string              `json:"workspace_id,omitempty"`
 	BaseWorkspaceID string              `json:"base_workspace_id,omitempty"`
@@ -245,6 +252,7 @@ type RuntimeCapabilities struct {
 	SessionAttentionDelta    bool `json:"session_attention_delta_v1"`
 	WorkspaceExecutionPolicy bool `json:"workspace_execution_policy_v1"`
 	ManagedWorktree          bool `json:"managed_worktree_v1"`
+	ConversationArchive      bool `json:"conversation_archive_v1"`
 	MaxConcurrentTurns       int  `json:"max_concurrent_turns"`
 	MaxConnectedSessions     int  `json:"max_connected_sessions"`
 }
@@ -264,6 +272,7 @@ func ConfiguredRuntimeCapabilities(maxConcurrentTurns int) RuntimeCapabilities {
 		SessionAttentionDelta:    true,
 		WorkspaceExecutionPolicy: true,
 		ManagedWorktree:          false,
+		ConversationArchive:      true,
 		MaxConcurrentTurns:       maxConcurrentTurns,
 	}
 }
@@ -293,6 +302,7 @@ type SessionActivity struct {
 	LastSequence           int64                    `json:"last_sequence"`
 	LatestTerminal         *SessionTerminalActivity `json:"latest_terminal,omitempty"`
 	UpdatedAt              string                   `json:"updated_at,omitempty"`
+	ArchivedAt             string                   `json:"archived_at,omitempty"`
 	ExecutionPolicy        string                   `json:"execution_policy,omitempty"`
 	WorkspaceID            string                   `json:"workspace_id,omitempty"`
 	BaseWorkspaceID        string                   `json:"base_workspace_id,omitempty"`
@@ -360,6 +370,13 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 		attentionSupported = attentionSupported && capability.SupportsAttentionSnapshot()
 	}
 	runtimeCapabilities := opts.RuntimeCapabilities
+	archiveRepo, archiveSupported := repo.(conversation.ArchivableConversationRepository)
+	if capability, ok := repo.(conversation.ConversationArchiveCapability); ok {
+		archiveSupported = archiveSupported && capability.SupportsConversationArchive()
+	}
+	if !archiveSupported {
+		runtimeCapabilities.ConversationArchive = false
+	}
 	if opts.ManagedWorktrees == nil {
 		runtimeCapabilities.ManagedWorktree = false
 	}
@@ -504,6 +521,9 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 		}
 		activities := make([]SessionActivity, 0, len(activityBySession))
 		for _, activity := range activityBySession {
+			if meta, ok := metaBySession[activity.SessionID]; ok {
+				activity.ArchivedAt = archiveTimestamp(meta.ArchivedAt)
+			}
 			if record, managed := managedBySession[activity.SessionID]; managed {
 				activity.ExecutionPolicy = session.ExecutionPolicyIsolatedWorktree
 				activity.WorkspaceID = record.CheckoutWorkspaceID
@@ -540,7 +560,24 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 	// ---- v1 CRUD: all read from Repository (SQLite) ----
 
 	mux.HandleFunc("GET /v1/conversations", func(w http.ResponseWriter, r *http.Request) {
-		metas, err := repo.List(r.Context())
+		archived := false
+		if raw, present := r.URL.Query()["archived"]; present {
+			if len(raw) != 1 || (raw[0] != "true" && raw[0] != "false") {
+				http.Error(w, "archived must be true or false", http.StatusBadRequest)
+				return
+			}
+			archived = raw[0] == "true"
+		}
+		var metas []session.Meta
+		var err error
+		if archiveSupported {
+			metas, err = archiveRepo.ListArchived(r.Context(), archived)
+		} else if archived {
+			writeConversationArchiveUnsupported(w, r)
+			return
+		} else {
+			metas, err = repo.List(r.Context())
+		}
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -559,6 +596,7 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 				Name:          effectiveName(m),
 				TurnStatus:    m.TurnStatus,
 				PausedAt:      m.PausedAt,
+				ArchivedAt:    archiveTimestamp(m.ArchivedAt),
 			}
 			if record, managed := managedBySession[m.ID]; managed {
 				ref.ExecutionPolicy = session.ExecutionPolicyIsolatedWorktree
@@ -676,6 +714,7 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 			detail.WorkspacePath = s.WorkspacePath
 			detail.Workspace = workspaceDTO(s.WorkspacePath)
 			detail.Name = s.Name
+			detail.ArchivedAt = archiveTimestamp(s.ArchivedAt)
 			detail.ExecutionPolicy = s.ExecutionPolicy()
 			detail.WorkspaceID, _ = s.Metadata[session.MetaWorkspaceID].(string)
 			detail.BaseWorkspaceID, _ = s.Metadata[session.MetaBaseWorkspaceID].(string)
@@ -907,6 +946,7 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 			WorkspacePath: sess.WorkspacePath,
 			Workspace:     workspaceDTO(sess.WorkspacePath),
 			Name:          sess.Name,
+			ArchivedAt:    archiveTimestamp(sess.ArchivedAt),
 		})
 	})
 
@@ -930,6 +970,51 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
+	})
+
+	mux.HandleFunc("POST /v1/conversations/{id}/archive", func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+		if !archiveSupported {
+			writeConversationArchiveUnsupported(w, r)
+			return
+		}
+		var archivedAt time.Time
+		var err error
+		if executor != nil {
+			archivedAt, err = executor.ArchiveConversation(r.Context(), id)
+		} else {
+			archivedAt, err = archiveIdleConversation(r.Context(), repo, archiveRepo, id)
+		}
+		if err != nil {
+			if writeConversationOperationError(w, r, id, err) {
+				return
+			}
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, r, http.StatusOK, ConversationArchiveResponse{ID: id, ArchivedAt: archiveTimestamp(archivedAt)})
+	})
+
+	mux.HandleFunc("POST /v1/conversations/{id}/restore", func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+		if !archiveSupported {
+			writeConversationArchiveUnsupported(w, r)
+			return
+		}
+		var err error
+		if executor != nil {
+			err = executor.RestoreConversation(r.Context(), id)
+		} else {
+			err = restoreIdleConversation(r.Context(), repo, archiveRepo, id)
+		}
+		if err != nil {
+			if writeConversationOperationError(w, r, id, err) {
+				return
+			}
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, r, http.StatusOK, ConversationArchiveResponse{ID: id})
 	})
 
 	// Clone a public GitHub repo into the workspace. Used by the host's "Import from
@@ -974,11 +1059,7 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 			err = deleteIdleConversation(r.Context(), repo, id)
 		}
 		if err != nil {
-			var inUse *conversation.ConversationInUseError
-			if errors.As(err, &inUse) {
-				Result(w, r, http.StatusConflict, http.StatusConflict*100, "conversation is in use", conversationOperationErrorResponse{
-					Code: "conversation_in_use", Message: "conversation has an active or resumable turn", SessionID: id, State: inUse.State,
-				})
+			if writeConversationOperationError(w, r, id, err) {
 				return
 			}
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -1005,7 +1086,45 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 	return mux
 }
 
-func deleteIdleConversation(ctx context.Context, repo conversation.ConversationRepository, sessionID string) error {
+func archiveTimestamp(at time.Time) string {
+	if at.IsZero() {
+		return ""
+	}
+	return at.UTC().Format(time.RFC3339Nano)
+}
+
+func writeConversationArchiveUnsupported(w http.ResponseWriter, r *http.Request) {
+	Result(w, r, http.StatusNotImplemented, http.StatusNotImplemented*100, "conversation archive is not supported", conversationOperationErrorResponse{
+		Code: "conversation_archive_not_supported", Message: "configured Runtime storage does not support durable conversation archive",
+	})
+}
+
+func writeConversationOperationError(w http.ResponseWriter, r *http.Request, sessionID string, err error) bool {
+	var inUse *conversation.ConversationInUseError
+	if !errors.As(err, &inUse) {
+		return false
+	}
+	Result(w, r, http.StatusConflict, http.StatusConflict*100, "conversation is in use", conversationOperationErrorResponse{
+		Code: "conversation_in_use", Message: "conversation has an active or resumable turn", SessionID: sessionID, State: inUse.State,
+	})
+	return true
+}
+
+func archiveIdleConversation(ctx context.Context, repo conversation.ConversationRepository, archiveRepo conversation.ArchivableConversationRepository, sessionID string) (time.Time, error) {
+	if err := ensureConversationIdle(ctx, repo, sessionID); err != nil {
+		return time.Time{}, err
+	}
+	return archiveRepo.Archive(ctx, sessionID, time.Now().UTC())
+}
+
+func restoreIdleConversation(ctx context.Context, repo conversation.ConversationRepository, archiveRepo conversation.ArchivableConversationRepository, sessionID string) error {
+	if err := ensureConversationIdle(ctx, repo, sessionID); err != nil {
+		return err
+	}
+	return archiveRepo.Restore(ctx, sessionID)
+}
+
+func ensureConversationIdle(ctx context.Context, repo conversation.ConversationRepository, sessionID string) error {
 	metas, err := repo.List(ctx)
 	if err != nil {
 		return err
@@ -1019,6 +1138,13 @@ func deleteIdleConversation(ctx context.Context, repo conversation.ConversationR
 			return &conversation.ConversationInUseError{SessionID: sessionID, State: meta.TurnStatus}
 		}
 		break
+	}
+	return nil
+}
+
+func deleteIdleConversation(ctx context.Context, repo conversation.ConversationRepository, sessionID string) error {
+	if err := ensureConversationIdle(ctx, repo, sessionID); err != nil {
+		return err
 	}
 	return repo.Delete(ctx, sessionID)
 }

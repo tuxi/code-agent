@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"sync"
+	"time"
 
 	"code-agent/internal/session"
 )
@@ -213,6 +214,44 @@ func (r *sqliteRepository) List(ctx context.Context) ([]session.Meta, error) {
 	return metas, nil
 }
 
+func (r *sqliteRepository) SupportsConversationArchive() bool {
+	_, ok := r.store.(session.ConversationArchiveStore)
+	return ok
+}
+
+func (r *sqliteRepository) Archive(ctx context.Context, id string, at time.Time) (time.Time, error) {
+	store, ok := r.store.(session.ConversationArchiveStore)
+	if !ok {
+		return time.Time{}, ErrConversationArchiveUnsupported
+	}
+	return store.Archive(ctx, id, at)
+}
+
+func (r *sqliteRepository) Restore(ctx context.Context, id string) error {
+	store, ok := r.store.(session.ConversationArchiveStore)
+	if !ok {
+		return ErrConversationArchiveUnsupported
+	}
+	return store.Restore(ctx, id)
+}
+
+func (r *sqliteRepository) ListArchived(ctx context.Context, archived bool) ([]session.Meta, error) {
+	if !r.SupportsConversationArchive() {
+		return nil, ErrConversationArchiveUnsupported
+	}
+	metas, err := r.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]session.Meta, 0, len(metas))
+	for _, meta := range metas {
+		if (!meta.ArchivedAt.IsZero()) == archived {
+			out = append(out, meta)
+		}
+	}
+	return out, nil
+}
+
 func (r *sqliteRepository) Delete(ctx context.Context, id string) error {
 	return r.store.Delete(ctx, id)
 }
@@ -228,6 +267,8 @@ func (r *sqliteRepository) Close() error {
 // Compile-time check: sqliteRepository satisfies ConversationRepository.
 var _ ConversationRepository = (*sqliteRepository)(nil)
 var _ ReservedConversationRepository = (*sqliteRepository)(nil)
+var _ ArchivableConversationRepository = (*sqliteRepository)(nil)
+var _ ConversationArchiveCapability = (*sqliteRepository)(nil)
 
 // StoreEventAdapter wraps a session.EventStore as a ConversationEventStore by
 // delegating Append → RecordEvent and Replay → SessionEvents. This is the

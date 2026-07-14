@@ -259,8 +259,21 @@ func TestConfiguredRuntimeCapabilitiesEnableParallelOnlyAboveOne(t *testing.T) {
 		t.Fatalf("serial capabilities=%+v", serial)
 	}
 	parallel := ConfiguredRuntimeCapabilities(5)
-	if !parallel.MultiSessionExecution || !parallel.SessionScopedClientTools || !parallel.WorkspaceExecutionPolicy || !parallel.ActivitySnapshot || !parallel.SessionAttentionSnapshot || !parallel.SessionAttentionDelta || parallel.ManagedWorktree || parallel.MaxConcurrentTurns != 5 {
+	if !parallel.MultiSessionExecution || !parallel.SessionScopedClientTools || !parallel.WorkspaceExecutionPolicy || !parallel.ActivitySnapshot || !parallel.SessionAttentionSnapshot || !parallel.SessionAttentionDelta || !parallel.ConversationArchive || parallel.ManagedWorktree || parallel.MaxConcurrentTurns != 5 {
 		t.Fatalf("parallel capabilities=%+v", parallel)
+	}
+}
+
+func TestMuxDowngradesArchiveCapabilityWithoutDurableStore(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/runtime/capabilities", nil)
+	NewMux(newFakeConversationRepo(), &fakeEventStore{}, nil, MuxOptions{
+		RuntimeCapabilities: ConfiguredRuntimeCapabilities(2),
+	}).ServeHTTP(recorder, req)
+	var got runtimeCapabilitiesResponse
+	decodeResponse(t, recorder.Result(), &got)
+	if got.Capabilities.ConversationArchive {
+		t.Fatalf("capabilities=%+v", got.Capabilities)
 	}
 }
 
@@ -578,6 +591,142 @@ func TestMuxDeleteRejectsPausedConversationWithStableCode(t *testing.T) {
 	}
 	if _, err := repo.Load(context.Background(), paused.ID); err != nil {
 		t.Fatalf("paused conversation was deleted: %v", err)
+	}
+}
+
+func TestMuxArchiveRestoreAndListFiltering(t *testing.T) {
+	store := session.NewMemoryStore()
+	repo := conversation.NewSQLiteRepository(store, 128000, 90000, "test", "", nil)
+	ctx := context.Background()
+	active, err := repo.Create(ctx, t.TempDir(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	archived, err := repo.Create(ctx, t.TempDir(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := &fakeEventStore{}
+	_, _ = events.Append(ctx, storedEvent(agent.Event{Kind: agent.EventTurnFinished, SessionID: archived.ID, TurnID: "turn_1", At: time.Now(), Text: "kept"}))
+	srv := httptest.NewServer(NewMux(repo, events, nil, MuxOptions{RuntimeCapabilities: ConfiguredRuntimeCapabilities(2)}))
+	defer srv.Close()
+
+	capResp, err := http.Get(srv.URL + "/v1/runtime/capabilities")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var capabilities runtimeCapabilitiesResponse
+	decodeResponse(t, capResp, &capabilities)
+	if !capabilities.Capabilities.ConversationArchive {
+		t.Fatalf("capabilities=%+v", capabilities.Capabilities)
+	}
+
+	archive := func() ConversationArchiveResponse {
+		resp, err := http.Post(srv.URL+"/v1/conversations/"+archived.ID+"/archive", "application/json", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("archive status=%d", resp.StatusCode)
+		}
+		var result ConversationArchiveResponse
+		decodeResponse(t, resp, &result)
+		return result
+	}
+	first := archive()
+	second := archive()
+	if first.ID != archived.ID || first.ArchivedAt == "" || first.ArchivedAt != second.ArchivedAt {
+		t.Fatalf("archive responses first=%+v second=%+v", first, second)
+	}
+
+	list := func(query string) []ConversationRef {
+		resp, err := http.Get(srv.URL + "/v1/conversations" + query)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var refs []ConversationRef
+		decodeResponse(t, resp, &refs)
+		return refs
+	}
+	if refs := list(""); len(refs) != 1 || refs[0].ID != active.ID {
+		t.Fatalf("default list=%+v", refs)
+	}
+	if refs := list("?archived=true"); len(refs) != 1 || refs[0].ID != archived.ID || refs[0].ArchivedAt != first.ArchivedAt {
+		t.Fatalf("archived list=%+v", refs)
+	}
+	activity := fetchActivity(t, srv.URL)
+	var archivedActivity *SessionActivity
+	for i := range activity.Sessions {
+		if activity.Sessions[i].SessionID == archived.ID {
+			archivedActivity = &activity.Sessions[i]
+			break
+		}
+	}
+	if archivedActivity == nil || archivedActivity.ArchivedAt != first.ArchivedAt {
+		t.Fatalf("archived activity=%+v", archivedActivity)
+	}
+
+	detailResp, err := http.Get(srv.URL + "/v1/conversations/" + archived.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var detail ConversationDetail
+	decodeResponse(t, detailResp, &detail)
+	if detail.ArchivedAt != first.ArchivedAt || detail.MessageCount == 0 {
+		t.Fatalf("archived detail=%+v", detail)
+	}
+	eventResp, err := http.Get(srv.URL + "/v1/conversations/" + archived.ID + "/events")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var frames []map[string]any
+	decodeResponse(t, eventResp, &frames)
+	if len(frames) != 1 || frames[0]["kind"] != string(agent.EventTurnFinished) {
+		t.Fatalf("archived events=%+v", frames)
+	}
+
+	for range 2 {
+		resp, err := http.Post(srv.URL+"/v1/conversations/"+archived.ID+"/restore", "application/json", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("restore status=%d", resp.StatusCode)
+		}
+		resp.Body.Close()
+	}
+	if refs := list(""); len(refs) != 2 {
+		t.Fatalf("restored default list=%+v", refs)
+	}
+	if refs := list("?archived=true"); len(refs) != 0 {
+		t.Fatalf("restored archived list=%+v", refs)
+	}
+}
+
+func TestMuxArchiveRejectsPausedConversation(t *testing.T) {
+	store := session.NewMemoryStore()
+	repo := conversation.NewSQLiteRepository(store, 128000, 90000, "test", "", nil)
+	sess, err := repo.Create(context.Background(), t.TempDir(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess.SetTurnStatus(session.TurnStatusPaused)
+	if err := repo.Save(context.Background(), sess); err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(NewMux(repo, &fakeEventStore{}, nil, MuxOptions{}))
+	defer srv.Close()
+	resp, err := http.Post(srv.URL+"/v1/conversations/"+sess.ID+"/archive", "application/json", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("archive paused status=%d", resp.StatusCode)
+	}
+	var body conversationOperationErrorResponse
+	decodeResponse(t, resp, &body)
+	if body.Code != "conversation_in_use" || body.State != session.TurnStatusPaused {
+		t.Fatalf("archive paused response=%+v", body)
 	}
 }
 

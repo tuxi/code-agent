@@ -2,9 +2,13 @@ package conversation
 
 import (
 	"context"
+	"errors"
+	"time"
 
 	"code-agent/internal/session"
 )
+
+var ErrConversationArchiveUnsupported = errors.New("conversation: archive is not supported by this repository")
 
 // ConversationRepository is the persistence boundary for conversation metadata.
 // It is backed by SQLite (session.Store) and is the single source of truth:
@@ -60,4 +64,17 @@ type ConversationRepository interface {
 // managed worktree provisioning. The caller owns the stable id reservation.
 type ReservedConversationRepository interface {
 	CreateWithID(ctx context.Context, id, workspacePath, workspaceExtID string) (*session.Session, error)
+}
+
+// ArchivableConversationRepository is an optional durable extension. Keeping it
+// separate avoids forcing third-party stores to silently emulate cross-device
+// archive state. ListArchived returns exactly one side of the archive partition.
+type ArchivableConversationRepository interface {
+	Archive(ctx context.Context, id string, at time.Time) (time.Time, error)
+	Restore(ctx context.Context, id string) error
+	ListArchived(ctx context.Context, archived bool) ([]session.Meta, error)
+}
+
+type ConversationArchiveCapability interface {
+	SupportsConversationArchive() bool
 }

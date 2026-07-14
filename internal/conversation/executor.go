@@ -66,17 +66,25 @@ type TurnExecutor struct {
 }
 
 type sessionOperation struct {
-	turns    int
-	deleting bool
+	turns     int
+	exclusive bool
+	done      chan struct{}
 }
 
 // ErrConversationInUse is returned when a destructive conversation operation
 // races with an accepted, queued, running, waiting, resuming, or paused turn.
 var ErrConversationInUse = errors.New("conversation: conversation is in use")
 
-// ErrConversationDeleting is returned to a turn submitted after deletion has
-// atomically claimed the session. The turn is not accepted or persisted.
-var ErrConversationDeleting = errors.New("conversation: conversation is being deleted")
+// ErrConversationOperationInProgress is returned to a turn submitted after an
+// archive, restore, or delete operation atomically claimed the session. The turn
+// is not accepted or persisted.
+var ErrConversationOperationInProgress = errors.New("conversation: exclusive conversation operation is in progress")
+
+// Backward-compatible alias retained for callers compiled against the initial
+// delete guard implementation.
+var ErrConversationDeleting = ErrConversationOperationInProgress
+
+var ErrConversationArchived = errors.New("conversation: conversation is archived")
 
 // ConversationInUseError carries the stable state used by the HTTP layer while
 // remaining compatible with errors.Is(err, ErrConversationInUse).
@@ -136,9 +144,9 @@ func (e *TurnExecutor) beginSessionTurn(sessionID string) (func(), error) {
 		op = &sessionOperation{}
 		e.sessionOps[sessionID] = op
 	}
-	if op.deleting {
+	if op.exclusive {
 		e.sessionOpsMu.Unlock()
-		return nil, ErrConversationDeleting
+		return nil, ErrConversationOperationInProgress
 	}
 	op.turns++
 	e.sessionOpsMu.Unlock()
@@ -148,7 +156,7 @@ func (e *TurnExecutor) beginSessionTurn(sessionID string) (func(), error) {
 		once.Do(func() {
 			e.sessionOpsMu.Lock()
 			op.turns--
-			if op.turns == 0 && !op.deleting {
+			if op.turns == 0 && !op.exclusive {
 				delete(e.sessionOps, sessionID)
 			}
 			e.sessionOpsMu.Unlock()
@@ -161,46 +169,100 @@ func (e *TurnExecutor) beginSessionTurn(sessionID string) (func(), error) {
 // The HTTP layer must only tear down connection-owned brokers after this returns
 // nil; otherwise a rejected delete would incorrectly deny a pending approval.
 func (e *TurnExecutor) DeleteConversation(ctx context.Context, sessionID string) error {
-	e.sessionOpsMu.Lock()
-	op := e.sessionOps[sessionID]
-	if op == nil {
-		op = &sessionOperation{}
-		e.sessionOps[sessionID] = op
-	}
-	if op.deleting || op.turns > 0 {
-		state := e.liveSessionState(sessionID)
-		if state == "" {
-			state = "accepted"
-		}
-		e.sessionOpsMu.Unlock()
-		return &ConversationInUseError{SessionID: sessionID, State: state}
-	}
-	op.deleting = true
-	e.sessionOpsMu.Unlock()
-
-	defer func() {
-		e.sessionOpsMu.Lock()
-		op.deleting = false
-		if op.turns == 0 {
-			delete(e.sessionOps, sessionID)
-		}
-		e.sessionOpsMu.Unlock()
-	}()
-
-	metas, err := e.repo.List(ctx)
+	release, err := e.beginExclusiveConversationOperation(ctx, sessionID)
 	if err != nil {
 		return err
 	}
-	for _, meta := range metas {
-		if meta.ID != sessionID {
-			continue
-		}
-		if deletionBlockedTurnStatus(meta.TurnStatus) {
-			return &ConversationInUseError{SessionID: sessionID, State: meta.TurnStatus}
-		}
-		break
-	}
+	defer release()
 	return e.repo.Delete(ctx, sessionID)
+}
+
+func (e *TurnExecutor) ArchiveConversation(ctx context.Context, sessionID string) (time.Time, error) {
+	repo, ok := e.repo.(ArchivableConversationRepository)
+	if !ok {
+		return time.Time{}, ErrConversationArchiveUnsupported
+	}
+	release, err := e.beginExclusiveConversationOperation(ctx, sessionID)
+	if err != nil {
+		return time.Time{}, err
+	}
+	defer release()
+	return repo.Archive(ctx, sessionID, time.Now().UTC())
+}
+
+func (e *TurnExecutor) RestoreConversation(ctx context.Context, sessionID string) error {
+	repo, ok := e.repo.(ArchivableConversationRepository)
+	if !ok {
+		return ErrConversationArchiveUnsupported
+	}
+	release, err := e.beginExclusiveConversationOperation(ctx, sessionID)
+	if err != nil {
+		return err
+	}
+	defer release()
+	return repo.Restore(ctx, sessionID)
+}
+
+func (e *TurnExecutor) beginExclusiveConversationOperation(ctx context.Context, sessionID string) (func(), error) {
+	for {
+		e.sessionOpsMu.Lock()
+		op := e.sessionOps[sessionID]
+		if op == nil {
+			op = &sessionOperation{}
+			e.sessionOps[sessionID] = op
+		}
+		if op.turns > 0 {
+			e.sessionOpsMu.Unlock()
+			state := e.liveSessionState(sessionID)
+			if state == "" {
+				state = "accepted"
+			}
+			return nil, &ConversationInUseError{SessionID: sessionID, State: state}
+		}
+		if op.exclusive {
+			done := op.done
+			e.sessionOpsMu.Unlock()
+			select {
+			case <-done:
+				continue
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}
+		op.exclusive = true
+		op.done = make(chan struct{})
+		e.sessionOpsMu.Unlock()
+
+		release := func() {
+			e.sessionOpsMu.Lock()
+			if op.exclusive {
+				op.exclusive = false
+				close(op.done)
+				op.done = nil
+			}
+			if op.turns == 0 {
+				delete(e.sessionOps, sessionID)
+			}
+			e.sessionOpsMu.Unlock()
+		}
+
+		metas, err := e.repo.List(ctx)
+		if err != nil {
+			release()
+			return nil, err
+		}
+		for _, meta := range metas {
+			if meta.ID != sessionID {
+				continue
+			}
+			if exclusiveOperationBlockedTurnStatus(meta.TurnStatus) {
+				release()
+				return nil, &ConversationInUseError{SessionID: sessionID, State: meta.TurnStatus}
+			}
+			break
+		}
+		return release, nil
+	}
 }
 
 func (e *TurnExecutor) liveSessionState(sessionID string) string {
@@ -212,7 +274,7 @@ func (e *TurnExecutor) liveSessionState(sessionID string) string {
 	return ""
 }
 
-func deletionBlockedTurnStatus(status string) bool {
+func exclusiveOperationBlockedTurnStatus(status string) bool {
 	switch status {
 	case session.TurnStatusRunning, session.TurnStatusResuming, session.TurnStatusPaused:
 		return true
@@ -268,6 +330,9 @@ func (e *TurnExecutor) ExecuteWithRequestIDAndAssets(ctx context.Context, sessio
 	if err != nil {
 		return agent.TurnResult{}, err
 	}
+	if !sess.ArchivedAt.IsZero() {
+		return agent.TurnResult{}, ErrConversationArchived
+	}
 	return e.executeWithSessionAssets(ctx, sess, requestID, input, modelName, assets)
 }
 
@@ -284,7 +349,29 @@ func (e *TurnExecutor) ExecuteWithSessionAssets(parentCtx context.Context, sess 
 		return agent.TurnResult{}, err
 	}
 	defer release()
+	archived, err := e.conversationArchived(parentCtx, sess)
+	if err != nil {
+		return agent.TurnResult{}, err
+	}
+	if archived {
+		return agent.TurnResult{}, ErrConversationArchived
+	}
 	return e.executeWithSessionAssets(parentCtx, sess, "", input, model, assets)
+}
+
+func (e *TurnExecutor) conversationArchived(ctx context.Context, fallback *session.Session) (bool, error) {
+	if !fallback.ArchivedAt.IsZero() {
+		return true, nil
+	}
+	capability, ok := e.repo.(ConversationArchiveCapability)
+	if !ok || !capability.SupportsConversationArchive() {
+		return false, nil
+	}
+	stored, err := e.repo.Load(ctx, fallback.ID)
+	if err != nil {
+		return false, err
+	}
+	return !stored.ArchivedAt.IsZero(), nil
 }
 
 func (e *TurnExecutor) executeWithSessionAssets(parentCtx context.Context, sess *session.Session, requestID, input, modelName string, assets []model.GatewayAssetRef) (agent.TurnResult, error) {
@@ -337,6 +424,9 @@ func (e *TurnExecutor) Resume(parentCtx context.Context, sessionID string) (agen
 	sess, err := e.repo.Load(parentCtx, sessionID)
 	if err != nil {
 		return agent.TurnResult{}, err
+	}
+	if !sess.ArchivedAt.IsZero() {
+		return agent.TurnResult{}, ErrConversationArchived
 	}
 	// Only a paused turn is resumable. A host that calls resume on every foreground
 	// (the silent auto-resume pattern) will hit sessions that are done/failed/empty;

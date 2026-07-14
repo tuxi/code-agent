@@ -23,12 +23,13 @@ import (
 //
 // Compile-time checks: Store satisfies all storage interfaces.
 var (
-	_ session.Store               = (*Store)(nil)
-	_ session.SessionStore        = (*Store)(nil)
-	_ session.EventStore          = (*Store)(nil)
-	_ session.EventAttentionStore = (*Store)(nil)
-	_ session.TelemetryStore      = (*Store)(nil)
-	_ worktree.Store              = (*Store)(nil)
+	_ session.Store                    = (*Store)(nil)
+	_ session.SessionStore             = (*Store)(nil)
+	_ session.EventStore               = (*Store)(nil)
+	_ session.EventAttentionStore      = (*Store)(nil)
+	_ session.TelemetryStore           = (*Store)(nil)
+	_ session.ConversationArchiveStore = (*Store)(nil)
+	_ worktree.Store                   = (*Store)(nil)
 )
 
 type Store struct {
@@ -60,6 +61,7 @@ CREATE TABLE IF NOT EXISTS sessions (
 	name              TEXT,
 	created_at        TEXT,
 	updated_at        TEXT,
+	archived_at       TEXT,
 	metadata          TEXT
 	,gateway_assets   TEXT
 	,reference_ledger TEXT
@@ -176,6 +178,7 @@ func (s *Store) open() error {
 		`ALTER TABLE sessions ADD COLUMN name TEXT`,
 		`ALTER TABLE sessions ADD COLUMN gateway_assets TEXT`,
 		`ALTER TABLE sessions ADD COLUMN reference_ledger TEXT`,
+		`ALTER TABLE sessions ADD COLUMN archived_at TEXT`,
 		`ALTER TABLE messages ADD COLUMN assets TEXT`,
 		`ALTER TABLE managed_worktrees ADD COLUMN remove_force INTEGER NOT NULL DEFAULT 0`,
 		// v2: re-index session_events by at for chronological ordering.
@@ -257,18 +260,18 @@ func (s *Store) save(ctx context.Context, sess *session.Session) error {
 		ledgerJSON = string(b)
 	}
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO sessions (id, model, summary, prompt_tokens, context_window, compact_threshold, workspace_path, workspace_root, workspace_rel, workspace_ext_id, name, created_at, updated_at, metadata, gateway_assets, reference_ledger)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO sessions (id, model, summary, prompt_tokens, context_window, compact_threshold, workspace_path, workspace_root, workspace_rel, workspace_ext_id, name, created_at, updated_at, archived_at, metadata, gateway_assets, reference_ledger)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			model=excluded.model, summary=excluded.summary, prompt_tokens=excluded.prompt_tokens,
 			context_window=excluded.context_window, compact_threshold=excluded.compact_threshold,
 			workspace_path=excluded.workspace_path, workspace_root=excluded.workspace_root,
 			workspace_rel=excluded.workspace_rel, workspace_ext_id=excluded.workspace_ext_id,
-			name=excluded.name, updated_at=excluded.updated_at, metadata=excluded.metadata,
+			name=excluded.name, updated_at=excluded.updated_at, archived_at=sessions.archived_at, metadata=excluded.metadata,
 			gateway_assets=excluded.gateway_assets, reference_ledger=excluded.reference_ledger`,
 		sess.ID, sess.Model, sess.Summary, sess.PromptTokens, sess.ContextWindow, sess.CompactThreshold,
 		sess.WorkspacePath, sess.Workspace.Root, sess.Workspace.Rel, sess.Workspace.ExtID,
-		sess.Name, formatTime(sess.CreatedAt), formatTime(sess.UpdatedAt), metaJSON, cacheJSON, ledgerJSON); err != nil {
+		sess.Name, formatTime(sess.CreatedAt), formatTime(sess.UpdatedAt), formatTime(sess.ArchivedAt), metaJSON, cacheJSON, ledgerJSON); err != nil {
 		return fmt.Errorf("save session row: %w", err)
 	}
 
@@ -318,16 +321,16 @@ func (s *Store) save(ctx context.Context, sess *session.Session) error {
 
 func (s *Store) Load(ctx context.Context, id string) (*session.Session, error) {
 	var sess session.Session
-	var createdAt, updatedAt, metaJSON, cacheJSON, ledgerJSON, name string
+	var createdAt, updatedAt, archivedAt, metaJSON, cacheJSON, ledgerJSON, name string
 	err := s.db.QueryRowContext(ctx, `
 		SELECT id, model, summary, prompt_tokens, context_window, compact_threshold, COALESCE(workspace_path, ''),
 		       COALESCE(workspace_root, ''), COALESCE(workspace_rel, ''), COALESCE(workspace_ext_id, ''),
-		       COALESCE(name, ''), created_at, updated_at, COALESCE(metadata, ''), COALESCE(gateway_assets, ''), COALESCE(reference_ledger, '')
+		       COALESCE(name, ''), created_at, updated_at, COALESCE(archived_at, ''), COALESCE(metadata, ''), COALESCE(gateway_assets, ''), COALESCE(reference_ledger, '')
 		FROM sessions WHERE id=?`, id).
 		Scan(&sess.ID, &sess.Model, &sess.Summary, &sess.PromptTokens, &sess.ContextWindow,
 			&sess.CompactThreshold, &sess.WorkspacePath,
 			&sess.Workspace.Root, &sess.Workspace.Rel, &sess.Workspace.ExtID,
-			&name, &createdAt, &updatedAt, &metaJSON, &cacheJSON, &ledgerJSON)
+			&name, &createdAt, &updatedAt, &archivedAt, &metaJSON, &cacheJSON, &ledgerJSON)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf("session %q not found", id)
 	}
@@ -336,6 +339,7 @@ func (s *Store) Load(ctx context.Context, id string) (*session.Session, error) {
 	}
 	sess.CreatedAt = parseTime(createdAt)
 	sess.UpdatedAt = parseTime(updatedAt)
+	sess.ArchivedAt = parseTime(archivedAt)
 	sess.Name = name
 	// workspace_path is the (frozen) display hint for the portable ref.
 	sess.Workspace.AbsHint = sess.WorkspacePath
@@ -412,7 +416,7 @@ func (s *Store) List(ctx context.Context) ([]session.Meta, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT s.id, s.model, s.prompt_tokens, s.updated_at, COALESCE(s.workspace_path, ''),
 		       COALESCE(s.workspace_root, ''), COALESCE(s.workspace_rel, ''), COALESCE(s.workspace_ext_id, ''), COALESCE(s.name, ''),
-		       COALESCE(s.metadata, ''),
+		       COALESCE(s.metadata, ''), COALESCE(s.archived_at, ''),
 		       (SELECT COUNT(*) FROM messages m WHERE m.session_id = s.id),
 		       (SELECT COALESCE((SELECT content FROM messages m WHERE m.session_id = s.id AND m.role = 'user' ORDER BY m.seq LIMIT 1), '')),
 		       (SELECT COUNT(*) FROM compactions c WHERE c.session_id = s.id AND c.after_tokens >= 0),
@@ -427,15 +431,16 @@ func (s *Store) List(ctx context.Context) ([]session.Meta, error) {
 	var out []session.Meta
 	for rows.Next() {
 		var m session.Meta
-		var updatedAt, lastCompacted, metadata string
+		var updatedAt, lastCompacted, metadata, archivedAt string
 		if err := rows.Scan(&m.ID, &m.Model, &m.PromptTokens, &updatedAt, &m.WorkspacePath,
-			&m.Workspace.Root, &m.Workspace.Rel, &m.Workspace.ExtID, &m.Name, &metadata,
+			&m.Workspace.Root, &m.Workspace.Rel, &m.Workspace.ExtID, &m.Name, &metadata, &archivedAt,
 			&m.MessageCount, &m.Title, &m.Compactions, &m.TotalSaved, &lastCompacted); err != nil {
 			return nil, err
 		}
 		m.Workspace.AbsHint = m.WorkspacePath
 		m.UpdatedAt = parseTime(updatedAt)
 		m.LastCompacted = parseTime(lastCompacted)
+		m.ArchivedAt = parseTime(archivedAt)
 		m.TurnStatus, m.PausedAt = turnLifecycleFromMetadata(metadata)
 		out = append(out, m)
 	}
@@ -901,6 +906,48 @@ func (s *Store) Delete(ctx context.Context, id string) error {
 		}
 	}
 	return tx.Commit()
+}
+
+func (s *Store) Archive(ctx context.Context, id string, at time.Time) (time.Time, error) {
+	if at.IsZero() {
+		at = time.Now().UTC()
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return time.Time{}, err
+	}
+	defer tx.Rollback()
+	var current string
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(archived_at, '') FROM sessions WHERE id=?`, id).Scan(&current); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return time.Time{}, fmt.Errorf("session %q not found", id)
+		}
+		return time.Time{}, err
+	}
+	if current != "" {
+		return parseTime(current), tx.Commit()
+	}
+	archivedAt := at.UTC()
+	if _, err := tx.ExecContext(ctx, `UPDATE sessions SET archived_at=? WHERE id=?`, formatTime(archivedAt), id); err != nil {
+		return time.Time{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return time.Time{}, err
+	}
+	return archivedAt, nil
+}
+
+func (s *Store) Restore(ctx context.Context, id string) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE sessions SET archived_at='' WHERE id=?`, id)
+	if err != nil {
+		return err
+	}
+	if affected, err := res.RowsAffected(); err != nil {
+		return err
+	} else if affected == 0 {
+		return fmt.Errorf("session %q not found", id)
+	}
+	return nil
 }
 
 // UpdateName changes just the display name of a session without loading/saving

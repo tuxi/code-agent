@@ -21,6 +21,15 @@ type SessionStore interface {
 	Close() error
 }
 
+// ConversationArchiveStore is the optional persistent archive extension. The
+// Runtime advertises conversation_archive_v1 only when its configured backend
+// implements it. Archive and Restore are idempotent; Archive returns the stable
+// original timestamp when called repeatedly.
+type ConversationArchiveStore interface {
+	Archive(ctx context.Context, id string, at time.Time) (time.Time, error)
+	Restore(ctx context.Context, id string) error
+}
+
 // EventStore is the optional event-log persistence port. It records and replays
 // agent events (the P7 EventStore — the raw, replayable runtime stream).
 // Consumers that don't need timeline replay or event search can provide a no-op
@@ -211,6 +220,7 @@ type Meta struct {
 	// interrupted sessions and render a "continue" entry (agent-wire v1.2 §3.2).
 	TurnStatus string // "" | running | paused | resuming | done | failed
 	PausedAt   int64  // unix seconds when paused; 0 if not paused
+	ArchivedAt time.Time
 }
 
 // Stats is aggregate compaction telemetry across all stored sessions — the real

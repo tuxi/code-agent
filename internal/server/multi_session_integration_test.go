@@ -249,6 +249,60 @@ func TestMultiSessionWebSocketQueuesAndCancelsSharedWorkspace(t *testing.T) {
 	builder.finish("a")
 }
 
+func TestArchivedConversationRejectsWebSocketTurnUntilRestored(t *testing.T) {
+	store := session.NewMemoryStore()
+	repo := conversation.NewSQLiteRepository(store, 128000, 90000, "test", "", nil)
+	sess, err := repo.Create(context.Background(), t.TempDir(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := &fakeEventStore{}
+	builder := newMultiSessionRunBuilder()
+	executor := conversation.NewTurnExecutor(repo, events, conversation.NewActiveTurnRegistry(), conversation.NewSubscriptionManager(), builder)
+	srv := httptest.NewServer(NewMux(repo, events, executor, MuxOptions{
+		Accept: &websocket.AcceptOptions{InsecureSkipVerify: true}, RuntimeCapabilities: ConfiguredRuntimeCapabilities(2),
+	}))
+	defer srv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	conn := dialConversation(t, ctx, srv.URL, sess.ID)
+	defer conn.CloseNow()
+	archived, err := http.Post(srv.URL+"/v1/conversations/"+sess.ID+"/archive", "application/json", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	archived.Body.Close()
+	if archived.StatusCode != http.StatusOK {
+		t.Fatalf("archive status=%d", archived.StatusCode)
+	}
+	wsWriteJSON(t, ctx, conn, map[string]any{"type": "agent_input", "kind": "text", "request_id": "archived-turn", "text": "must not run"})
+	select {
+	case id := <-builder.started:
+		t.Fatalf("archived conversation started turn for %q", id)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	restored, err := http.Post(srv.URL+"/v1/conversations/"+sess.ID+"/restore", "application/json", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restored.Body.Close()
+	if restored.StatusCode != http.StatusOK {
+		t.Fatalf("restore status=%d", restored.StatusCode)
+	}
+	wsWriteJSON(t, ctx, conn, map[string]any{"type": "agent_input", "kind": "text", "request_id": "restored-turn", "text": "run"})
+	select {
+	case id := <-builder.started:
+		if id != sess.ID {
+			t.Fatalf("restored turn started session=%q", id)
+		}
+	case <-ctx.Done():
+		t.Fatal("restored conversation did not start")
+	}
+	builder.finish(sess.ID)
+}
+
 func TestMultiSessionActivityReportsBackgroundApprovalAndTerminal(t *testing.T) {
 	repo := newFakeConversationRepo()
 	repo.sessions["background"] = &session.Session{ID: "background", WorkspacePath: "/workspace/background", Metadata: map[string]any{}}

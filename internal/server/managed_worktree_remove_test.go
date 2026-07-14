@@ -13,6 +13,7 @@ import (
 	"strings"
 	"testing"
 
+	"code-agent/internal/conversation"
 	"code-agent/internal/managedworktree"
 	"code-agent/internal/session"
 )
@@ -164,6 +165,70 @@ func TestConversationDeleteDoesNotImplicitlyRemoveManagedWorktree(t *testing.T) 
 	record, err := manager.WorktreeBySessionID(context.Background(), ref.ID)
 	if err != nil || record.State != "ready" {
 		t.Fatalf("record=%+v err=%v", record, err)
+	}
+}
+
+func TestConversationArchivePreservesManagedWorktree(t *testing.T) {
+	root := initManagedHTTPRepo(t)
+	store := session.NewMemoryStore()
+	repo := conversation.NewSQLiteRepository(store, 128000, 90000, "test", "", nil)
+	managedRepo := repo.(interface {
+		CreateWithID(context.Context, string, string, string) (*session.Session, error)
+		Load(context.Context, string) (*session.Session, error)
+		Save(context.Context, *session.Session) error
+	})
+	manager := managedworktree.New(store, managedRepo)
+	server := httptest.NewServer(NewMux(repo, &fakeEventStore{}, nil, MuxOptions{ManagedWorktrees: manager, RuntimeCapabilities: ConfiguredRuntimeCapabilities(2)}))
+	defer server.Close()
+	created := requestJSON(t, server.URL+"/v1/conversations", map[string]any{
+		"client_request_id": "create_archive_keep", "workspace_path": root,
+		"execution_policy": session.ExecutionPolicyIsolatedWorktree,
+		"worktree":         map[string]any{"managed": true, "base_ref": "head"},
+	})
+	var ref ConversationRef
+	decodeResponse(t, created, &ref)
+	archived, err := http.Post(server.URL+"/v1/conversations/"+ref.ID+"/archive", "application/json", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if archived.StatusCode != http.StatusOK {
+		t.Fatalf("archive status=%d", archived.StatusCode)
+	}
+	archived.Body.Close()
+	if _, err := os.Stat(ref.WorkspacePath); err != nil {
+		t.Fatalf("conversation archive removed worktree: %v", err)
+	}
+	record, err := manager.WorktreeBySessionID(context.Background(), ref.ID)
+	if err != nil || record.State != "ready" {
+		t.Fatalf("record=%+v err=%v", record, err)
+	}
+	list, err := http.Get(server.URL + "/v1/conversations?archived=true")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var refs []ConversationRef
+	decodeResponse(t, list, &refs)
+	if len(refs) != 1 || refs[0].ID != ref.ID || refs[0].Worktree == nil || refs[0].Worktree.State != "ready" {
+		t.Fatalf("archived refs=%+v", refs)
+	}
+	deleteRequest, err := http.NewRequest(http.MethodDelete, server.URL+"/v1/conversations/"+ref.ID, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deleted, err := http.DefaultClient.Do(deleteRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deleted.Body.Close()
+	if deleted.StatusCode != http.StatusNoContent {
+		t.Fatalf("archived delete status=%d", deleted.StatusCode)
+	}
+	if _, err := os.Stat(ref.WorkspacePath); err != nil {
+		t.Fatalf("archived conversation delete removed worktree: %v", err)
+	}
+	record, err = manager.WorktreeBySessionID(context.Background(), ref.ID)
+	if err != nil || record.State != "ready" {
+		t.Fatalf("record after archived delete=%+v err=%v", record, err)
 	}
 }
 

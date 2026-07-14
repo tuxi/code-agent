@@ -395,6 +395,84 @@ func TestStoreReopenIdempotent(t *testing.T) {
 	s2.Close()
 }
 
+func TestStoreArchiveRestorePersistsAcrossRestart(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "archive.db")
+	ctx := context.Background()
+	store, err := New(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess := sampleSession()
+	if err := store.Save(ctx, sess); err != nil {
+		t.Fatal(err)
+	}
+	wantAt := time.Date(2026, 7, 14, 9, 30, 0, 123000000, time.UTC)
+	first, err := store.Archive(ctx, sess.ID, wantAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := store.Archive(ctx, sess.ID, wantAt.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !first.Equal(wantAt) || !second.Equal(wantAt) {
+		t.Fatalf("archive timestamps first=%s second=%s want=%s", first, second, wantAt)
+	}
+	// A stale whole-session snapshot must not silently undo the archive. Restore
+	// is the only supported transition back to the normal list.
+	if err := store.Save(ctx, sess); err != nil {
+		t.Fatal(err)
+	}
+	stillArchived, err := store.Load(ctx, sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !stillArchived.ArchivedAt.Equal(wantAt) {
+		t.Fatalf("stale save changed archive state: archived_at=%s", stillArchived.ArchivedAt)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	restarted, err := New(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := restarted.Load(ctx, sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !loaded.ArchivedAt.Equal(wantAt) {
+		t.Fatalf("restarted archived_at=%s want=%s", loaded.ArchivedAt, wantAt)
+	}
+	metas, err := restarted.List(ctx)
+	if err != nil || len(metas) != 1 || !metas[0].ArchivedAt.Equal(wantAt) {
+		t.Fatalf("metas=%+v err=%v", metas, err)
+	}
+	if err := restarted.Restore(ctx, sess.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := restarted.Restore(ctx, sess.ID); err != nil {
+		t.Fatalf("idempotent restore: %v", err)
+	}
+	if err := restarted.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	restored, err := New(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer restored.Close()
+	loaded, err = restored.Load(ctx, sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !loaded.ArchivedAt.IsZero() {
+		t.Fatalf("restored archived_at=%s want zero", loaded.ArchivedAt)
+	}
+}
+
 func TestStoreLoadMissing(t *testing.T) {
 	store := newStore(t)
 	if _, err := store.Load(context.Background(), "nope"); err == nil {

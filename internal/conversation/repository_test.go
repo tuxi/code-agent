@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"code-agent/internal/session/sqlite"
 )
@@ -153,6 +154,38 @@ func TestRepoList(t *testing.T) {
 	}
 	if metas[1].ID != s1.ID {
 		t.Errorf("second = %q, want %q", metas[1].ID, s1.ID)
+	}
+}
+
+func TestRepoListArchivedPartitionsWithoutLosingHistory(t *testing.T) {
+	repo := newTestRepo(t)
+	archiveRepo := repo.(ArchivableConversationRepository)
+	ctx := context.Background()
+	dir := t.TempDir()
+	active, err := repo.Create(ctx, dir, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	archived, err := repo.Create(ctx, dir, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := time.Date(2026, 7, 14, 10, 0, 0, 0, time.UTC)
+	if _, err := archiveRepo.Archive(ctx, archived.ID, at); err != nil {
+		t.Fatal(err)
+	}
+
+	activeMetas, err := archiveRepo.ListArchived(ctx, false)
+	if err != nil || len(activeMetas) != 1 || activeMetas[0].ID != active.ID {
+		t.Fatalf("active metas=%+v err=%v", activeMetas, err)
+	}
+	archivedMetas, err := archiveRepo.ListArchived(ctx, true)
+	if err != nil || len(archivedMetas) != 1 || archivedMetas[0].ID != archived.ID || !archivedMetas[0].ArchivedAt.Equal(at) {
+		t.Fatalf("archived metas=%+v err=%v", archivedMetas, err)
+	}
+	loaded, err := repo.Load(ctx, archived.ID)
+	if err != nil || len(loaded.Messages) == 0 {
+		t.Fatalf("archived history missing: session=%+v err=%v", loaded, err)
 	}
 }
 

@@ -194,6 +194,91 @@ func TestTurnExecutorDeleteConversationExcludesNewTurnAtomically(t *testing.T) {
 	}
 }
 
+func TestTurnExecutorArchiveIsIdempotentAndBlocksArchivedTurns(t *testing.T) {
+	store := session.NewMemoryStore()
+	repo := NewSQLiteRepository(store, 128000, 90000, "test", "", nil)
+	sess, err := repo.Create(context.Background(), t.TempDir(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	executor := NewTurnExecutor(repo, &fakeEventStore{}, NewActiveTurnRegistry(), NewSubscriptionManager(), &fakeRunBuilder{})
+
+	const callers = 8
+	timestamps := make(chan time.Time, callers)
+	errs := make(chan error, callers)
+	var wg sync.WaitGroup
+	for range callers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			at, err := executor.ArchiveConversation(context.Background(), sess.ID)
+			timestamps <- at
+			errs <- err
+		}()
+	}
+	wg.Wait()
+	close(timestamps)
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	var first time.Time
+	for at := range timestamps {
+		if first.IsZero() {
+			first = at
+		} else if !at.Equal(first) {
+			t.Fatalf("idempotent archive timestamps differ: %s / %s", first, at)
+		}
+	}
+	if _, err := executor.Execute(context.Background(), sess.ID, "must not run", ""); !errors.Is(err, ErrConversationArchived) {
+		t.Fatalf("archived Execute error=%v", err)
+	}
+	if _, err := executor.ExecuteWithSession(context.Background(), sess, "stale handle", ""); !errors.Is(err, ErrConversationArchived) {
+		t.Fatalf("archived stale-session Execute error=%v", err)
+	}
+	if err := executor.RestoreConversation(context.Background(), sess.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := executor.RestoreConversation(context.Background(), sess.ID); err != nil {
+		t.Fatalf("idempotent restore: %v", err)
+	}
+	if _, err := executor.Execute(context.Background(), sess.ID, "runs after restore", ""); err != nil {
+		t.Fatalf("restored Execute: %v", err)
+	}
+}
+
+func TestTurnExecutorArchiveRejectsActiveTurn(t *testing.T) {
+	store := session.NewMemoryStore()
+	repo := NewSQLiteRepository(store, 128000, 90000, "test", "", nil)
+	sess, err := repo.Create(context.Background(), t.TempDir(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := make(chan string, 1)
+	release := make(chan struct{})
+	executor := NewTurnExecutor(repo, &fakeEventStore{}, NewActiveTurnRegistry(), NewSubscriptionManager(), &schedulerBlockingRunBuilder{started: started, release: release})
+	done := make(chan error, 1)
+	go func() {
+		_, err := executor.Execute(context.Background(), sess.ID, "work", "")
+		done <- err
+	}()
+	assertReady(t, started)
+	_, err = executor.ArchiveConversation(context.Background(), sess.ID)
+	var inUse *ConversationInUseError
+	if !errors.As(err, &inUse) || inUse.State != session.TurnStatusRunning {
+		t.Fatalf("archive active error=%v detail=%+v", err, inUse)
+	}
+	close(release)
+	if err := assertReady(t, done); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := executor.ArchiveConversation(context.Background(), sess.ID); err != nil {
+		t.Fatalf("archive after terminal: %v", err)
+	}
+}
+
 func TestTurnExecutorExecutionGuardEmitsStructuredTerminalFailure(t *testing.T) {
 	repo := newFakeRepo()
 	sess := &session.Session{ID: "managed", WorkspacePath: "/missing", Metadata: map[string]any{}}
