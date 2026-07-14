@@ -46,6 +46,7 @@ type Record struct {
 	LastErrorCode       string
 	LastErrorMessage    string
 	RemoveRequestID     string
+	RemoveForce         bool
 	CreatedAt           time.Time
 	UpdatedAt           time.Time
 }

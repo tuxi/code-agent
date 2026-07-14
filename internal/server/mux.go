@@ -62,11 +62,22 @@ type ManagedWorktreeCreateRequest struct {
 }
 
 type ManagedWorktreeDTO struct {
-	Managed bool   `json:"managed"`
-	Name    string `json:"name,omitempty"`
-	Branch  string `json:"branch,omitempty"`
-	BaseRef string `json:"base_ref,omitempty"`
-	State   string `json:"state"`
+	Managed     bool   `json:"managed"`
+	Name        string `json:"name,omitempty"`
+	Branch      string `json:"branch,omitempty"`
+	BaseRef     string `json:"base_ref,omitempty"`
+	State       string `json:"state"`
+	NeedsRebind bool   `json:"needs_rebind,omitempty"`
+}
+
+type RemoveManagedWorktreeRequest struct {
+	RequestID string `json:"request_id"`
+	Force     bool   `json:"force"`
+}
+
+type RemoveManagedWorktreeResponse struct {
+	SessionID string             `json:"session_id"`
+	Worktree  ManagedWorktreeDTO `json:"worktree"`
 }
 
 type APIWarning struct {
@@ -579,6 +590,33 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 		})
 	})
 
+	mux.HandleFunc("POST /v1/conversations/{id}/worktree/remove", func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+		if opts.ManagedWorktrees == nil {
+			writeManagedWorktreeError(w, r, http.StatusNotImplemented, managedWorktreeErrorResponse{
+				Code: managedworktree.CodeNotRequested, Message: "managed worktree cleanup is not enabled", SessionID: id,
+			})
+			return
+		}
+		var req RemoveManagedWorktreeRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeManagedWorktreeError(w, r, http.StatusBadRequest, managedWorktreeErrorResponse{Code: "invalid_request", Message: "invalid JSON body", SessionID: id})
+			return
+		}
+		result, err := opts.ManagedWorktrees.Remove(r.Context(), managedworktree.RemoveRequest{SessionID: id, RequestID: req.RequestID, Force: req.Force})
+		if err != nil {
+			writeManagedRemoveError(w, r, err)
+			return
+		}
+		writeJSON(w, r, http.StatusOK, RemoveManagedWorktreeResponse{
+			SessionID: id,
+			Worktree: ManagedWorktreeDTO{
+				Managed: true, Name: result.Record.Name, Branch: result.Record.Branch,
+				BaseRef: string(result.Record.BaseRef), State: string(result.Record.State),
+			},
+		})
+	})
+
 	mux.HandleFunc("GET /v1/conversations/{id}", func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
 		recs, ok := loadEvents(r.Context(), eventStore, repo, id, w)
@@ -911,6 +949,29 @@ func writeManagedCreateError(w http.ResponseWriter, r *http.Request, err error) 
 		status = http.StatusConflict
 	case managedworktree.CodeNotGitRepository:
 		status = http.StatusBadRequest
+	}
+	writeManagedWorktreeError(w, r, status, managedWorktreeErrorResponse{
+		Code: managedErr.Code, Message: managedErr.Message,
+		ClientRequestID: managedErr.ClientRequestID, SessionID: managedErr.SessionID,
+	})
+}
+
+func writeManagedRemoveError(w http.ResponseWriter, r *http.Request, err error) {
+	var managedErr *managedworktree.Error
+	if !errors.As(err, &managedErr) {
+		writeManagedWorktreeError(w, r, http.StatusInternalServerError, managedWorktreeErrorResponse{Code: managedworktree.CodeRemoveFailed, Message: "managed worktree removal failed"})
+		return
+	}
+	status := http.StatusUnprocessableEntity
+	switch managedErr.Code {
+	case "invalid_request":
+		status = http.StatusBadRequest
+	case managedworktree.CodeMissing:
+		status = http.StatusNotFound
+	case managedworktree.CodeDirty, managedworktree.CodeInUse, managedworktree.CodeRequestConflict:
+		status = http.StatusConflict
+	case managedworktree.CodeRemoveFailed:
+		status = http.StatusInternalServerError
 	}
 	writeManagedWorktreeError(w, r, status, managedWorktreeErrorResponse{
 		Code: managedErr.Code, Message: managedErr.Message,

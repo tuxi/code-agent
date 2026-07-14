@@ -20,7 +20,8 @@ func TestManagedWorktreeReservationSurvivesRestart(t *testing.T) {
 		BaseWorkspaceID: "base", SourceWorkspaceID: "main", CheckoutWorkspaceID: "checkout_a",
 		SourceWorkspacePath: "/repo", WorktreePath: "/repo/.codeagent/worktrees/a",
 		Name: "a", Branch: "codeagent/a", BaseRef: worktree.BaseRefHead,
-		State: worktree.StateProvisioning, CreatedAt: time.Now(), UpdatedAt: time.Now(),
+		State: worktree.StateRemoving, RemoveRequestID: "remove_a", RemoveForce: true,
+		CreatedAt: time.Now(), UpdatedAt: time.Now(),
 	}
 	stored, created, err := store.ReserveWorktree(context.Background(), record)
 	if err != nil || !created || stored.SessionID != record.SessionID {
@@ -35,7 +36,7 @@ func TestManagedWorktreeReservationSurvivesRestart(t *testing.T) {
 	}
 	defer store.Close()
 	stored, created, err = store.ReserveWorktree(context.Background(), worktree.Record{ClientRequestID: record.ClientRequestID})
-	if err != nil || created || stored.SessionID != record.SessionID || stored.WorktreePath != record.WorktreePath || stored.State != worktree.StateProvisioning {
+	if err != nil || created || stored.SessionID != record.SessionID || stored.WorktreePath != record.WorktreePath || stored.State != worktree.StateRemoving || stored.RemoveRequestID != "remove_a" || !stored.RemoveForce {
 		t.Fatalf("restart reserve stored=%+v created=%v err=%v", stored, created, err)
 	}
 }

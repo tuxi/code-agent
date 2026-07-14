@@ -123,6 +123,7 @@ CREATE TABLE IF NOT EXISTS managed_worktrees (
     last_error_code        TEXT,
     last_error_message     TEXT,
     remove_request_id      TEXT,
+	remove_force           INTEGER NOT NULL DEFAULT 0,
     created_at             TEXT NOT NULL,
     updated_at             TEXT NOT NULL
 );
@@ -176,6 +177,7 @@ func (s *Store) open() error {
 		`ALTER TABLE sessions ADD COLUMN gateway_assets TEXT`,
 		`ALTER TABLE sessions ADD COLUMN reference_ledger TEXT`,
 		`ALTER TABLE messages ADD COLUMN assets TEXT`,
+		`ALTER TABLE managed_worktrees ADD COLUMN remove_force INTEGER NOT NULL DEFAULT 0`,
 		// v2: re-index session_events by at for chronological ordering.
 		// The original index was on (session_id, id); rebuild on (session_id, at).
 		`DROP INDEX IF EXISTS idx_session_events_session`,
@@ -519,13 +521,13 @@ func (s *Store) ReserveWorktree(ctx context.Context, record worktree.Record) (wo
 			client_request_id, session_id, base_workspace_id, source_workspace_id,
 			checkout_workspace_id, source_workspace_path, worktree_path, name, branch,
 			base_ref, base_commit, state, last_error_code, last_error_message,
-			remove_request_id, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			remove_request_id, remove_force, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(client_request_id) DO NOTHING`,
 		record.ClientRequestID, record.SessionID, record.BaseWorkspaceID, record.SourceWorkspaceID,
 		record.CheckoutWorkspaceID, record.SourceWorkspacePath, record.WorktreePath, record.Name, record.Branch,
 		string(record.BaseRef), record.BaseCommit, string(record.State), record.LastErrorCode, record.LastErrorMessage,
-		record.RemoveRequestID, formatTime(record.CreatedAt), formatTime(record.UpdatedAt))
+		record.RemoveRequestID, boolToInt(record.RemoveForce), formatTime(record.CreatedAt), formatTime(record.UpdatedAt))
 	if err != nil {
 		return worktree.Record{}, false, err
 	}
@@ -570,11 +572,11 @@ func (s *Store) UpdateWorktree(ctx context.Context, record worktree.Record) erro
 		UPDATE managed_worktrees SET
 			session_id=?, base_workspace_id=?, source_workspace_id=?, checkout_workspace_id=?,
 			source_workspace_path=?, worktree_path=?, name=?, branch=?, base_ref=?, base_commit=?,
-			state=?, last_error_code=?, last_error_message=?, remove_request_id=?, updated_at=?
+			state=?, last_error_code=?, last_error_message=?, remove_request_id=?, remove_force=?, updated_at=?
 		WHERE client_request_id=?`,
 		record.SessionID, record.BaseWorkspaceID, record.SourceWorkspaceID, record.CheckoutWorkspaceID,
 		record.SourceWorkspacePath, record.WorktreePath, record.Name, record.Branch, string(record.BaseRef), record.BaseCommit,
-		string(record.State), record.LastErrorCode, record.LastErrorMessage, record.RemoveRequestID,
+		string(record.State), record.LastErrorCode, record.LastErrorMessage, record.RemoveRequestID, boolToInt(record.RemoveForce),
 		formatTime(record.UpdatedAt), record.ClientRequestID)
 	if err != nil {
 		return err
@@ -593,7 +595,7 @@ const worktreeSelect = `
 	SELECT client_request_id, session_id, base_workspace_id, source_workspace_id,
 	       checkout_workspace_id, source_workspace_path, worktree_path, name, branch,
 	       base_ref, base_commit, state, last_error_code, last_error_message,
-	       remove_request_id, created_at, updated_at
+	       remove_request_id, remove_force, created_at, updated_at
 	FROM managed_worktrees`
 
 type worktreeScanner interface {
@@ -603,11 +605,12 @@ type worktreeScanner interface {
 func scanWorktree(row worktreeScanner) (worktree.Record, error) {
 	var record worktree.Record
 	var baseRef, state, createdAt, updatedAt string
+	var removeForce int
 	err := row.Scan(
 		&record.ClientRequestID, &record.SessionID, &record.BaseWorkspaceID, &record.SourceWorkspaceID,
 		&record.CheckoutWorkspaceID, &record.SourceWorkspacePath, &record.WorktreePath, &record.Name, &record.Branch,
 		&baseRef, &record.BaseCommit, &state, &record.LastErrorCode, &record.LastErrorMessage,
-		&record.RemoveRequestID, &createdAt, &updatedAt,
+		&record.RemoveRequestID, &removeForce, &createdAt, &updatedAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return worktree.Record{}, worktree.ErrNotFound
@@ -617,6 +620,7 @@ func scanWorktree(row worktreeScanner) (worktree.Record, error) {
 	}
 	record.BaseRef = worktree.BaseRef(baseRef)
 	record.State = worktree.State(state)
+	record.RemoveForce = removeForce != 0
 	record.CreatedAt = parseTime(createdAt)
 	record.UpdatedAt = parseTime(updatedAt)
 	return record, nil
