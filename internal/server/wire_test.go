@@ -19,6 +19,16 @@ var update = flag.Bool("update", false, "regenerate golden files")
 // fixedAt is a deterministic timestamp so golden frames are stable across runs.
 var fixedAt = time.Date(2026, 6, 24, 10, 0, 0, 123000000, time.UTC)
 
+func TestTurnQueuedWireIncludesReason(t *testing.T) {
+	got := toWire(agent.Event{
+		Kind: agent.EventTurnQueued, At: fixedAt, SessionID: "session_a", TurnID: "turn_a",
+		QueuePosition: 2, QueueReason: "workspace_lease",
+	})
+	if got.QueuePosition != 2 || got.Reason != "workspace_lease" {
+		t.Fatalf("turn_queued wire=%+v", got)
+	}
+}
+
 type wireCase struct {
 	ev     agent.Event
 	parent string

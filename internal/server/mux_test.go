@@ -554,6 +554,33 @@ func TestMuxDelete(t *testing.T) {
 	}
 }
 
+func TestMuxDeleteRejectsPausedConversationWithStableCode(t *testing.T) {
+	repo := newFakeConversationRepo()
+	paused := &session.Session{ID: "paused-delete", WorkspacePath: "/tmp/test", Metadata: map[string]any{}}
+	paused.SetTurnStatus(session.TurnStatusPaused)
+	repo.sessions[paused.ID] = paused
+	srv := httptest.NewServer(newTestMux(repo, &fakeEventStore{}))
+	defer srv.Close()
+
+	req, _ := http.NewRequest("DELETE", srv.URL+"/v1/conversations/"+paused.ID, nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("delete status=%d want 409", resp.StatusCode)
+	}
+	var body conversationOperationErrorResponse
+	decodeResponse(t, resp, &body)
+	if body.Code != "conversation_in_use" || body.SessionID != paused.ID || body.State != session.TurnStatusPaused {
+		t.Fatalf("delete response=%+v", body)
+	}
+	if _, err := repo.Load(context.Background(), paused.ID); err != nil {
+		t.Fatalf("paused conversation was deleted: %v", err)
+	}
+}
+
 // ---- conversation read API (P1-A.5) ----
 
 func readMuxWithHistory() (http.Handler, string) {

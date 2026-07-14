@@ -37,6 +37,13 @@ type TurnExecutor struct {
 	requestMu     sync.Mutex
 	requestClaims map[string]string // sessionID + NUL + requestID -> accepted turnID
 
+	// sessionOps closes the TOCTOU gap between accepting a turn and deleting its
+	// conversation. A turn holds a shared per-session claim from before Load until
+	// its terminal save; deletion atomically rejects an existing claim and blocks
+	// new claims until the repository delete has completed.
+	sessionOpsMu sync.Mutex
+	sessionOps   map[string]*sessionOperation
+
 	// sessionCreds stores per-session credential resolvers, set by the handler
 	// layer at WS upgrade time from the Authorization header. Server mode only;
 	// embedded mode uses the injected StaticResolver instead.
@@ -58,6 +65,35 @@ type TurnExecutor struct {
 	OnSaveError func(error)
 }
 
+type sessionOperation struct {
+	turns    int
+	deleting bool
+}
+
+// ErrConversationInUse is returned when a destructive conversation operation
+// races with an accepted, queued, running, waiting, resuming, or paused turn.
+var ErrConversationInUse = errors.New("conversation: conversation is in use")
+
+// ErrConversationDeleting is returned to a turn submitted after deletion has
+// atomically claimed the session. The turn is not accepted or persisted.
+var ErrConversationDeleting = errors.New("conversation: conversation is being deleted")
+
+// ConversationInUseError carries the stable state used by the HTTP layer while
+// remaining compatible with errors.Is(err, ErrConversationInUse).
+type ConversationInUseError struct {
+	SessionID string
+	State     string
+}
+
+func (e *ConversationInUseError) Error() string {
+	if e.State == "" {
+		return fmt.Sprintf("%s: %s", ErrConversationInUse, e.SessionID)
+	}
+	return fmt.Sprintf("%s: %s (%s)", ErrConversationInUse, e.SessionID, e.State)
+}
+
+func (e *ConversationInUseError) Unwrap() error { return ErrConversationInUse }
+
 // SetTitleGenerator configures optional auto-titling. Separate from the
 // constructor to keep the mandatory dependencies clear.
 func (e *TurnExecutor) SetTitleGenerator(g TitleGenerator) {
@@ -74,6 +110,7 @@ func NewTurnExecutor(repo ConversationRepository, events ConversationEventStore,
 		rb:            rb,
 		scheduler:     NewTurnScheduler(1),
 		requestClaims: make(map[string]string),
+		sessionOps:    make(map[string]*sessionOperation),
 		sessionCreds:  make(map[string]credential.Resolver),
 	}
 }
@@ -90,6 +127,98 @@ func (e *TurnExecutor) SetTurnScheduler(s *TurnScheduler) {
 
 func (e *TurnExecutor) SetExecutionGuard(guard func(ctx context.Context, sessionID string) (func(), error)) {
 	e.executionGuard = guard
+}
+
+func (e *TurnExecutor) beginSessionTurn(sessionID string) (func(), error) {
+	e.sessionOpsMu.Lock()
+	op := e.sessionOps[sessionID]
+	if op == nil {
+		op = &sessionOperation{}
+		e.sessionOps[sessionID] = op
+	}
+	if op.deleting {
+		e.sessionOpsMu.Unlock()
+		return nil, ErrConversationDeleting
+	}
+	op.turns++
+	e.sessionOpsMu.Unlock()
+
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			e.sessionOpsMu.Lock()
+			op.turns--
+			if op.turns == 0 && !op.deleting {
+				delete(e.sessionOps, sessionID)
+			}
+			e.sessionOpsMu.Unlock()
+		})
+	}, nil
+}
+
+// DeleteConversation atomically excludes new turns, rejects every non-terminal
+// lifecycle state, and deletes the durable session while the exclusion is held.
+// The HTTP layer must only tear down connection-owned brokers after this returns
+// nil; otherwise a rejected delete would incorrectly deny a pending approval.
+func (e *TurnExecutor) DeleteConversation(ctx context.Context, sessionID string) error {
+	e.sessionOpsMu.Lock()
+	op := e.sessionOps[sessionID]
+	if op == nil {
+		op = &sessionOperation{}
+		e.sessionOps[sessionID] = op
+	}
+	if op.deleting || op.turns > 0 {
+		state := e.liveSessionState(sessionID)
+		if state == "" {
+			state = "accepted"
+		}
+		e.sessionOpsMu.Unlock()
+		return &ConversationInUseError{SessionID: sessionID, State: state}
+	}
+	op.deleting = true
+	e.sessionOpsMu.Unlock()
+
+	defer func() {
+		e.sessionOpsMu.Lock()
+		op.deleting = false
+		if op.turns == 0 {
+			delete(e.sessionOps, sessionID)
+		}
+		e.sessionOpsMu.Unlock()
+	}()
+
+	metas, err := e.repo.List(ctx)
+	if err != nil {
+		return err
+	}
+	for _, meta := range metas {
+		if meta.ID != sessionID {
+			continue
+		}
+		if deletionBlockedTurnStatus(meta.TurnStatus) {
+			return &ConversationInUseError{SessionID: sessionID, State: meta.TurnStatus}
+		}
+		break
+	}
+	return e.repo.Delete(ctx, sessionID)
+}
+
+func (e *TurnExecutor) liveSessionState(sessionID string) string {
+	for _, activity := range e.scheduler.Activity() {
+		if activity.SessionID == sessionID {
+			return activity.State
+		}
+	}
+	return ""
+}
+
+func deletionBlockedTurnStatus(status string) bool {
+	switch status {
+	case session.TurnStatusRunning, session.TurnStatusResuming, session.TurnStatusPaused:
+		return true
+	default:
+		return false
+	}
 }
 
 // SetSessionCredential stores a credential resolver for a session. It is called
@@ -129,6 +258,12 @@ func (e *TurnExecutor) ExecuteWithAssets(ctx context.Context, sessionID string, 
 }
 
 func (e *TurnExecutor) ExecuteWithRequestIDAndAssets(ctx context.Context, sessionID, requestID, input, modelName string, assets []model.GatewayAssetRef) (agent.TurnResult, error) {
+	release, err := e.beginSessionTurn(sessionID)
+	if err != nil {
+		return agent.TurnResult{}, err
+	}
+	defer release()
+
 	sess, err := e.repo.Load(ctx, sessionID)
 	if err != nil {
 		return agent.TurnResult{}, err
@@ -144,6 +279,11 @@ func (e *TurnExecutor) ExecuteWithSession(parentCtx context.Context, sess *sessi
 }
 
 func (e *TurnExecutor) ExecuteWithSessionAssets(parentCtx context.Context, sess *session.Session, input string, model string, assets []model.GatewayAssetRef) (agent.TurnResult, error) {
+	release, err := e.beginSessionTurn(sess.ID)
+	if err != nil {
+		return agent.TurnResult{}, err
+	}
+	defer release()
 	return e.executeWithSessionAssets(parentCtx, sess, "", input, model, assets)
 }
 
@@ -188,6 +328,12 @@ func (e *TurnExecutor) executeWithSessionAssets(parentCtx context.Context, sess 
 // retry cap). Callers invoke it asynchronously — the embedded host's
 // Server.ResumeSession launches it and observes progress over the event stream.
 func (e *TurnExecutor) Resume(parentCtx context.Context, sessionID string) (agent.TurnResult, error) {
+	release, err := e.beginSessionTurn(sessionID)
+	if err != nil {
+		return agent.TurnResult{}, err
+	}
+	defer release()
+
 	sess, err := e.repo.Load(parentCtx, sessionID)
 	if err != nil {
 		return agent.TurnResult{}, err
@@ -257,8 +403,8 @@ func (e *TurnExecutor) driveTurn(
 		WorkspacePath: sess.WorkspacePath,
 		Mode:          workspaceExecutionMode(sess.ExecutionPolicy()),
 		RunningState:  runningState,
-	}, func(position int) {
-		pub.Emit(agent.Event{Kind: agent.EventTurnQueued, SessionID: sess.ID, TurnID: turnID, QueuePosition: position})
+	}, func(position int, reason TurnQueueReason) {
+		pub.Emit(agent.Event{Kind: agent.EventTurnQueued, SessionID: sess.ID, TurnID: turnID, QueuePosition: position, QueueReason: string(reason)})
 	})
 	if err != nil {
 		if errors.Is(err, context.Canceled) {

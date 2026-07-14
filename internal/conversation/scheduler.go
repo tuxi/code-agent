@@ -50,7 +50,17 @@ type ScheduledTurnActivity struct {
 	TurnID        string
 	State         string
 	QueuePosition int
+	QueueReason   TurnQueueReason
 }
+
+// TurnQueueReason is a stable, client-facing explanation for scheduler wait.
+type TurnQueueReason string
+
+const (
+	QueueReasonGlobalCapacity       TurnQueueReason = "global_capacity"
+	QueueReasonWorkspaceLease       TurnQueueReason = "workspace_lease"
+	QueueReasonSessionSerialization TurnQueueReason = "session_serialization"
+)
 
 // TurnScheduler admits turns fairly across sessions. It enforces three rules:
 // one running turn per session, a process-wide concurrency limit, and an
@@ -97,7 +107,7 @@ func NewTurnScheduler(maxConcurrentTurns int) *TurnScheduler {
 // Acquire blocks until the requested turn owns all required execution permits.
 // The returned release must be called exactly once. If ctx is cancelled while
 // queued, the request is removed and can never start afterwards.
-func (s *TurnScheduler) Acquire(ctx context.Context, req TurnScheduleRequest, queuedCallbacks ...func(position int)) (func(), error) {
+func (s *TurnScheduler) Acquire(ctx context.Context, req TurnScheduleRequest, queuedCallbacks ...func(position int, reason TurnQueueReason)) (func(), error) {
 	if req.SessionID == "" {
 		return nil, errors.New("conversation: scheduler requires a session id")
 	}
@@ -115,17 +125,19 @@ func (s *TurnScheduler) Acquire(ctx context.Context, req TurnScheduleRequest, qu
 	s.pending = append(s.pending, w)
 	s.dispatchLocked()
 	queuedPosition := 0
+	var queuedReason TurnQueueReason
 	if !w.running {
 		for i, pending := range s.pending {
 			if pending == w {
 				queuedPosition = i + 1
+				queuedReason = s.queueReasonLocked(w)
 				break
 			}
 		}
 	}
 	s.mu.Unlock()
 	if queuedPosition > 0 && len(queuedCallbacks) > 0 && queuedCallbacks[0] != nil {
-		queuedCallbacks[0](queuedPosition)
+		queuedCallbacks[0](queuedPosition, queuedReason)
 	}
 
 	select {
@@ -199,9 +211,20 @@ func (s *TurnScheduler) Activity() []ScheduledTurnActivity {
 			TurnID:        w.req.TurnID,
 			State:         "queued",
 			QueuePosition: position + 1,
+			QueueReason:   s.queueReasonLocked(w),
 		})
 	}
 	return activities
+}
+
+func (s *TurnScheduler) queueReasonLocked(w *scheduledTurn) TurnQueueReason {
+	if s.runningSessions[w.req.SessionID] || s.hasEarlierSessionEntryLocked(w) {
+		return QueueReasonSessionSerialization
+	}
+	if key := workspaceLeaseKey(w.req); key != "" && s.workspaceLeases[key] {
+		return QueueReasonWorkspaceLease
+	}
+	return QueueReasonGlobalCapacity
 }
 
 // Shutdown wakes every queued caller. Running turns are stopped by the active

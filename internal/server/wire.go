@@ -27,6 +27,7 @@ type wireEvent struct {
 	TurnID          string `json:"turn_id,omitempty"`
 	RequestID       string `json:"request_id,omitempty"`
 	QueuePosition   int    `json:"queue_position,omitempty"`
+	Reason          string `json:"reason,omitempty"`
 	InvocationID    string `json:"invocation_id,omitempty"`
 	// Seq is the per-session monotonic event sequence (v1.2 §4). A client records
 	// the highest seq it has seen and, on reconnect, requests
@@ -99,6 +100,7 @@ func toWire(e agent.Event) wireEvent {
 		TurnID:           e.TurnID,
 		RequestID:        e.RequestID,
 		QueuePosition:    e.QueuePosition,
+		Reason:           e.QueueReason,
 		InvocationID:     e.InvocationID,
 		Seq:              e.Seq,
 		CallID:           e.CallID,

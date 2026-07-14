@@ -11,7 +11,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode"
 
 	"code-agent/internal/session"
 	"code-agent/internal/workspace"
@@ -971,7 +970,7 @@ func slug(input string) string {
 	var b strings.Builder
 	lastDash := false
 	for _, r := range input {
-		allowed := unicode.IsLetter(r) || unicode.IsDigit(r)
+		allowed := (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')
 		if allowed {
 			if b.Len() >= 40 {
 				break
@@ -983,8 +982,8 @@ func slug(input string) string {
 			lastDash = true
 		}
 	}
-	result := strings.Trim(b.String(), "-.")
-	if result == "" || result == "." || result == ".." {
+	result := strings.Trim(b.String(), "-")
+	if result == "" {
 		return "task"
 	}
 	return result

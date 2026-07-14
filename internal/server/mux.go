@@ -93,6 +93,13 @@ type managedWorktreeErrorResponse struct {
 	Summary         *managedworktree.DirtySummary `json:"summary,omitempty"`
 }
 
+type conversationOperationErrorResponse struct {
+	Code      string `json:"code"`
+	Message   string `json:"message"`
+	SessionID string `json:"session_id,omitempty"`
+	State     string `json:"state,omitempty"`
+}
+
 // RebindRequest is the POST /v1/conversations/{id}/rebind body: the host re-supplies
 // the fresh absolute path of an external workspace for this launch. See spec §6.2bis.
 type RebindRequest struct {
@@ -280,6 +287,7 @@ type SessionActivity struct {
 	ActiveTurnID           string                   `json:"active_turn_id,omitempty"`
 	State                  string                   `json:"state"`
 	QueuePosition          int                      `json:"queue_position"`
+	QueueReason            string                   `json:"queue_reason,omitempty"`
 	PendingApprovalCount   int                      `json:"pending_approval_count"`
 	PendingClientToolCount int                      `json:"pending_client_tool_count"`
 	LastSequence           int64                    `json:"last_sequence"`
@@ -476,6 +484,7 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 				activity.ActiveTurnID = live.TurnID
 				activity.State = live.State
 				activity.QueuePosition = live.QueuePosition
+				activity.QueueReason = string(live.QueueReason)
 				activity.UpdatedAt = generatedAt.Format(time.RFC3339Nano)
 				activityBySession[live.SessionID] = activity
 			}
@@ -515,6 +524,7 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 			if activity.LatestTerminal != nil && activity.ActiveTurnID != "" && activity.LatestTerminal.TurnID == activity.ActiveTurnID {
 				activity.State = terminalActivityState(activity.LatestTerminal.Kind)
 				activity.QueuePosition = 0
+				activity.QueueReason = ""
 			}
 			activities = append(activities, activity)
 		}
@@ -957,13 +967,26 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 
 	mux.HandleFunc("DELETE /v1/conversations/{id}", func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
-		// Close and remove the session-scoped approver so blocked turns wake
-		// and the approver is garbage-collected.
-		ws.RemoveApprover(id)
-		if err := repo.Delete(r.Context(), id); err != nil {
+		var err error
+		if executor != nil {
+			err = executor.DeleteConversation(r.Context(), id)
+		} else {
+			err = deleteIdleConversation(r.Context(), repo, id)
+		}
+		if err != nil {
+			var inUse *conversation.ConversationInUseError
+			if errors.As(err, &inUse) {
+				Result(w, r, http.StatusConflict, http.StatusConflict*100, "conversation is in use", conversationOperationErrorResponse{
+					Code: "conversation_in_use", Message: "conversation has an active or resumable turn", SessionID: id, State: inUse.State,
+				})
+				return
+			}
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		// Tear down connection-owned brokers only after the guarded repository
+		// delete succeeds. A rejected delete must leave pending approvals intact.
+		ws.RemoveApprover(id)
 		w.WriteHeader(http.StatusNoContent)
 	})
 
@@ -980,6 +1003,24 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 	})
 
 	return mux
+}
+
+func deleteIdleConversation(ctx context.Context, repo conversation.ConversationRepository, sessionID string) error {
+	metas, err := repo.List(ctx)
+	if err != nil {
+		return err
+	}
+	for _, meta := range metas {
+		if meta.ID != sessionID {
+			continue
+		}
+		switch meta.TurnStatus {
+		case session.TurnStatusRunning, session.TurnStatusResuming, session.TurnStatusPaused:
+			return &conversation.ConversationInUseError{SessionID: sessionID, State: meta.TurnStatus}
+		}
+		break
+	}
+	return repo.Delete(ctx, sessionID)
 }
 
 func writeManagedWorktreeError(w http.ResponseWriter, r *http.Request, status int, detail managedWorktreeErrorResponse) {

@@ -2,6 +2,7 @@ package conversation
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -183,12 +184,70 @@ func TestTurnScheduler_ActivityReportsRunningAndQueuePosition(t *testing.T) {
 		time.Sleep(time.Millisecond)
 	}
 	activity := s.Activity()
-	if len(activity) != 2 || activity[0] != (ScheduledTurnActivity{SessionID: "running", State: "running"}) || activity[1] != (ScheduledTurnActivity{SessionID: "queued", State: "queued", QueuePosition: 1}) {
+	if len(activity) != 2 || activity[0] != (ScheduledTurnActivity{SessionID: "running", State: "running"}) || activity[1] != (ScheduledTurnActivity{SessionID: "queued", State: "queued", QueuePosition: 1, QueueReason: QueueReasonGlobalCapacity}) {
 		t.Fatalf("Activity() = %#v", activity)
 	}
 	s.Cancel("queued")
 	if err := assertReady(t, queued); err != context.Canceled {
 		t.Fatalf("queued acquire error = %v", err)
+	}
+}
+
+func TestTurnScheduler_ReportsStableQueueReasons(t *testing.T) {
+	tests := []struct {
+		name       string
+		maxRunning int
+		running    TurnScheduleRequest
+		queued     TurnScheduleRequest
+		want       TurnQueueReason
+	}{
+		{
+			name: "global capacity", maxRunning: 1,
+			running: TurnScheduleRequest{SessionID: "a", WorkspacePath: "/work/a"},
+			queued:  TurnScheduleRequest{SessionID: "b", WorkspacePath: "/work/b"},
+			want:    QueueReasonGlobalCapacity,
+		},
+		{
+			name: "workspace lease", maxRunning: 2,
+			running: TurnScheduleRequest{SessionID: "a", WorkspacePath: "/work/shared"},
+			queued:  TurnScheduleRequest{SessionID: "b", WorkspacePath: "/work/shared"},
+			want:    QueueReasonWorkspaceLease,
+		},
+		{
+			name: "session serialization", maxRunning: 2,
+			running: TurnScheduleRequest{SessionID: "a", WorkspacePath: "/work/a"},
+			queued:  TurnScheduleRequest{SessionID: "a", WorkspacePath: "/work/b"},
+			want:    QueueReasonSessionSerialization,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := NewTurnScheduler(tt.maxRunning)
+			release, err := s.Acquire(context.Background(), tt.running)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer release()
+
+			reason := make(chan TurnQueueReason, 1)
+			done := make(chan error, 1)
+			ctx, cancel := context.WithCancel(context.Background())
+			go func() {
+				_, err := s.Acquire(ctx, tt.queued, func(_ int, got TurnQueueReason) { reason <- got })
+				done <- err
+			}()
+			if got := assertReady(t, reason); got != tt.want {
+				t.Fatalf("reason=%q want %q", got, tt.want)
+			}
+			activity := s.Activity()
+			if got := activity[len(activity)-1].QueueReason; got != tt.want {
+				t.Fatalf("activity reason=%q want %q", got, tt.want)
+			}
+			cancel()
+			if err := assertReady(t, done); !errors.Is(err, context.Canceled) {
+				t.Fatalf("queued error=%v", err)
+			}
+		})
 	}
 }
 

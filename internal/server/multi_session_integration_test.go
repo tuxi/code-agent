@@ -215,8 +215,19 @@ func TestMultiSessionWebSocketQueuesAndCancelsSharedWorkspace(t *testing.T) {
 
 	wsWriteJSON(t, ctx, b, map[string]any{"type": "agent_input", "kind": "text", "request_id": "req-b", "text": "B"})
 	queued := readUntilKind(t, ctx, b, string(agent.EventTurnQueued))
-	if queued["turn_id"] == "" || queued["queue_position"].(float64) != 1 {
+	if queued["turn_id"] == "" || queued["queue_position"].(float64) != 1 || queued["reason"] != string(conversation.QueueReasonWorkspaceLease) {
 		t.Fatalf("queued frame=%v", queued)
+	}
+	activity := fetchActivity(t, srv.URL)
+	var queuedActivity *SessionActivity
+	for i := range activity.Sessions {
+		if activity.Sessions[i].SessionID == "b" {
+			queuedActivity = &activity.Sessions[i]
+			break
+		}
+	}
+	if queuedActivity == nil || queuedActivity.State != "queued" || queuedActivity.QueueReason != string(conversation.QueueReasonWorkspaceLease) {
+		t.Fatalf("queued activity=%+v", queuedActivity)
 	}
 	wsWriteJSON(t, ctx, b, map[string]any{"type": "cancel_turn"})
 	cancelled := readUntilKind(t, ctx, b, string(agent.EventTurnCancelled))

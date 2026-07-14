@@ -21,6 +21,24 @@ type memoryRepo struct {
 
 func newMemoryRepo() *memoryRepo { return &memoryRepo{sessions: map[string]*session.Session{}} }
 
+func TestSlugUsesASCIISafeAllowlist(t *testing.T) {
+	tests := map[string]string{
+		"看下上次提交了什么":   "task",
+		"Fix Auth!!!": "fix-auth",
+		"  A---B  ":   "a-b",
+		"résumé 日本語":  "r-sum",
+		"":            "task",
+	}
+	for input, want := range tests {
+		if got := slug(input); got != want {
+			t.Errorf("slug(%q) = %q, want %q", input, got, want)
+		}
+	}
+	if got := slug(strings.Repeat("A", 80)); got != strings.Repeat("a", 40) {
+		t.Errorf("long slug length=%d value=%q", len(got), got)
+	}
+}
+
 func (r *memoryRepo) CreateWithID(_ context.Context, id, workspacePath, _ string) (*session.Session, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

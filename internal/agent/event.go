@@ -97,6 +97,7 @@ type Event struct {
 	TurnID        string
 	RequestID     string // client-generated idempotency/correlation key for agent_input
 	QueuePosition int    // EventTurnQueued: one-based scheduler position
+	QueueReason   string // EventTurnQueued: global_capacity | workspace_lease | session_serialization
 
 	// Seq is the monotonic per-store sequence number assigned when the event is
 	// persisted (v1.2 §4). It is 0 on the core path and stamped by the transport

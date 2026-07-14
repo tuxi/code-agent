@@ -116,6 +116,84 @@ type executionGuardError struct{}
 func (executionGuardError) Error() string              { return "managed checkout is missing" }
 func (executionGuardError) LifecycleErrorCode() string { return "worktree_missing" }
 
+type blockingDeleteRepo struct {
+	*fakeRepo
+	deleteStarted  chan struct{}
+	continueDelete chan struct{}
+}
+
+func (r *blockingDeleteRepo) Delete(ctx context.Context, id string) error {
+	close(r.deleteStarted)
+	select {
+	case <-r.continueDelete:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	return r.fakeRepo.Delete(ctx, id)
+}
+
+func TestTurnExecutorDeleteConversationRejectsActiveAndPausedTurns(t *testing.T) {
+	repo := newFakeRepo()
+	running := &session.Session{ID: "running-delete", WorkspacePath: "/work/running-delete", Metadata: map[string]any{}}
+	repo.sessions[running.ID] = running
+	started := make(chan string, 1)
+	release := make(chan struct{})
+	executor := NewTurnExecutor(repo, &fakeEventStore{}, NewActiveTurnRegistry(), NewSubscriptionManager(), &schedulerBlockingRunBuilder{started: started, release: release})
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := executor.Execute(context.Background(), running.ID, "work", "")
+		done <- err
+	}()
+	assertReady(t, started)
+	err := executor.DeleteConversation(context.Background(), running.ID)
+	var inUse *ConversationInUseError
+	if !errors.As(err, &inUse) || inUse.State != session.TurnStatusRunning {
+		t.Fatalf("active delete error=%v detail=%+v", err, inUse)
+	}
+	if _, ok := repo.sessions[running.ID]; !ok {
+		t.Fatal("active conversation was deleted")
+	}
+	close(release)
+	if err := assertReady(t, done); err != nil {
+		t.Fatal(err)
+	}
+
+	paused := &session.Session{ID: "paused-delete", Metadata: map[string]any{}}
+	paused.SetTurnStatus(session.TurnStatusPaused)
+	repo.sessions[paused.ID] = paused
+	repo.metas = []session.Meta{{ID: paused.ID, TurnStatus: session.TurnStatusPaused}}
+	err = executor.DeleteConversation(context.Background(), paused.ID)
+	inUse = nil
+	if !errors.As(err, &inUse) || inUse.State != session.TurnStatusPaused {
+		t.Fatalf("paused delete error=%v detail=%+v", err, inUse)
+	}
+	if _, ok := repo.sessions[paused.ID]; !ok {
+		t.Fatal("paused conversation was deleted")
+	}
+}
+
+func TestTurnExecutorDeleteConversationExcludesNewTurnAtomically(t *testing.T) {
+	base := newFakeRepo()
+	base.sessions["delete-race"] = &session.Session{ID: "delete-race", WorkspacePath: "/work/delete-race", Metadata: map[string]any{}}
+	repo := &blockingDeleteRepo{fakeRepo: base, deleteStarted: make(chan struct{}), continueDelete: make(chan struct{})}
+	executor := NewTurnExecutor(repo, &fakeEventStore{}, NewActiveTurnRegistry(), NewSubscriptionManager(), &fakeRunBuilder{})
+
+	deleted := make(chan error, 1)
+	go func() { deleted <- executor.DeleteConversation(context.Background(), "delete-race") }()
+	assertReady(t, repo.deleteStarted)
+	if _, err := executor.Execute(context.Background(), "delete-race", "must not run", ""); !errors.Is(err, ErrConversationDeleting) {
+		t.Fatalf("turn racing with delete error=%v, want ErrConversationDeleting", err)
+	}
+	close(repo.continueDelete)
+	if err := assertReady(t, deleted); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := base.sessions["delete-race"]; ok {
+		t.Fatal("conversation still exists after guarded delete")
+	}
+}
+
 func TestTurnExecutorExecutionGuardEmitsStructuredTerminalFailure(t *testing.T) {
 	repo := newFakeRepo()
 	sess := &session.Session{ID: "managed", WorkspacePath: "/missing", Metadata: map[string]any{}}
@@ -393,6 +471,9 @@ func TestTurnExecutor_QueuesSameWorkspaceAndCancelsQueuedTurn(t *testing.T) {
 	}
 	if secondEvents[1].QueuePosition != 1 {
 		t.Fatalf("queue position = %d, want 1", secondEvents[1].QueuePosition)
+	}
+	if secondEvents[1].QueueReason != string(QueueReasonWorkspaceLease) {
+		t.Fatalf("queue reason = %q, want %q", secondEvents[1].QueueReason, QueueReasonWorkspaceLease)
 	}
 	close(release)
 	if err := assertReady(t, firstDone); err != nil {
