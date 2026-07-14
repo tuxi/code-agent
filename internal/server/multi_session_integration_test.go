@@ -12,6 +12,7 @@ import (
 
 	"code-agent/internal/agent"
 	"code-agent/internal/conversation"
+	"code-agent/internal/runtime"
 	"code-agent/internal/session"
 
 	"github.com/coder/websocket"
@@ -124,6 +125,65 @@ func TestMultiSessionWebSocketRunsDifferentWorkspacesConcurrently(t *testing.T) 
 	}
 	builder.finish("a")
 	builder.finish("b")
+}
+
+func TestManagedWorktreeHTTPAndWebSocketRunSameRepositoryConcurrently(t *testing.T) {
+	root := initManagedHTTPRepo(t)
+	store := session.NewMemoryStore()
+	repo := newFakeConversationRepo()
+	events := &fakeEventStore{}
+	builder := newMultiSessionRunBuilder()
+	executor := conversation.NewTurnExecutor(repo, events, conversation.NewActiveTurnRegistry(), conversation.NewSubscriptionManager(), builder)
+	executor.SetTurnScheduler(conversation.NewTurnScheduler(2))
+	manager, _, err := runtime.ConfigureManagedWorktrees(context.Background(), store, repo, executor, true)
+	if err != nil || manager == nil {
+		t.Fatalf("manager=%v err=%v", manager, err)
+	}
+	caps := ConfiguredRuntimeCapabilities(2)
+	caps.ManagedWorktree = true
+	srv := httptest.NewServer(NewMux(repo, events, executor, MuxOptions{
+		Accept: &websocket.AcceptOptions{InsecureSkipVerify: true}, RuntimeCapabilities: caps, ManagedWorktrees: manager,
+	}))
+	defer srv.Close()
+
+	create := func(requestID, name string) ConversationRef {
+		response := requestJSON(t, srv.URL+"/v1/conversations", map[string]any{
+			"client_request_id": requestID, "workspace_path": root,
+			"base_workspace_id": "same_repo", "execution_policy": session.ExecutionPolicyIsolatedWorktree,
+			"worktree": map[string]any{"managed": true, "suggested_name": name, "base_ref": "head"},
+		})
+		if response.StatusCode != http.StatusCreated {
+			t.Fatalf("create status=%d body=%s", response.StatusCode, readManagedHTTPBody(t, response))
+		}
+		var ref ConversationRef
+		decodeResponse(t, response, &ref)
+		return ref
+	}
+	aRef := create("create_ws_a", "ws-a")
+	bRef := create("create_ws_b", "ws-b")
+	if aRef.WorkspacePath == bRef.WorkspacePath {
+		t.Fatal("managed creates returned the same checkout")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	a := dialConversation(t, ctx, srv.URL, aRef.ID)
+	defer a.CloseNow()
+	b := dialConversation(t, ctx, srv.URL, bRef.ID)
+	defer b.CloseNow()
+	wsWriteJSON(t, ctx, a, map[string]any{"type": "agent_input", "kind": "text", "request_id": "turn-a", "text": "A"})
+	wsWriteJSON(t, ctx, b, map[string]any{"type": "agent_input", "kind": "text", "request_id": "turn-b", "text": "B"})
+	seen := map[string]bool{}
+	for len(seen) < 2 {
+		select {
+		case id := <-builder.started:
+			seen[id] = true
+		case <-ctx.Done():
+			t.Fatal("two managed worktrees from one repository did not run concurrently")
+		}
+	}
+	builder.finish(aRef.ID)
+	builder.finish(bRef.ID)
 }
 
 func TestMultiSessionWebSocketQueuesAndCancelsSharedWorkspace(t *testing.T) {

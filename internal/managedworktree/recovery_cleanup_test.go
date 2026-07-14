@@ -208,6 +208,30 @@ func TestRemoveForceAndBusyGuard(t *testing.T) {
 	}
 }
 
+func TestTurnGuardAtomicallyRejectsRemoval(t *testing.T) {
+	ctx := context.Background()
+	root := initGitRepo(t)
+	store := session.NewMemoryStore()
+	manager := New(store, newMemoryRepo())
+	created, err := manager.Create(ctx, CreateRequest{ClientRequestID: "create_guard", SourceWorkspacePath: root, BaseRef: worktree.BaseRefHead})
+	if err != nil {
+		t.Fatal(err)
+	}
+	release, err := manager.AcquireTurnGuard(ctx, created.Session.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = manager.Remove(ctx, RemoveRequest{SessionID: created.Session.ID, RequestID: "remove_guard", Force: true})
+	var managedErr *Error
+	if !errors.As(err, &managedErr) || managedErr.Code != CodeInUse {
+		t.Fatalf("remove err=%v", err)
+	}
+	release()
+	if _, err := manager.Remove(ctx, RemoveRequest{SessionID: created.Session.ID, RequestID: "remove_guard", Force: true}); err != nil {
+		t.Fatalf("remove after guard release: %v", err)
+	}
+}
+
 func TestReconcileResumesDurableRemovingState(t *testing.T) {
 	ctx := context.Background()
 	root := initGitRepo(t)

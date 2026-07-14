@@ -47,6 +47,11 @@ type TurnExecutor struct {
 	// first turn completes. Nil means no auto-titling (tests, headless).
 	titleGen TitleGenerator
 
+	// executionGuard optionally holds an external session resource lease for the
+	// whole accepted/queued/running lifecycle. Managed worktrees use it to make
+	// turn start and explicit removal atomic.
+	executionGuard func(ctx context.Context, sessionID string) (release func(), err error)
+
 	// OnSaveError, if set, is invoked when the post-turn save fails. Autosave
 	// is best-effort and never fails the turn; this only surfaces the warning
 	// (the REPL prints it, a server logs it). Default nil = silent.
@@ -81,6 +86,10 @@ func (e *TurnExecutor) SetTurnScheduler(s *TurnScheduler) {
 		s = NewTurnScheduler(1)
 	}
 	e.scheduler = s
+}
+
+func (e *TurnExecutor) SetExecutionGuard(guard func(ctx context.Context, sessionID string) (func(), error)) {
+	e.executionGuard = guard
 }
 
 // SetSessionCredential stores a credential resolver for a session. It is called
@@ -220,6 +229,22 @@ func (e *TurnExecutor) driveTurn(
 	pub := &sequencingEmitter{ctx: context.WithoutCancel(parentCtx), events: e.events, live: e.subs.Emitter(sess.ID)}
 	if existingTurnID, duplicate := e.claimRequest(parentCtx, sess.ID, requestID, turnID, pub); duplicate {
 		return agent.TurnResult{TurnID: existingTurnID, Deduplicated: true}, nil
+	}
+	if e.executionGuard != nil {
+		releaseGuard, guardErr := e.executionGuard(parentCtx, sess.ID)
+		if guardErr != nil {
+			sess.SetTurnStatus(session.TurnStatusFailed)
+			pub.Emit(agent.Event{
+				Kind: agent.EventTurnFailed, SessionID: sess.ID, TurnID: turnID,
+				Err: guardErr.Error(), ErrorCode: lifecycleErrorCode(guardErr), At: time.Now(),
+			})
+			_ = e.repo.Save(context.WithoutCancel(parentCtx), sess)
+			if persistErr := pub.terminalPersistenceError(); persistErr != nil {
+				guardErr = errors.Join(guardErr, persistErr)
+			}
+			return agent.TurnResult{TurnID: turnID}, guardErr
+		}
+		defer releaseGuard()
 	}
 
 	// 2. Wait for the process/session/workspace execution permits before claiming
@@ -431,6 +456,10 @@ func (e *TurnExecutor) emitLifecycle(pub agent.Emitter, sess *session.Session, t
 }
 
 func lifecycleErrorCode(err error) string {
+	var coded interface{ LifecycleErrorCode() string }
+	if errors.As(err, &coded) && coded.LifecycleErrorCode() != "" {
+		return coded.LifecycleErrorCode()
+	}
 	var apiErr *model.APIError
 	if errors.As(err, &apiErr) {
 		if apiErr.Code == "quota_exceeded" || apiErr.Type == "quota_exceeded" {
@@ -494,6 +523,15 @@ func (e *TurnExecutor) Cancel(sessionID string) {
 // endpoint. Persisted lifecycle state remains available through Repository.List.
 func (e *TurnExecutor) Activity() []ScheduledTurnActivity {
 	return e.scheduler.Activity()
+}
+
+func (e *TurnExecutor) HasActivity(sessionID string) bool {
+	for _, activity := range e.scheduler.Activity() {
+		if activity.SessionID == sessionID {
+			return true
+		}
+	}
+	return false
 }
 
 // repoCheckpointer persists the session mid-turn via the repository (v1.2 §2). It

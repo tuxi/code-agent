@@ -139,12 +139,20 @@ func run() error {
 	maxConcurrentTurns := cfg.RuntimeMaxConcurrentTurns()
 	executor.SetTurnScheduler(conversation.NewTurnScheduler(maxConcurrentTurns))
 	executor.SetTitleGenerator(conversation.NewLLMTitleGenerator(provider, mc.Model))
+	managedWorktrees, worktreeReport, worktreeErr := runtime.ConfigureManagedWorktrees(ctx, telemetryStore, repo, executor, true)
+	if worktreeErr != nil {
+		fmt.Fprintf(os.Stderr, "codeagentd: managed worktrees disabled: %v\n", worktreeErr)
+	} else if managedWorktrees != nil && (len(worktreeReport.Issues) > 0 || len(worktreeReport.Orphans) > 0) {
+		fmt.Fprintf(os.Stderr, "codeagentd: managed worktree reconciliation: issues=%d orphans=%d missing=%d\n", len(worktreeReport.Issues), len(worktreeReport.Orphans), len(worktreeReport.Missing))
+	}
 	// Job bracket events reach the owning conversation's live subscribers (P8.7
 	// §8.4-2) — persisted copies are already handled inside the sink.
 	if jobSink != nil {
 		jobSink.SetLiveResolver(subs.Emitter)
 	}
 
+	runtimeCapabilities := server.ConfiguredRuntimeCapabilities(maxConcurrentTurns)
+	runtimeCapabilities.ManagedWorktree = managedWorktrees != nil
 	handler := server.NewMux(repo, eventStore, executor, server.MuxOptions{
 		ServerName:          "codeagentd/" + mc.Model,
 		Capabilities:        defaultCapabilities,
@@ -153,7 +161,8 @@ func run() error {
 		WorkspaceReloader:   wsReg.ReloadWorkspace,
 		Prompts:             wsReg,
 		CredentialStore:     executor.SetSessionCredential,
-		RuntimeCapabilities: server.ConfiguredRuntimeCapabilities(maxConcurrentTurns),
+		RuntimeCapabilities: runtimeCapabilities,
+		ManagedWorktrees:    managedWorktrees,
 	})
 
 	srv := &http.Server{Addr: addr, Handler: handler}

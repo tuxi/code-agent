@@ -423,12 +423,20 @@ func Assemble(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider 
 	maxConcurrentTurns := cfg.RuntimeMaxConcurrentTurns()
 	executor.SetTurnScheduler(conversation.NewTurnScheduler(maxConcurrentTurns))
 	executor.SetTitleGenerator(conversation.NewLLMTitleGenerator(provider, mc.Model))
+	managedWorktrees, worktreeReport, worktreeErr := runtime.ConfigureManagedWorktrees(ctx, telemetryStore, repo, executor, cfg.Profile != app.ProfileSandboxed)
+	if worktreeErr != nil {
+		fmt.Printf("codeagent embedded: managed worktrees disabled: %v\n", worktreeErr)
+	} else if managedWorktrees != nil && (len(worktreeReport.Issues) > 0 || len(worktreeReport.Orphans) > 0) {
+		fmt.Printf("codeagent embedded: managed worktree reconciliation: issues=%d orphans=%d missing=%d\n", len(worktreeReport.Issues), len(worktreeReport.Orphans), len(worktreeReport.Missing))
+	}
 	// Job bracket events reach the owning conversation's live subscribers (P8.7
 	// §8.4-2) — persisted copies are already handled inside the sink.
 	if jobSink != nil {
 		jobSink.SetLiveResolver(subs.Emitter)
 	}
 
+	runtimeCapabilities := server.ConfiguredRuntimeCapabilities(maxConcurrentTurns)
+	runtimeCapabilities.ManagedWorktree = managedWorktrees != nil
 	handler := server.NewMux(repo, eventStore, executor, server.MuxOptions{
 		ServerName:        "codeagent/" + mc.Model,
 		Capabilities:      defaultCapabilities,
@@ -441,7 +449,8 @@ func Assemble(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider 
 		// flows: WS upgrade → CredentialStore → TurnExecutor → RuntimeContext →
 		// ServeRunBuilder.Build() → model provider → Gateway.
 		CredentialStore:     executor.SetSessionCredential,
-		RuntimeCapabilities: server.ConfiguredRuntimeCapabilities(maxConcurrentTurns),
+		RuntimeCapabilities: runtimeCapabilities,
+		ManagedWorktrees:    managedWorktrees,
 	})
 	rt := &Runtime{Executor: executor, Builder: rb, Repo: repo}
 	return handler, rt, closers, nil

@@ -111,6 +111,36 @@ func (s *stubRunner) ResumeTurn(ctx context.Context, sess *session.Session) (age
 	return agent.TurnResult{}, nil
 }
 
+type executionGuardError struct{}
+
+func (executionGuardError) Error() string              { return "managed checkout is missing" }
+func (executionGuardError) LifecycleErrorCode() string { return "worktree_missing" }
+
+func TestTurnExecutorExecutionGuardEmitsStructuredTerminalFailure(t *testing.T) {
+	repo := newFakeRepo()
+	sess := &session.Session{ID: "managed", WorkspacePath: "/missing", Metadata: map[string]any{}}
+	repo.sessions[sess.ID] = sess
+	events := &fakeEventStore{}
+	executor := NewTurnExecutor(repo, events, NewActiveTurnRegistry(), NewSubscriptionManager(), &fakeRunBuilder{})
+	executor.SetExecutionGuard(func(context.Context, string) (func(), error) {
+		return nil, executionGuardError{}
+	})
+	result, err := executor.Execute(context.Background(), sess.ID, "run", "")
+	if err == nil || result.TurnID == "" {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	if len(events.records) != 2 || events.records[0].Kind != string(agent.EventTurnAccepted) || events.records[1].Kind != string(agent.EventTurnFailed) {
+		t.Fatalf("events=%+v", events.records)
+	}
+	var failed agent.Event
+	if err := json.Unmarshal(events.records[1].Payload, &failed); err != nil {
+		t.Fatal(err)
+	}
+	if failed.TurnID != result.TurnID || failed.ErrorCode != "worktree_missing" || failed.Err == "" {
+		t.Fatalf("failed=%+v", failed)
+	}
+}
+
 // ctxCheckingEventStore refuses Append on a canceled ctx, like a real SQLite
 // store would.
 type ctxCheckingEventStore struct {

@@ -264,6 +264,19 @@ func TestConfiguredRuntimeCapabilitiesEnableParallelOnlyAboveOne(t *testing.T) {
 	}
 }
 
+func TestMuxNeverAdvertisesManagedWorktreeWithoutActualManager(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/runtime/capabilities", nil)
+	caps := ConfiguredRuntimeCapabilities(2)
+	caps.ManagedWorktree = true
+	NewMux(newFakeConversationRepo(), &fakeEventStore{}, nil, MuxOptions{RuntimeCapabilities: caps}).ServeHTTP(recorder, req)
+	var got runtimeCapabilitiesResponse
+	decodeResponse(t, recorder.Result(), &got)
+	if got.Capabilities.ManagedWorktree {
+		t.Fatalf("capabilities=%+v", got.Capabilities)
+	}
+}
+
 func TestMuxDowngradesAttentionCapabilityForLegacyEventStore(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/v1/runtime/capabilities", nil)

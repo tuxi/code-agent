@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -28,7 +29,7 @@ const (
 	CodeEscapeDetected     = "worktree_escape_detected"
 	CodeProvisionFailed    = "worktree_provision_failed"
 	CodeMissing            = "worktree_missing"
-	CodeInUse              = "worktree_in_use"
+	CodeInUse              = "worktree_busy"
 	CodeDirty              = "worktree_dirty"
 	CodeRemoveFailed       = "worktree_remove_failed"
 	CodeRequestConflict    = "worktree_request_conflict"
@@ -40,6 +41,7 @@ type Error struct {
 	ClientRequestID string
 	SessionID       string
 	Cause           error
+	DirtySummary    *DirtySummary
 }
 
 func (e *Error) Error() string {
@@ -51,9 +53,23 @@ func (e *Error) Error() string {
 
 func (e *Error) Unwrap() error { return e.Cause }
 
+// LifecycleErrorCode lets the generic turn executor preserve the structured
+// managed-worktree failure on a pre-execution turn_failed event.
+func (e *Error) LifecycleErrorCode() string { return e.Code }
+
 type Warning struct {
 	Code    string
 	Message string
+}
+
+type DirtySummary struct {
+	ModifiedFiles  int `json:"modified_files"`
+	UntrackedFiles int `json:"untracked_files"`
+	NewCommits     int `json:"new_commits"`
+}
+
+func (s DirtySummary) HasRisk() bool {
+	return s.ModifiedFiles > 0 || s.UntrackedFiles > 0 || s.NewCommits > 0
 }
 
 type CreateRequest struct {
@@ -135,16 +151,102 @@ type Manager struct {
 	busy  func(sessionID string) bool
 
 	requestLocks sync.Map // client_request_id → *sync.Mutex
+
+	operationMu sync.Mutex
+	turnGuards  map[string]int
+	removing    map[string]bool
 }
 
 func New(store worktree.Store, repo ConversationRepository) *Manager {
-	return &Manager{store: store, repo: repo, git: execGit{}, now: time.Now}
+	return &Manager{
+		store: store, repo: repo, git: execGit{}, now: time.Now,
+		turnGuards: make(map[string]int), removing: make(map[string]bool),
+	}
 }
 
 // SetBusyChecker wires the turn scheduler/active registry without coupling the
 // provisioner to the conversation package. It must be configured before serving
 // remove requests.
 func (m *Manager) SetBusyChecker(check func(sessionID string) bool) { m.busy = check }
+
+// AcquireTurnGuard atomically excludes worktree removal for one complete turn.
+// Non-managed sessions pass through with a no-op guard.
+func (m *Manager) AcquireTurnGuard(ctx context.Context, sessionID string) (func(), error) {
+	if !m.beginTurnGuard(sessionID) {
+		return nil, &Error{Code: CodeInUse, Message: "managed worktree removal is in progress", SessionID: sessionID}
+	}
+	released := false
+	release := func() {
+		m.operationMu.Lock()
+		if !released {
+			released = true
+			m.turnGuards[sessionID]--
+			if m.turnGuards[sessionID] == 0 {
+				delete(m.turnGuards, sessionID)
+			}
+		}
+		m.operationMu.Unlock()
+	}
+	record, err := m.store.WorktreeBySessionID(ctx, sessionID)
+	if errors.Is(err, worktree.ErrNotFound) {
+		return release, nil
+	}
+	if err != nil {
+		release()
+		return nil, &Error{Code: CodeProvisionFailed, Message: "managed worktree state could not be loaded", SessionID: sessionID, Cause: err}
+	}
+	if record.State != worktree.StateReady {
+		release()
+		return nil, m.recordErr(record, CodeMissing, "managed worktree is not ready", nil)
+	}
+	if _, err := os.Lstat(record.WorktreePath); err != nil {
+		if os.IsNotExist(err) {
+			_ = m.markMissing(ctx, &record)
+		}
+		release()
+		return nil, m.recordErr(record, CodeMissing, "managed worktree checkout is missing", err)
+	}
+	if err := m.verifyCheckout(ctx, record); err != nil {
+		m.markFailed(ctx, &record, err)
+		release()
+		return nil, err
+	}
+	return release, nil
+}
+
+func (m *Manager) WorktreeBySessionID(ctx context.Context, sessionID string) (worktree.Record, error) {
+	return m.store.WorktreeBySessionID(ctx, sessionID)
+}
+
+func (m *Manager) ListWorktrees(ctx context.Context) ([]worktree.Record, error) {
+	return m.store.ListWorktrees(ctx)
+}
+
+func (m *Manager) beginTurnGuard(sessionID string) bool {
+	m.operationMu.Lock()
+	defer m.operationMu.Unlock()
+	if m.removing[sessionID] {
+		return false
+	}
+	m.turnGuards[sessionID]++
+	return true
+}
+
+func (m *Manager) beginRemoval(sessionID string) bool {
+	m.operationMu.Lock()
+	defer m.operationMu.Unlock()
+	if m.removing[sessionID] || m.turnGuards[sessionID] > 0 {
+		return false
+	}
+	m.removing[sessionID] = true
+	return true
+}
+
+func (m *Manager) endRemoval(sessionID string) {
+	m.operationMu.Lock()
+	delete(m.removing, sessionID)
+	m.operationMu.Unlock()
+}
 
 func (m *Manager) Create(ctx context.Context, req CreateRequest) (CreateResult, error) {
 	if strings.TrimSpace(req.ClientRequestID) == "" {
@@ -229,6 +331,10 @@ func (m *Manager) Remove(ctx context.Context, req RemoveRequest) (RemoveResult, 
 			return RemoveResult{}, m.recordErr(record, CodeRequestConflict, "request_id was already used with a different force value", nil)
 		}
 		if record.State == worktree.StateRemoving || record.State == worktree.StateRemoveFailed {
+			if !m.beginRemoval(record.SessionID) {
+				return RemoveResult{}, m.recordErr(record, CodeInUse, "managed worktree has an active or queued turn", nil)
+			}
+			defer m.endRemoval(record.SessionID)
 			if err := m.finishRemoval(ctx, &record); err != nil {
 				return RemoveResult{}, err
 			}
@@ -241,13 +347,22 @@ func (m *Manager) Remove(ctx context.Context, req RemoveRequest) (RemoveResult, 
 	if m.busy != nil && m.busy(record.SessionID) {
 		return RemoveResult{}, m.recordErr(record, CodeInUse, "managed worktree has an active or queued turn", nil)
 	}
+	if !m.beginRemoval(record.SessionID) {
+		return RemoveResult{}, m.recordErr(record, CodeInUse, "managed worktree has an active or queued turn", nil)
+	}
+	defer m.endRemoval(record.SessionID)
+	if m.busy != nil && m.busy(record.SessionID) {
+		return RemoveResult{}, m.recordErr(record, CodeInUse, "managed worktree has an active or queued turn", nil)
+	}
 	if !req.Force {
-		dirty, inspectErr := m.hasRemovalRisk(ctx, record)
+		dirty, inspectErr := m.removalRisk(ctx, record)
 		if inspectErr != nil {
 			return RemoveResult{}, inspectErr
 		}
-		if dirty {
-			return RemoveResult{}, m.recordErr(record, CodeDirty, "managed worktree has dirty, untracked, or new committed changes", nil)
+		if dirty.HasRisk() {
+			dirtyErr := m.recordErr(record, CodeDirty, "managed worktree has dirty, untracked, or new committed changes", nil)
+			dirtyErr.DirtySummary = &dirty
+			return RemoveResult{}, dirtyErr
 		}
 	}
 	record.State = worktree.StateRemoving
@@ -270,6 +385,10 @@ func (m *Manager) reconcileRecord(ctx context.Context, record *worktree.Record) 
 	case worktree.StateRemoved, worktree.StateRetained:
 		return nil
 	case worktree.StateRemoving, worktree.StateRemoveFailed:
+		if !m.beginRemoval(record.SessionID) {
+			return m.recordErr(*record, CodeInUse, "managed worktree removal is already in progress", nil)
+		}
+		defer m.endRemoval(record.SessionID)
 		return m.finishRemoval(ctx, record)
 	}
 
@@ -384,28 +503,40 @@ func (m *Manager) verifyCheckout(ctx context.Context, record worktree.Record) er
 	return nil
 }
 
-func (m *Manager) hasRemovalRisk(ctx context.Context, record worktree.Record) (bool, error) {
+func (m *Manager) removalRisk(ctx context.Context, record worktree.Record) (DirtySummary, error) {
 	if _, err := os.Lstat(record.WorktreePath); err != nil {
 		if os.IsNotExist(err) {
-			return false, m.recordErr(record, CodeMissing, "managed worktree checkout is missing", err)
+			return DirtySummary{}, m.recordErr(record, CodeMissing, "managed worktree checkout is missing", err)
 		}
-		return false, m.recordErr(record, CodeRemoveFailed, "managed worktree path could not be inspected", err)
+		return DirtySummary{}, m.recordErr(record, CodeRemoveFailed, "managed worktree path could not be inspected", err)
 	}
 	if err := m.verifyCheckout(ctx, record); err != nil {
-		return false, err
+		return DirtySummary{}, err
 	}
 	status, err := m.git.Run(ctx, record.WorktreePath, "status", "--porcelain", "--untracked-files=normal")
 	if err != nil {
-		return false, m.recordErr(record, CodeRemoveFailed, "managed worktree status could not be inspected", err)
+		return DirtySummary{}, m.recordErr(record, CodeRemoveFailed, "managed worktree status could not be inspected", err)
 	}
-	if status != "" {
-		return true, nil
+	var summary DirtySummary
+	for _, line := range strings.Split(status, "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		if strings.HasPrefix(line, "??") {
+			summary.UntrackedFiles++
+		} else {
+			summary.ModifiedFiles++
+		}
 	}
 	commits, err := m.git.Run(ctx, record.WorktreePath, "rev-list", "--count", record.BaseCommit+"..HEAD")
 	if err != nil {
-		return false, m.recordErr(record, CodeRemoveFailed, "managed worktree commits could not be inspected", err)
+		return DirtySummary{}, m.recordErr(record, CodeRemoveFailed, "managed worktree commits could not be inspected", err)
 	}
-	return strings.TrimSpace(commits) != "0", nil
+	summary.NewCommits, err = strconv.Atoi(strings.TrimSpace(commits))
+	if err != nil {
+		return DirtySummary{}, m.recordErr(record, CodeRemoveFailed, "managed worktree commit count was invalid", err)
+	}
+	return summary, nil
 }
 
 func (m *Manager) finishRemoval(ctx context.Context, record *worktree.Record) error {

@@ -86,10 +86,11 @@ type APIWarning struct {
 }
 
 type managedWorktreeErrorResponse struct {
-	Code            string `json:"code"`
-	Message         string `json:"message"`
-	ClientRequestID string `json:"client_request_id,omitempty"`
-	SessionID       string `json:"session_id,omitempty"`
+	Code            string                        `json:"code"`
+	Message         string                        `json:"message"`
+	ClientRequestID string                        `json:"client_request_id,omitempty"`
+	SessionID       string                        `json:"session_id,omitempty"`
+	Summary         *managedworktree.DirtySummary `json:"summary,omitempty"`
 }
 
 // RebindRequest is the POST /v1/conversations/{id}/rebind body: the host re-supplies
@@ -284,6 +285,10 @@ type SessionActivity struct {
 	LastSequence           int64                    `json:"last_sequence"`
 	LatestTerminal         *SessionTerminalActivity `json:"latest_terminal,omitempty"`
 	UpdatedAt              string                   `json:"updated_at,omitempty"`
+	ExecutionPolicy        string                   `json:"execution_policy,omitempty"`
+	WorkspaceID            string                   `json:"workspace_id,omitempty"`
+	BaseWorkspaceID        string                   `json:"base_workspace_id,omitempty"`
+	Worktree               *ManagedWorktreeDTO      `json:"worktree,omitempty"`
 }
 
 type activityResponse struct {
@@ -347,6 +352,9 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 		attentionSupported = attentionSupported && capability.SupportsAttentionSnapshot()
 	}
 	runtimeCapabilities := opts.RuntimeCapabilities
+	if opts.ManagedWorktrees == nil {
+		runtimeCapabilities.ManagedWorktree = false
+	}
 	if !attentionSupported {
 		runtimeCapabilities.SessionAttentionSnapshot = false
 		runtimeCapabilities.SessionAttentionDelta = false
@@ -385,6 +393,11 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 		}
 		metaBySession := make(map[string]session.Meta, len(metas))
 		activityBySession := make(map[string]SessionActivity)
+		managedBySession, managedErr := managedWorktreesBySession(r.Context(), opts.ManagedWorktrees)
+		if managedErr != nil {
+			http.Error(w, managedErr.Error(), http.StatusInternalServerError)
+			return
+		}
 		for _, meta := range metas {
 			metaBySession[meta.ID] = meta
 			switch meta.TurnStatus {
@@ -403,6 +416,13 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 					State:     meta.TurnStatus,
 					UpdatedAt: meta.UpdatedAt.UTC().Format(time.RFC3339Nano),
 				}
+			}
+			if record, managed := managedBySession[meta.ID]; managed && record.State != worktree.StateReady && record.State != worktree.StateRemoved {
+				activity := activityBySession[meta.ID]
+				activity.SessionID = meta.ID
+				activity.State = "workspace_" + string(record.State)
+				activity.UpdatedAt = record.UpdatedAt.UTC().Format(time.RFC3339Nano)
+				activityBySession[meta.ID] = activity
 			}
 		}
 
@@ -475,6 +495,12 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 		}
 		activities := make([]SessionActivity, 0, len(activityBySession))
 		for _, activity := range activityBySession {
+			if record, managed := managedBySession[activity.SessionID]; managed {
+				activity.ExecutionPolicy = session.ExecutionPolicyIsolatedWorktree
+				activity.WorkspaceID = record.CheckoutWorkspaceID
+				activity.BaseWorkspaceID = record.BaseWorkspaceID
+				activity.Worktree = managedWorktreeDTO(record)
+			}
 			// Broker waits outrank scheduler state. Client tools are blocking but do
 			// not imply that a human approval notification is needed.
 			switch {
@@ -510,15 +536,30 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 			return
 		}
 		refs := make([]ConversationRef, 0, len(metas))
+		managedBySession, managedErr := managedWorktreesBySession(r.Context(), opts.ManagedWorktrees)
+		if managedErr != nil {
+			http.Error(w, managedErr.Error(), http.StatusInternalServerError)
+			return
+		}
 		for _, m := range metas {
-			refs = append(refs, ConversationRef{
+			ref := ConversationRef{
 				ID:            m.ID,
 				WorkspacePath: m.WorkspacePath,
 				Workspace:     workspaceDTO(m.WorkspacePath),
 				Name:          effectiveName(m),
 				TurnStatus:    m.TurnStatus,
 				PausedAt:      m.PausedAt,
-			})
+			}
+			if record, managed := managedBySession[m.ID]; managed {
+				ref.ExecutionPolicy = session.ExecutionPolicyIsolatedWorktree
+				ref.WorkspaceID = record.CheckoutWorkspaceID
+				ref.BaseWorkspaceID = record.BaseWorkspaceID
+				ref.Worktree = managedWorktreeDTO(record)
+				if sess, loadErr := repo.Load(r.Context(), m.ID); loadErr == nil {
+					ref.Warnings = sessionWorktreeWarnings(sess)
+				}
+			}
+			refs = append(refs, ref)
 		}
 		writeJSON(w, r, http.StatusOK, refs)
 	})
@@ -610,10 +651,7 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 		}
 		writeJSON(w, r, http.StatusOK, RemoveManagedWorktreeResponse{
 			SessionID: id,
-			Worktree: ManagedWorktreeDTO{
-				Managed: true, Name: result.Record.Name, Branch: result.Record.Branch,
-				BaseRef: string(result.Record.BaseRef), State: string(result.Record.State),
-			},
+			Worktree:  *managedWorktreeDTO(result.Record),
 		})
 	})
 
@@ -628,6 +666,10 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 			detail.WorkspacePath = s.WorkspacePath
 			detail.Workspace = workspaceDTO(s.WorkspacePath)
 			detail.Name = s.Name
+			detail.ExecutionPolicy = s.ExecutionPolicy()
+			detail.WorkspaceID, _ = s.Metadata[session.MetaWorkspaceID].(string)
+			detail.BaseWorkspaceID, _ = s.Metadata[session.MetaBaseWorkspaceID].(string)
+			detail.Warnings = sessionWorktreeWarnings(s)
 			if s.Workspace.Root != "" {
 				detail.WorkspaceRef = &WorkspaceRefDTO{
 					Root:  s.Workspace.Root,
@@ -637,6 +679,15 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 			}
 			if nr, err := repo.NeedsRebind(r.Context(), id); err == nil {
 				detail.NeedsRebind = nr
+			}
+			if opts.ManagedWorktrees != nil {
+				if record, recordErr := opts.ManagedWorktrees.WorktreeBySessionID(r.Context(), id); recordErr == nil {
+					detail.ExecutionPolicy = session.ExecutionPolicyIsolatedWorktree
+					detail.WorkspaceID = record.CheckoutWorkspaceID
+					detail.BaseWorkspaceID = record.BaseWorkspaceID
+					detail.Worktree = managedWorktreeDTO(record)
+					detail.NeedsRebind = detail.NeedsRebind || record.State == worktree.StateMissing
+				}
 			}
 		}
 		for _, rec := range recs {
@@ -976,6 +1027,7 @@ func writeManagedRemoveError(w http.ResponseWriter, r *http.Request, err error) 
 	writeManagedWorktreeError(w, r, status, managedWorktreeErrorResponse{
 		Code: managedErr.Code, Message: managedErr.Message,
 		ClientRequestID: managedErr.ClientRequestID, SessionID: managedErr.SessionID,
+		Summary: managedErr.DirtySummary,
 	})
 }
 
@@ -989,9 +1041,63 @@ func managedConversationRef(result managedworktree.CreateResult) ConversationRef
 		Workspace:       workspaceDTO(result.Record.WorktreePath),
 		ExecutionPolicy: session.ExecutionPolicyIsolatedWorktree,
 		WorkspaceID:     result.Record.CheckoutWorkspaceID, BaseWorkspaceID: result.Record.BaseWorkspaceID,
-		Worktree: &ManagedWorktreeDTO{Managed: true, Name: result.Record.Name, Branch: result.Record.Branch, BaseRef: string(result.Record.BaseRef), State: string(result.Record.State)},
+		Worktree: managedWorktreeDTO(result.Record),
 		Warnings: warnings,
 	}
+}
+
+func managedWorktreeDTO(record worktree.Record) *ManagedWorktreeDTO {
+	return &ManagedWorktreeDTO{
+		Managed: true, Name: record.Name, Branch: record.Branch,
+		BaseRef: string(record.BaseRef), State: string(record.State),
+		NeedsRebind: record.State == worktree.StateMissing,
+	}
+}
+
+func managedWorktreesBySession(ctx context.Context, manager *managedworktree.Manager) (map[string]worktree.Record, error) {
+	out := make(map[string]worktree.Record)
+	if manager == nil {
+		return out, nil
+	}
+	records, err := manager.ListWorktrees(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, record := range records {
+		out[record.SessionID] = record
+	}
+	return out, nil
+}
+
+func sessionWorktreeWarnings(sess *session.Session) []APIWarning {
+	if sess == nil || sess.Metadata == nil {
+		return nil
+	}
+	raw, ok := sess.Metadata[session.MetaWorktreeWarnings]
+	if !ok {
+		return nil
+	}
+	var warnings []APIWarning
+	appendWarning := func(item map[string]any) {
+		code, _ := item["code"].(string)
+		message, _ := item["message"].(string)
+		if code != "" {
+			warnings = append(warnings, APIWarning{Code: code, Message: message})
+		}
+	}
+	switch items := raw.(type) {
+	case []map[string]any:
+		for _, item := range items {
+			appendWarning(item)
+		}
+	case []any:
+		for _, rawItem := range items {
+			if item, ok := rawItem.(map[string]any); ok {
+				appendWarning(item)
+			}
+		}
+	}
+	return warnings
 }
 
 // loadEvents fetches a session's recorded events from the EventStore and resolves
