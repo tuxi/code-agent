@@ -19,6 +19,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"code-agent/internal/app"
@@ -125,9 +126,12 @@ type Handle struct {
 
 	// Lifecycle state (v1.2). srvCtx is the server-scoped context resumed turns run
 	// under (so Stop cancels them); cfg + rt back Suspend/ResumeSession/Reconfigure.
-	srvCtx context.Context
-	cfg    app.Config
-	rt     *Runtime
+	srvCtx     context.Context
+	cfg        app.Config
+	rt         *Runtime
+	credential credential.Resolver
+
+	reconfigureMu sync.Mutex
 }
 
 // Port returns the actual TCP port the server is listening on. With Addr empty
@@ -200,10 +204,13 @@ func (h *Handle) ResumeSession(sessionID string) error {
 // The swap lands at the next turn boundary; in-flight turns finish on the old
 // config.
 //
-// Reconfigure only swaps the model and its provider credentials. Changes that
-// affect the tool graph (web search provider keys, MCP server list, etc.) require
-// a server restart: the host should call Stop + Start with the updated secrets.
+// Reconfigure swaps model and managed-tool credentials at the next turn
+// boundary. Structural tool graph changes (provider kind, MCP server list, etc.)
+// still require a server restart.
 func (h *Handle) Reconfigure(secretsJSON, modelName string) error {
+	h.reconfigureMu.Lock()
+	defer h.reconfigureMu.Unlock()
+
 	if h.rt == nil {
 		return fmt.Errorf("runtime not started")
 	}
@@ -215,8 +222,14 @@ func (h *Handle) Reconfigure(secretsJSON, modelName string) error {
 	// copy-on-stack pattern keeps h.cfg unchanged on error so a failed reconfigure
 	// doesn't leave a half-updated stored config.
 	cfg := h.cfg
-	injectedResolver := injectSecrets(&cfg, secrets)
-	credChain := cfg.CredentialResolver(injectedResolver)
+	credChain := h.credential
+	if len(secrets) > 0 {
+		injectedResolver := injectSecrets(&cfg, secrets)
+		credChain = cfg.CredentialResolver(injectedResolver)
+	}
+	if credChain == nil {
+		credChain = cfg.CredentialResolver(nil)
+	}
 	mc, err := cfg.SelectModel(modelName)
 	if err != nil {
 		return err
@@ -225,7 +238,9 @@ func (h *Handle) Reconfigure(secretsJSON, modelName string) error {
 	if err != nil {
 		return err
 	}
-	h.rt.Builder.Reconfigure(mc, provider)
+	h.rt.Builder.Reconfigure(mc, provider, credChain)
+	h.cfg = cfg
+	h.credential = credChain
 	return nil
 }
 
@@ -296,7 +311,7 @@ func StartServer(ctx context.Context, opt Options) (*Handle, error) {
 	// observers and background goroutines tied to it wind down.
 	srvCtx, cancel := context.WithCancel(ctx)
 
-	h := &Handle{cancel: cancel, serveErr: make(chan error, 1), srvCtx: srvCtx, cfg: cfg}
+	h := &Handle{cancel: cancel, serveErr: make(chan error, 1), srvCtx: srvCtx, cfg: cfg, credential: credChain}
 	// On any error after this point, release whatever we already acquired.
 	ok := false
 	defer func() {
@@ -312,7 +327,7 @@ func StartServer(ctx context.Context, opt Options) (*Handle, error) {
 	if opt.MaxConcurrentTurns > 0 {
 		cfg.Runtime.MaxConcurrentTurns = opt.MaxConcurrentTurns
 	}
-	handler, rt, closers, err := Assemble(srvCtx, cfg, mc, provider, workspaceDir)
+	handler, rt, closers, err := Assemble(srvCtx, cfg, mc, provider, credChain, workspaceDir)
 	if err != nil {
 		return nil, err
 	}
@@ -359,7 +374,7 @@ func StartServer(ctx context.Context, opt Options) (*Handle, error) {
 // The provider must already be built (callers differ in how they resolve creds:
 // the CLI from env, the embedded host from injected secrets). On error, any
 // resources opened before the failure are released before returning.
-func Assemble(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider model.Provider, workspaceDir string) (http.Handler, *Runtime, []func(), error) {
+func Assemble(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider model.Provider, cred credential.Resolver, workspaceDir string) (http.Handler, *Runtime, []func(), error) {
 	if workspaceDir == "" {
 		workspaceDir, _ = os.Getwd()
 	}
@@ -382,7 +397,7 @@ func Assemble(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider 
 	// cfg.MCP carries only host-INJECTED servers (the embedded MCPJSON document);
 	// they participate as an extra user-scope layer under every workspace's own
 	// files. The CLI serve path leaves cfg.MCP empty (see runServe).
-	toolReg, _, planRef, jobSink, err := runtime.BuildBaseRegistry(ctx, cfg, mc, provider, telemetryStore, workspaceDir, nil)
+	toolReg, _, planRef, jobSink, err := runtime.BuildBaseRegistry(ctx, cfg, mc, provider, cred, telemetryStore, workspaceDir, nil)
 	if err != nil {
 		release()
 		return nil, nil, nil, err
@@ -418,7 +433,7 @@ func Assemble(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider 
 
 	active := conversation.NewActiveTurnRegistry()
 	subs := conversation.NewSubscriptionManager()
-	rb := runtime.NewServeRunBuilder(cfg, mc, provider, toolReg, wsReg, planRef)
+	rb := runtime.NewServeRunBuilder(cfg, mc, provider, cred, toolReg, wsReg, planRef)
 	executor := conversation.NewTurnExecutor(repo, eventStore, active, subs, rb)
 	maxConcurrentTurns := cfg.RuntimeMaxConcurrentTurns()
 	executor.SetTurnScheduler(conversation.NewTurnScheduler(maxConcurrentTurns))

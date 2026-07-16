@@ -31,7 +31,7 @@ func runServe(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider 
 
 	// The CLI serve path uses process lifecycle, not the in-app suspend/resume
 	// verbs, so it ignores the returned Runtime bundle.
-	handler, _, closers, err := embed.Assemble(ctx, cfg, mc, provider, root)
+	handler, _, closers, err := embed.Assemble(ctx, cfg, mc, provider, cfg.CredentialResolver(nil), root)
 	if err != nil {
 		return err
 	}

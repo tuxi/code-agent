@@ -554,7 +554,7 @@ func (e *TurnExecutor) driveTurn(
 	// 6. Record the terminal status BEFORE the save, then emit the lifecycle event
 	//    so a client sees paused/failed transitions.
 	recordStatus(sess, runErr)
-	e.emitLifecycle(pub, sess, res.TurnID, runErr)
+	e.emitLifecycle(pub, sess, res, runErr)
 	if persistErr := pub.terminalPersistenceError(); persistErr != nil && !errors.Is(runErr, persistErr) {
 		runErr = errors.Join(runErr, persistErr)
 	}
@@ -667,7 +667,7 @@ func (e *TurnExecutor) recordResumeStatus(sess *session.Session, runErr error) {
 // emitLifecycle publishes the executor-owned paused/failed/cancelled lifecycle
 // event matching the session's just-recorded status. A successful done turn
 // already emitted turn_finished from the loop.
-func (e *TurnExecutor) emitLifecycle(pub agent.Emitter, sess *session.Session, turnID string, runErr error) {
+func (e *TurnExecutor) emitLifecycle(pub agent.Emitter, sess *session.Session, result agent.TurnResult, runErr error) {
 	var kind agent.EventKind
 	switch sess.TurnStatus() {
 	case session.TurnStatusPaused:
@@ -683,7 +683,12 @@ func (e *TurnExecutor) emitLifecycle(pub agent.Emitter, sess *session.Session, t
 	default:
 		return
 	}
-	event := agent.Event{Kind: kind, SessionID: sess.ID, TurnID: turnID, At: time.Now()}
+	event := agent.Event{
+		Kind: kind, SessionID: sess.ID, TurnID: result.TurnID, At: time.Now(),
+		BillingUnits: result.BillingUnits, ModelBillingUnits: result.ModelBillingUnits,
+		ToolBillingUnits: result.ToolBillingUnits, ExecutedToolCalls: result.ExecutedToolCalls,
+		SucceededToolCalls: result.SucceededToolCalls, BillableToolCalls: result.BillableToolCalls,
+	}
 	if kind == agent.EventTurnFailed {
 		event.Err = errString(runErr)
 		event.ErrorCode = lifecycleErrorCode(runErr)

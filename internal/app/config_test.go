@@ -210,6 +210,43 @@ func TestWebSearchKeyDefaults(t *testing.T) {
 	}
 }
 
+func TestManagedWebSearchDefaultsToGatewayCredentialAndModelBaseURL(t *testing.T) {
+	cfg, err := LoadConfigBytes([]byte(`
+default_model: gateway
+credentials:
+  gateway:
+    default:
+      source: injected
+models:
+  gateway:
+    provider: openai
+    base_url: https://gateway.example/api/v1/agent
+    credential:
+      namespace: gateway
+      name: default
+web:
+  search:
+    provider: gateway
+    fallback_provider: tavily
+    gateway_timeout_seconds: 600
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.Web.Search.Credential; got != (CredentialRef{Namespace: "gateway", Name: "default"}) {
+		t.Fatalf("credential = %+v", got)
+	}
+	if got := cfg.Web.Search.GatewayBaseURL; got != "https://gateway.example/api/v1/agent" {
+		t.Fatalf("gateway_base_url = %q", got)
+	}
+	if got := cfg.Web.Search.GatewayTimeoutSeconds; got != 600 {
+		t.Fatalf("gateway_timeout_seconds = %d", got)
+	}
+	if cfg.Web.Search.FallbackProvider != "" {
+		t.Fatalf("managed fallback = %q, want empty", cfg.Web.Search.FallbackProvider)
+	}
+}
+
 func TestLoadConfigFallsBackToDeepseek(t *testing.T) {
 	// No file, no models configured -> built-in deepseek default.
 	cfg, err := LoadConfig("")

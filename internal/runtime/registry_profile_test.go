@@ -17,7 +17,7 @@ func registerForProfile(t *testing.T, profile app.Profile) map[string]bool {
 	}
 	reg := tools.NewRegistry()
 	cfg := app.Config{Profile: profile}
-	if err := RegisterBuiltinTools(reg, cfg, skillReg, "", nil); err != nil {
+	if err := RegisterBuiltinTools(reg, cfg, nil, skillReg, "", nil); err != nil {
 		t.Fatalf("RegisterBuiltinTools(%q): %v", profile, err)
 	}
 	got := map[string]bool{}
@@ -37,7 +37,7 @@ func registerWithAllowlist(t *testing.T, allow []string) map[string]bool {
 	}
 	reg := tools.NewRegistry()
 	cfg := app.Config{Agent: app.AgentConfig{BuiltinTools: &allow}}
-	if err := RegisterBuiltinTools(reg, cfg, skillReg, "", nil); err != nil {
+	if err := RegisterBuiltinTools(reg, cfg, nil, skillReg, "", nil); err != nil {
 		t.Fatalf("RegisterBuiltinTools: %v", err)
 	}
 	got := map[string]bool{}

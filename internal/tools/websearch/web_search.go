@@ -3,11 +3,13 @@ package websearch
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"unicode/utf8"
 
 	"code-agent/internal/app"
+	"code-agent/internal/credential"
 	"code-agent/internal/tools"
 )
 
@@ -23,7 +25,7 @@ type Tool struct {
 // NewTool builds a web_search tool from the web section of config. It returns
 // nil if no provider is configured (the tool is simply not registered, and the
 // model won't see it).
-func NewTool(cfg app.WebConfig) *Tool {
+func NewTool(cfg app.WebConfig, resolver credential.Resolver) *Tool {
 	t := &Tool{
 		TopK: cfg.Search.TopK,
 	}
@@ -35,8 +37,19 @@ func NewTool(cfg app.WebConfig) *Tool {
 	if timeout <= 0 {
 		timeout = 10
 	}
+	gatewayTimeout := cfg.Search.GatewayTimeoutSeconds
+	if gatewayTimeout <= 0 {
+		gatewayTimeout = 120
+	}
 
 	switch cfg.Search.Provider {
+	case "gateway":
+		t.Primary = NewGatewaySearchProvider(
+			resolver,
+			cfg.Search.Credential.Target(),
+			cfg.Search.GatewayBaseURL,
+			gatewayTimeout,
+		)
 	case "brave":
 		if key := cfg.Search.BraveAPIKey(); key != "" {
 			t.Primary = NewBrave(key, timeout)
@@ -47,6 +60,11 @@ func NewTool(cfg app.WebConfig) *Tool {
 		if key := cfg.Search.TavilyAPIKey(); key != "" {
 			t.Primary = NewTavily(key, timeout)
 		}
+	}
+	// Managed search owns provider selection and billing at Gateway. Falling back
+	// to a Runtime provider would bypass its financial ledger.
+	if cfg.Search.Provider == "gateway" {
+		return t
 	}
 
 	switch cfg.Search.FallbackProvider {
@@ -83,7 +101,7 @@ func (t *Tool) InputSchema() json.RawMessage {
 	}, "query").JSON()
 }
 
-func (t *Tool) Execute(ctx context.Context, _ tools.ExecutionContext, input json.RawMessage) (tools.ToolResult, error) {
+func (t *Tool) Execute(ctx context.Context, ec tools.ExecutionContext, input json.RawMessage) (tools.ToolResult, error) {
 	var in searchInput
 	if len(input) > 0 {
 		if err := json.Unmarshal(input, &in); err != nil {
@@ -99,7 +117,7 @@ func (t *Tool) Execute(ctx context.Context, _ tools.ExecutionContext, input json
 		in.TopK = t.TopK
 	}
 
-	results, err := t.search(ctx, in.Query, in.TopK)
+	results, usage, err := t.search(ctx, ec, in.Query, in.TopK)
 	if err != nil {
 		return tools.ToolResult{}, err
 	}
@@ -109,7 +127,7 @@ func (t *Tool) Execute(ctx context.Context, _ tools.ExecutionContext, input json
 		return tools.ToolResult{}, err
 	}
 
-	return tools.ToolResult{Content: string(b)}, nil
+	return tools.ToolResult{Content: string(b), Usage: usage}, nil
 }
 
 // Output-budget constants. The tool keeps its own JSON under the agent loop's
@@ -169,45 +187,61 @@ func clipRunes(s string, max int) string {
 	return s[:cut] + "…"
 }
 
-func (t *Tool) search(ctx context.Context, query string, topK int) ([]Result, error) {
+func (t *Tool) search(ctx context.Context, ec tools.ExecutionContext, query string, topK int) ([]Result, *tools.ToolUsage, error) {
 	if t.Primary == nil {
-		return nil, fmt.Errorf(
+		return nil, nil, fmt.Errorf(
 			"no search provider configured: the default provider is tavily but no API key was found. " +
 				"Set web.search.tavily_api_key_env in config.yaml to an env var holding your Tavily key " +
 				"(free tier at https://tavily.com), or switch web.search.provider to searxng/brave")
 	}
 
-	var results []Result
+	request := SearchRequest{
+		Query: query, TopK: topK,
+		CallID: ec.CallID, SessionID: ec.SessionID, TurnID: ec.TurnID,
+		ExecutionID: ec.ExecutionID,
+	}
+	var response SearchResponse
 	var errs []string
+	var err error
 
-	results, err := t.Primary.Search(ctx, query, topK)
+	response, err = t.Primary.Search(ctx, request)
 	if err != nil {
+		var fatal tools.TurnFatalToolError
+		if errors.As(err, &fatal) && fatal.TurnFatalToolError() {
+			return nil, nil, err
+		}
 		errs = append(errs, fmt.Sprintf("%s: %s", t.Primary.Name(), err.Error()))
 	}
 
 	// Fallback: only when primary returned no results (error or empty).
-	if len(results) == 0 && t.Fallback != nil {
-		results, err = t.Fallback.Search(ctx, query, topK)
+	if len(response.Results) == 0 && t.Fallback != nil {
+		response, err = t.Fallback.Search(ctx, request)
 		if err != nil {
 			errs = append(errs, fmt.Sprintf("%s: %s", t.Fallback.Name(), err.Error()))
 		}
 	}
 
-	if len(results) == 0 {
+	if len(response.Results) == 0 {
 		if len(errs) > 0 {
-			return nil, fmt.Errorf("search failed: %s", strings.Join(errs, "; "))
+			return nil, nil, fmt.Errorf("search failed: %s", strings.Join(errs, "; "))
 		}
-		return nil, fmt.Errorf("no results found for %q", query)
+		// A managed call can legitimately return no matches and still consume
+		// provider credits. Treat that as a successful empty result so its receipt
+		// reaches tool_finished and the model cannot retry behind the ledger's back.
+		if response.Usage != nil {
+			return []Result{}, response.Usage, nil
+		}
+		return nil, nil, fmt.Errorf("no results found for %q", query)
 	}
 
 	// Deduplicate by URL, then cap. Provider order is preserved — relevance and
 	// quality ranking are left to the provider and the calling model.
-	results = dedup(results)
+	results := dedup(response.Results)
 	if len(results) > topK {
 		results = results[:topK]
 	}
 
-	return results, nil
+	return results, response.Usage, nil
 }
 
 func dedup(results []Result) []Result {

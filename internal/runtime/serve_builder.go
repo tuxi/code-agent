@@ -10,9 +10,11 @@ import (
 	"code-agent/internal/app"
 	"code-agent/internal/approve"
 	"code-agent/internal/conversation"
+	"code-agent/internal/credential"
 	"code-agent/internal/model"
 	"code-agent/internal/skills"
 	"code-agent/internal/tools"
+	"code-agent/internal/tools/websearch"
 )
 
 // ServeRunBuilder is the conversation.RunBuilder for the HTTP/WebSocket server. It
@@ -35,13 +37,14 @@ type ServeRunBuilder struct {
 	// rules loaded from config + settings files are enforced here.
 	rules *approve.RuleStore
 
-	mu       sync.RWMutex
-	mc       app.ModelConfig
-	provider model.Provider
+	mu         sync.RWMutex
+	mc         app.ModelConfig
+	provider   model.Provider
+	credential credential.Resolver
 }
 
 // NewServeRunBuilder constructs the builder with the initial model + provider.
-func NewServeRunBuilder(cfg app.Config, mc app.ModelConfig, provider model.Provider, toolReg *tools.Registry, wsReg *WorkspaceRegistry, _ *agent.RunnerRef) *ServeRunBuilder {
+func NewServeRunBuilder(cfg app.Config, mc app.ModelConfig, provider model.Provider, cred credential.Resolver, toolReg *tools.Registry, wsReg *WorkspaceRegistry, _ *agent.RunnerRef) *ServeRunBuilder {
 	return &ServeRunBuilder{
 		Cfg: cfg, ToolReg: toolReg, WSReg: wsReg,
 		// Pre-GA: RuleStore should be workspace-scoped via WorkspaceInstance.Rules
@@ -52,7 +55,7 @@ func NewServeRunBuilder(cfg app.Config, mc app.ModelConfig, provider model.Provi
 		// grants default to the user scope, which is workspace-independent and
 		// correct for serve mode until Phase 3 lands.
 		rules: approve.NewRuleStore("", cfg.Permissions.Allow, cfg.Permissions.Deny),
-		mc:    mc, provider: provider,
+		mc:    mc, provider: provider, credential: cred,
 	}
 }
 
@@ -63,18 +66,19 @@ func (b *ServeRunBuilder) Rules() *approve.RuleStore { return b.rules }
 
 // Reconfigure hot-swaps the model config and provider used by future turns
 // (v1.2 §3.3). It does not touch the listener or any in-flight turn.
-func (b *ServeRunBuilder) Reconfigure(mc app.ModelConfig, provider model.Provider) {
+func (b *ServeRunBuilder) Reconfigure(mc app.ModelConfig, provider model.Provider, cred credential.Resolver) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.mc = mc
 	b.provider = provider
+	b.credential = cred
 }
 
 // Build creates a per-turn TurnRunner that resolves skills from the session's
 // workspace, merges client-registered tools, and wires plan tools + client waiter.
 func (b *ServeRunBuilder) Build(ctx conversation.RuntimeContext) conversation.TurnRunner {
 	b.mu.RLock()
-	mc, baseProvider := b.mc, b.provider
+	mc, baseProvider, baseCredential := b.mc, b.provider, b.credential
 	cfg := b.Cfg
 	b.mu.RUnlock()
 
@@ -133,6 +137,11 @@ func (b *ServeRunBuilder) Build(ctx conversation.RuntimeContext) conversation.Tu
 	// replaced in every turn-local clone: wiring the shared base reference here
 	// races concurrent sessions and can route A's plan operation into B's runner.
 	turnTools := toolReg.Clone()
+	toolCredential := baseCredential
+	if ctx.Credential != nil {
+		toolCredential = ctx.Credential
+	}
+	turnTools.Replace(websearch.NewTool(cfg.Web, toolCredential))
 	planRef := &agent.RunnerRef{}
 	turnTools.Replace(agent.NewEnterPlanModeTool(planRef))
 	turnTools.Replace(agent.NewProposePlanTool(planRef, filepath.Join(workspacePath, ".codeagent", "plans")))

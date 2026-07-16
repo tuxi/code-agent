@@ -29,6 +29,30 @@ func TestTurnQueuedWireIncludesReason(t *testing.T) {
 	}
 }
 
+func TestToWireManagedToolUsage(t *testing.T) {
+	usage := &tools.ToolUsage{
+		ToolCallID: "call_web_1", ToolName: "web_search", Provider: "tavily",
+		Operation: "basic", ProviderCredits: 1, BillingUnits: 8000,
+		FundingSource: "subscription", ReservationID: "res_1", PricingVersion: 2,
+	}
+	w := toWire(agent.Event{Kind: agent.EventToolFinished, CallID: "call_web_1", ToolUsage: usage})
+	if w.ToolUsage == nil || w.ToolUsage.BillingUnits != 8000 || w.ToolUsage.ToolCallID != "call_web_1" {
+		t.Fatalf("wire usage = %+v", w.ToolUsage)
+	}
+}
+
+func TestToWireTurnUsageSummary(t *testing.T) {
+	w := toWire(agent.Event{
+		Kind: agent.EventTurnFinished, BillingUnits: 8300,
+		ModelBillingUnits: 300, ToolBillingUnits: 8000,
+		ExecutedToolCalls: 2, SucceededToolCalls: 2, BillableToolCalls: 1,
+	})
+	if w.BillingUnits != 8300 || w.ModelBillingUnits != 300 || w.ToolBillingUnits != 8000 ||
+		w.ExecutedToolCalls != 2 || w.SucceededToolCalls != 2 || w.BillableToolCalls != 1 {
+		t.Fatalf("wire turn usage = %+v", w)
+	}
+}
+
 type wireCase struct {
 	ev     agent.Event
 	parent string

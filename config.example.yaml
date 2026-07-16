@@ -115,10 +115,17 @@ currency: "$"
 
 web:
   search:
-    provider: tavily
-    tavily_api_key_env: TAVILY_API_KEY
+    # Managed mode: reuses the same gateway/default JWT as model calls.
+    # Gateway owns Tavily credentials, provider fallback, billing and idempotency.
+    provider: gateway
+    gateway_base_url: "https://agent.xxx.com/api/v1/agent"
+    credential:
+      namespace: gateway
+      name: default
     top_k: 5
-    timeout_seconds: 10
+    # Runtime -> Gateway whole-request timeout. Keep separate from the direct
+    # provider timeout because Gateway also performs quota and billing writes.
+    gateway_timeout_seconds: 120
   fetch:
     timeout_seconds: 30
     cache_ttl_seconds: 600
@@ -131,3 +138,5 @@ hooks:
     match: run_command
     command: 'if grep -q "rm -rf"; then echo "blocked: refusing rm -rf"; exit 1; fi'
 
+runtime:
+  max_concurrent_turns: 5

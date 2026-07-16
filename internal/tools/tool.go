@@ -23,6 +23,10 @@ type ExecutionContext struct {
 	// CallID is the per-tool-call identifier (e.g. "call_3").
 	CallID string
 
+	// ExecutionID identifies the model invocation that requested this tool call.
+	// Managed tools forward it to Gateway for end-to-end correlation.
+	ExecutionID string
+
 	// PlanMode is true when the runner is in a planning/proposing state.
 	// Tools that need different behavior during plan mode (e.g. write_file
 	// restricting writes to .codeagent/plans/) check this field.
@@ -40,6 +44,34 @@ type ToolResult struct {
 	Content string          `json:"content"`
 	Output  json.RawMessage `json:"output,omitempty"`
 	Assets  []assets.Ref    `json:"assets,omitempty"`
+	// Usage is populated by billable managed tools. Local tools leave it nil.
+	// It is an event side-channel and is not included in the model observation.
+	Usage *ToolUsage `json:"usage,omitempty"`
+}
+
+// ToolUsage is the provider-neutral billing receipt returned by a managed tool.
+// BillingUnits contributes to the user's unified Usage Units; provider credits
+// remain diagnostic/provider accounting and never replace BillingUnits.
+type ToolUsage struct {
+	ToolCallID      string `json:"tool_call_id"`
+	ToolName        string `json:"tool_name"`
+	Provider        string `json:"provider"`
+	Operation       string `json:"operation"`
+	ProviderCredits int64  `json:"provider_credits"`
+	BillingUnits    int64  `json:"billing_units"`
+	FundingSource   string `json:"funding_source"`
+	ReservationID   string `json:"reservation_id"`
+	PricingVersion  int    `json:"pricing_version"`
+	Replayed        bool   `json:"replayed,omitempty"`
+}
+
+// TurnFatalToolError marks a tool failure that must stop the turn after the
+// tool-result message has been committed. Authentication and quota failures use
+// this path so the host receives auth_expired/quota_exceeded instead of the
+// model merely seeing a retryable-looking "Tool error" observation.
+type TurnFatalToolError interface {
+	error
+	TurnFatalToolError() bool
 }
 
 // ClientProxyTool is a Tool stub registered from a client's register_tools

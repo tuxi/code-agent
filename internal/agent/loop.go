@@ -234,6 +234,24 @@ type TurnResult struct {
 	// size with spend; a /goal budget reads TokensUsed.
 	TokensUsed int
 
+	// Billing Units are authoritative values returned by Gateway. Model and
+	// managed-tool spend stay separate for diagnostics and add up to
+	// BillingUnits; local tools never contribute Units.
+	ModelBillingUnits int64
+	ToolBillingUnits  int64
+	BillingUnits      int64
+
+	// Tool counters describe runtime work, not model intent. Calls blocked by
+	// policy/budget are not executed; billable calls are successful managed
+	// calls carrying a Gateway usage receipt.
+	ExecutedToolCalls  int
+	SucceededToolCalls int
+	BillableToolCalls  int
+
+	// billedToolCallIDs prevents a replayed managed result from being counted
+	// twice if the same call is observed again within this drive.
+	billedToolCallIDs map[string]struct{}
+
 	// HitStepLimit is true when the turn exhausted MaxSteps and Final came from the
 	// best-effort tool-free answer rather than the model finishing on its own. A
 	// caller that delegates a turn (the subagent, 8.3) uses it to avoid passing off
@@ -657,6 +675,8 @@ func (r *Runner) drive(ctx context.Context, sess *session.Session) (TurnResult, 
 			BillingUnits:     resp.Usage.BillingUnits,
 			Elapsed:          time.Since(modelStart),
 		})
+		turn.ModelBillingUnits += resp.Usage.BillingUnits
+		turn.BillingUnits += resp.Usage.BillingUnits
 		if err != nil {
 			return turn, err
 		}
@@ -744,9 +764,15 @@ func (r *Runner) drive(ctx context.Context, sess *session.Session) (TurnResult, 
 			sess.UpdatedAt = time.Now()
 			turn.Final = resp.Content
 			r.emit(Event{
-				Kind:            EventTurnFinished,
-				Text:            turn.Final,
-				TextAnnotations: annotateTextWithAssets(turn.Final, turnAssets),
+				Kind:               EventTurnFinished,
+				Text:               turn.Final,
+				TextAnnotations:    annotateTextWithAssets(turn.Final, turnAssets),
+				BillingUnits:       turn.BillingUnits,
+				ModelBillingUnits:  turn.ModelBillingUnits,
+				ToolBillingUnits:   turn.ToolBillingUnits,
+				ExecutedToolCalls:  turn.ExecutedToolCalls,
+				SucceededToolCalls: turn.SucceededToolCalls,
+				BillableToolCalls:  turn.BillableToolCalls,
 			})
 			return turn, nil
 		}
@@ -791,14 +817,22 @@ func (r *Runner) drive(ctx context.Context, sess *session.Session) (TurnResult, 
 	// results in the history, so give it one final tool-free call to answer from
 	// what it has — instead of a useless "stopped" message that forces the user to
 	// re-ask (and re-pay for the whole investigation).
-	final, finalTokens := r.finalAnswerAfterLimit(ctx, sess)
+	final, finalTokens, finalBillingUnits := r.finalAnswerAfterLimit(ctx, sess)
 	turn.Final = final
 	turn.TokensUsed += finalTokens
+	turn.ModelBillingUnits += finalBillingUnits
+	turn.BillingUnits += finalBillingUnits
 	turn.HitStepLimit = true
 	r.emit(Event{
-		Kind:            EventTurnFinished,
-		Text:            turn.Final,
-		TextAnnotations: annotateTextWithAssets(turn.Final, turnAssets),
+		Kind:               EventTurnFinished,
+		Text:               turn.Final,
+		TextAnnotations:    annotateTextWithAssets(turn.Final, turnAssets),
+		BillingUnits:       turn.BillingUnits,
+		ModelBillingUnits:  turn.ModelBillingUnits,
+		ToolBillingUnits:   turn.ToolBillingUnits,
+		ExecutedToolCalls:  turn.ExecutedToolCalls,
+		SucceededToolCalls: turn.SucceededToolCalls,
+		BillableToolCalls:  turn.BillableToolCalls,
 	})
 	return turn, nil
 }
@@ -981,9 +1015,9 @@ const toolInterruptedObservation = "This tool call did not run: the turn was int
 // finalAnswerAfterLimit returns the best-effort answer AND the tokens that one
 // call consumed, so the turn-level counter (TurnResult.TokensUsed) stays exact
 // even on the step-limit path.
-func (r *Runner) finalAnswerAfterLimit(ctx context.Context, sess *session.Session) (string, int) {
+func (r *Runner) finalAnswerAfterLimit(ctx context.Context, sess *session.Session) (string, int, int64) {
 	if ctx.Err() != nil {
-		return stepLimitMessage, 0
+		return stepLimitMessage, 0, 0
 	}
 	msgs := make([]model.Message, len(sess.Messages), len(sess.Messages)+1)
 	copy(msgs, sess.Messages)
@@ -1007,13 +1041,13 @@ func (r *Runner) finalAnswerAfterLimit(ctx context.Context, sess *session.Sessio
 	// not an answer — don't show the user noise or persist it; fall back cleanly.
 	// The call still consumed tokens, so report them regardless.
 	if err != nil || resp.Content == "" || LooksLikeToolCallLeak(resp.Content) {
-		return stepLimitMessage, tok
+		return stepLimitMessage, tok, resp.Usage.BillingUnits
 	}
 
 	sess.Messages = append(sess.Messages, model.Message{Role: model.RoleAssistant, Content: resp.Content})
 	sess.PromptTokens = resp.Usage.PromptTokens
 	sess.UpdatedAt = time.Now()
-	return resp.Content, tok
+	return resp.Content, tok, resp.Usage.BillingUnits
 }
 
 // Checkpointer persists the session mid-turn, at the consistent boundary after
@@ -1121,6 +1155,7 @@ func (r *Runner) executeTool(ctx context.Context, tool tools.Tool, callID string
 		SessionID:     r.emitSessionID,
 		TurnID:        r.emitTurnID,
 		CallID:        callID,
+		ExecutionID:   r.emitInvocationID,
 		PlanMode:      r.PlanState == PlanStatusPlanning || r.PlanState == PlanStatusProposing,
 		OnStdout: func(chunk string) {
 			r.emit(Event{Kind: EventToolStdout, CallID: callID, Chunk: chunk})

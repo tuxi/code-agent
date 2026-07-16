@@ -36,21 +36,21 @@ func TestTavilyProvider(t *testing.T) {
 	defer srv.Close()
 
 	p := &TavilyProvider{APIKey: "tvly-test", BaseURL: srv.URL, Client: srv.Client()}
-	results, err := p.Search(context.Background(), "test query", 5)
+	response, err := p.Search(context.Background(), SearchRequest{Query: "test query", TopK: 5})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(results) != 2 {
-		t.Fatalf("expected 2 results (empty-URL dropped), got %d", len(results))
+	if len(response.Results) != 2 {
+		t.Fatalf("expected 2 results (empty-URL dropped), got %d", len(response.Results))
 	}
-	if results[0].Title != "Result 1" || results[0].URL != "https://a.com" {
-		t.Errorf("unexpected first result: %+v", results[0])
+	if response.Results[0].Title != "Result 1" || response.Results[0].URL != "https://a.com" {
+		t.Errorf("unexpected first result: %+v", response.Results[0])
 	}
-	if results[0].Snippet != "Snippet 1" {
-		t.Errorf("expected content mapped to snippet, got %q", results[0].Snippet)
+	if response.Results[0].Snippet != "Snippet 1" {
+		t.Errorf("expected content mapped to snippet, got %q", response.Results[0].Snippet)
 	}
-	if results[0].Source != "tavily" {
-		t.Errorf("expected source 'tavily', got %q", results[0].Source)
+	if response.Results[0].Source != "tavily" {
+		t.Errorf("expected source 'tavily', got %q", response.Results[0].Source)
 	}
 }
 
@@ -68,12 +68,12 @@ func TestTavilyTopKCap(t *testing.T) {
 	defer srv.Close()
 
 	p := &TavilyProvider{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
-	results, err := p.Search(context.Background(), "q", 2)
+	response, err := p.Search(context.Background(), SearchRequest{Query: "q", TopK: 2})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(results) != 2 {
-		t.Fatalf("expected topK cap of 2, got %d", len(results))
+	if len(response.Results) != 2 {
+		t.Fatalf("expected topK cap of 2, got %d", len(response.Results))
 	}
 }
 
@@ -84,7 +84,7 @@ func TestTavilyHTTPError(t *testing.T) {
 	defer srv.Close()
 
 	p := &TavilyProvider{APIKey: "bad", BaseURL: srv.URL, Client: srv.Client()}
-	_, err := p.Search(context.Background(), "q", 5)
+	_, err := p.Search(context.Background(), SearchRequest{Query: "q", TopK: 5})
 	if err == nil {
 		t.Fatal("expected error on HTTP 401")
 	}

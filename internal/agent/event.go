@@ -129,6 +129,7 @@ type Event struct {
 	Observation     string
 	Output          json.RawMessage         // EventToolFinished: structured tool-specific output side-channel
 	Assets          []assets.Ref            // EventToolFinished: normalized clickable assets side-channel
+	ToolUsage       *tools.ToolUsage        // EventToolFinished: managed-tool billing receipt; nil for local tools
 	TextAnnotations []assets.TextAnnotation // EventTurnFinished: assistant-text ranges linked to assets
 	Chunk           string                  // stdout/stderr chunk (ToolStdout / ToolStderr)
 	Failure         string                  // EventObserved: the classified FailureType (e.g. "compile")
@@ -144,12 +145,17 @@ type Event struct {
 	Todos []tools.Todo
 
 	// Model / thinking.
-	Text             string        // reasoning text (Thinking) or final answer (TurnFinished)
-	PromptTokens     int           // ModelFinished: current invocation context size
-	CompletionTokens int           // ModelFinished: current invocation output
-	TotalTokens      int           // ModelFinished: current invocation provider total
-	BillingUnits     int64         // ModelFinished: current invocation Gateway Usage Units
-	Elapsed          time.Duration // ModelFinished: how long the model call took (P3.8 uses this)
+	Text               string        // reasoning text (Thinking) or final answer (TurnFinished)
+	PromptTokens       int           // ModelFinished: current invocation context size
+	CompletionTokens   int           // ModelFinished: current invocation output
+	TotalTokens        int           // ModelFinished: current invocation provider total
+	BillingUnits       int64         // ModelFinished: invocation Units; TurnFinished/Failed: total turn Units
+	ModelBillingUnits  int64         // TurnFinished/Failed: cumulative model Gateway Usage Units
+	ToolBillingUnits   int64         // TurnFinished/Failed: cumulative managed-tool Usage Units
+	ExecutedToolCalls  int           // TurnFinished/Failed: calls that reached an executor
+	SucceededToolCalls int           // TurnFinished/Failed: executed calls without an execution error
+	BillableToolCalls  int           // TurnFinished/Failed: unique calls carrying a Gateway usage receipt
+	Elapsed            time.Duration // ModelFinished: how long the model call took (P3.8 uses this)
 
 	// Compaction (Compacted / ContextPruned). AfterTokens == 0 means "just
 	// compacted, size not yet measured"; > 0 means the next model call measured

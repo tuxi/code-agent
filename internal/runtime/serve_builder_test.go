@@ -4,18 +4,22 @@ import (
 	"context"
 	"sync"
 	"testing"
+	"time"
 
 	"code-agent/internal/agent"
 	"code-agent/internal/app"
 	"code-agent/internal/conversation"
+	"code-agent/internal/credential"
 	"code-agent/internal/session"
 	"code-agent/internal/tools"
+	"code-agent/internal/tools/websearch"
 )
 
 func TestServeRunBuilderPlanToolsAreTurnScoped(t *testing.T) {
+	SetStoreBaseDir(t.TempDir())
 	base := tools.NewRegistry()
 	sharedRef := WirePlanTools(base, t.TempDir())
-	builder := NewServeRunBuilder(app.Config{}, app.ModelConfig{}, nil, base, NewWorkspaceRegistry(""), sharedRef)
+	builder := NewServeRunBuilder(app.Config{}, app.ModelConfig{}, nil, nil, base, NewWorkspaceRegistry(""), sharedRef)
 	workspace := t.TempDir()
 
 	var runners [2]*agent.Runner
@@ -42,5 +46,47 @@ func TestServeRunBuilderPlanToolsAreTurnScoped(t *testing.T) {
 		if runner.PlanState != agent.PlanStatusPlanning {
 			t.Fatalf("runner %d state = %v, want planning", i, runner.PlanState)
 		}
+	}
+}
+
+func TestServeRunBuilderUsesSessionCredentialForManagedSearch(t *testing.T) {
+	SetStoreBaseDir(t.TempDir())
+	target := credential.Target{Namespace: "gateway", Name: "default"}
+	baseCredential := credential.StaticResolver{
+		target: {Type: credential.Bearer, Secret: "base-token"},
+	}
+	sessionCredential := credential.StaticResolver{
+		target: {Type: credential.Bearer, Secret: "session-token"},
+	}
+	cfg := app.Config{Web: app.WebConfig{Search: app.WebSearchConfig{
+		Provider: "gateway", GatewayBaseURL: "https://gateway.example/api/v1/agent",
+		Credential: app.CredentialRef{Namespace: "gateway", Name: "default"}, TopK: 5, GatewayTimeoutSeconds: 77,
+	}}}
+	base := tools.NewRegistry()
+	if err := base.Register(websearch.NewTool(cfg.Web, baseCredential)); err != nil {
+		t.Fatal(err)
+	}
+	sharedRef := WirePlanTools(base, t.TempDir())
+	builder := NewServeRunBuilder(cfg, app.ModelConfig{}, nil, baseCredential, base, NewWorkspaceRegistry(""), sharedRef)
+	workspace := t.TempDir()
+	runner := builder.Build(conversation.RuntimeContext{
+		Session:    &session.Session{ID: "session-a", WorkspacePath: workspace},
+		Credential: sessionCredential,
+	}).(*agent.Runner)
+
+	toolValue, ok := runner.Tools.Get("web_search")
+	if !ok {
+		t.Fatal("managed web_search is missing")
+	}
+	provider := toolValue.(*websearch.Tool).Primary.(*websearch.GatewaySearchProvider)
+	if provider.Client.Timeout != 77*time.Second {
+		t.Fatalf("managed web_search timeout = %s", provider.Client.Timeout)
+	}
+	resolved, err := provider.Credential.Resolve(context.Background(), target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.Secret != "session-token" {
+		t.Fatalf("managed web_search token = %q, want session token", resolved.Secret)
 	}
 }

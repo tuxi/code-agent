@@ -10,6 +10,16 @@ import (
 	"testing"
 )
 
+type stubSearchProvider struct {
+	response SearchResponse
+	err      error
+}
+
+func (p stubSearchProvider) Search(context.Context, SearchRequest) (SearchResponse, error) {
+	return p.response, p.err
+}
+func (stubSearchProvider) Name() string { return "stub" }
+
 func TestSearXNGProvider(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Query().Get("q") == "" {
@@ -29,21 +39,21 @@ func TestSearXNGProvider(t *testing.T) {
 	defer srv.Close()
 
 	p := NewSearXNG([]string{srv.URL}, 10)
-	results, err := p.Search(context.Background(), "test", 5)
+	response, err := p.Search(context.Background(), SearchRequest{Query: "test", TopK: 5})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(results) != 2 {
-		t.Fatalf("expected 2 results, got %d", len(results))
+	if len(response.Results) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(response.Results))
 	}
-	if results[0].Title != "Result 1" || results[0].URL != "https://a.com" {
-		t.Errorf("unexpected result: %+v", results[0])
+	if response.Results[0].Title != "Result 1" || response.Results[0].URL != "https://a.com" {
+		t.Errorf("unexpected result: %+v", response.Results[0])
 	}
 }
 
 func TestSearXNGProviderError(t *testing.T) {
 	p := NewSearXNG([]string{"http://127.0.0.1:1"}, 1)
-	_, err := p.Search(context.Background(), "test", 5)
+	_, err := p.Search(context.Background(), SearchRequest{Query: "test", TopK: 5})
 	if err == nil {
 		t.Fatal("expected error with invalid base URL")
 	}
@@ -157,6 +167,29 @@ func TestToolExecuteNoProvider(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "no search provider") {
 		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestToolExecutePreservesManagedUsageForEmptyResults(t *testing.T) {
+	usage := &tools.ToolUsage{
+		ToolCallID: "call_1", ToolName: "web_search", Provider: "tavily",
+		Operation: "basic", ProviderCredits: 1, BillingUnits: 8000,
+		FundingSource: "subscription", ReservationID: "res_1", PricingVersion: 2,
+	}
+	tool := &Tool{Primary: stubSearchProvider{response: SearchResponse{Usage: usage}}, TopK: 5}
+
+	result, err := tool.Execute(context.Background(), tools.ExecutionContext{CallID: "call_1"}, json.RawMessage(`{"query":"no matches"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Usage != usage {
+		t.Fatalf("usage = %+v, want managed receipt", result.Usage)
+	}
+	var output struct {
+		Results []Result `json:"results"`
+	}
+	if err := json.Unmarshal([]byte(result.Content), &output); err != nil || output.Results == nil || len(output.Results) != 0 {
+		t.Fatalf("content = %s, want empty successful result (decode error: %v)", result.Content, err)
 	}
 }
 

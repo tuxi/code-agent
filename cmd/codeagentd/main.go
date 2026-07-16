@@ -106,7 +106,7 @@ func run() error {
 	// daemon's launch directory never decides which MCP tools a conversation sees.
 	// root for skills: "" means no project-local skills from the daemon itself;
 	// workspace-scoped skills are loaded per instance by WorkspaceRegistry.
-	toolReg, _, planRef, jobSink, err := runtime.BuildBaseRegistry(ctx, cfg, mc, provider, telemetryStore, "", nil)
+	toolReg, _, planRef, jobSink, err := runtime.BuildBaseRegistry(ctx, cfg, mc, provider, cfg.CredentialResolver(nil), telemetryStore, "", nil)
 	if err != nil {
 		return err
 	}
@@ -134,7 +134,7 @@ func run() error {
 	eventStore := &conversation.StoreEventAdapter{Store: telemetryStore}
 	active := conversation.NewActiveTurnRegistry()
 	subs := conversation.NewSubscriptionManager()
-	rb := runtime.NewServeRunBuilder(cfg, mc, provider, toolReg, wsReg, planRef)
+	rb := runtime.NewServeRunBuilder(cfg, mc, provider, cfg.CredentialResolver(nil), toolReg, wsReg, planRef)
 	executor := conversation.NewTurnExecutor(repo, eventStore, active, subs, rb)
 	maxConcurrentTurns := cfg.RuntimeMaxConcurrentTurns()
 	executor.SetTurnScheduler(conversation.NewTurnScheduler(maxConcurrentTurns))

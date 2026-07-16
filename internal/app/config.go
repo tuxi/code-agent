@@ -294,13 +294,16 @@ type WebConfig struct {
 }
 
 type WebSearchConfig struct {
-	Provider         string `yaml:"provider"`           // "tavily" (default), "brave", or "searxng"
-	FallbackProvider string `yaml:"fallback_provider"`  // optional fallback
-	SearXNGBaseURL   string `yaml:"searxng_base_url"`   // SearXNG instance base URL (single or comma-separated)
-	BraveAPIKeyEnv   string `yaml:"brave_api_key_env"`  // env var holding Brave API key
-	TavilyAPIKeyEnv  string `yaml:"tavily_api_key_env"` // env var holding Tavily API key
-	TopK             int    `yaml:"top_k"`              // max results, default 5
-	TimeoutSeconds   int    `yaml:"timeout_seconds"`    // HTTP timeout, default 10
+	Provider              string        `yaml:"provider"`                // "tavily" (default), "gateway", "brave", or "searxng"
+	FallbackProvider      string        `yaml:"fallback_provider"`       // optional fallback
+	GatewayBaseURL        string        `yaml:"gateway_base_url"`        // Agent Gateway /api/v1/agent base URL
+	GatewayTimeoutSeconds int           `yaml:"gateway_timeout_seconds"` // whole managed search request, default 120
+	Credential            CredentialRef `yaml:"credential"`              // managed search credential; defaults to gateway/default
+	SearXNGBaseURL        string        `yaml:"searxng_base_url"`        // SearXNG instance base URL (single or comma-separated)
+	BraveAPIKeyEnv        string        `yaml:"brave_api_key_env"`       // env var holding Brave API key
+	TavilyAPIKeyEnv       string        `yaml:"tavily_api_key_env"`      // env var holding Tavily API key
+	TopK                  int           `yaml:"top_k"`                   // max results, default 5
+	TimeoutSeconds        int           `yaml:"timeout_seconds"`         // HTTP timeout, default 10
 
 	// Resolved at load time or injected by a host (e.g. iOS Keychain), not read
 	// from YAML. Same pattern as ModelConfig.APIKey.
@@ -468,6 +471,20 @@ func LoadConfigBytes(data []byte) (Config, error) {
 
 	if cfg.Web.Search.Provider == "" {
 		cfg.Web.Search.Provider = "tavily"
+	}
+	if cfg.Web.Search.Provider == "gateway" {
+		if cfg.Web.Search.Credential.IsZero() {
+			cfg.Web.Search.Credential = CredentialRef{Namespace: "gateway", Name: "default"}
+		}
+		// The common Gateway model/search deployment shares the same
+		// /api/v1/agent base URL, so avoid requiring duplicate configuration.
+		if cfg.Web.Search.GatewayBaseURL == "" {
+			if mc, ok := cfg.Models[cfg.DefaultModel]; ok && mc.Credential == cfg.Web.Search.Credential {
+				cfg.Web.Search.GatewayBaseURL = mc.BaseURL
+			}
+		}
+		// Managed mode must never bypass Gateway billing via a local fallback.
+		cfg.Web.Search.FallbackProvider = ""
 	}
 	// SearXNG instances default to the built-in public pool when not configured.
 	if cfg.Web.Search.TopK <= 0 {

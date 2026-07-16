@@ -60,7 +60,11 @@ type toolCallResult struct {
 	observation string
 	output      json.RawMessage
 	assetRefs   []assets.Ref
+	usage       *tools.ToolUsage
+	executed    bool
+	succeeded   bool
 	stepError   string // non-empty => a genuine tool error (not a cancel)
+	fatalErr    error  // auth/quota: commit this result, then terminate the turn
 	toolStart   time.Time
 }
 
@@ -171,6 +175,22 @@ func (r *Runner) executeToolBatch(
 		for k := range group {
 			r.commitToolResult(ctx, sess, turn, turnAssets, group[k], results[k])
 		}
+		for _, result := range results {
+			if result.fatalErr == nil {
+				continue
+			}
+			// Keep history balanced for later calls that were planned in the
+			// same assistant message but intentionally not executed.
+			for _, pending := range plans[g[1]:] {
+				sess.Messages = append(sess.Messages, model.Message{
+					Role:       model.RoleTool,
+					ToolCallID: pending.call.ID,
+					Content:    toolInterruptedObservation,
+				})
+			}
+			sess.UpdatedAt = time.Now()
+			return result.fatalErr
+		}
 	}
 	return nil
 }
@@ -245,23 +265,28 @@ func (r *Runner) runToolCall(ctx context.Context, p toolCallPlan) toolCallResult
 	case tools.HasSideEffectsFor(p.tool, p.wireInput) && r.approve(p.call.Function.Name, p.input) != VerdictAllow:
 		observation = "The tool call was not approved. No changes were made."
 	case p.executor == "client":
+		res.executed = true
 		result, waitErr := r.ClientWaiter.Wait(ctx, p.call.ID, r.clientToolTimeout())
 		if waitErr != nil {
 			execErr = waitErr
 		} else if result.IsError {
 			execErr = fmt.Errorf("%s", result.Content)
 		} else {
+			res.succeeded = true
 			observation = result.Content
 			output = result.Output
 			assetRefs = result.Assets
 		}
 	default:
+		res.executed = true
 		var toolResult tools.ToolResult
 		toolResult, execErr = r.executeTool(ctx, p.tool, p.call.ID, p.wireInput)
 		if execErr == nil {
+			res.succeeded = true
 			observation = toolResult.Content
 			output = toolResult.Output
 			assetRefs = toolResult.Assets
+			res.usage = toolResult.Usage
 			// Post-tool hook (8.5): react to the change (format/lint). It runs the
 			// configured command but does not alter the result in v1.
 			r.postHook(ctx, p.call.Function.Name, p.wireInput, observation)
@@ -276,6 +301,10 @@ func (r *Runner) runToolCall(ctx context.Context, p toolCallPlan) toolCallResult
 		} else {
 			res.stepError = execErr.Error()
 			observation = "Tool error: " + execErr.Error()
+			var fatal tools.TurnFatalToolError
+			if errors.As(execErr, &fatal) && fatal.TurnFatalToolError() {
+				res.fatalErr = execErr
+			}
 		}
 	}
 	res.observation = observation
@@ -288,6 +317,27 @@ func (r *Runner) runToolCall(ctx context.Context, p toolCallPlan) toolCallResult
 // skill/todo telemetry, Observation enrichment, the Step, asset normalization,
 // the ToolFinished event, and the tool-result message.
 func (r *Runner) commitToolResult(ctx context.Context, sess *session.Session, turn *TurnResult, turnAssets *[]assets.Ref, p toolCallPlan, res toolCallResult) {
+	if res.executed {
+		turn.ExecutedToolCalls++
+	}
+	if res.succeeded {
+		turn.SucceededToolCalls++
+	}
+	if res.usage != nil {
+		callID := res.usage.ToolCallID
+		if callID == "" {
+			callID = p.call.ID
+		}
+		if turn.billedToolCallIDs == nil {
+			turn.billedToolCallIDs = make(map[string]struct{})
+		}
+		if _, seen := turn.billedToolCallIDs[callID]; !seen {
+			turn.billedToolCallIDs[callID] = struct{}{}
+			turn.BillableToolCalls++
+			turn.ToolBillingUnits += res.usage.BillingUnits
+			turn.BillingUnits += res.usage.BillingUnits
+		}
+	}
 	observation := res.observation
 	// A compliant MCP tool puts descriptors in its original structuredContent.
 	// Register them before observation/compaction so no opaque MCP identifier
@@ -355,6 +405,7 @@ func (r *Runner) commitToolResult(ctx context.Context, sess *session.Session, tu
 		Observation: observation,
 		Output:      res.output,
 		Assets:      assetRefs,
+		ToolUsage:   res.usage,
 		Elapsed:     time.Since(res.toolStart),
 		Err:         step.Error,
 	})

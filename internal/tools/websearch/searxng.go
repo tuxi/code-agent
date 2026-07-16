@@ -68,12 +68,12 @@ type searxngResult struct {
 	Engine  string `json:"engine"`
 }
 
-func (p *SearXNGProvider) Search(ctx context.Context, query string, topK int) ([]Result, error) {
+func (p *SearXNGProvider) Search(ctx context.Context, searchReq SearchRequest) (SearchResponse, error) {
 	var lastErr error
 	for _, baseURL := range p.Instances {
-		results, err := p.tryInstance(ctx, baseURL, query, topK)
+		results, err := p.tryInstance(ctx, baseURL, searchReq.Query, searchReq.TopK)
 		if err == nil {
-			return results, nil
+			return SearchResponse{Results: results}, nil
 		}
 		lastErr = err
 		// If context is done, stop retrying.
@@ -82,9 +82,9 @@ func (p *SearXNGProvider) Search(ctx context.Context, query string, topK int) ([
 		}
 	}
 	if lastErr != nil {
-		return nil, fmt.Errorf("searxng: all %d instances failed (last: %w)", len(p.Instances), lastErr)
+		return SearchResponse{}, fmt.Errorf("searxng: all %d instances failed (last: %w)", len(p.Instances), lastErr)
 	}
-	return nil, fmt.Errorf("searxng: no instances configured")
+	return SearchResponse{}, fmt.Errorf("searxng: no instances configured")
 }
 
 func (p *SearXNGProvider) tryInstance(ctx context.Context, baseURL, query string, topK int) ([]Result, error) {

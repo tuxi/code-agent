@@ -45,15 +45,15 @@ type braveResult struct {
 	Description string `json:"description"`
 }
 
-func (p *BraveProvider) Search(ctx context.Context, query string, topK int) ([]Result, error) {
+func (p *BraveProvider) Search(ctx context.Context, searchReq SearchRequest) (SearchResponse, error) {
 	params := url.Values{}
-	params.Set("q", query)
-	params.Set("count", fmt.Sprintf("%d", topK))
+	params.Set("q", searchReq.Query)
+	params.Set("count", fmt.Sprintf("%d", searchReq.TopK))
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
 		braveAPIBase+"?"+params.Encode(), nil)
 	if err != nil {
-		return nil, fmt.Errorf("brave: %w", err)
+		return SearchResponse{}, fmt.Errorf("brave: %w", err)
 	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Accept-Encoding", "gzip")
@@ -61,17 +61,17 @@ func (p *BraveProvider) Search(ctx context.Context, query string, topK int) ([]R
 
 	resp, err := p.Client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("brave: request failed: %w", err)
+		return SearchResponse{}, fmt.Errorf("brave: request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("brave: HTTP %d", resp.StatusCode)
+		return SearchResponse{}, fmt.Errorf("brave: HTTP %d", resp.StatusCode)
 	}
 
 	var br braveResponse
 	if err := json.NewDecoder(resp.Body).Decode(&br); err != nil {
-		return nil, fmt.Errorf("brave: invalid response: %w", err)
+		return SearchResponse{}, fmt.Errorf("brave: invalid response: %w", err)
 	}
 
 	results := make([]Result, 0, len(br.Web.Results))
@@ -86,5 +86,5 @@ func (p *BraveProvider) Search(ctx context.Context, query string, topK int) ([]R
 			Source:  "web",
 		})
 	}
-	return results, nil
+	return SearchResponse{Results: results}, nil
 }

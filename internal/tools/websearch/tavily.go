@@ -59,16 +59,16 @@ type tavilyResult struct {
 	Score   float64 `json:"score"`
 }
 
-func (p *TavilyProvider) Search(ctx context.Context, query string, topK int) ([]Result, error) {
+func (p *TavilyProvider) Search(ctx context.Context, searchReq SearchRequest) (SearchResponse, error) {
 	reqBody, err := json.Marshal(tavilyRequest{
 		APIKey:      p.APIKey,
-		Query:       query,
-		MaxResults:  topK,
+		Query:       searchReq.Query,
+		MaxResults:  searchReq.TopK,
 		SearchDepth: "basic",
 		Topic:       "general",
 	})
 	if err != nil {
-		return nil, fmt.Errorf("tavily: marshal request: %w", err)
+		return SearchResponse{}, fmt.Errorf("tavily: marshal request: %w", err)
 	}
 
 	endpoint := p.BaseURL
@@ -78,24 +78,24 @@ func (p *TavilyProvider) Search(ctx context.Context, query string, topK int) ([]
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(reqBody))
 	if err != nil {
-		return nil, fmt.Errorf("tavily: %w", err)
+		return SearchResponse{}, fmt.Errorf("tavily: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := p.Client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("tavily: request failed: %w", err)
+		return SearchResponse{}, fmt.Errorf("tavily: request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("tavily: HTTP %d", resp.StatusCode)
+		return SearchResponse{}, fmt.Errorf("tavily: HTTP %d", resp.StatusCode)
 	}
 
 	var tr tavilyResponse
 	if err := json.NewDecoder(resp.Body).Decode(&tr); err != nil {
-		return nil, fmt.Errorf("tavily: invalid response: %w", err)
+		return SearchResponse{}, fmt.Errorf("tavily: invalid response: %w", err)
 	}
 
 	results := make([]Result, 0, len(tr.Results))
@@ -109,9 +109,9 @@ func (p *TavilyProvider) Search(ctx context.Context, query string, topK int) ([]
 			Snippet: r.Content,
 			Source:  "tavily",
 		})
-		if len(results) >= topK {
+		if len(results) >= searchReq.TopK {
 			break
 		}
 	}
-	return results, nil
+	return SearchResponse{Results: results}, nil
 }
