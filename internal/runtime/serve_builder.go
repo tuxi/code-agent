@@ -14,6 +14,7 @@ import (
 	"code-agent/internal/model"
 	"code-agent/internal/skills"
 	"code-agent/internal/tools"
+	"code-agent/internal/tools/skill"
 	"code-agent/internal/tools/websearch"
 )
 
@@ -145,6 +146,17 @@ func (b *ServeRunBuilder) Build(ctx conversation.RuntimeContext) conversation.Tu
 	planRef := &agent.RunnerRef{}
 	turnTools.Replace(agent.NewEnterPlanModeTool(planRef))
 	turnTools.Replace(agent.NewProposePlanTool(planRef, filepath.Join(workspacePath, ".codeagent", "plans")))
+
+	// Replace the shared LoadSkillTool with one that uses this workspace's own
+	// skill registry, so hot-reload (triggered on cache miss) only affects this
+	// workspace — never leaking skills across workspaces (§6).
+	if skillReg != nil {
+		turnTools.Replace(skill.NewLoadSkillTool(
+			skillReg,
+			cfg.GlobalSkillsDir,
+			filepath.Join(workspacePath, "skills"),
+		))
+	}
 
 	runner := BuildRunner(b.Cfg, mc, provider, turnTools, skillReg, ctx.Approver, ctx.Publisher, b.rules, workspacePath)
 	runner.ReservedTurnID = ctx.TurnID
