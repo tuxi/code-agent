@@ -14,9 +14,9 @@ type inspectingTool struct {
 	inspectErr error
 }
 
-func (t *inspectingTool) Name() string                      { return t.name }
-func (t *inspectingTool) Description() string               { return "test tool" }
-func (t *inspectingTool) InputSchema() json.RawMessage       { return nil }
+func (t *inspectingTool) Name() string                 { return t.name }
+func (t *inspectingTool) Description() string          { return "test tool" }
+func (t *inspectingTool) InputSchema() json.RawMessage { return nil }
 func (t *inspectingTool) Execute(_ context.Context, _ ExecutionContext, _ json.RawMessage) (ToolResult, error) {
 	return ToolResult{}, nil
 }
@@ -27,9 +27,9 @@ type plainTool struct {
 	name string
 }
 
-func (t *plainTool) Name() string                      { return t.name }
-func (t *plainTool) Description() string               { return "plain tool" }
-func (t *plainTool) InputSchema() json.RawMessage       { return nil }
+func (t *plainTool) Name() string                 { return t.name }
+func (t *plainTool) Description() string          { return "plain tool" }
+func (t *plainTool) InputSchema() json.RawMessage { return nil }
 func (t *plainTool) Execute(_ context.Context, _ ExecutionContext, _ json.RawMessage) (ToolResult, error) {
 	return ToolResult{}, nil
 }

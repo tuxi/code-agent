@@ -27,8 +27,8 @@ import (
 
 // Permissions is the tool-name allow/deny block, matched as globs downstream.
 type Permissions struct {
-	Allow          []string `json:"allow"`
-	Deny           []string `json:"deny"`
+	Allow []string `json:"allow"`
+	Deny  []string `json:"deny"`
 	// ProtectedPaths are file patterns (base names like ".env" or globs like
 	// "*.key") that the safety layer treats as sensitive. Reading or writing them
 	// is never auto-approved — even read-only tools trigger an audit event and

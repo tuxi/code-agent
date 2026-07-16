@@ -24,7 +24,7 @@ func TestASTClassification(t *testing.T) {
 
 		// Pipeline via AST
 		{"go test | grep FAIL", Allow, "AST pipe all-allow"},
-		
+
 		// Too complex → Confirm
 		{"if true; then echo yes; fi", Confirm, "if statement"},
 		{"for f in *.go; do echo $f; done", Confirm, "for loop"},

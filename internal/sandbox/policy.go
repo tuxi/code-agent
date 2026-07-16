@@ -321,27 +321,38 @@ func stripSubstitutions(command string) string {
 		r := rune(command[i])
 		switch {
 		case inSingle:
-			if r == '\'' { inSingle = false }
-			b.WriteRune(r); i++
+			if r == '\'' {
+				inSingle = false
+			}
+			b.WriteRune(r)
+			i++
 		case inDouble:
 			if strings.HasPrefix(command[i:], "$(") {
 				_, end := extractBracketContent(command[i+2:])
 				b.WriteString("''")
 				i += 2 + end + 1
 			} else {
-				if r == '"' { inDouble = false }
-				b.WriteRune(r); i++
+				if r == '"' {
+					inDouble = false
+				}
+				b.WriteRune(r)
+				i++
 			}
 		case r == '\'':
-			inSingle = true; b.WriteRune(r); i++
+			inSingle = true
+			b.WriteRune(r)
+			i++
 		case r == '"':
-			inDouble = true; b.WriteRune(r); i++
+			inDouble = true
+			b.WriteRune(r)
+			i++
 		case strings.HasPrefix(command[i:], "$("):
 			_, end := extractBracketContent(command[i+2:])
 			b.WriteString("''") // placeholder so adjacent tokens don't merge
 			i += 2 + end + 1
 		default:
-			b.WriteRune(r); i++
+			b.WriteRune(r)
+			i++
 		}
 	}
 	return strings.TrimSpace(b.String())

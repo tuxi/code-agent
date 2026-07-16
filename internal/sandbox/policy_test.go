@@ -25,7 +25,7 @@ func TestDefaultPolicyClassify(t *testing.T) {
 		// Mutating / networked commands require confirmation.
 		{"git commit -m \"wip\"", Confirm},
 		{"git checkout main", Confirm}, // can discard working changes
-		{"git reset --hard", Block}, // dangerous: hard reset discards all working-tree changes
+		{"git reset --hard", Block},    // dangerous: hard reset discards all working-tree changes
 		{"git push origin feature", Confirm},
 		{"rm build/output", Confirm},
 		{"mv a b", Confirm},

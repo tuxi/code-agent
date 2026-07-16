@@ -64,7 +64,7 @@ func TestStaticResolverEmpty(t *testing.T) {
 
 func TestStaticResolverMultipleTargets(t *testing.T) {
 	r := StaticResolver{
-		{Namespace: "llm", Name: "deepseek"}:  {Type: Bearer, Secret: "sk-ds"},
+		{Namespace: "llm", Name: "deepseek"}:    {Type: Bearer, Secret: "sk-ds"},
 		{Namespace: "gateway", Name: "default"}: {Type: Bearer, Secret: "jwt"},
 		{Namespace: "mcp", Name: "github"}:      {Type: Bearer, Secret: "gho"},
 	}

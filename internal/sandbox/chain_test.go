@@ -7,10 +7,10 @@ import (
 
 func TestSplitByOperators(t *testing.T) {
 	tests := []struct {
-		name        string
-		command     string
-		wantSubs    []string
-		wantOps     []string
+		name     string
+		command  string
+		wantSubs []string
+		wantOps  []string
 	}{
 		{
 			name:     "simple chaining with &&",

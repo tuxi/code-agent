@@ -16,7 +16,9 @@ type recordingApprover struct {
 
 func (r *recordingApprover) Approve(string, json.RawMessage) agent.Verdict {
 	r.called = true
-	if r.verdict == agent.VerdictAsk { return agent.VerdictDeny }
+	if r.verdict == agent.VerdictAsk {
+		return agent.VerdictDeny
+	}
 	return r.verdict
 }
 

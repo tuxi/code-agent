@@ -492,4 +492,3 @@ models:
 		t.Errorf("ExpiresAt = %v, want unix %d", c.ExpiresAt, futureExpiry)
 	}
 }
-

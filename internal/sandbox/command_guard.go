@@ -412,7 +412,9 @@ func extractCommandSubstitutions(command string) []string {
 		r := rune(command[i])
 		switch {
 		case inSingle:
-			if r == '\'' { inSingle = false }
+			if r == '\'' {
+				inSingle = false
+			}
 			i++
 		case inDouble:
 			// $() IS expanded inside double quotes in a real shell.
@@ -423,13 +425,17 @@ func extractCommandSubstitutions(command string) []string {
 				}
 				i += 2 + end + 1
 			} else {
-				if r == '"' { inDouble = false }
+				if r == '"' {
+					inDouble = false
+				}
 				i++
 			}
 		case r == '\'':
-			inSingle = true; i++
+			inSingle = true
+			i++
 		case r == '"':
-			inDouble = true; i++
+			inDouble = true
+			i++
 		case strings.HasPrefix(command[i:], "$("):
 			inner, end := extractBracketContent(command[i+2:])
 			if inner != "" {
@@ -449,9 +455,13 @@ func extractBracketContent(s string) (string, int) {
 	for i, r := range s {
 		switch {
 		case inSingle:
-			if r == '\'' { inSingle = false }
+			if r == '\'' {
+				inSingle = false
+			}
 		case inDouble:
-			if r == '"' { inDouble = false }
+			if r == '"' {
+				inDouble = false
+			}
 		case r == '\'':
 			inSingle = true
 		case r == '"':
@@ -460,7 +470,9 @@ func extractBracketContent(s string) (string, int) {
 			depth++
 		case r == ')':
 			depth--
-			if depth == 0 { return s[:i], i }
+			if depth == 0 {
+				return s[:i], i
+			}
 		}
 	}
 	return "", 0
@@ -577,7 +589,9 @@ func ConvertBackticks(command string) string {
 		r := rune(command[i])
 		switch {
 		case inSingle:
-			if r == '\'' { inSingle = false }
+			if r == '\'' {
+				inSingle = false
+			}
 			b.WriteRune(r)
 			i++
 		case r == '\'':

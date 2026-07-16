@@ -14,7 +14,7 @@ func TestExtractCommandSubstitutions(t *testing.T) {
 		{"go build -ldflags \"-X v=$(git describe)\"", []string{"git describe"}},
 		{"echo $(date) $(whoami)", []string{"date", "whoami"}},
 		{"echo hello", nil},
-		{"echo '$(not this)'", nil}, // inside single quotes
+		{"echo '$(not this)'", nil},                    // inside single quotes
 		{"echo \"$(but this)\"", []string{"but this"}}, // double quotes: expanded
 	}
 	for _, tt := range tests {

@@ -4,8 +4,8 @@ import "testing"
 
 func TestHasDangerousAssignment(t *testing.T) {
 	tests := []struct {
-		command  string
-		wantVar  string
+		command       string
+		wantVar       string
 		wantDangerous bool
 	}{
 		{"PATH=/tmp go build", "PATH", true},

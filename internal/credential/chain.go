@@ -14,8 +14,8 @@ import (
 //   - If a Resolver returns a non-zero Credential, it is returned immediately.
 //   - If a Resolver returns (zero, nil), the chain moves to the next Resolver.
 //   - If a Resolver returns an error:
-//     - When FailFast is true, the chain short-circuits and returns the error.
-//     - When FailFast is false, the error is collected and the chain continues.
+//   - When FailFast is true, the chain short-circuits and returns the error.
+//   - When FailFast is false, the error is collected and the chain continues.
 //   - If all Resolvers return zero, (ResolvedCredential{}, nil) is returned.
 //     If FailFast is false and one or more errors were collected, they are
 //     joined and returned alongside a zero credential.
