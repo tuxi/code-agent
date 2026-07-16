@@ -50,7 +50,7 @@ func (t *LoadSkillTool) InputSchema() json.RawMessage {
 	}, "name").JSON()
 }
 
-func (t *LoadSkillTool) Execute(_ context.Context, _ tools.ExecutionContext, input json.RawMessage) (tools.ToolResult, error) {
+func (t *LoadSkillTool) Execute(_ context.Context, exeContext tools.ExecutionContext, input json.RawMessage) (tools.ToolResult, error) {
 	in := parseInput(input)
 
 	// List mode: empty name → return the available skills index.
@@ -66,8 +66,12 @@ func (t *LoadSkillTool) Execute(_ context.Context, _ tools.ExecutionContext, inp
 		// no restart required. This matches the UX of "create SKILL.md then call
 		// load_skill" that Claude Code users expect (though CC achieves it by
 		// short-lived processes, not hot-reload).
+		projectDir := t.projectDir
+		if !filepath.IsAbs(t.projectDir) && exeContext.WorkspaceRoot != "" {
+			projectDir = filepath.Join(exeContext.WorkspaceRoot, t.projectDir)
+		}
 		if t.globalDir != "" || t.projectDir != "" {
-			if fresh, err := skills.Load(t.globalDir, t.projectDir); err == nil {
+			if fresh, err := skills.Load(t.globalDir, projectDir); err == nil {
 				t.Skills.Merge(fresh)
 				s, ok = t.Skills.Get(in.Name)
 			}
