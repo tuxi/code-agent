@@ -131,7 +131,14 @@ func TestRunTurnPruningSkipsSummarize(t *testing.T) {
 		Messages: []model.Message{
 			{Role: model.RoleSystem, Content: "sys"},
 			{Role: model.RoleUser, Content: "old"},
-			{Role: model.RoleAssistant, ToolCalls: []model.ToolCall{{ID: "a"}}},
+			{Role: model.RoleAssistant, ToolCalls: []model.ToolCall{{
+				ID:   "a",
+				Type: "function",
+				Function: model.FunctionCall{
+					Name:      "read_file",
+					Arguments: `{"path":"old.txt"}`,
+				},
+			}}},
 			{Role: model.RoleTool, ToolCallID: "a", Content: strings.Repeat("A", 40000)},
 			{Role: model.RoleAssistant, Content: "ans"},
 		},

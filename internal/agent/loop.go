@@ -478,6 +478,22 @@ func (r *Runner) RunTurnWithAssets(ctx context.Context, sess *session.Session, u
 		r.emitTurnID = nextSessionTurnID(sess)
 	}
 	r.emitInvocationID = "" // cleared each turn; set per model call
+
+	// Repair legacy provider-invalid history before appending the new user input.
+	// The invalid assistant tool call and everything after it are not safe to send
+	// back to an OpenAI-compatible provider.
+	if repair := sess.TruncateInvalidToolCallTail(); repair != nil {
+		r.emit(Event{
+			Kind: EventSessionRepaired,
+			Text: fmt.Sprintf(
+				"Truncated %d messages from index %d: %v",
+				repair.Removed,
+				repair.FromIndex,
+				repair.Reason,
+			),
+		})
+	}
+
 	// Repair sessions written by older runtimes before appending a new user
 	// message. Empty assistant no-ops are invalid provider input but are never
 	// needed to preserve a tool-call/result pairing.
@@ -523,6 +539,18 @@ func (r *Runner) ResumeTurn(ctx context.Context, sess *session.Session) (TurnRes
 		r.emitTurnID = nextSessionTurnID(sess)
 	}
 	r.emitInvocationID = ""
+
+	if repair := sess.TruncateInvalidToolCallTail(); repair != nil {
+		r.emit(Event{
+			Kind: EventSessionRepaired,
+			Text: fmt.Sprintf(
+				"Truncated %d messages from index %d: %v",
+				repair.Removed,
+				repair.FromIndex,
+				repair.Reason,
+			),
+		})
+	}
 	sess.RemoveEmptyAssistantNoOps()
 
 	sess.UpdatedAt = time.Now()
@@ -680,6 +708,21 @@ func (r *Runner) drive(ctx context.Context, sess *session.Session) (TurnResult, 
 		if err != nil {
 			return turn, err
 		}
+
+		// Some OpenAI-compatible providers occasionally return a tool call with
+		// an empty id. Assign a stable, unique id here so the echoed assistant
+		// message and the tool result messages reference the SAME non-empty
+		// tool_call_id — otherwise the API rejects the next request with
+		// "insufficient tool messages following tool_calls message".
+		for j := range resp.ToolCalls {
+			if resp.ToolCalls[j].ID == "" {
+				resp.ToolCalls[j].ID = nextCallID()
+			}
+			if resp.ToolCalls[j].Type == "" {
+				resp.ToolCalls[j].Type = "function"
+			}
+		}
+
 		// A provider may end a successful HTTP/SSE exchange without emitting
 		// either text or tool calls. Never persist that no-op as an assistant
 		// message: OpenAI-compatible providers reject it on the next request.
@@ -705,17 +748,6 @@ func (r *Runner) drive(ctx context.Context, sess *session.Session) (TurnResult, 
 				SummaryChars: stat.SummaryChars,
 				Ineffective:  sess.CompactThreshold > 0 && stat.AfterTokens >= sess.CompactThreshold,
 			})
-		}
-
-		// Some OpenAI-compatible providers occasionally return a tool call with
-		// an empty id. Assign a stable, unique id here so the echoed assistant
-		// message and the tool result messages reference the SAME non-empty
-		// tool_call_id — otherwise the API rejects the next request with
-		// "insufficient tool messages following tool_calls message".
-		for j := range resp.ToolCalls {
-			if resp.ToolCalls[j].ID == "" {
-				resp.ToolCalls[j].ID = nextCallID()
-			}
 		}
 
 		// No tool calls => the model wants to finish.
@@ -952,8 +984,10 @@ const planningPrompt = "[plan mode] You are in PLAN MODE. You can read, search, 
 	"3. Approach — the implementation strategy and key design decisions\n" +
 	"4. Step-by-step order — the sequence of changes\n" +
 	"5. Risks and edge cases — what could go wrong and how to handle it\n" +
-	"When your plan is complete, write it to .codeagent/plans/ and call propose_plan " +
-	"to submit it for user approval. Do NOT make any project changes. " +
+	"When your plan is complete, write it to a markdown file under .codeagent/plans/, " +
+	"then call propose_plan with plan_path set to that workspace-relative file path. " +
+	"Keep the accompanying text brief; the plan file is the authoritative content " +
+	"submitted for approval. Do NOT make any project changes. " +
 	"You may track your plan's steps with todo_write."
 
 // withConvergenceNudge returns a copy of msgs with a transient reminder appended,

@@ -3,6 +3,8 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -214,5 +216,89 @@ func TestProposePlanApprovesAndTransitions(t *testing.T) {
 	// With no PlanApprover, auto-approve → Executing.
 	if runner.PlanState != PlanStatusExecuting {
 		t.Fatalf("expected Executing state after approve, got %v", runner.PlanState)
+	}
+}
+
+func TestProposePlanUsesCanonicalPlanFile(t *testing.T) {
+	root := t.TempDir()
+	plansDir := filepath.Join(root, ".codeagent", "plans")
+	if err := os.MkdirAll(plansDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const planBody = "# Canonical Plan\n\n1. Change the server\n2. Update the client contract\n"
+	planFile := filepath.Join(plansDir, "canonical.md")
+	if err := os.WriteFile(planFile, []byte(planBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ref := &RunnerRef{}
+	runner := &Runner{
+		PlanState:     PlanStatusPlanning,
+		WorkspaceRoot: root,
+		planTitle:     "Canonical plan",
+		lastThinking:  "The plan is ready at .codeagent/plans/canonical.md.",
+	}
+	ref.R = runner
+	tool := NewProposePlanTool(ref, plansDir)
+
+	result, err := tool.Execute(context.Background(), tools.ExecutionContext{WorkspaceRoot: root},
+		json.RawMessage(`{"plan_path":".codeagent/plans/canonical.md"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runner.PlanState != PlanStatusExecuting {
+		t.Fatalf("expected Executing state, got %v", runner.PlanState)
+	}
+	if runner.activePlan == nil {
+		t.Fatal("active plan was not populated")
+	}
+	if runner.activePlan.Content != planBody {
+		t.Fatalf("approval content = %q, want canonical file content", runner.activePlan.Content)
+	}
+	canonicalPlanFile, err := filepath.EvalSymlinks(planFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runner.activePlan.FilePath != canonicalPlanFile {
+		t.Fatalf("file path = %q, want %q", runner.activePlan.FilePath, canonicalPlanFile)
+	}
+	if runner.activePlan.WorkspaceRelativePath != ".codeagent/plans/canonical.md" {
+		t.Fatalf("relative path = %q", runner.activePlan.WorkspaceRelativePath)
+	}
+	if !strings.Contains(result.Content, canonicalPlanFile) {
+		t.Fatalf("approval result does not reference canonical file: %q", result.Content)
+	}
+	entries, err := os.ReadDir(plansDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "canonical.md" {
+		t.Fatalf("propose_plan created a duplicate plan file: %v", entries)
+	}
+}
+
+func TestProposePlanRejectsPathOutsidePlansDirectory(t *testing.T) {
+	root := t.TempDir()
+	plansDir := filepath.Join(root, ".codeagent", "plans")
+	if err := os.MkdirAll(plansDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(root, "outside.md")
+	if err := os.WriteFile(outside, []byte("# Not a plan directory file\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ref := &RunnerRef{}
+	runner := &Runner{PlanState: PlanStatusPlanning, WorkspaceRoot: root}
+	ref.R = runner
+	tool := NewProposePlanTool(ref, plansDir)
+
+	_, err := tool.Execute(context.Background(), tools.ExecutionContext{WorkspaceRoot: root},
+		json.RawMessage(`{"plan_path":"outside.md"}`))
+	if err == nil || !strings.Contains(err.Error(), "inside .codeagent/plans") {
+		t.Fatalf("expected plans-directory rejection, got %v", err)
+	}
+	if runner.PlanState != PlanStatusPlanning {
+		t.Fatalf("invalid plan changed state to %v", runner.PlanState)
 	}
 }

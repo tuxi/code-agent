@@ -131,11 +131,18 @@ agent-core (Layer 1)          agent-server (Layer 2)         frontends (Layer 3)
 { "type": "plan_approval_request", "id": "plan_appr_1",
   "session_id": "sess_root", "turn_id": "turn_42",
   "plan_id": "plan_abc", "title": "Add Auth",
+  "plan_path": ".codeagent/plans/add-auth.md",
+  "file_path": "/workspace/.codeagent/plans/add-auth.md",
   "content": "# Plan\n1. Step one\n2. Step two" }
 
 // client → server
 { "type": "plan_approval_response", "id": "plan_appr_1", "approved": true }
 ```
+
+- `content` 是提交审批时从计划文件读取的完整 Markdown 快照，也是远程客户端的权威审批内容。
+- `plan_path` 是工作区相对路径，客户端应优先展示；它可跨机器和重连保持稳定。
+- `file_path` 是服务端本地绝对路径，仅当客户端与服务端共享文件系统时用于直接打开文件。
+- 新版 `propose_plan` 通过 `plan_path` 显式指定 `.codeagent/plans/` 下的计划文件。服务端校验路径并读取内容，不再为该调用生成第二份 `plan_<id>.md`。未提供 `plan_path` 的旧调用暂时沿用内联计划兼容逻辑。
 
 ### 4.2 入站消息（client → server，已实现）
 

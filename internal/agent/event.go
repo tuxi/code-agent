@@ -81,6 +81,8 @@ const (
 	EventJobStarted  EventKind = "job_started"
 	EventJobOutput   EventKind = "job_output"
 	EventJobFinished EventKind = "job_finished"
+
+	EventSessionRepaired EventKind = "session_repaired"
 )
 
 // Event is a single point in a turn — a discriminated union where Kind selects

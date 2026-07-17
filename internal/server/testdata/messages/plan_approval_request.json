@@ -5,6 +5,8 @@
   "turn_id": "turn_7",
   "plan_id": "plan_abc",
   "title": "Add Auth",
+  "plan_path": ".codeagent/plans/add-auth.md",
+  "file_path": "/workspace/.codeagent/plans/add-auth.md",
   "content": "# Plan\n1. Step one\n2. Step two",
   "deadline_ms": 120000
 }

@@ -176,13 +176,15 @@ Always allow all tools from "github"?   [Always allow] [Allow once] [Deny]
 
 ## 7. 计划审批（Plan Approval）
 
-**不变**。`plan_approval_response` **仍然是两态布尔**（plans 没有 "always" 语义）：
+`plan_approval_response` **仍然是两态布尔**（plans 没有 "always" 语义）。请求新增计划文件路径，`content` 为服务端读取文件后冻结的完整 Markdown 快照：
 
 ```json
 // server → client
 { "type": "plan_approval_request", "id": "plan_appr_1",
   "session_id": "sess_root", "turn_id": "turn_42",
   "plan_id": "plan_abc", "title": "Add Auth",
+  "plan_path": ".codeagent/plans/add-auth.md",
+  "file_path": "/workspace/.codeagent/plans/add-auth.md",
   "content": "# Plan\n1. ..." }
 
 // client → server（两态，不变）
@@ -202,6 +204,7 @@ Always allow all tools from "github"?   [Always allow] [Allow once] [Deny]
 5. ⬜ 按 `id` 去重（重连时服务端重发同一 id）
 6. ⬜ 收到 `auto_approved` 事件时展示 "✓ Auto-approved" 低调度量行
 7. ⬜ `plan_approval_response` 保持两态，不引入 decision
+8. ⬜ `PlanApprovalRequest` 增加可选 `plan_path`、`file_path`；审批正文继续读取 `content`
 
 ### Web（JS/TS — WebSocket）
 

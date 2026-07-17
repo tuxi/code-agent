@@ -458,6 +458,14 @@ func (e *TurnExecutor) driveTurn(
 	run func(ctx context.Context, runner TurnRunner) (agent.TurnResult, error),
 	recordStatus func(sess *session.Session, runErr error),
 ) (agent.TurnResult, error) {
+	// Repair provider-invalid legacy history before reserving or starting any
+	// model work. Runner also guards this boundary for direct CLI/TUI callers,
+	// but the executor owns durable sessions and must persist the repair now so a
+	// later model error or process exit cannot leave the poisoned tail in SQLite.
+	if err := e.repairInvalidToolCallTail(parentCtx, sess); err != nil {
+		return agent.TurnResult{}, err
+	}
+
 	// 1. Allocate the turn identity and publish acceptance before it can wait in
 	// the scheduler. These events are persisted even for a cancelled queued turn,
 	// so reconnecting clients see one complete lifecycle rather than a silent gap.
@@ -569,6 +577,28 @@ func (e *TurnExecutor) driveTurn(
 	}
 
 	return res, runErr
+}
+
+// repairInvalidToolCallTail truncates a session at its first provider-invalid
+// assistant tool call and immediately persists the repaired history. Detection
+// and mutation live on Session; persistence lives here because TurnExecutor owns
+// the ConversationRepository boundary.
+func (e *TurnExecutor) repairInvalidToolCallTail(ctx context.Context, sess *session.Session) error {
+	repair := sess.TruncateInvalidToolCallTail()
+	if repair == nil {
+		return nil
+	}
+
+	sess.UpdatedAt = time.Now()
+	if err := e.repo.Save(context.WithoutCancel(ctx), sess); err != nil {
+		return fmt.Errorf(
+			"persist repaired session %s from message %d: %w",
+			sess.ID,
+			repair.FromIndex,
+			err,
+		)
+	}
+	return nil
 }
 
 func (e *TurnExecutor) claimRequest(ctx context.Context, sessionID, requestID, proposedTurnID string, pub agent.Emitter) (string, bool) {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 )
 
@@ -73,6 +74,34 @@ type ToolCall struct {
 	ID       string       `json:"id"`
 	Type     string       `json:"type"` // currently always "function"
 	Function FunctionCall `json:"function"`
+}
+
+func (c ToolCall) ValidateForHistory() error {
+	if strings.TrimSpace(c.ID) == "" {
+		return errors.New("tool call id is empty")
+	}
+
+	if c.Type != "function" {
+		return fmt.Errorf("unsupported tool call type %q", c.Type)
+	}
+
+	if strings.TrimSpace(c.Function.Name) == "" {
+		return errors.New("tool function name is empty")
+	}
+
+	var arguments any
+	if err := json.Unmarshal(
+		[]byte(c.Function.Arguments),
+		&arguments,
+	); err != nil {
+		return fmt.Errorf("function arguments are invalid JSON: %w", err)
+	}
+
+	if _, ok := arguments.(map[string]any); !ok {
+		return errors.New("function arguments must be a JSON object")
+	}
+
+	return nil
 }
 
 // FunctionCall carries the tool name and its arguments.
@@ -147,6 +176,17 @@ func (r Response) HasToolCalls() bool {
 func (r Response) ValidateAssistantTurn() error {
 	if strings.TrimSpace(r.Content) == "" && !r.HasToolCalls() {
 		return ErrEmptyAssistantResponse
+	}
+
+	for i, call := range r.ToolCalls {
+		if err := call.ValidateForHistory(); err != nil {
+			return fmt.Errorf(
+				"tool call %d (%q) is invalid: %w",
+				i,
+				call.Function.Name,
+				err,
+			)
+		}
 	}
 	return nil
 }

@@ -27,6 +27,7 @@ import (
 	"code-agent/internal/credential"
 	"code-agent/internal/mcp"
 	"code-agent/internal/model"
+	"code-agent/internal/repos"
 	"code-agent/internal/runtime"
 	"code-agent/internal/server"
 	"code-agent/internal/settings"
@@ -327,7 +328,11 @@ func StartServer(ctx context.Context, opt Options) (*Handle, error) {
 	if opt.MaxConcurrentTurns > 0 {
 		cfg.Runtime.MaxConcurrentTurns = opt.MaxConcurrentTurns
 	}
-	handler, rt, closers, err := Assemble(srvCtx, cfg, mc, provider, credChain, workspaceDir)
+	cloneStateDir := ""
+	if dataDir != "" {
+		cloneStateDir = filepath.Join(dataDir, ".codeagent", "clone")
+	}
+	handler, rt, closers, err := Assemble(srvCtx, cfg, mc, provider, credChain, workspaceDir, cloneStateDir)
 	if err != nil {
 		return nil, err
 	}
@@ -374,7 +379,7 @@ func StartServer(ctx context.Context, opt Options) (*Handle, error) {
 // The provider must already be built (callers differ in how they resolve creds:
 // the CLI from env, the embedded host from injected secrets). On error, any
 // resources opened before the failure are released before returning.
-func Assemble(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider model.Provider, cred credential.Resolver, workspaceDir string) (http.Handler, *Runtime, []func(), error) {
+func Assemble(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider model.Provider, cred credential.Resolver, workspaceDir, cloneStateDir string) (http.Handler, *Runtime, []func(), error) {
 	if workspaceDir == "" {
 		workspaceDir, _ = os.Getwd()
 	}
@@ -452,10 +457,23 @@ func Assemble(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider 
 
 	runtimeCapabilities := server.ConfiguredRuntimeCapabilities(maxConcurrentTurns)
 	runtimeCapabilities.ManagedWorktree = managedWorktrees != nil
+	if cloneStateDir == "" {
+		if home, err := os.UserHomeDir(); err == nil {
+			cloneStateDir = filepath.Join(home, ".codeagent", "clone")
+		}
+	}
+	cloneService, cloneErr := repos.NewService(workspaceDir, cloneStateDir)
+	capabilities := append([]string(nil), defaultCapabilities...)
+	if cloneErr != nil {
+		fmt.Printf("codeagent embedded: public git clone disabled: %v\n", cloneErr)
+	} else {
+		closers = append(closers, func() { _ = cloneService.Close() })
+		capabilities = append(capabilities, "public_git_clone_v1")
+	}
 	handler := server.NewMux(repo, eventStore, executor, server.MuxOptions{
 		ServerName:        "codeagent/" + mc.Model,
-		Capabilities:      defaultCapabilities,
-		WorkspaceRoot:     workspaceDir,
+		Capabilities:      capabilities,
+		CloneService:      cloneService,
 		Granter:           rb.Rules(),
 		WorkspaceReloader: wsReg.ReloadWorkspace,
 		Prompts:           wsReg, // default workspace's MCP prompts; per-workspace needs a wire change

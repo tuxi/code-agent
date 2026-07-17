@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	gogit "github.com/go-git/go-git/v5"
@@ -13,6 +14,8 @@ func TestNormalizeURL(t *testing.T) {
 	ok := map[string]string{
 		"https://github.com/owner/repo":     "https://github.com/owner/repo",
 		"https://github.com/owner/repo.git": "https://github.com/owner/repo.git",
+		"https://gitlab.com/owner/repo":     "https://gitlab.com/owner/repo",
+		"https://gitee.com/owner/repo":      "https://gitee.com/owner/repo",
 		"owner/repo":                        "https://github.com/owner/repo",
 		"owner/repo.git":                    "https://github.com/owner/repo",
 	}
@@ -27,7 +30,7 @@ func TestNormalizeURL(t *testing.T) {
 		}
 	}
 
-	bad := []string{"", "http://github.com/o/r", "https://gitlab.com/o/r", "ssh://git@github.com/o/r", "just-one-word"}
+	bad := []string{"", "http://github.com/o/r", "ssh://git@github.com/o/r", "https://user:token@example.com/o/r", "https://example.com/o/r?token=x", "https://127.0.0.1/o/r", "https://169.254.169.254/o/r", "just-one-word"}
 	for _, in := range bad {
 		if _, cerr := normalizeURL(in); cerr == nil {
 			t.Errorf("normalizeURL(%q) should have failed", in)
@@ -43,7 +46,7 @@ func TestValidName(t *testing.T) {
 			t.Errorf("validName(%q) = false, want true", n)
 		}
 	}
-	for _, n := range []string{"", ".", "..", "a/b", "../escape", "/abs", `a\b`} {
+	for _, n := range []string{"", ".", "..", "a/b", "../escape", "/abs", `a\b`, "line\nbreak", strings.Repeat("x", 256)} {
 		if validName(n) {
 			t.Errorf("validName(%q) = true, want false", n)
 		}
@@ -83,11 +86,14 @@ func TestClone_TargetConfinementAndConflict(t *testing.T) {
 	// Clone enforces github.com, we test the unique-target + clone mechanics by
 	// cloning twice into the same base name via a small local helper.
 	cloneOnce := func(name string) (*CloneResult, error) {
-		rel, abs := uniqueTarget(ws, name)
+		rel, abs, err := uniqueTarget(ws, name)
+		if err != nil {
+			t.Fatal(err)
+		}
 		if !isUnder(abs, ws) {
 			t.Fatalf("target escaped workspace: %s", abs)
 		}
-		_, err := gogit.PlainCloneContext(ctx, abs, false, &gogit.CloneOptions{URL: "file://" + src, Depth: 1})
+		_, err = gogit.PlainCloneContext(ctx, abs, false, &gogit.CloneOptions{URL: "file://" + src, Depth: 1})
 		if err != nil {
 			return nil, err
 		}
@@ -110,8 +116,8 @@ func TestClone_TargetConfinementAndConflict(t *testing.T) {
 	if err != nil {
 		t.Fatalf("second clone: %v", err)
 	}
-	if r2.Rel != "repo-2" {
-		t.Errorf("second rel = %q, want repo-2", r2.Rel)
+	if r2.Rel != "repo1" {
+		t.Errorf("second rel = %q, want repo1", r2.Rel)
 	}
 }
 
@@ -126,7 +132,7 @@ func TestClone_InvalidName(t *testing.T) {
 
 func TestClone_InvalidURL(t *testing.T) {
 	ws := t.TempDir()
-	_, err := Clone(context.Background(), ws, CloneOptions{URL: "https://gitlab.com/o/r"})
+	_, err := Clone(context.Background(), ws, CloneOptions{URL: "ssh://git@gitlab.com/o/r"})
 	ce, ok := err.(*CloneError)
 	if !ok || ce.Code != "invalid_url" {
 		t.Fatalf("err = %v, want invalid_url CloneError", err)
@@ -136,18 +142,23 @@ func TestClone_InvalidURL(t *testing.T) {
 func TestUniqueTarget(t *testing.T) {
 	ws := t.TempDir()
 	// First is free.
-	rel, _ := uniqueTarget(ws, "x")
+	rel, _, err := uniqueTarget(ws, "x")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if rel != "x" {
 		t.Errorf("rel = %q, want x", rel)
 	}
-	// Occupy x and x-2 with non-empty dirs.
-	for _, n := range []string{"x", "x-2"} {
+	// Occupy x and x1. Empty directories also count as occupied.
+	for _, n := range []string{"x", "x1"} {
 		d := filepath.Join(ws, n)
 		os.MkdirAll(d, 0o755)
-		os.WriteFile(filepath.Join(d, "f"), []byte("y"), 0o644)
 	}
-	rel, _ = uniqueTarget(ws, "x")
-	if rel != "x-3" {
-		t.Errorf("rel = %q, want x-3", rel)
+	rel, _, err = uniqueTarget(ws, "x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rel != "x2" {
+		t.Errorf("rel = %q, want x2", rel)
 	}
 }

@@ -28,6 +28,8 @@ func TestMessageContractGolden(t *testing.T) {
 			Type: "plan_approval_request", ID: "plan_appr_1",
 			SessionID: "sess_root", TurnID: "turn_7",
 			PlanID: "plan_abc", Title: "Add Auth",
+			PlanPath:   ".codeagent/plans/add-auth.md",
+			FilePath:   "/workspace/.codeagent/plans/add-auth.md",
 			Content:    "# Plan\n1. Step one\n2. Step two",
 			DeadlineMS: 120000,
 		},

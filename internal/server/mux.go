@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"code-agent/internal/agent"
@@ -27,10 +28,14 @@ import (
 // statusForCloneCode maps a structured clone error code to an HTTP status.
 func statusForCloneCode(code string) int {
 	switch code {
-	case "invalid_url", "invalid_name":
+	case "invalid_url", "invalid_name", "invalid_request":
 		return http.StatusBadRequest
 	case "repo_not_found", "ref_not_found":
 		return http.StatusNotFound
+	case "destination_conflict":
+		return http.StatusConflict
+	case "cancelled":
+		return http.StatusRequestTimeout
 	case "network_error":
 		return http.StatusBadGateway
 	default: // io_error and anything unexpected
@@ -130,25 +135,28 @@ type WorkspaceDTO struct {
 	Kind        string `json:"kind"`
 }
 
-// CloneRepoRequest is the POST /v1/repos/clone body. See docs/ios_github_clone_spec.md.
+// CloneRepoRequest is the POST /v1/repos/clone body. See
+// docs/runtime-integration/public-git-clone-v1.md.
 type CloneRepoRequest struct {
-	URL   string `json:"url"`             // https GitHub URL or "owner/repo" shorthand
-	Ref   string `json:"ref,omitempty"`   // optional branch/tag
-	Name  string `json:"name,omitempty"`  // optional target dir name
-	Depth int    `json:"depth,omitempty"` // optional shallow depth (0 => default)
+	RequestID string `json:"request_id"`
+	URL       string `json:"url"`
+	Ref       string `json:"ref,omitempty"`
+	Name      string `json:"name,omitempty"`
+	Depth     *int   `json:"depth,omitempty"` // absent=1, zero=full history
 }
 
 // CloneRepoResponse is returned on a successful clone. workspace_path is this
 // launch's absolute path (host displays it, does not persist it); workspace_ref is
 // the portable identity to create the conversation with.
 type CloneRepoResponse struct {
+	RequestID     string           `json:"request_id"`
 	WorkspacePath string           `json:"workspace_path"`
 	WorkspaceRef  *WorkspaceRefDTO `json:"workspace_ref"`
 }
 
 // cloneErrorResponse is the structured error body keyed on a stable code.
 type cloneErrorResponse struct {
-	Error   string `json:"error"`   // invalid_url | repo_not_found | ref_not_found | network_error | io_error | invalid_name
+	Error   string `json:"error"`   // stable Public Git Clone v1 code
 	Message string `json:"message"` // human-readable detail
 }
 
@@ -214,10 +222,9 @@ type MuxOptions struct {
 	Capabilities []string
 	// Accept carries WebSocket origin policy. Nil = same-origin only.
 	Accept *websocket.AcceptOptions
-	// WorkspaceRoot is the default workspace directory (cfg.Workspace.Root). The
-	// repo-clone endpoint clones into a subdirectory of it. Empty disables that
-	// endpoint (it returns 400).
-	WorkspaceRoot string
+	// CloneService enables Public Git Clone v1. Nil means the endpoint and
+	// capability are unavailable.
+	CloneService *repos.Service
 	// Granter persists a client's "always allow" verdict into the shared permission
 	// store (the same one the loop's allowlist reads). Nil disables persistence, so
 	// an "always" over the wire is treated as a one-time allow.
@@ -253,6 +260,7 @@ type RuntimeCapabilities struct {
 	WorkspaceExecutionPolicy bool `json:"workspace_execution_policy_v1"`
 	ManagedWorktree          bool `json:"managed_worktree_v1"`
 	ConversationArchive      bool `json:"conversation_archive_v1"`
+	PublicGitClone           bool `json:"public_git_clone_v1"`
 	MaxConcurrentTurns       int  `json:"max_concurrent_turns"`
 	MaxConnectedSessions     int  `json:"max_connected_sessions"`
 }
@@ -279,6 +287,7 @@ func ConfiguredRuntimeCapabilities(maxConcurrentTurns int) RuntimeCapabilities {
 
 type runtimeCapabilitiesResponse struct {
 	Capabilities RuntimeCapabilities `json:"capabilities"`
+	ProjectsRoot string              `json:"projects_root,omitempty"`
 }
 
 // SessionActivity is the merged scheduler, broker, lifecycle, and durable-event
@@ -370,6 +379,7 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 		attentionSupported = attentionSupported && capability.SupportsAttentionSnapshot()
 	}
 	runtimeCapabilities := opts.RuntimeCapabilities
+	runtimeCapabilities.PublicGitClone = opts.CloneService != nil
 	archiveRepo, archiveSupported := repo.(conversation.ArchivableConversationRepository)
 	if capability, ok := repo.(conversation.ConversationArchiveCapability); ok {
 		archiveSupported = archiveSupported && capability.SupportsConversationArchive()
@@ -395,7 +405,11 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 	})
 
 	mux.HandleFunc("GET /v1/runtime/capabilities", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, r, http.StatusOK, runtimeCapabilitiesResponse{Capabilities: runtimeCapabilities})
+		projectsRoot := ""
+		if opts.CloneService != nil {
+			projectsRoot = opts.CloneService.ProjectsRoot()
+		}
+		writeJSON(w, r, http.StatusOK, runtimeCapabilitiesResponse{Capabilities: runtimeCapabilities, ProjectsRoot: projectsRoot})
 	})
 
 	mux.HandleFunc("GET /v1/activity", func(w http.ResponseWriter, r *http.Request) {
@@ -1017,23 +1031,23 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 		writeJSON(w, r, http.StatusOK, ConversationArchiveResponse{ID: id})
 	})
 
-	// Clone a public GitHub repo into the workspace. Used by the host's "Import from
-	// GitHub" flow before a conversation is created — the cloned directory lands under
-	// the workspace root and is returned as a workspace_ref, reusing the same
-	// relativize/re-anchor path as any other workspace project. See
-	// docs/ios_github_clone_spec.md.
+	// Public Git Clone v1 creates a project only; it never creates a conversation
+	// or managed worktree.
 	mux.HandleFunc("POST /v1/repos/clone", func(w http.ResponseWriter, r *http.Request) {
-		if opts.WorkspaceRoot == "" {
-			writeJSON(w, r, http.StatusBadRequest, cloneErrorResponse{Error: "io_error", Message: "server has no workspace root configured"})
+		if opts.CloneService == nil {
+			writeJSON(w, r, http.StatusBadRequest, cloneErrorResponse{Error: "io_error", Message: "public git clone is not configured"})
 			return
 		}
 		var req CloneRepoRequest
+		r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeJSON(w, r, http.StatusBadRequest, cloneErrorResponse{Error: "invalid_url", Message: "invalid JSON body"})
+			writeJSON(w, r, http.StatusBadRequest, cloneErrorResponse{Error: "invalid_request", Message: "invalid JSON body"})
 			return
 		}
-		res, err := repos.Clone(r.Context(), opts.WorkspaceRoot, repos.CloneOptions{
-			URL: req.URL, Ref: req.Ref, Name: req.Name, Depth: req.Depth,
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
+		defer cancel()
+		res, err := opts.CloneService.Clone(ctx, repos.Request{
+			RequestID: req.RequestID, URL: req.URL, Ref: req.Ref, Name: req.Name, Depth: req.Depth,
 		})
 		if err != nil {
 			var ce *repos.CloneError
@@ -1045,6 +1059,7 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 			return
 		}
 		writeJSON(w, r, http.StatusCreated, CloneRepoResponse{
+			RequestID:     strings.TrimSpace(req.RequestID),
 			WorkspacePath: res.AbsPath,
 			WorkspaceRef:  &WorkspaceRefDTO{Root: session.RootWorkspace, Rel: res.Rel},
 		})

@@ -22,6 +22,7 @@ type fakeRepo struct {
 	sessions map[string]*session.Session
 	events   []session.EventRecord
 	metas    []session.Meta // returned by List when set
+	saves    int
 }
 
 func newFakeRepo() *fakeRepo {
@@ -43,6 +44,7 @@ func (r *fakeRepo) Load(ctx context.Context, id string) (*session.Session, error
 	return s, nil
 }
 func (r *fakeRepo) Save(ctx context.Context, s *session.Session) error {
+	r.saves++
 	r.sessions[s.ID] = s
 	return nil
 }
@@ -422,6 +424,68 @@ type notFoundError struct{ id string }
 func (e *notFoundError) Error() string { return "session " + e.id + " not found" }
 
 // ---- tests ----
+
+func TestTurnExecutorRepairInvalidToolCallTailPersistsImmediately(t *testing.T) {
+	repo := newFakeRepo()
+	exec := NewTurnExecutor(repo, &fakeEventStore{}, NewActiveTurnRegistry(), NewSubscriptionManager(), &fakeRunBuilder{})
+	sess := &session.Session{
+		ID:       "repair-session",
+		Metadata: map[string]any{},
+		Messages: []model.Message{
+			{Role: model.RoleSystem, Content: "system"},
+			{Role: model.RoleUser, Content: "answer my question"},
+			{
+				Role: model.RoleAssistant,
+				ToolCalls: []model.ToolCall{{
+					ID:   "bad-call",
+					Type: "function",
+					Function: model.FunctionCall{
+						Name:      "load_skill",
+						Arguments: `{": "review-agent-runtime-architecture"}`,
+					},
+				}},
+			},
+			{Role: model.RoleTool, ToolCallID: "bad-call", Content: "invalid arguments"},
+		},
+	}
+	repo.sessions[sess.ID] = sess
+
+	if err := exec.repairInvalidToolCallTail(context.Background(), sess); err != nil {
+		t.Fatal(err)
+	}
+	if repo.saves != 1 {
+		t.Fatalf("save calls = %d, want 1", repo.saves)
+	}
+	if len(sess.Messages) != 2 {
+		t.Fatalf("messages = %d, want 2", len(sess.Messages))
+	}
+	if got := sess.Messages[len(sess.Messages)-1]; got.Role != model.RoleUser || got.Content != "answer my question" {
+		t.Fatalf("repaired tail ended at %#v", got)
+	}
+	if index, err := repo.sessions[sess.ID].FirstInvalidToolCallIndex(); err != nil || index != -1 {
+		t.Fatalf("persisted session remains invalid: index=%d err=%v", index, err)
+	}
+}
+
+func TestTurnExecutorRepairValidHistoryDoesNotSave(t *testing.T) {
+	repo := newFakeRepo()
+	exec := NewTurnExecutor(repo, &fakeEventStore{}, NewActiveTurnRegistry(), NewSubscriptionManager(), &fakeRunBuilder{})
+	sess := &session.Session{
+		ID: "valid-session",
+		Messages: []model.Message{
+			{Role: model.RoleSystem, Content: "system"},
+			{Role: model.RoleUser, Content: "hello"},
+			{Role: model.RoleAssistant, Content: "hi"},
+		},
+	}
+
+	if err := exec.repairInvalidToolCallTail(context.Background(), sess); err != nil {
+		t.Fatal(err)
+	}
+	if repo.saves != 0 {
+		t.Fatalf("save calls = %d, want 0", repo.saves)
+	}
+}
 
 func TestTurnExecutor_Execute_LoadsAndSaves(t *testing.T) {
 	repo := newFakeRepo()

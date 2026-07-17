@@ -3,6 +3,7 @@ package session
 import (
 	"code-agent/internal/model"
 	"code-agent/internal/reference"
+	"fmt"
 	"time"
 )
 
@@ -76,6 +77,12 @@ type Session struct {
 	ArchivedAt time.Time
 }
 
+type HistoryRepair struct {
+	FromIndex int
+	Removed   int
+	Reason    error
+}
+
 // IsEmpty reports whether the session has no conversation yet — only the initial
 // system prompt, no turns. Such a session is a throwaway (e.g. a fresh REPL
 // launch the user immediately /resume'd away from) and must not be persisted,
@@ -103,4 +110,41 @@ func (s *Session) RemoveEmptyAssistantNoOps() int {
 	}
 	s.Messages = kept
 	return removed
+}
+
+func (s *Session) FirstInvalidToolCallIndex() (int, error) {
+
+	for messageIndex, message := range s.Messages {
+		if message.Role != model.RoleAssistant {
+			continue
+		}
+
+		for toolCallIndex, call := range message.ToolCalls {
+			if err := call.ValidateForHistory(); err != nil {
+				return messageIndex, fmt.Errorf(
+					"message %d tool call %d (%q) is invalid: %w",
+					messageIndex,
+					toolCallIndex,
+					call.Function.Name,
+					err,
+				)
+			}
+		}
+	}
+	return -1, nil
+}
+
+func (s *Session) TruncateInvalidToolCallTail() *HistoryRepair {
+	index, err := s.FirstInvalidToolCallIndex()
+	if err == nil {
+		return nil
+	}
+
+	removed := len(s.Messages) - index
+	s.Messages = s.Messages[:index]
+	return &HistoryRepair{
+		FromIndex: index,
+		Removed:   removed,
+		Reason:    err,
+	}
 }

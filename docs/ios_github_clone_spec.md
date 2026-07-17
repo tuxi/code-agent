@@ -1,6 +1,6 @@
 # Runtime 需求 Spec：GitHub 仓库 clone 进 workspace（iOS / go-git）
 
-> 状态：Draft · 面向 CodeAgent Go Runtime 团队
+> 状态：Superseded · 已由 `docs/runtime-integration/public-git-clone-v1.md` 取代
 > 依赖：runtime 的 **go-git 回填**（团队列的能力缺口 A.#1）。本 spec 是该 batch 的一个 API 面。
 > 范围（v1）：**仅公开仓库**，无鉴权。私有仓库 / PAT 留待后续 spec。
 

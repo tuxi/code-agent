@@ -25,13 +25,17 @@ const (
 // Plan is an implementation plan produced during plan mode. It is written to disk
 // as a .md file under .codeagent/plans/ so the user can review it outside the tool.
 type Plan struct {
-	ID        string     `json:"id"`
-	Title     string     `json:"title"`
-	Content   string     `json:"content"` // markdown body
-	Steps     []PlanStep `json:"steps,omitempty"`
-	Status    PlanStatus `json:"status"`
-	FilePath  string     `json:"file_path,omitempty"` // absolute path on disk
-	CreatedAt time.Time  `json:"created_at"`
+	ID      string     `json:"id"`
+	Title   string     `json:"title"`
+	Content string     `json:"content"` // markdown body
+	Steps   []PlanStep `json:"steps,omitempty"`
+	Status  PlanStatus `json:"status"`
+	// WorkspaceRelativePath is the stable, portable path clients should display.
+	// FilePath is the server-local absolute path clients may use when they share
+	// the server's filesystem.
+	WorkspaceRelativePath string    `json:"workspace_relative_path,omitempty"`
+	FilePath              string    `json:"file_path,omitempty"`
+	CreatedAt             time.Time `json:"created_at"`
 }
 
 // PlanStep is a single actionable step within a plan. Steps are populated from the

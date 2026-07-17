@@ -17,6 +17,7 @@ import (
 
 	"code-agent/internal/app"
 	"code-agent/internal/conversation"
+	"code-agent/internal/repos"
 	"code-agent/internal/runtime"
 	"code-agent/internal/server"
 )
@@ -81,8 +82,18 @@ func run() error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 
-	home, _ := os.UserHomeDir()
-	reposDir := filepath.Join(home, ".codeagent", "repos")
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("resolve user home for projects root: %w", err)
+	}
+	projectsRoot := filepath.Join(home, "Documents")
+	cloneStateDir := filepath.Join(home, ".codeagent", "clone")
+	cloneService, cloneErr := repos.NewService(projectsRoot, cloneStateDir)
+	if cloneErr != nil {
+		fmt.Fprintf(os.Stderr, "codeagentd: public git clone disabled: %v\n", cloneErr)
+	} else {
+		defer cloneService.Close()
+	}
 
 	// The daemon's global telemetry store uses CWD as its identity key. This
 	// means codeagentd launched from /path/to/project-a naturally isolates its
@@ -92,7 +103,7 @@ func run() error {
 	// After Phase 3 (cfg.Workspace removed) we pass CWD explicitly.
 	//
 	// The clone-target directory is the only path that MUST be CWD-independent:
-	// reposDir lives under ~/.codeagent, not under any project.
+	// projectsRoot is the user's Documents directory, not the launch directory.
 	cwd, _ := os.Getwd()
 	telemetryStore, err := runtime.OpenStore(cwd)
 	if err != nil {
@@ -153,10 +164,14 @@ func run() error {
 
 	runtimeCapabilities := server.ConfiguredRuntimeCapabilities(maxConcurrentTurns)
 	runtimeCapabilities.ManagedWorktree = managedWorktrees != nil
+	capabilities := append([]string(nil), defaultCapabilities...)
+	if cloneService != nil {
+		capabilities = append(capabilities, "public_git_clone_v1")
+	}
 	handler := server.NewMux(repo, eventStore, executor, server.MuxOptions{
 		ServerName:          "codeagentd/" + mc.Model,
-		Capabilities:        defaultCapabilities,
-		WorkspaceRoot:       reposDir,
+		Capabilities:        capabilities,
+		CloneService:        cloneService,
 		Granter:             rb.Rules(),
 		WorkspaceReloader:   wsReg.ReloadWorkspace,
 		Prompts:             wsReg,
@@ -171,7 +186,7 @@ func run() error {
 		_ = srv.Close()
 	}()
 
-	fmt.Printf("codeagentd serve — http://%s  (model: %s, cwd: %s, repos: %s)\n", addr, mc.Model, cwd, reposDir)
+	fmt.Printf("codeagentd serve — http://%s  (model: %s, cwd: %s, projects: %s)\n", addr, mc.Model, cwd, projectsRoot)
 	fmt.Println("  GET  /healthz")
 	fmt.Println("  GET  /v1/conversations")
 	fmt.Println("  POST  /v1/conversations            {\"workspace_path\":\"...\"}  -> {\"id\":\"...\"}")

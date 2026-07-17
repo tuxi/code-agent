@@ -516,11 +516,17 @@ Task list changed.
 { "type": "plan_approval_request", "id": "plan_appr_1",
   "session_id": "sess_root", "turn_id": "turn_42",
   "plan_id": "plan_abc", "title": "Add Auth",
+  "plan_path": ".codeagent/plans/add-auth.md",
+  "file_path": "/workspace/.codeagent/plans/add-auth.md",
   "content": "# Plan\n1. Step one\n2. Step two" }
 
 // Client → Server
 { "type": "plan_approval_response", "id": "plan_appr_1", "approved": true }
 ```
+
+`content` is the complete markdown snapshot read from the canonical plan file at
+approval time. `plan_path` is its portable workspace-relative path; `file_path`
+is the optional server-local absolute path for clients sharing that filesystem.
 
 ---
 

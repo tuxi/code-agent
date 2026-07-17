@@ -216,6 +216,8 @@ func (a *RemoteApprover) ApprovePlan(plan agent.Plan) agent.PlanDecision {
 			ID:         id,
 			PlanID:     plan.ID,
 			Title:      plan.Title,
+			PlanPath:   plan.WorkspaceRelativePath,
+			FilePath:   plan.FilePath,
 			Content:    plan.Content,
 			DeadlineMS: a.timeout.Milliseconds(),
 		}
@@ -285,6 +287,8 @@ func (a *RemoteApprover) UpdateSink(sink FrameSink) {
 				ID:         reqID,
 				PlanID:     req.plan.ID,
 				Title:      req.plan.Title,
+				PlanPath:   req.plan.WorkspaceRelativePath,
+				FilePath:   req.plan.FilePath,
 				Content:    req.plan.Content,
 				DeadlineMS: a.timeout.Milliseconds(),
 			}

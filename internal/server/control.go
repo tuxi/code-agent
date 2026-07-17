@@ -70,6 +70,8 @@ type PlanApprovalRequest struct {
 	TurnID     string `json:"turn_id,omitempty"`
 	PlanID     string `json:"plan_id"`
 	Title      string `json:"title"`
+	PlanPath   string `json:"plan_path,omitempty"` // workspace-relative, portable path
+	FilePath   string `json:"file_path,omitempty"` // server-local absolute path
 	Content    string `json:"content"`
 	DeadlineMS int64  `json:"deadline_ms,omitempty"`
 }
