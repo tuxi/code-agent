@@ -314,12 +314,12 @@ func normalizeToolAssets(refs []assets.Ref, workspaceRoot, turnID, callID string
 	return out
 }
 
-// gatewayScreenshotAssets converts a desktop-control screenshot into a
-// Gateway-owned reference. It deliberately runs only for screenshot_capture:
-// user-supplied image assets are preserved by the message path but do not gain
-// implicit visual semantics until that product workflow is defined.
-func (r *Runner) gatewayScreenshotAssets(ctx context.Context, sess *session.Session, toolName string, refs []assets.Ref) ([]model.GatewayAssetRef, string) {
-	if r.AssetUploader == nil || !isScreenshotCapture(toolName) {
+// gatewayImageCaptureAssets converts image output from screenshot, camera, and
+// screen-capture tools into Gateway-owned references so the VLM can consume them
+// in subsequent turns. It covers both server-side MCP captures (screenshot_capture)
+// and client-side captures (capture_photo, take_screenshot).
+func (r *Runner) gatewayImageCaptureAssets(ctx context.Context, sess *session.Session, toolName string, refs []assets.Ref) ([]model.GatewayAssetRef, string) {
+	if r.AssetUploader == nil || !isImageCaptureTool(toolName) {
 		return nil, ""
 	}
 	var out []model.GatewayAssetRef
@@ -330,11 +330,23 @@ func (r *Runner) gatewayScreenshotAssets(ctx context.Context, sess *session.Sess
 		}
 		localPath, err := r.safeWorkspaceAssetPath(ref.AbsolutePath)
 		if err != nil {
-			return out, "[asset_unavailable] screenshot asset is outside the workspace."
+			// Client-side captures (camera photo, screen capture) may write
+			// to a temp directory outside the workspace. Stage the file
+			// into the workspace so Gateway upload can proceed.
+			if isClientImageCaptureTool(toolName) && r.WorkspaceRoot != "" {
+				staged, copyErr := copyAssetToWorkspace(ref.AbsolutePath, r.WorkspaceRoot, ref.MIMEType)
+				if copyErr != nil {
+					return out, "[asset_unavailable] could not stage client image asset in workspace."
+				}
+				localPath = staged
+				ref.AbsolutePath = staged
+			} else {
+				return out, "[asset_unavailable] image asset is outside the workspace."
+			}
 		}
 		sha, size, err := fileSHA256(localPath)
 		if err != nil {
-			return out, "[asset_unavailable] screenshot asset could not be prepared for Gateway."
+			return out, "[asset_unavailable] image asset could not be prepared for Gateway."
 		}
 		scope := "gateway:unknown"
 		if scoped, ok := r.AssetUploader.(model.AssetUploadScoper); ok {
@@ -359,12 +371,13 @@ func (r *Runner) gatewayScreenshotAssets(ctx context.Context, sess *session.Sess
 			}
 		}
 		filename := filepath.Base(localPath)
+		assetClass, businessType := imageCaptureAssetClasses(toolName)
 		gatewayRef, err := r.AssetUploader.UploadAsset(ctx, model.AssetUpload{
-			Path: localPath, AssetClass: "agent_screenshot", AssetKind: "image", BusinessType: "agent_screenshot",
+			Path: localPath, AssetClass: assetClass, AssetKind: "image", BusinessType: businessType,
 			Filename: filename, MIMEType: ref.MIMEType, SizeBytes: size, SHA256: sha,
 		})
 		if err != nil {
-			return out, "[asset_unavailable] screenshot upload to Gateway failed."
+			return out, "[asset_unavailable] image upload to Gateway failed."
 		}
 		if r.assetUploadCache == nil {
 			r.assetUploadCache = make(map[string]model.GatewayAssetRef)
@@ -385,7 +398,7 @@ func (r *Runner) gatewayScreenshotAssets(ctx context.Context, sess *session.Sess
 		out = append(out, gatewayRef)
 	}
 	if len(out) == 0 {
-		return nil, "[asset_unavailable] screenshot contained no uploadable image asset."
+		return nil, "[asset_unavailable] no uploadable image asset found."
 	}
 	return deduplicateGatewayAssets(out), ""
 }
@@ -407,8 +420,86 @@ func deduplicateGatewayAssets(refs []model.GatewayAssetRef) []model.GatewayAsset
 	return out
 }
 
-func isScreenshotCapture(toolName string) bool {
-	return toolName == "screenshot_capture" || strings.HasSuffix(toolName, "__screenshot_capture")
+// isImageCaptureTool reports whether toolName is a tool whose image output
+// should be uploaded to Gateway for VLM consumption. It covers:
+//   - screenshot_capture (including MCP-prefixed variants)
+//   - capture_photo (client-side camera capture)
+//   - take_screenshot (client-side screen capture)
+func isImageCaptureTool(toolName string) bool {
+	if toolName == "screenshot_capture" || strings.HasSuffix(toolName, "__screenshot_capture") {
+		return true
+	}
+	switch toolName {
+	case "capture_photo", "take_screenshot":
+		return true
+	}
+	return false
+}
+
+// imageCaptureAssetClasses maps an image-capture tool name to Gateway
+// (AssetClass, BusinessType) pairs for telemetry downstream.
+func imageCaptureAssetClasses(toolName string) (string, string) {
+	if toolName == "capture_photo" {
+		return "agent_photo", "agent_photo"
+	}
+	return "agent_screenshot", "agent_screenshot"
+}
+
+// isClientImageCaptureTool reports whether toolName is a client-side image
+// capture tool (as opposed to a server-side MCP screenshot_capture).
+func isClientImageCaptureTool(toolName string) bool {
+	switch toolName {
+	case "capture_photo", "take_screenshot":
+		return true
+	}
+	return false
+}
+
+// copyAssetToWorkspace copies an image file from an arbitrary location into
+// .codeagent/assets/client/ under workspaceRoot and returns the new absolute path.
+func copyAssetToWorkspace(sourcePath, workspaceRoot, mimeType string) (string, error) {
+	ext := extensionForImageMIME(mimeType)
+	rel := filepath.ToSlash(filepath.Join(".codeagent", "assets", "client", filepath.Base(sourcePath)))
+	if filepath.Ext(rel) == "" || filepath.Ext(rel) != ext {
+		rel = strings.TrimSuffix(rel, filepath.Ext(rel)) + ext
+	}
+	abs := filepath.Join(workspaceRoot, filepath.FromSlash(rel))
+	if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
+		return "", err
+	}
+	src, err := os.Open(sourcePath)
+	if err != nil {
+		return "", err
+	}
+	defer src.Close()
+	dst, err := os.Create(abs)
+	if err != nil {
+		return "", err
+	}
+	defer dst.Close()
+	if _, err := io.Copy(dst, src); err != nil {
+		return "", err
+	}
+	return abs, nil
+}
+
+// extensionForImageMIME returns the file extension (with dot) for common image
+// MIME types. Falls back to ".bin" for unknown types.
+func extensionForImageMIME(mimeType string) string {
+	switch strings.ToLower(strings.TrimSpace(strings.Split(mimeType, ";")[0])) {
+	case "image/png":
+		return ".png"
+	case "image/jpeg":
+		return ".jpg"
+	case "image/gif":
+		return ".gif"
+	case "image/webp":
+		return ".webp"
+	case "image/heic", "image/heif":
+		return ".heic"
+	default:
+		return ".bin"
+	}
 }
 
 func fileSHA256(path string) (string, int64, error) {

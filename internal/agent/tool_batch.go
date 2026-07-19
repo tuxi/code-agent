@@ -389,7 +389,7 @@ func (r *Runner) commitToolResult(ctx context.Context, sess *session.Session, tu
 	step.FinishedAt = time.Now()
 	turn.Steps = append(turn.Steps, step)
 	assetRefs := normalizeToolAssets(res.assetRefs, r.WorkspaceRoot, r.emitTurnID, p.call.ID)
-	gatewayAssets, assetNote := r.gatewayScreenshotAssets(ctx, sess, p.call.Function.Name, assetRefs)
+	gatewayAssets, assetNote := r.gatewayImageCaptureAssets(ctx, sess, p.call.Function.Name, assetRefs)
 	if assetNote != "" {
 		observation += "\n" + assetNote
 		step.Observation = observation
