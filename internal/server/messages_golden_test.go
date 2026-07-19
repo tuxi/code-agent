@@ -78,7 +78,7 @@ func TestMessageContractGolden(t *testing.T) {
 		// v1.1 hello with capabilities
 		"hello": helloFrame{
 			Type: "hello", ProtocolVersion: 1, Server: "codeagent/deepseek-v4",
-			Capabilities: []string{"streaming", "thinking", "tool_streaming", "plan_mode", "subagents", "session_resume", "client_tool_execution"},
+			Capabilities: []string{"streaming", "thinking", "reasoning_streaming", "tool_streaming", "plan_mode", "subagents", "session_resume", "client_tool_execution"},
 		},
 	}
 

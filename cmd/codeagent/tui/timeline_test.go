@@ -172,7 +172,7 @@ func TestItemIDsAndDuration(t *testing.T) {
 	}
 }
 
-// EventThinking appends to the step's thinking field.
+// EventThinking installs the step's authoritative thinking snapshot.
 func TestTranscriptCapturesThinking(t *testing.T) {
 	var tr transcript
 	tr.render(agent.Event{Kind: agent.EventModelStarted}, 80)

@@ -1372,7 +1372,7 @@ func (e *TurnExecutor) generateTitleAsync(sess *session.Session) {
 // replay path (ReplaySince) will report (v1.2 §4). Non-terminal persistence
 // remains best-effort. Terminal persistence is authoritative: a failed append is
 // retained for the executor and the unsequenced terminal is not forwarded live.
-// Ephemeral token deltas are not persisted and carry no seq.
+// Ephemeral text/reasoning deltas are not persisted and carry no seq.
 type sequencingEmitter struct {
 	ctx    context.Context
 	events ConversationEventStore
@@ -1383,7 +1383,7 @@ type sequencingEmitter struct {
 }
 
 func (s *sequencingEmitter) Emit(ev agent.Event) {
-	if ev.Kind == agent.EventTokenDelta {
+	if ev.Kind == agent.EventTokenDelta || ev.Kind == agent.EventReasoningDelta {
 		s.live.Emit(ev)
 		return
 	}

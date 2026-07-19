@@ -263,7 +263,8 @@ All the data already exists on `Event` ([event.go](../internal/agent/event.go)):
 
 | Timeline item | Event(s) | Fields used |
 |---|---|---|
-| Thinking | `EventThinking` | `Text` |
+| Thinking live preview | `EventReasoningDelta` | `Text`（瞬态 append） |
+| Thinking snapshot | `EventThinking` | `Text`（持久化 replace） |
 | Tool (header) | `EventToolStarted` | `Step`, `ToolName`, `ToolArgs` |
 | Tool ✓/✗ status | `EventObserved` | `Failure` (`""`/`none` ⇒ ✓; else ✗ + label) |
 | Tool body/result | `EventToolFinished` | `Observation` |

@@ -147,7 +147,7 @@ func TestGatewaySSEUserAssetErrorFixtureIsParsedWithoutFallback(t *testing.T) {
 		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(sse)), Header: http.Header{"Content-Type": {"text/event-stream"}}}, nil
 	})}
 	provider := &ResilientProvider{Inner: inner, MaxRetries: 3, LogWriter: io.Discard}
-	_, err := provider.CompleteStream(context.Background(), Request{Model: "text-model"}, func(string) {})
+	_, err := provider.CompleteStream(context.Background(), Request{Model: "text-model"}, func(string) {}, nil)
 	code, ok := UserAssetErrorCode(err)
 	if !ok || code != "image_processing_failed" {
 		t.Fatalf("code=%q ok=%v err=%v", code, ok, err)

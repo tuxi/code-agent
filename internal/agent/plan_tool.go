@@ -79,7 +79,7 @@ func (t *enterPlanModeTool) Execute(_ context.Context, _ tools.ExecutionContext,
 
 // proposePlanTool presents the model's plan to the user for approval. The
 // canonical form is a markdown file written under .codeagent/plans/ and named
-// explicitly by plan_path. lastThinking remains as a compatibility fallback for
+// explicitly by plan_path. lastAssistantText remains as a compatibility fallback for
 // older callers that submit the plan inline before invoking this tool.
 type proposePlanTool struct {
 	ref      *RunnerRef
@@ -180,12 +180,12 @@ func (t *proposePlanTool) Execute(_ context.Context, ec tools.ExecutionContext, 
 	} else {
 		// Compatibility path for older models: preserve the previous inline-plan
 		// behavior until all callers send plan_path.
-		if r.lastThinking == "" {
+		if r.lastAssistantText == "" {
 			return tools.ToolResult{}, fmt.Errorf(
 				"propose_plan: plan_path is required. Write the complete plan under " +
 					".codeagent/plans/ and pass its workspace-relative path")
 		}
-		plan.Content = r.lastThinking
+		plan.Content = r.lastAssistantText
 		plan.FilePath = filepath.Join(plansDir, planID+".md")
 		header := fmt.Sprintf("# %s\n\n_Plan ID: %s | Created: %s_\n\n",
 			title, planID, plan.CreatedAt.Format(time.RFC3339))

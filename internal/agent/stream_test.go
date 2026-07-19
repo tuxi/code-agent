@@ -9,16 +9,79 @@ import (
 )
 
 // streamProvider implements model.StreamingProvider, emitting one delta per rune.
-type streamProvider struct{ text string }
+type streamProvider struct {
+	text      string
+	reasoning string
+}
 
 func (s streamProvider) Complete(context.Context, model.Request) (model.Response, error) {
-	return model.Response{Content: s.text, FinishReason: "stop"}, nil
+	return model.Response{Content: s.text, ReasoningContent: s.reasoning, FinishReason: "stop"}, nil
 }
-func (s streamProvider) CompleteStream(_ context.Context, _ model.Request, onText func(string)) (model.Response, error) {
+func (s streamProvider) CompleteStream(_ context.Context, _ model.Request, onText, onReasoning func(string)) (model.Response, error) {
+	for _, r := range s.reasoning {
+		onReasoning(string(r))
+	}
 	for _, r := range s.text {
 		onText(string(r))
 	}
-	return model.Response{Content: s.text, FinishReason: "stop"}, nil
+	return model.Response{Content: s.text, ReasoningContent: s.reasoning, FinishReason: "stop"}, nil
+}
+
+func TestStreamSeparatesReasoningFromFinalText(t *testing.T) {
+	em := &capturingEmitter{}
+	runner := &Runner{
+		Model:    streamProvider{text: "final answer", reasoning: "inspect auth flow"},
+		Stream:   true,
+		MaxSteps: 3,
+		Emitter:  em,
+	}
+	res, err := runner.RunTurn(context.Background(), newSession(), "go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Final != "final answer" {
+		t.Fatalf("final=%q, want final answer", res.Final)
+	}
+	var textDeltas, reasoningDeltas string
+	var snapshots []string
+	for _, e := range em.events {
+		switch e.Kind {
+		case EventTokenDelta:
+			textDeltas += e.Text
+		case EventReasoningDelta:
+			reasoningDeltas += e.Text
+		case EventThinking:
+			snapshots = append(snapshots, e.Text)
+		}
+	}
+	if textDeltas != "final answer" || reasoningDeltas != "inspect auth flow" {
+		t.Fatalf("text deltas=%q reasoning deltas=%q", textDeltas, reasoningDeltas)
+	}
+	if len(snapshots) != 1 || snapshots[0] != "inspect auth flow" {
+		t.Fatalf("thinking snapshots=%q, want only provider reasoning", snapshots)
+	}
+}
+
+func TestNonStreamResponseStillPublishesReasoningSnapshot(t *testing.T) {
+	em := &capturingEmitter{}
+	runner := &Runner{
+		Model:    streamProvider{text: "done", reasoning: "checked constraints"},
+		Stream:   false,
+		MaxSteps: 3,
+		Emitter:  em,
+	}
+	if _, err := runner.RunTurn(context.Background(), newSession(), "go"); err != nil {
+		t.Fatal(err)
+	}
+	thinking, ok := em.first(EventThinking)
+	if !ok || thinking.Text != "checked constraints" {
+		t.Fatalf("thinking=%+v present=%v", thinking, ok)
+	}
+	for _, e := range em.events {
+		if e.Kind == EventReasoningDelta {
+			t.Fatal("non-stream completion must not emit reasoning_delta")
+		}
+	}
 }
 
 func TestStreamEmitsTokenDeltas(t *testing.T) {
@@ -51,9 +114,9 @@ type failingStreamProvider struct{ text string }
 func (s failingStreamProvider) Complete(context.Context, model.Request) (model.Response, error) {
 	return model.Response{}, errors.New("model call failed: context deadline exceeded")
 }
-func (s failingStreamProvider) CompleteStream(_ context.Context, _ model.Request, onText func(string)) (model.Response, error) {
+func (s failingStreamProvider) CompleteStream(_ context.Context, _ model.Request, _ func(string), onReasoning func(string)) (model.Response, error) {
 	for _, r := range s.text {
-		onText(string(r))
+		onReasoning(string(r))
 	}
 	return model.Response{}, errors.New("model call failed: context deadline exceeded")
 }

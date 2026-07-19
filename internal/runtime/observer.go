@@ -60,10 +60,10 @@ type EventStoreEmitter struct {
 }
 
 func (e EventStoreEmitter) Emit(ev agent.Event) {
-	// Token deltas (8.6) are an ephemeral live preview, not part of the durable
-	// stream — the finalized answer is captured by EventTurnFinished. Persisting
-	// every delta would bloat the event log (hundreds per answer), so skip them.
-	if ev.Kind != agent.EventTokenDelta {
+	// Text and reasoning deltas are ephemeral live previews, not part of the
+	// durable stream. EventTurnFinished and EventThinking carry their respective
+	// authoritative snapshots, so persisting every delta would only bloat logs.
+	if ev.Kind != agent.EventTokenDelta && ev.Kind != agent.EventReasoningDelta {
 		if payload, err := json.Marshal(ev); err == nil {
 			_, _ = e.Store.RecordEvent(e.Ctx, session.EventRecord{
 				SessionID: ev.SessionID,

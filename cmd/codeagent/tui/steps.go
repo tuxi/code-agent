@@ -15,7 +15,11 @@ type stepBuf struct {
 	active   bool
 	elapsed  time.Duration // model-call duration → "Thought for Ns"
 	thinking string        // the model's reasoning text, shown when the step is expanded
-	tools    []Item        // the tools (and skills) run in this step, in order
+	// thinkingFinal distinguishes a persisted EventThinking snapshot from an
+	// ephemeral reasoning_delta preview. A preview without a final snapshot is
+	// discarded at model_finished (for example after a resilient fallback).
+	thinkingFinal bool
+	tools         []Item // the tools (and skills) run in this step, in order
 }
 
 // renderStep formats a completed step: a "Thought for Ns, <summary>" header and

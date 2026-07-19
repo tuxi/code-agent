@@ -125,8 +125,9 @@ type streamOptions struct {
 type chatCompletionResponse struct {
 	Choices []struct {
 		Message struct {
-			Content   string     `json:"content"`
-			ToolCalls []ToolCall `json:"tool_calls"`
+			Content          string     `json:"content"`
+			ReasoningContent string     `json:"reasoning_content"`
+			ToolCalls        []ToolCall `json:"tool_calls"`
 		} `json:"message"`
 		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
@@ -159,8 +160,9 @@ type streamChunk struct {
 	Error   *openAIErrorPayload `json:"error,omitempty"`
 	Choices []struct {
 		Delta struct {
-			Content   string `json:"content"`
-			ToolCalls []struct {
+			Content          string `json:"content"`           // final-answer text delta
+			ReasoningContent string `json:"reasoning_content"` // provider-visible reasoning delta
+			ToolCalls        []struct {
 				Index    int    `json:"index"`
 				ID       string `json:"id"`
 				Type     string `json:"type"`
@@ -239,10 +241,10 @@ func IsLocalBaseURL(urlStr string) bool {
 }
 
 // CompleteStream is the streaming form of Complete (StreamingProvider). It calls
-// onText for each text delta as it arrives, accumulates tool-call deltas (the
-// loop needs them whole), and returns the same complete Response Complete would —
-// so everything downstream is identical; only a renderer saw the text live.
-func (p *OpenAICompatibleProvider) CompleteStream(ctx context.Context, req Request, onText func(string)) (Response, error) {
+// onText/onReasoning for their respective deltas as they arrive, accumulates
+// tool-call deltas (the loop needs them whole), and returns the same complete
+// Response Complete would.
+func (p *OpenAICompatibleProvider) CompleteStream(ctx context.Context, req Request, onText func(string), onReasoning func(string)) (Response, error) {
 	// Local endpoints (Ollama etc.) do not require a credential.
 	if !p.hasCredential() && !IsLocalBaseURL(p.BaseURL) {
 		return Response{}, fmt.Errorf("missing credential")
@@ -283,6 +285,7 @@ func (p *OpenAICompatibleProvider) CompleteStream(ctx context.Context, req Reque
 	}
 
 	var content strings.Builder
+	var reasoningContent strings.Builder
 	calls := map[int]*ToolCall{}
 	var order []int
 	var finishReason string
@@ -336,6 +339,14 @@ func (p *OpenAICompatibleProvider) CompleteStream(ctx context.Context, req Reque
 		if ch.FinishReason != "" {
 			finishReason = ch.FinishReason
 		}
+
+		if ch.Delta.ReasoningContent != "" {
+			reasoningContent.WriteString(ch.Delta.ReasoningContent)
+			if onReasoning != nil {
+				onReasoning(ch.Delta.ReasoningContent)
+			}
+		}
+
 		if ch.Delta.Content != "" {
 			content.WriteString(ch.Delta.Content)
 			if onText != nil {
@@ -373,10 +384,11 @@ func (p *OpenAICompatibleProvider) CompleteStream(ctx context.Context, req Reque
 		toolCalls = append(toolCalls, *calls[idx])
 	}
 	return Response{
-		Content:      strings.TrimSpace(content.String()),
-		ToolCalls:    toolCalls,
-		FinishReason: finishReason,
-		Usage:        usage,
+		Content:          strings.TrimSpace(content.String()),
+		ReasoningContent: strings.TrimSpace(reasoningContent.String()),
+		ToolCalls:        toolCalls,
+		FinishReason:     finishReason,
+		Usage:            usage,
 	}, nil
 }
 
@@ -460,9 +472,10 @@ func (p *OpenAICompatibleProvider) Complete(ctx context.Context, req Request) (R
 
 	choice := decoded.Choices[0]
 	return Response{
-		Content:      strings.TrimSpace(choice.Message.Content),
-		ToolCalls:    choice.Message.ToolCalls,
-		FinishReason: choice.FinishReason,
+		Content:          strings.TrimSpace(choice.Message.Content),
+		ReasoningContent: strings.TrimSpace(choice.Message.ReasoningContent),
+		ToolCalls:        choice.Message.ToolCalls,
+		FinishReason:     choice.FinishReason,
 		Usage: Usage{
 			PromptTokens:       decoded.Usage.PromptTokens,
 			CompletionTokens:   decoded.Usage.CompletionTokens,

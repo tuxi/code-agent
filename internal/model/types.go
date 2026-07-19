@@ -159,6 +159,12 @@ type Response struct {
 	// returns tool calls.
 	Content string `json:"content"`
 
+	// ReasoningContent is the complete provider-visible reasoning text for this
+	// response. Providers may expose a summary, omit it, or redact it entirely,
+	// so it is neither the final assistant answer nor a guaranteed full chain of
+	// thought.
+	ReasoningContent string `json:"reasoning_content,omitempty"`
+
 	// ToolCalls is non-empty when the model wants the runtime to execute tools
 	// before continuing.
 	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
@@ -223,11 +229,16 @@ type Provider interface {
 }
 
 // StreamingProvider is an OPTIONAL capability on top of Provider: a provider that
-// can stream the model's text content as it is generated, calling onText for each
-// content delta, while still returning the SAME complete Response that Complete
-// would. Tool-call deltas are accumulated internally (the loop needs them whole),
-// so only human-read text streams. Callers type-assert for it and fall back to
-// Complete when absent — so Complete stays the contract everything else depends on.
+// can stream final-answer text and provider-visible reasoning as they are
+// generated, while still returning the SAME complete Response that Complete
+// would. Tool-call deltas are accumulated internally (the loop needs them whole).
+// Either callback may be nil. Callers type-assert for this interface and fall
+// back to Complete when absent, so Complete remains the base contract.
 type StreamingProvider interface {
-	CompleteStream(ctx context.Context, request Request, onText func(delta string)) (Response, error)
+	CompleteStream(
+		ctx context.Context,
+		request Request,
+		onText func(delta string), // final-answer text delta
+		onReasoning func(delta string), // provider-visible reasoning delta
+	) (Response, error)
 }

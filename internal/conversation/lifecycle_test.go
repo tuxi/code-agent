@@ -238,7 +238,7 @@ func (f emitterFunc) Emit(e agent.Event) { f(e) }
 
 // TestSequencingEmitterStampsLiveSeq is the v1.2 §4 invariant: a persisted event's
 // live broadcast carries the same monotonic seq the store assigned, while an
-// ephemeral token delta is forwarded live but neither persisted nor seq'd.
+// ephemeral text/reasoning deltas are forwarded live but neither persisted nor seq'd.
 func TestSequencingEmitterStampsLiveSeq(t *testing.T) {
 	events := &fakeEventStore{}
 	var live []agent.Event
@@ -251,15 +251,19 @@ func TestSequencingEmitterStampsLiveSeq(t *testing.T) {
 	se.Emit(agent.Event{Kind: agent.EventTurnStarted, SessionID: "s"})
 	se.Emit(agent.Event{Kind: agent.EventThinking, SessionID: "s"})
 	se.Emit(agent.Event{Kind: agent.EventTokenDelta, SessionID: "s"}) // ephemeral
+	se.Emit(agent.Event{Kind: agent.EventReasoningDelta, SessionID: "s"})
 
-	if len(live) != 3 {
-		t.Fatalf("live got %d events, want 3", len(live))
+	if len(live) != 4 {
+		t.Fatalf("live got %d events, want 4", len(live))
 	}
 	if live[0].Seq != 1 || live[1].Seq != 2 {
 		t.Errorf("live seqs = %d,%d want 1,2", live[0].Seq, live[1].Seq)
 	}
 	if live[2].Seq != 0 {
 		t.Errorf("token_delta live seq = %d, want 0 (not persisted)", live[2].Seq)
+	}
+	if live[3].Seq != 0 {
+		t.Errorf("reasoning_delta live seq = %d, want 0 (not persisted)", live[3].Seq)
 	}
 	if len(events.records) != 2 {
 		t.Errorf("persisted %d events, want 2 (token_delta skipped)", len(events.records))

@@ -74,7 +74,8 @@ agent-core (Layer 1)          agent-server (Layer 2)         frontends (Layer 3)
 | `model_started` | — | 即将调模型（计时锚点） |
 | `model_finished` | `prompt_tokens` `completion_tokens` `total_tokens` `billing_units` `elapsed_ms` `err` | 模型返回；tokens/Units 均为本次 invocation，客户端按 turn 累加。`prompt_tokens` 是当前上下文大小，不能标成整轮累计。 |
 | `token_delta` | `text` | 流式文本增量（高频、**不持久化**） |
-| `thinking` | `text` | 推理文本 |
+| `reasoning_delta` | `text` | provider 可见推理增量（高频、**不持久化**、无 `seq`） |
+| `thinking` | `text` | 单次 invocation 的完整推理快照（持久化）；替换 live reasoning buffer，不能 append |
 | `tool_started` | `call_id` `step` `tool_name` `tool_args` | 工具开始 |
 | `tool_finished` | `call_id` `step` `tool_name` `observation` `err` | 工具结束 |
 | `observed` | `call_id` `step` `tool_name` `observation` `failure` | 结果被分类（`failure` = FailureType，如 `compile`） |

@@ -129,6 +129,7 @@ type ollamaChatResponse struct {
 	Message   struct {
 		Role      string           `json:"role"`
 		Content   string           `json:"content"`
+		Thinking  string           `json:"thinking,omitempty"`
 		ToolCalls []ollamaToolCall `json:"tool_calls,omitempty"`
 	} `json:"message"`
 	Done            bool `json:"done"`
@@ -386,9 +387,10 @@ func (p *OllamaProvider) Complete(ctx context.Context, req Request) (Response, e
 	}
 
 	return Response{
-		Content:      strings.TrimSpace(or.Message.Content),
-		ToolCalls:    toolCalls,
-		FinishReason: finish,
+		Content:          strings.TrimSpace(or.Message.Content),
+		ReasoningContent: strings.TrimSpace(or.Message.Thinking),
+		ToolCalls:        toolCalls,
+		FinishReason:     finish,
 		Usage: Usage{
 			PromptTokens:     or.PromptEvalCount,
 			CompletionTokens: or.EvalCount,
@@ -402,9 +404,9 @@ func (p *OllamaProvider) Complete(ctx context.Context, req Request) (Response, e
 
 // CompleteStream sends a streaming chat request to Ollama's /api/chat.
 // Ollama's native streaming emits NDJSON where each line carries the next
-// token(s) as a content delta (NOT accumulated text). Each delta is passed
-// to onText as-is and accumulated into the final Response.Content.
-func (p *OllamaProvider) CompleteStream(ctx context.Context, req Request, onText func(string)) (Response, error) {
+// token(s) as a content or thinking delta (NOT accumulated text). Each delta is
+// passed to the matching callback and accumulated into the final Response.
+func (p *OllamaProvider) CompleteStream(ctx context.Context, req Request, onText, onReasoning func(string)) (Response, error) {
 	body := ollamaChatRequest{
 		Model:     req.Model,
 		Messages:  toOllamaMessages(req.Messages),
@@ -441,6 +443,7 @@ func (p *OllamaProvider) CompleteStream(ctx context.Context, req Request, onText
 
 	var (
 		content   strings.Builder
+		reasoning strings.Builder
 		toolCalls []ToolCall
 		usage     Usage
 	)
@@ -464,6 +467,13 @@ func (p *OllamaProvider) CompleteStream(ctx context.Context, req Request, onText
 			content.WriteString(delta)
 			if onText != nil {
 				onText(delta)
+			}
+		}
+		if chunk.Message.Thinking != "" {
+			delta := chunk.Message.Thinking
+			reasoning.WriteString(delta)
+			if onReasoning != nil {
+				onReasoning(delta)
 			}
 		}
 
@@ -500,9 +510,10 @@ func (p *OllamaProvider) CompleteStream(ctx context.Context, req Request, onText
 	}
 
 	return Response{
-		Content:      finalContent,
-		ToolCalls:    toolCalls,
-		FinishReason: finish,
-		Usage:        usage,
+		Content:          finalContent,
+		ReasoningContent: strings.TrimSpace(reasoning.String()),
+		ToolCalls:        toolCalls,
+		FinishReason:     finish,
+		Usage:            usage,
 	}, nil
 }

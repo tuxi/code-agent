@@ -98,6 +98,7 @@ func TestOllamaComplete(t *testing.T) {
 			Message: struct {
 				Role      string           `json:"role"`
 				Content   string           `json:"content"`
+				Thinking  string           `json:"thinking,omitempty"`
 				ToolCalls []ollamaToolCall `json:"tool_calls,omitempty"`
 			}{
 				Role:    "assistant",
@@ -208,6 +209,7 @@ func TestOllamaComplete_EchoesToolCallArgs(t *testing.T) {
 			Message: struct {
 				Role      string           `json:"role"`
 				Content   string           `json:"content"`
+				Thinking  string           `json:"thinking,omitempty"`
 				ToolCalls []ollamaToolCall `json:"tool_calls,omitempty"`
 			}{Role: "assistant", Content: "done"},
 			Done:            true,
@@ -262,6 +264,7 @@ func TestOllamaComplete_TextOnly(t *testing.T) {
 			Message: struct {
 				Role      string           `json:"role"`
 				Content   string           `json:"content"`
+				Thinking  string           `json:"thinking,omitempty"`
 				ToolCalls []ollamaToolCall `json:"tool_calls,omitempty"`
 			}{Role: "assistant", Content: "Hello!"},
 			Done:            true,
@@ -315,6 +318,8 @@ func TestOllamaCompleteStream(t *testing.T) {
 	// (the next token/word), NOT accumulated text. Tool calls and usage
 	// arrive in the final chunk.
 	chunks := []string{
+		`{"model":"m","created_at":"2024-01-01T00:00:00Z","message":{"role":"assistant","content":"","thinking":"Check"},"done":false}`,
+		`{"model":"m","created_at":"2024-01-01T00:00:00Z","message":{"role":"assistant","content":"","thinking":" tools"},"done":false}`,
 		`{"model":"m","created_at":"2024-01-01T00:00:00Z","message":{"role":"assistant","content":"I"},"done":false}`,
 		`{"model":"m","created_at":"2024-01-01T00:00:00Z","message":{"role":"assistant","content":" will"},"done":false}`,
 		`{"model":"m","created_at":"2024-01-01T00:00:00Z","message":{"role":"assistant","content":" check."},"done":false}`,
@@ -336,6 +341,7 @@ func TestOllamaCompleteStream(t *testing.T) {
 	p := NewOllamaProvider(srv.URL)
 
 	var deltas []string
+	var reasoningDeltas []string
 	var mu sync.Mutex
 	onText := func(s string) {
 		mu.Lock()
@@ -348,7 +354,7 @@ func TestOllamaCompleteStream(t *testing.T) {
 		Temperature: 0.2,
 		Messages:    []Message{{Role: RoleUser, Content: "list files"}},
 		Tools:       []ToolDefinition{{Type: "function", Function: ToolFunction{Name: "list_files"}}},
-	}, onText)
+	}, onText, func(s string) { reasoningDeltas = append(reasoningDeltas, s) })
 	if err != nil {
 		t.Fatalf("CompleteStream: %v", err)
 	}
@@ -359,6 +365,9 @@ func TestOllamaCompleteStream(t *testing.T) {
 	}
 	if len(deltas) != 3 {
 		t.Errorf("expected 3 deltas (I /  will /  check.), got %d: %v", len(deltas), deltas)
+	}
+	if strings.Join(reasoningDeltas, "") != "Check tools" || resp.ReasoningContent != "Check tools" {
+		t.Errorf("reasoning deltas=%q response=%q", reasoningDeltas, resp.ReasoningContent)
 	}
 
 	// Verify final response.
@@ -410,6 +419,7 @@ func TestOllamaComplete_QwenJSONFallback(t *testing.T) {
 			Message: struct {
 				Role      string           `json:"role"`
 				Content   string           `json:"content"`
+				Thinking  string           `json:"thinking,omitempty"`
 				ToolCalls []ollamaToolCall `json:"tool_calls,omitempty"`
 			}{
 				Role:    "assistant",
@@ -540,6 +550,7 @@ func TestOllamaComplete_QwenXMLFallback(t *testing.T) {
 			Message: struct {
 				Role      string           `json:"role"`
 				Content   string           `json:"content"`
+				Thinking  string           `json:"thinking,omitempty"`
 				ToolCalls []ollamaToolCall `json:"tool_calls,omitempty"`
 			}{
 				Role:    "assistant",

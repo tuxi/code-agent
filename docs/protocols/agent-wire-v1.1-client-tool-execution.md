@@ -674,7 +674,7 @@ func (r Router) Route(ctx context.Context, data []byte) {
   "type": "hello",
   "protocol_version": 1,
   "server": "codeagent/deepseek-v4",
-  "capabilities": ["streaming", "thinking", "tool_streaming", "plan_mode", "subagents", "session_resume", "client_tool_execution"]
+  "capabilities": ["streaming", "thinking", "reasoning_streaming", "tool_streaming", "plan_mode", "subagents", "session_resume", "client_tool_execution"]
 }
 ```
 
@@ -684,6 +684,7 @@ func (r Router) Route(ctx context.Context, data []byte) {
 |---|---|---|
 | `streaming` | 支持 `token_delta` 流式输出 | ✅ |
 | `thinking` | 支持 `thinking` 推理文本事件 | ✅ |
+| `reasoning_streaming` | 支持瞬态 `reasoning_delta` 推理增量；最终由 `thinking` 快照替换 | ✅ |
 | `tool_streaming` | 支持 `tool_stdout` / `tool_stderr` 实时输出 | ✅ |
 | `plan_mode` | 支持 propose_plan / plan_approval_request 流程 | ✅ |
 | `subagents` | 支持 `task_started` / `task_finished` 子代理事件 | ✅ |

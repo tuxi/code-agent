@@ -167,7 +167,7 @@ v1 只含 user/assistant；工具/系统消息的全量保真属于 P1-B。
 | `session_id` | string | 产生事件的会话（job 事件此处为 **job id**） |
 | `parent_session_id` | string | 仅 subagent 事件：父会话，用于嵌套渲染 |
 | `turn_id` | string | 产生事件的 turn，用于把一轮的事件聚到一起 |
-| `seq` | int | 会话内**单调递增**的事件序号（v1.2 §4 已落地），直播帧与 `GET /events` 回放帧一致。续传时记录收到的**最大 `seq`**，用 `GET /events?since=<seq>` 只取增量。⚠️ 单调但**有空洞**（底层是跨会话共享的自增 id），**不要**用"已收条数"当 N；`token_delta` 不带（瞬态、不持久化） |
+| `seq` | int | 会话内**单调递增**的事件序号（v1.2 §4 已落地），直播帧与 `GET /events` 回放帧一致。续传时记录收到的**最大 `seq`**，用 `GET /events?since=<seq>` 只取增量。⚠️ 单调但**有空洞**（底层是跨会话共享的自增 id），**不要**用"已收条数"当 N；`token_delta` / `reasoning_delta` 不带（瞬态、不持久化） |
 
 各 `kind` 的额外字段：
 
@@ -177,7 +177,8 @@ v1 只含 user/assistant；工具/系统消息的全量保真属于 P1-B。
 | `model_started` | — | 即将调模型 |
 | `model_finished` | `prompt_tokens` `completion_tokens` `total_tokens` `billing_units` `elapsed_ms` `err` | 模型返回（单次 invocation）；客户端按 turn 累加 total/Units，prompt 仅表示当前上下文。 |
 | `token_delta` | `text` | **流式文本增量**，高频、不持久化；累加成助手回复 |
-| `thinking` | `text` | 推理文本 |
+| `reasoning_delta` | `text` | **流式推理增量**，高频、不持久化；按 `invocation_id` 累加到 live reasoning buffer；若到 `model_finished` 仍未收到 `thinking`，丢弃该 buffer |
+| `thinking` | `text` | 单次 invocation 的完整 provider-visible 推理快照（持久化）；必须替换 live buffer，不能继续 append |
 | `tool_started` | `call_id` `step` `tool_name` `tool_args` | 工具开始（`tool_args` 是**结构化 JSON 对象**） |
 | `tool_finished` | `call_id` `step` `tool_name` `observation` `err` | 工具结束 |
 | `observed` | `call_id` `step` `tool_name` `observation` `failure` | 结果被分类（`failure` 如 `compile`） |
@@ -193,7 +194,30 @@ v1 只含 user/assistant；工具/系统消息的全量保真属于 P1-B。
 | `job_output` | `session_id`(=job id) `chunk` | job 输出片段（stdout+stderr 交错，服务端已按 ~4KB/750ms 合并，不会每行一条）。**仅 job 分区**，父会话流里没有 |
 | `job_finished` | `session_id`(=job id) `call_id` `text` `elapsed_ms` `exit_code` `err` | job 终态（`call_id` 同 `job_started`）。`text` ∈ `exited`（成功）\| `failed` \| `canceled`；`exit_code` 仅失败时出现（>0 = 命令非零退出，-1 = 启动失败/被信号杀死；成功时省略）；`err` 是配套的人读描述（如 `exit code 2`），仅失败时出现。形状以 golden `internal/server/testdata/job_*.json` 为准 |
 
-> 渲染建议：按 `turn_id` 把一轮的事件聚成一个气泡；`token_delta` 实时拼接成助手文本；subagent 事件按 `parent_session_id` 折叠成子流。job 终态三分支的入口卡/查看器顶栏显示：`exited` → 成功；`failed` → 失败（用 `exit_code` 细分：-1 显示"被终止/启动失败"，>0 显示"退出码 N"）；`canceled` → 已取消（用户/模型主动停止，不是失败）。
+> 渲染建议：按 `turn_id` 聚合一轮、按 `invocation_id` 聚合一次模型调用。`token_delta` 实时拼正文；`reasoning_delta` 实时拼可折叠推理；`thinking` 到达时替换推理 buffer。subagent 事件按 `parent_session_id` 折叠成子流。job 终态三分支的入口卡/查看器顶栏显示：`exited` → 成功；`failed` → 失败（用 `exit_code` 细分：-1 显示"被终止/启动失败"，>0 显示"退出码 N"）；`canceled` → 已取消（用户/模型主动停止，不是失败）。
+
+> **2026-07-19 reasoning 语义修正：**旧 Runtime 曾错误地把带 tool call
+> 的普通 assistant `content` 发成 `thinking`。该行为已移除；客户端不能再依赖
+> `thinking` 承载普通正文。新版 reducer 应按以下规则处理：
+
+```swift
+case "model_started":
+    invocations[id].liveReasoning = ""
+    invocations[id].hasReasoningSnapshot = false
+case "reasoning_delta":
+    invocations[id].liveReasoning += event.text
+case "thinking":
+    invocations[id].liveReasoning = event.text      // replace, never append
+    invocations[id].hasReasoningSnapshot = true
+case "model_finished":
+    if !invocations[id].hasReasoningSnapshot {
+        invocations[id].liveReasoning = ""          // discard orphan preview
+    }
+```
+
+普通 assistant 正文只来自 `token_delta` 的 live preview 和
+`turn_finished.text` 的权威快照。reasoning 可能是供应商摘要、为空或被隐藏，
+客户端不能把它拼进最终回答，也不能假设每次 invocation 都存在。
 
 #### 聚合身份（reducer 必读）
 
@@ -262,8 +286,9 @@ turn 进行中，副作用工具（如 `run_command`、`apply_patch`）需要确
 client → {type:send_message, text:"..."}
 server → turn_started
 server → model_started
+server → reasoning_delta × N    （实时拼接可折叠推理；可能没有）
 server → token_delta × N        （流式拼接助手文本）
-server → thinking?              （可能有）
+server → thinking?              （完整推理快照，替换 live buffer）
 server → model_finished
 server → turn_finished {text}   ← 本轮结束，可发下一条
 ```
@@ -292,7 +317,7 @@ server → turn_finished {text:"已推送"}
 5. **忽略未知 `kind` 和未知字段**（前向兼容）；版本只在 `hello` 协商一次，别期望逐事件带版本。收到不认识的 `kind` 应 no-op，**不要崩**——服务端新增事件不该让旧客户端挂掉。
 6. **审批是阻塞往返**：收到 `approval_request` 即代表 turn 在等你回 `approval_response`；默认无期限（帧里带 `deadline_ms` 时才有超时）。重连后同 `id` 的重发帧要去重。
 7. **一轮一发**：`turn_finished` 之前不要再 `send_message`。
-8. **断线重连**：WS 重连只给新 `hello`。用 `seq` 精确续传（v1.2 §4 起可用，本条旧文"`seq` 是 v2 预留"已过时）：断线前记住收到的最大 `seq`，重连后先 `GET /events?since=<seq>` 补缺口、再接实时流（去重同 §2 恢复流程）。`token_delta` 不持久化，断线期间的打字机增量补不回来——用补回的 `turn_finished.text` 还原最终文本即可。
+8. **断线重连**：WS 重连只给新 `hello`。用 `seq` 精确续传（v1.2 §4 起可用，本条旧文"`seq` 是 v2 预留"已过时）：断线前记住收到的最大 `seq`，重连后先 `GET /events?since=<seq>` 补缺口、再接实时流（去重同 §2 恢复流程）。`token_delta` / `reasoning_delta` 不持久化，断线期间的增量补不回来——分别用补回的 `turn_finished.text` / `thinking.text` 还原权威快照即可。
 
 ---
 

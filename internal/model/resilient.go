@@ -162,13 +162,13 @@ func (p *ResilientProvider) Complete(ctx context.Context, req Request) (resp Res
 	return Response{}, fmt.Errorf("model call failed after %d attempt(s): %w", attempts, err)
 }
 
-// CompleteStream streams the inner provider's text when it supports streaming,
+// CompleteStream streams the inner provider's text and reasoning when supported,
 // recording one RequestStat on success. It deliberately does NOT retry a stream:
 // a half-emitted stream cannot be cleanly replayed (the renderer already showed
 // it). On any failure it falls back to the fully resilient, retried Complete — so
 // the result is always recoverable and the resilience guarantee is untouched;
 // only the live preview is best-effort.
-func (p *ResilientProvider) CompleteStream(ctx context.Context, req Request, onText func(string)) (Response, error) {
+func (p *ResilientProvider) CompleteStream(ctx context.Context, req Request, onText, onReasoning func(string)) (Response, error) {
 	if p.Inner == nil {
 		return Response{}, errors.New("resilient provider: nil inner provider")
 	}
@@ -183,7 +183,7 @@ func (p *ResilientProvider) CompleteStream(ctx context.Context, req Request, onT
 		attemptCtx, cancel = context.WithTimeout(ctx, p.Timeout)
 	}
 	start := time.Now()
-	resp, err := sp.CompleteStream(attemptCtx, req, onText)
+	resp, err := sp.CompleteStream(attemptCtx, req, onText, onReasoning)
 	if cancel != nil {
 		cancel()
 	}

@@ -324,6 +324,12 @@ func (m model) handleEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 		m.streaming += ev.Text
 		return m, waitForEvent(m.b.events)
 	}
+	// Reasoning deltas update only the current step's live expandable body. The
+	// persisted EventThinking snapshot replaces this buffer when the call ends.
+	if ev.Kind == agent.EventReasoningDelta {
+		m.tr.step.thinking += ev.Text
+		return m, waitForEvent(m.b.events)
+	}
 
 	// Live UI state (spinner, gauge, skills) — separate from transcript rendering.
 	switch ev.Kind {

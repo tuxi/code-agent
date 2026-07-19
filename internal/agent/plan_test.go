@@ -133,8 +133,8 @@ func TestEnterPlanModeTransitionsState(t *testing.T) {
 	if runner.PlanState != PlanStatusPlanning {
 		t.Fatalf("PlanState should be Planning after enter_plan_mode, got %v", runner.PlanState)
 	}
-	if runner.lastThinking != "Here is the plan..." {
-		t.Fatalf("lastThinking not captured, got %q", runner.lastThinking)
+	if runner.lastAssistantText != "Here is the plan..." {
+		t.Fatalf("lastAssistantText not captured, got %q", runner.lastAssistantText)
 	}
 	if res.Final != "Here is the plan..." {
 		t.Fatalf("unexpected final answer: %q", res.Final)
@@ -199,8 +199,8 @@ func TestProposePlanApprovesAndTransitions(t *testing.T) {
 	if runner.PlanState != PlanStatusPlanning {
 		t.Fatalf("expected Planning state, got %v", runner.PlanState)
 	}
-	if runner.lastThinking != "# Plan\n\n1. Add login\n2. Add middleware" {
-		t.Fatalf("unexpected lastThinking: %q", runner.lastThinking)
+	if runner.lastAssistantText != "# Plan\n\n1. Add login\n2. Add middleware" {
+		t.Fatalf("unexpected lastAssistantText: %q", runner.lastAssistantText)
 	}
 
 	// Second turn: propose the plan (no PlanApprover → auto-approve).
@@ -233,10 +233,10 @@ func TestProposePlanUsesCanonicalPlanFile(t *testing.T) {
 
 	ref := &RunnerRef{}
 	runner := &Runner{
-		PlanState:     PlanStatusPlanning,
-		WorkspaceRoot: root,
-		planTitle:     "Canonical plan",
-		lastThinking:  "The plan is ready at .codeagent/plans/canonical.md.",
+		PlanState:         PlanStatusPlanning,
+		WorkspaceRoot:     root,
+		planTitle:         "Canonical plan",
+		lastAssistantText: "The plan is ready at .codeagent/plans/canonical.md.",
 	}
 	ref.R = runner
 	tool := NewProposePlanTool(ref, plansDir)

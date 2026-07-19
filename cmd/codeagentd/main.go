@@ -28,6 +28,7 @@ import (
 var defaultCapabilities = []string{
 	"streaming",
 	"thinking",
+	"reasoning_streaming",
 	"tool_streaming",
 	"plan_mode",
 	"subagents",

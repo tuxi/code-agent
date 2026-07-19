@@ -64,10 +64,9 @@ type Runner struct {
 	// tools run exactly as before.
 	Hook ToolHook
 
-	// Stream, when true AND the provider supports it, streams the model's text as
-	// it generates (8.6) — emitting EventTokenDelta for a renderer to show live.
-	// The returned Response is identical to the non-streamed one, so the loop is
-	// unaffected. Set by the TUI; run/repl leave it off.
+	// Stream, when true AND the provider supports it, streams final-answer text
+	// and provider-visible reasoning via their distinct delta events. The returned
+	// Response remains identical to the non-streamed one.
 	Stream bool
 
 	// RemindSkills, when true, injects a one-shot ephemeral reminder on the first
@@ -119,10 +118,10 @@ type Runner struct {
 	// layer can wire it from planModeToolNames after runner construction.
 	PlanTools *tools.Registry
 
-	// lastThinking stores the model's most recent thinking text (the response
-	// content, or the live-streamed text when the call failed) so propose_plan
-	// can extract the plan body without duplicating it in args.
-	lastThinking string
+	// lastAssistantText stores the model's most recent ordinary assistant
+	// content so propose_plan can use it as a compatibility fallback without
+	// confusing user-visible text with provider reasoning.
+	lastAssistantText string
 
 	Compactor session.Compactor
 
@@ -709,37 +708,33 @@ func (r *Runner) drive(ctx context.Context, sess *session.Session) (TurnResult, 
 		r.emitInvocationID = newInvocationID()
 		r.emit(Event{Kind: EventModelStarted})
 		modelStart := time.Now()
-		var streamed strings.Builder
+		var streamedText, streamedReasoning strings.Builder
 		resp, err := r.complete(ctx, model.Request{
 			Model:       r.ModelName,
 			Temperature: r.Temperature,
 			Messages:    msgs,
 			Tools:       toolDefs,
-		}, &streamed)
-		// Capture the model's text for plan extraction and thinking events.
-		// Prefer the complete response, but fall back to what was streamed live
-		// when the call failed before a Response could be assembled (e.g. a
-		// mid-stream timeout) — otherwise the thinking shown live would be lost
-		// from the persisted event log on a failed turn.
-		thinking := resp.Content
-		if thinking == "" {
-			thinking = strings.TrimSpace(streamed.String())
+		}, &streamedText, &streamedReasoning)
+
+		// Ordinary assistant content and provider reasoning are independent
+		// channels. Keep the former only for propose_plan's legacy content fallback;
+		// publish the latter as the authoritative, persisted thinking snapshot.
+		assistantText := resp.Content
+		if assistantText == "" && err != nil {
+			assistantText = strings.TrimSpace(streamedText.String())
 		}
-		// Emit EventThinking BEFORE EventModelFinished so the logical event
-		// order is model_started → thinking → model_finished, and the at
-		// timestamp reflects when thinking was produced, not when the turn
-		// finished processing it.
-		if thinking != "" {
-			r.lastThinking = thinking
+		if assistantText != "" {
+			r.lastAssistantText = assistantText
 		}
-		// Persist thinking when the model also requested tools (a finishing turn's
-		// text is persisted as TurnFinished instead, so emitting here would
-		// duplicate it), OR when the call failed — a failed turn produces no
-		// TurnFinished, so this is the only chance to retain the live thinking.
-		// A context cancellation is excluded: its partial thinking is re-generated
-		// when the turn resumes, so emitting it here is noise on a clean suspend.
-		if thinking != "" && (resp.HasToolCalls() || (err != nil && !errors.Is(err, context.Canceled))) {
-			r.emit(Event{Kind: EventThinking, Text: thinking})
+		reasoning := resp.ReasoningContent
+		if reasoning == "" && err != nil {
+			reasoning = strings.TrimSpace(streamedReasoning.String())
+		}
+		// A clean cancellation is resumed and regenerated, so persisting its
+		// incomplete reasoning would add noise. Other failures retain the partial
+		// snapshot for diagnostics and faithful transcript replay.
+		if reasoning != "" && !errors.Is(err, context.Canceled) {
+			r.emit(Event{Kind: EventThinking, Text: reasoning})
 		}
 		// Always emit ModelFinished, even on error: it pairs with ModelStarted, so
 		// a live renderer's "Thinking…" ticker is always stopped (no leaked timer).
@@ -1120,7 +1115,10 @@ func (r *Runner) finalAnswerAfterLimit(ctx context.Context, sess *session.Sessio
 		Temperature: r.Temperature,
 		Messages:    msgs,
 		// No Tools: the model must answer with text, not request more tools.
-	}, nil)
+	}, nil, nil)
+	if resp.ReasoningContent != "" && !errors.Is(err, context.Canceled) {
+		r.emit(Event{Kind: EventThinking, Text: resp.ReasoningContent})
+	}
 	r.emit(Event{Kind: EventModelFinished, PromptTokens: resp.Usage.PromptTokens, CompletionTokens: resp.Usage.CompletionTokens, TotalTokens: resp.Usage.TotalTokens, BillingUnits: resp.Usage.BillingUnits, Elapsed: time.Since(start), Err: errString(err)})
 	tok := resp.Usage.PromptTokens + resp.Usage.CompletionTokens
 	// A leaked tool-call markup (deepseek, when forced to answer with no tools) is
@@ -1206,16 +1204,10 @@ func errString(err error) string {
 	return err.Error()
 }
 
-// complete calls the model, streaming its text live (8.6) when Stream is set and
-// the provider supports it — emitting EventTokenDelta for each text delta. Either
-// way it returns the same complete Response, so the loop's control flow is
-// identical whether or not streaming happened.
-// complete calls the model. When streaming, each text delta is mirrored into
-// streamed (when non-nil) so the caller retains the live thinking text even if
-// the call ultimately fails — the provider returns an empty Response on a mid-
-// stream read error, discarding its own accumulation, so this is the only copy
-// that survives a failed turn.
-func (r *Runner) complete(ctx context.Context, req model.Request, streamed *strings.Builder) (model.Response, error) {
+// complete calls the model and keeps final-answer text and provider-visible
+// reasoning in separate channels. The optional builders retain partial streams
+// when a provider fails before it can return its accumulated Response.
+func (r *Runner) complete(ctx context.Context, req model.Request, streamedText, streamedReasoning *strings.Builder) (model.Response, error) {
 	// Every model call goes through here, so this is the one place the current
 	// date is injected — the main loop, the step-limit answer, and subagents all
 	// get it without each call site remembering to.
@@ -1227,10 +1219,15 @@ func (r *Runner) complete(ctx context.Context, req model.Request, streamed *stri
 	if r.Stream {
 		if sp, ok := r.Model.(model.StreamingProvider); ok {
 			return sp.CompleteStream(ctx, req, func(delta string) {
-				if streamed != nil {
-					streamed.WriteString(delta)
+				if streamedText != nil {
+					streamedText.WriteString(delta)
 				}
 				r.emit(Event{Kind: EventTokenDelta, Text: delta})
+			}, func(delta string) {
+				if streamedReasoning != nil {
+					streamedReasoning.WriteString(delta)
+				}
+				r.emit(Event{Kind: EventReasoningDelta, Text: delta})
 			})
 		}
 	}

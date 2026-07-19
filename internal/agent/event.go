@@ -17,25 +17,26 @@ import (
 type EventKind string
 
 const (
-	EventTurnAccepted  EventKind = "turn_accepted"
-	EventTurnQueued    EventKind = "turn_queued"
-	EventTurnStarted   EventKind = "turn_started"
-	EventModelStarted  EventKind = "model_started"  // about to call the model
-	EventModelFinished EventKind = "model_finished" // model returned (carries latency)
-	EventTokenDelta    EventKind = "token_delta"    // a streamed text delta (8.6); ephemeral, not persisted
-	EventThinking      EventKind = "thinking"       // model produced reasoning text
-	EventToolStarted   EventKind = "tool_started"
-	EventToolStdout    EventKind = "tool_stdout" // a stdout chunk during tool execution
-	EventToolStderr    EventKind = "tool_stderr" // a stderr chunk during tool execution
-	EventToolFinished  EventKind = "tool_finished"
-	EventObserved      EventKind = "observed"      // a tool result was classified (P4.1)
-	EventAutoApproved  EventKind = "auto_approved" // auto mode granted a side-effecting call without a human prompt (audit; p9.1 §12.3)
-	EventReflected     EventKind = "reflected"     // a finalize self-check fired (P4.3)
-	EventPreMutation   EventKind = "pre_mutation"  // a pre-mutation root-cause self-check fired (P4.3-R Move 3)
-	EventVerified      EventKind = "verified"      // a deterministic finalize verify ran (P4.3-R Move 2)
-	EventSkillLoaded   EventKind = "skill_loaded"  // a skill body was loaded (P6)
-	EventTodoUpdated   EventKind = "todo_updated"  // the model's task checklist changed (8.4)
-	EventCompacted     EventKind = "compacted"
+	EventTurnAccepted   EventKind = "turn_accepted"
+	EventTurnQueued     EventKind = "turn_queued"
+	EventTurnStarted    EventKind = "turn_started"
+	EventModelStarted   EventKind = "model_started"   // about to call the model
+	EventModelFinished  EventKind = "model_finished"  // model returned (carries latency)
+	EventTokenDelta     EventKind = "token_delta"     // streamed final-answer text; ephemeral, not persisted
+	EventReasoningDelta EventKind = "reasoning_delta" // streamed provider-visible reasoning; ephemeral, not persisted
+	EventThinking       EventKind = "thinking"        // complete provider-visible reasoning snapshot; persisted
+	EventToolStarted    EventKind = "tool_started"
+	EventToolStdout     EventKind = "tool_stdout" // a stdout chunk during tool execution
+	EventToolStderr     EventKind = "tool_stderr" // a stderr chunk during tool execution
+	EventToolFinished   EventKind = "tool_finished"
+	EventObserved       EventKind = "observed"      // a tool result was classified (P4.1)
+	EventAutoApproved   EventKind = "auto_approved" // auto mode granted a side-effecting call without a human prompt (audit; p9.1 §12.3)
+	EventReflected      EventKind = "reflected"     // a finalize self-check fired (P4.3)
+	EventPreMutation    EventKind = "pre_mutation"  // a pre-mutation root-cause self-check fired (P4.3-R Move 3)
+	EventVerified       EventKind = "verified"      // a deterministic finalize verify ran (P4.3-R Move 2)
+	EventSkillLoaded    EventKind = "skill_loaded"  // a skill body was loaded (P6)
+	EventTodoUpdated    EventKind = "todo_updated"  // the model's task checklist changed (8.4)
+	EventCompacted      EventKind = "compacted"
 	// EventContextPruned: tier-0 deterministic pruning ran (P12.c) — old tool
 	// results truncated / think-blocks stripped outside the protected tail, with
 	// no LLM call. SavedTokens carries the approximate reclaimed size; the true
@@ -149,7 +150,7 @@ type Event struct {
 	Todos []tools.Todo
 
 	// Model / thinking.
-	Text               string        // reasoning text (Thinking) or final answer (TurnFinished)
+	Text               string        // reasoning delta/snapshot or final answer, selected by Kind
 	PromptTokens       int           // ModelFinished: current invocation context size
 	CompletionTokens   int           // ModelFinished: current invocation output
 	TotalTokens        int           // ModelFinished: current invocation provider total

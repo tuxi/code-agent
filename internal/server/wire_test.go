@@ -30,6 +30,17 @@ func TestTurnQueuedWireIncludesReason(t *testing.T) {
 	}
 }
 
+func TestReasoningDeltaWirePreservesInvocationAndText(t *testing.T) {
+	got := toWire(agent.Event{
+		Kind: agent.EventReasoningDelta, At: fixedAt,
+		SessionID: "session_a", TurnID: "turn_a", InvocationID: "inv_a",
+		Text: "inspect auth flow",
+	})
+	if got.Kind != "reasoning_delta" || got.InvocationID != "inv_a" || got.Text != "inspect auth flow" {
+		t.Fatalf("reasoning_delta wire=%+v", got)
+	}
+}
+
 func TestToWireManagedToolUsage(t *testing.T) {
 	usage := &tools.ToolUsage{
 		ToolCallID: "call_web_1", ToolName: "web_search", Provider: "tavily",

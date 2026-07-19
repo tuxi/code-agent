@@ -32,9 +32,15 @@ func (tr *transcript) render(ev agent.Event, width int) []string {
 
 	case agent.EventModelFinished:
 		tr.step.elapsed = ev.Elapsed
+		if !tr.step.thinkingFinal {
+			tr.step.thinking = ""
+		}
 
 	case agent.EventThinking:
-		tr.step.thinking += ev.Text // captured for step expand in the live region
+		// Thinking is the complete persisted snapshot. Replace any ephemeral
+		// reasoning_delta preview instead of appending and duplicating it.
+		tr.step.thinking = ev.Text
+		tr.step.thinkingFinal = true
 
 	case agent.EventToolStarted, agent.EventObserved:
 		tr.timeline.Apply(ev)
