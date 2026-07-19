@@ -1,0 +1,22 @@
+{
+  "type": "agent_input",
+  "kind": "text",
+  "request_id": "req_user_asset_004",
+  "text": "比较这两张图片",
+  "assets": [
+    {
+      "asset_id": 10004,
+      "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "kind": "image",
+      "mime_type": "image/jpeg",
+      "filename": "before.jpg"
+    },
+    {
+      "asset_id": 10005,
+      "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "kind": "image",
+      "mime_type": "image/png",
+      "filename": "after.png"
+    }
+  ]
+}

@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -96,6 +97,14 @@ type WSHandler struct {
 	// without auth (uses base provider credential chain).
 	CredentialStore func(sessionID string, cred credential.Resolver)
 
+	// CapabilityResolver returns credential-scoped capabilities for this new
+	// connection. It runs before hello; failures must return no capability.
+	CapabilityResolver func(ctx context.Context, cred credential.Resolver) []string
+
+	// SessionReady runs after this connection has restored its conversation
+	// credential. Durable work and credential-scoped outboxes may resume here.
+	SessionReady func(ctx context.Context, sessionID string, cred credential.Resolver)
+
 	// Session-scoped approvers that survive connection changes. Keyed by session ID.
 	mu          sync.Mutex
 	approvers   map[string]*RemoteApprover
@@ -168,18 +177,28 @@ func (h *WSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Extract the JWT from the Authorization header and store it for this
 	// session. The credential flows through TurnExecutor → RuntimeContext →
 	// ServeRunBuilder.Build() → the turn's model provider.
+	var connectionCred credential.Resolver
 	if h.CredentialStore != nil {
 		if token := bearerToken(r); token != "" {
 			target := credential.Target{Namespace: "gateway", Name: "default"}
 			resolver := credential.StaticResolver{
 				target: {Type: credential.Bearer, Secret: token},
 			}
+			connectionCred = resolver
 			h.CredentialStore(sessionID, resolver)
 		} else {
 			fmt.Fprintf(os.Stderr, "[auth] ws: no Authorization header for session %s\n", sessionID)
 		}
 	} else {
 		fmt.Fprintf(os.Stderr, "[auth] ws: CredentialStore is nil — per-session auth disabled\n")
+	}
+	capabilities := append([]string(nil), h.Capabilities...)
+	if h.CapabilityResolver != nil {
+		for _, capability := range h.CapabilityResolver(ctx, connectionCred) {
+			if !hasCapability(capabilities, capability) {
+				capabilities = append(capabilities, capability)
+			}
+		}
 	}
 
 	// Get or create the session-scoped RemoteApprover. On a first connection
@@ -212,6 +231,8 @@ func (h *WSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		Approvals:   revisionApprovalResolver{handler: h, sessionID: sessionID, revision: controlRevision, target: approver},
 		ToolResults: revisionToolResultResolver{handler: h, sessionID: sessionID, revision: controlRevision, target: waiter},
 		Prompts:     h.Prompts,
+		Rejections:  frameInputRejectionSink{sink: sink},
+		ImageInput:  hasCapability(capabilities, "image_input"),
 	}
 	go func() {
 		defer cancel()
@@ -224,13 +245,35 @@ func (h *WSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	bridge := NewBridge(sink).WithCapabilities(h.Capabilities)
-	runErr := bridge.Run(ctx, sess, h.serverName())
+	bridge := NewBridge(sink).WithCapabilities(capabilities)
+	runErr := bridge.RunReady(ctx, sess, h.serverName(), func() {
+		if h.SessionReady != nil {
+			h.SessionReady(ctx, sessionID, connectionCred)
+		}
+	})
 	if runErr == nil || ctx.Err() != nil {
 		conn.Close(websocket.StatusNormalClosure, "")
 		return
 	}
 	conn.Close(websocket.StatusInternalError, "stream error")
+}
+
+type frameInputRejectionSink struct{ sink FrameSink }
+
+func (s frameInputRejectionSink) RejectInput(rejected AgentInputRejected) {
+	frame, err := json.Marshal(rejected)
+	if err == nil {
+		_ = s.sink.Send(frame)
+	}
+}
+
+func hasCapability(capabilities []string, want string) bool {
+	for _, capability := range capabilities {
+		if capability == want {
+			return true
+		}
+	}
+	return false
 }
 
 // claimSessionControl atomically installs a new sink and advances the session's

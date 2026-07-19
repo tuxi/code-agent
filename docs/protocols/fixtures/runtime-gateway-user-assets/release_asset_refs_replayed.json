@@ -1,0 +1,9 @@
+{
+  "trace_id": "trace_release_002",
+  "code": 0,
+  "msg": "success",
+  "data": {
+    "session_id": "sess_01J2Y8",
+    "released_refs": 0
+  }
+}

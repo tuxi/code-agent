@@ -1,0 +1,7 @@
+{
+  "error": {
+    "type": "user_asset_error",
+    "code": "image_processing_failed",
+    "message": "Image processing failed"
+  }
+}

@@ -1,6 +1,8 @@
 package runtime
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -75,6 +77,73 @@ func (b *ServeRunBuilder) Reconfigure(mc app.ModelConfig, provider model.Provide
 	b.credential = cred
 }
 
+func (b *ServeRunBuilder) ResolveModel(wireModel string) (string, error) {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	if wireModel == "" {
+		return b.mc.Model, nil
+	}
+	if selected, err := b.Cfg.SelectModel(wireModel); err == nil {
+		return selected.Model, nil
+	}
+	// Gateway accepts a direct wire model name that is not a local profile.
+	return wireModel, nil
+}
+
+// ImageInputCapability probes the frozen Runtime–Gateway contract using the
+// credential bound to the connecting conversation. The provider owns the
+// 60-second base-URL + credential-scope cache and fails closed when stale.
+func (b *ServeRunBuilder) ImageInputCapability(ctx context.Context, cred credential.Resolver) bool {
+	provider, ok := b.gatewayProvider(cred)
+	if !ok {
+		return false
+	}
+	prober, ok := provider.(model.ImageInputCapabilityProber)
+	if !ok {
+		return false
+	}
+	enabled, err := prober.ImageInputCapability(ctx)
+	return err == nil && enabled
+}
+
+func (b *ServeRunBuilder) gatewayProvider(cred credential.Resolver) (model.Provider, bool) {
+	b.mu.RLock()
+	mc, pc, baseCred := b.mc, b.Cfg.Provider, b.credential
+	b.mu.RUnlock()
+	if !isGatewayModelEndpoint(mc.BaseURL) {
+		return nil, false
+	}
+	if cred == nil {
+		cred = baseCred
+	}
+	provider, err := BuildProvider(mc, pc, cred)
+	return provider, err == nil
+}
+
+func (b *ServeRunBuilder) CredentialScope(ctx context.Context, cred credential.Resolver) string {
+	provider, ok := b.gatewayProvider(cred)
+	if !ok {
+		return ""
+	}
+	scoper, ok := provider.(model.AssetUploadScoper)
+	if !ok {
+		return ""
+	}
+	return scoper.AssetUploadScope(ctx)
+}
+
+func (b *ServeRunBuilder) ReleaseConversationAssetRefs(ctx context.Context, cred credential.Resolver, sessionID string) error {
+	provider, ok := b.gatewayProvider(cred)
+	if !ok {
+		return errors.New("gateway provider unavailable")
+	}
+	releaser, ok := provider.(model.ConversationAssetRefReleaser)
+	if !ok {
+		return errors.New("gateway asset-ref release unavailable")
+	}
+	return releaser.ReleaseConversationAssetRefs(ctx, sessionID)
+}
+
 // Build creates a per-turn TurnRunner that resolves skills from the session's
 // workspace, merges client-registered tools, and wires plan tools + client waiter.
 func (b *ServeRunBuilder) Build(ctx conversation.RuntimeContext) conversation.TurnRunner {
@@ -93,6 +162,9 @@ func (b *ServeRunBuilder) Build(ctx conversation.RuntimeContext) conversation.Tu
 			// Not a config profile — forward as-is to the provider.
 			mc.Model = ctx.Model
 		}
+	}
+	if ctx.ResolvedModel != "" {
+		mc.Model = ctx.ResolvedModel
 	}
 
 	// If the session has a per-session credential (server mode — JWT from
@@ -160,6 +232,7 @@ func (b *ServeRunBuilder) Build(ctx conversation.RuntimeContext) conversation.Tu
 
 	runner := BuildRunner(b.Cfg, mc, provider, turnTools, skillReg, ctx.Approver, ctx.Publisher, b.rules, workspacePath)
 	runner.ReservedTurnID = ctx.TurnID
+	runner.RequestID = ctx.RequestID
 	if workspacePath != "" {
 		runner.WorkspaceRoot = workspacePath
 	}

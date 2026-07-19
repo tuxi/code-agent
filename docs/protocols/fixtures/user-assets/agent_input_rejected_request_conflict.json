@@ -1,0 +1,8 @@
+{
+  "type": "agent_input_rejected",
+  "request_id": "req_user_asset_004",
+  "error": {
+    "code": "request_conflict",
+    "message": "request_id was already used with a different payload"
+  }
+}

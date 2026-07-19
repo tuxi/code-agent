@@ -64,6 +64,13 @@ func (b *Bridge) WithCapabilities(caps []string) *Bridge {
 // kill the stream); a sink error stops the stream. It always unsubscribes on
 // return.
 func (b *Bridge) Run(ctx context.Context, sub Subscriber, serverName string) error {
+	return b.RunReady(ctx, sub, serverName, nil)
+}
+
+// RunReady invokes ready after the live subscription and hello are established.
+// Recovery work started by ready therefore cannot race ahead of the connection
+// and lose its first lifecycle events.
+func (b *Bridge) RunReady(ctx context.Context, sub Subscriber, serverName string, ready func()) error {
 	events, unsub := sub.Subscribe()
 	defer unsub()
 
@@ -73,6 +80,9 @@ func (b *Bridge) Run(ctx context.Context, sub Subscriber, serverName string) err
 	}
 	if err := b.sink.Send(hello); err != nil {
 		return err
+	}
+	if ready != nil {
+		ready()
 	}
 
 	for {

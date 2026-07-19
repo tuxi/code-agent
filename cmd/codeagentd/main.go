@@ -17,6 +17,7 @@ import (
 
 	"code-agent/internal/app"
 	"code-agent/internal/conversation"
+	"code-agent/internal/credential"
 	"code-agent/internal/repos"
 	"code-agent/internal/runtime"
 	"code-agent/internal/server"
@@ -147,9 +148,11 @@ func run() error {
 	subs := conversation.NewSubscriptionManager()
 	rb := runtime.NewServeRunBuilder(cfg, mc, provider, cfg.CredentialResolver(nil), toolReg, wsReg, planRef)
 	executor := conversation.NewTurnExecutor(repo, eventStore, active, subs, rb)
+	executor.SetAssetRefReleaseService(rb)
 	maxConcurrentTurns := cfg.RuntimeMaxConcurrentTurns()
 	executor.SetTurnScheduler(conversation.NewTurnScheduler(maxConcurrentTurns))
 	executor.SetTitleGenerator(conversation.NewLLMTitleGenerator(provider, mc.Model))
+	_ = executor.ReconcileInterrupted(ctx)
 	managedWorktrees, worktreeReport, worktreeErr := runtime.ConfigureManagedWorktrees(ctx, telemetryStore, repo, executor, true)
 	if worktreeErr != nil {
 		fmt.Fprintf(os.Stderr, "codeagentd: managed worktrees disabled: %v\n", worktreeErr)
@@ -169,13 +172,24 @@ func run() error {
 		capabilities = append(capabilities, "public_git_clone_v1")
 	}
 	handler := server.NewMux(repo, eventStore, executor, server.MuxOptions{
-		ServerName:          "codeagentd/" + mc.Model,
-		Capabilities:        capabilities,
-		CloneService:        cloneService,
-		Granter:             rb.Rules(),
-		WorkspaceReloader:   wsReg.ReloadWorkspace,
-		Prompts:             wsReg,
-		CredentialStore:     executor.SetSessionCredential,
+		ServerName:        "codeagentd/" + mc.Model,
+		Capabilities:      capabilities,
+		CloneService:      cloneService,
+		Granter:           rb.Rules(),
+		WorkspaceReloader: wsReg.ReloadWorkspace,
+		Prompts:           wsReg,
+		CredentialStore:   executor.SetSessionCredential,
+		CapabilityResolver: func(ctx context.Context, cred credential.Resolver) []string {
+			persistence, ok := repo.(conversation.UserAssetsPersistenceCapability)
+			if ok && persistence.SupportsUserAssetsPersistence() && rb.ImageInputCapability(ctx, cred) {
+				return []string{"image_input"}
+			}
+			return nil
+		},
+		SessionReady: func(ctx context.Context, sessionID string, cred credential.Resolver) {
+			_, _ = executor.RecoverSessionTurnInputs(context.WithoutCancel(ctx), sessionID)
+			go executor.FlushAssetRefReleases(context.WithoutCancel(ctx), cred)
+		},
 		RuntimeCapabilities: runtimeCapabilities,
 		ManagedWorktrees:    managedWorktrees,
 	})

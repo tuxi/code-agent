@@ -103,15 +103,17 @@ func defaultHTTPClient() *http.Client {
 }
 
 type chatCompletionRequest struct {
-	SessionID     string           `json:"session_id,omitempty"`
-	ExecutionID   string           `json:"execution_id,omitempty"`
-	Model         string           `json:"model"`
-	Messages      []Message        `json:"messages"`
-	Temperature   float64          `json:"temperature,omitempty"`
-	Tools         []ToolDefinition `json:"tools,omitempty"`
-	ToolChoice    string           `json:"tool_choice,omitempty"`
-	Stream        bool             `json:"stream,omitempty"`
-	StreamOptions *streamOptions   `json:"stream_options,omitempty"`
+	SessionID     string            `json:"session_id,omitempty"`
+	TurnID        string            `json:"turn_id,omitempty"`
+	RequestID     string            `json:"request_id,omitempty"`
+	ExecutionID   string            `json:"execution_id,omitempty"`
+	Model         string            `json:"model"`
+	Messages      []Message         `json:"messages"`
+	Temperature   float64           `json:"temperature,omitempty"`
+	Tools         *[]ToolDefinition `json:"tools,omitempty"`
+	ToolChoice    string            `json:"tool_choice,omitempty"`
+	Stream        bool              `json:"stream,omitempty"`
+	StreamOptions *streamOptions    `json:"stream_options,omitempty"`
 }
 
 // streamOptions asks the provider to include a final usage chunk in the SSE
@@ -250,9 +252,9 @@ func (p *OpenAICompatibleProvider) CompleteStream(ctx context.Context, req Reque
 	}
 
 	data, err := json.Marshal(chatCompletionRequest{
-		SessionID: req.SessionID, ExecutionID: req.ExecutionID,
+		SessionID: req.SessionID, TurnID: req.TurnID, RequestID: req.RequestID, ExecutionID: req.ExecutionID,
 		Model: req.Model, Messages: req.Messages, Temperature: req.Temperature,
-		Tools: req.Tools, ToolChoice: req.ToolChoice,
+		Tools: toolsForGatewayRequest(req.Messages, req.Tools), ToolChoice: req.ToolChoice,
 		Stream: true, StreamOptions: &streamOptions{IncludeUsage: true},
 	})
 	if err != nil {
@@ -391,11 +393,13 @@ func (p *OpenAICompatibleProvider) Complete(ctx context.Context, req Request) (R
 
 	body := chatCompletionRequest{
 		SessionID:   req.SessionID,
+		TurnID:      req.TurnID,
+		RequestID:   req.RequestID,
 		ExecutionID: req.ExecutionID,
 		Model:       req.Model,
 		Messages:    req.Messages,
 		Temperature: req.Temperature,
-		Tools:       req.Tools,
+		Tools:       toolsForGatewayRequest(req.Messages, req.Tools),
 		ToolChoice:  req.ToolChoice,
 	}
 
@@ -468,6 +472,19 @@ func (p *OpenAICompatibleProvider) Complete(ctx context.Context, req Request) (R
 		},
 		Raw: raw,
 	}, nil
+}
+
+func toolsForGatewayRequest(messages []Message, tools []ToolDefinition) *[]ToolDefinition {
+	if tools != nil {
+		return &tools
+	}
+	for _, message := range messages {
+		if message.Role == RoleUser && len(message.Assets) > 0 {
+			empty := []ToolDefinition{}
+			return &empty
+		}
+	}
+	return nil
 }
 
 // apiErrorFromBody preserves OpenAI-compatible structured error fields for the

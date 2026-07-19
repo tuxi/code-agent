@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 
 	"code-agent/internal/agent"
 	"code-agent/internal/approve"
@@ -69,6 +70,8 @@ type Router struct {
 	Approvals   ApprovalResolver
 	ToolResults ToolResultResolver // v1.1: delivers client tool results to the blocked waiter
 	Prompts     PromptService      // renders an MCP prompt server-side for invoke_prompt (nil disables)
+	Rejections  InputRejectionSink // v1.5 pre-turn control responses
+	ImageInput  bool               // connection-level hello capability snapshot
 }
 
 // Route dispatches one raw inbound message.
@@ -97,8 +100,9 @@ func (r Router) Route(ctx context.Context, data []byte) {
 			r.Commands.RegisterTools(m.Tools)
 		}
 	case MsgTypeAgentInput:
-		var m AgentInput
-		if json.Unmarshal(data, &m) != nil {
+		m, rejected := decodeAndValidateAgentInput(data, r.ImageInput)
+		if rejected != nil {
+			r.reject(*rejected)
 			return
 		}
 		switch m.Kind {
@@ -109,14 +113,18 @@ func (r Router) Route(ctx context.Context, data []byte) {
 				turnCtx := context.WithoutCancel(ctx)
 				modelName := m.Model
 				if withRequestAssets, ok := r.Commands.(RequestAssetMessageTarget); ok && m.RequestID != "" && len(m.Assets) > 0 {
-					assets := append([]model.GatewayAssetRef(nil), m.Assets...)
+					assets := copyGatewayAssetRefs(m.Assets)
 					go func() {
-						_, _ = withRequestAssets.SendMessageWithRequestIDAndAssets(turnCtx, m.RequestID, m.Text, modelName, assets)
+						_, err := withRequestAssets.SendMessageWithRequestIDAndAssets(turnCtx, m.RequestID, m.Text, modelName, assets)
+						r.rejectError(m.RequestID, err)
 					}()
 				} else if withRequest, ok := r.Commands.(RequestMessageTarget); ok && m.RequestID != "" && len(m.Assets) == 0 {
-					go func() { _, _ = withRequest.SendMessageWithRequestID(turnCtx, m.RequestID, m.Text, modelName) }()
+					go func() {
+						_, err := withRequest.SendMessageWithRequestID(turnCtx, m.RequestID, m.Text, modelName)
+						r.rejectError(m.RequestID, err)
+					}()
 				} else if withAssets, ok := r.Commands.(AssetMessageTarget); ok && len(m.Assets) > 0 {
-					assets := append([]model.GatewayAssetRef(nil), m.Assets...)
+					assets := copyGatewayAssetRefs(m.Assets)
 					go func() { _, _ = withAssets.SendMessageWithAssets(turnCtx, m.Text, modelName, assets) }()
 				} else {
 					go func() { _, _ = r.Commands.SendMessage(turnCtx, m.Text, modelName) }()
@@ -172,5 +180,24 @@ func (r Router) Route(ctx context.Context, data []byte) {
 		if json.Unmarshal(data, &m) == nil && r.Approvals != nil {
 			r.Approvals.Resolve(m.ID, m.Approved)
 		}
+	}
+}
+
+func (r Router) reject(rejected AgentInputRejected) {
+	if r.Rejections != nil {
+		r.Rejections.RejectInput(rejected)
+	}
+}
+
+func (r Router) rejectError(requestID string, err error) {
+	if err == nil {
+		return
+	}
+	var coded interface {
+		AgentInputErrorCode() string
+		SafeMessage() string
+	}
+	if errors.As(err, &coded) {
+		r.reject(*rejectInput(requestID, coded.AgentInputErrorCode(), coded.SafeMessage()))
 	}
 }

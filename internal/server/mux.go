@@ -238,7 +238,9 @@ type MuxOptions struct {
 	// CredentialStore stores a per-session credential extracted from the
 	// Authorization header at WS upgrade time. Nil means credentials come from
 	// the base provider (embedded/CLI modes).
-	CredentialStore func(sessionID string, cred credential.Resolver)
+	CredentialStore    func(sessionID string, cred credential.Resolver)
+	CapabilityResolver func(ctx context.Context, cred credential.Resolver) []string
+	SessionReady       func(ctx context.Context, sessionID string, cred credential.Resolver)
 	// RuntimeCapabilities describes execution guarantees, not merely supported
 	// endpoints. It intentionally defaults to all false until scheduler and
 	// workspace isolation are fully installed.
@@ -859,13 +861,15 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 		return conversation.NewTransportSession(id, executor), nil
 	}
 	ws = &WSHandler{
-		Resolve:         wsResolve,
-		ServerName:      opts.ServerName,
-		Capabilities:    opts.Capabilities,
-		Accept:          opts.Accept,
-		Granter:         opts.Granter,
-		Prompts:         opts.Prompts,
-		CredentialStore: opts.CredentialStore,
+		Resolve:            wsResolve,
+		ServerName:         opts.ServerName,
+		Capabilities:       opts.Capabilities,
+		Accept:             opts.Accept,
+		Granter:            opts.Granter,
+		Prompts:            opts.Prompts,
+		CredentialStore:    opts.CredentialStore,
+		CapabilityResolver: opts.CapabilityResolver,
+		SessionReady:       opts.SessionReady,
 	}
 	mux.Handle("GET /v1/conversations/{id}/stream", ws)
 	mux.Handle("GET /v2/conversations/{id}/stream", ws)

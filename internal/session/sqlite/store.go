@@ -74,6 +74,7 @@ CREATE TABLE IF NOT EXISTS messages (
 	tool_calls   TEXT,
 	tool_call_id TEXT,
 	assets       TEXT,
+	origin_turn_id TEXT,
 	PRIMARY KEY (session_id, seq)
 );
 CREATE TABLE IF NOT EXISTS compactions (
@@ -108,6 +109,29 @@ CREATE TABLE IF NOT EXISTS session_events (
 	kind       TEXT,
 	at         TEXT,
 	payload    TEXT
+);
+CREATE TABLE IF NOT EXISTS turn_inputs (
+	session_id TEXT NOT NULL,
+	request_id TEXT NOT NULL,
+	turn_id TEXT NOT NULL,
+	payload_hash TEXT NOT NULL,
+	text TEXT NOT NULL,
+	wire_model TEXT NOT NULL,
+	resolved_model TEXT NOT NULL,
+	assets TEXT NOT NULL,
+	state TEXT NOT NULL,
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL,
+	PRIMARY KEY (session_id, request_id),
+	UNIQUE (session_id, turn_id)
+);
+CREATE TABLE IF NOT EXISTS asset_ref_release_outbox (
+	session_id TEXT PRIMARY KEY,
+	credential_scope TEXT NOT NULL,
+	attempts INTEGER NOT NULL DEFAULT 0,
+	next_attempt_at TEXT NOT NULL,
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS managed_worktrees (
     client_request_id      TEXT PRIMARY KEY,
@@ -180,6 +204,7 @@ func (s *Store) open() error {
 		`ALTER TABLE sessions ADD COLUMN reference_ledger TEXT`,
 		`ALTER TABLE sessions ADD COLUMN archived_at TEXT`,
 		`ALTER TABLE messages ADD COLUMN assets TEXT`,
+		`ALTER TABLE messages ADD COLUMN origin_turn_id TEXT`,
 		`ALTER TABLE managed_worktrees ADD COLUMN remove_force INTEGER NOT NULL DEFAULT 0`,
 		// v2: re-index session_events by at for chronological ordering.
 		// The original index was on (session_id, id); rebuild on (session_id, at).
@@ -190,6 +215,10 @@ func (s *Store) open() error {
 			db.Close()
 			return fmt.Errorf("migrate (%s): %w", stmt, err)
 		}
+	}
+	if _, err := db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_origin_turn ON messages(session_id, origin_turn_id) WHERE origin_turn_id IS NOT NULL AND origin_turn_id != ''`); err != nil {
+		db.Close()
+		return fmt.Errorf("migrate origin turn index: %w", err)
 	}
 	s.db = db
 	return nil
@@ -234,7 +263,13 @@ func (s *Store) save(ctx context.Context, sess *session.Session) error {
 		return err
 	}
 	defer tx.Rollback()
+	if err := s.saveSessionTx(ctx, tx, sess); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
 
+func (s *Store) saveSessionTx(ctx context.Context, tx *sql.Tx, sess *session.Session) error {
 	metaJSON := ""
 	if len(sess.Metadata) > 0 {
 		b, err := json.Marshal(sess.Metadata)
@@ -296,9 +331,9 @@ func (s *Store) save(ctx context.Context, sess *session.Session) error {
 			assetRefs = string(b)
 		}
 		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO messages (session_id, seq, role, content, tool_calls, tool_call_id, assets)
-			VALUES (?, ?, ?, ?, ?, ?, ?)`,
-			sess.ID, i, string(m.Role), m.Content, toolCalls, m.ToolCallID, assetRefs); err != nil {
+			INSERT INTO messages (session_id, seq, role, content, tool_calls, tool_call_id, assets, origin_turn_id)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			sess.ID, i, string(m.Role), m.Content, toolCalls, m.ToolCallID, assetRefs, m.OriginTurnID); err != nil {
 			return fmt.Errorf("save message %d: %w", i, err)
 		}
 	}
@@ -316,7 +351,7 @@ func (s *Store) save(ctx context.Context, sess *session.Session) error {
 		}
 	}
 
-	return tx.Commit()
+	return nil
 }
 
 func (s *Store) Load(ctx context.Context, id string) (*session.Session, error) {
@@ -361,17 +396,17 @@ func (s *Store) Load(ctx context.Context, id string) (*session.Session, error) {
 	}
 
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT role, content, tool_calls, tool_call_id, COALESCE(assets, '') FROM messages WHERE session_id=? ORDER BY seq`, id)
+		SELECT role, content, tool_calls, tool_call_id, COALESCE(assets, ''), COALESCE(origin_turn_id, '') FROM messages WHERE session_id=? ORDER BY seq`, id)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var role, content, toolCalls, toolCallID, assetRefs string
-		if err := rows.Scan(&role, &content, &toolCalls, &toolCallID, &assetRefs); err != nil {
+		var role, content, toolCalls, toolCallID, assetRefs, originTurnID string
+		if err := rows.Scan(&role, &content, &toolCalls, &toolCallID, &assetRefs, &originTurnID); err != nil {
 			return nil, err
 		}
-		m := model.Message{Role: model.Role(role), Content: content, ToolCallID: toolCallID}
+		m := model.Message{Role: model.Role(role), Content: content, ToolCallID: toolCallID, OriginTurnID: originTurnID}
 		if toolCalls != "" {
 			if err := json.Unmarshal([]byte(toolCalls), &m.ToolCalls); err != nil {
 				return nil, fmt.Errorf("unmarshal tool_calls: %w", err)
@@ -899,6 +934,7 @@ func (s *Store) Delete(ctx context.Context, id string) error {
 		`DELETE FROM messages WHERE session_id=?`,
 		`DELETE FROM compactions WHERE session_id=?`,
 		`DELETE FROM session_events WHERE session_id=?`,
+		`DELETE FROM turn_inputs WHERE session_id=?`,
 		`DELETE FROM sessions WHERE id=?`,
 	} {
 		if _, err := tx.ExecContext(ctx, q, id); err != nil {

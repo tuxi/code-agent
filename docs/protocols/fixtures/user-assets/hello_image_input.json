@@ -1,0 +1,10 @@
+{
+  "type": "hello",
+  "protocol_version": 1,
+  "server": "codeagent/0.x",
+  "capabilities": [
+    "streaming",
+    "session_resume",
+    "image_input"
+  ]
+}

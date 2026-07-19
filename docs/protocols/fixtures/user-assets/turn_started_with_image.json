@@ -1,0 +1,17 @@
+{
+  "event_id": "evt_user_asset_001",
+  "kind": "turn_started",
+  "at": "2026-07-18T08:00:00Z",
+  "session_id": "sess_user_asset_001",
+  "turn_id": "turn_user_asset_001",
+  "text": "解释这张截图里的错误",
+  "user_assets": [
+    {
+      "asset_id": 10001,
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "kind": "image",
+      "mime_type": "image/jpeg",
+      "filename": "build-error.jpg"
+    }
+  ]
+}

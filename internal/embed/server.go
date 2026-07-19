@@ -131,6 +131,7 @@ type Handle struct {
 	cfg        app.Config
 	rt         *Runtime
 	credential credential.Resolver
+	modelName  string
 
 	reconfigureMu sync.Mutex
 }
@@ -231,7 +232,11 @@ func (h *Handle) Reconfigure(secretsJSON, modelName string) error {
 	if credChain == nil {
 		credChain = cfg.CredentialResolver(nil)
 	}
-	mc, err := cfg.SelectModel(modelName)
+	selectedModelName := modelName
+	if selectedModelName == "" {
+		selectedModelName = h.modelName
+	}
+	mc, err := cfg.SelectModel(selectedModelName)
 	if err != nil {
 		return err
 	}
@@ -242,6 +247,7 @@ func (h *Handle) Reconfigure(secretsJSON, modelName string) error {
 	h.rt.Builder.Reconfigure(mc, provider, credChain)
 	h.cfg = cfg
 	h.credential = credChain
+	h.modelName = selectedModelName
 	return nil
 }
 
@@ -312,7 +318,7 @@ func StartServer(ctx context.Context, opt Options) (*Handle, error) {
 	// observers and background goroutines tied to it wind down.
 	srvCtx, cancel := context.WithCancel(ctx)
 
-	h := &Handle{cancel: cancel, serveErr: make(chan error, 1), srvCtx: srvCtx, cfg: cfg, credential: credChain}
+	h := &Handle{cancel: cancel, serveErr: make(chan error, 1), srvCtx: srvCtx, cfg: cfg, credential: credChain, modelName: opt.ModelName}
 	// On any error after this point, release whatever we already acquired.
 	ok := false
 	defer func() {
@@ -338,11 +344,6 @@ func StartServer(ctx context.Context, opt Options) (*Handle, error) {
 	}
 	h.closers = closers
 	h.rt = rt
-
-	// Reconcile any turn left mid-flight by a previous process death (jetsam) to
-	// paused, so the host lists a single "paused" status to offer "continue"
-	// (v1.2 §3.2). Best-effort — a failure here must not block startup.
-	_ = rt.Executor.ReconcileInterrupted(srvCtx)
 
 	addr := opt.Addr
 	if addr == "" {
@@ -440,6 +441,7 @@ func Assemble(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider 
 	subs := conversation.NewSubscriptionManager()
 	rb := runtime.NewServeRunBuilder(cfg, mc, provider, cred, toolReg, wsReg, planRef)
 	executor := conversation.NewTurnExecutor(repo, eventStore, active, subs, rb)
+	executor.SetAssetRefReleaseService(rb)
 	maxConcurrentTurns := cfg.RuntimeMaxConcurrentTurns()
 	executor.SetTurnScheduler(conversation.NewTurnScheduler(maxConcurrentTurns))
 	executor.SetTitleGenerator(conversation.NewLLMTitleGenerator(provider, mc.Model))
@@ -464,6 +466,7 @@ func Assemble(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider 
 	}
 	cloneService, cloneErr := repos.NewService(workspaceDir, cloneStateDir)
 	capabilities := append([]string(nil), defaultCapabilities...)
+	_ = executor.ReconcileInterrupted(ctx)
 	if cloneErr != nil {
 		fmt.Printf("codeagent embedded: public git clone disabled: %v\n", cloneErr)
 	} else {
@@ -481,7 +484,21 @@ func Assemble(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider 
 		// store. When a client connects with Authorization: Bearer <jwt>, the JWT
 		// flows: WS upgrade → CredentialStore → TurnExecutor → RuntimeContext →
 		// ServeRunBuilder.Build() → model provider → Gateway.
-		CredentialStore:     executor.SetSessionCredential,
+		CredentialStore: executor.SetSessionCredential,
+		CapabilityResolver: func(ctx context.Context, cred credential.Resolver) []string {
+			persistence, ok := repo.(conversation.UserAssetsPersistenceCapability)
+			if ok && persistence.SupportsUserAssetsPersistence() && rb.ImageInputCapability(ctx, cred) {
+				return []string{"image_input"}
+			}
+			return nil
+		},
+		SessionReady: func(ctx context.Context, sessionID string, connectionCred credential.Resolver) {
+			_, _ = executor.RecoverSessionTurnInputs(context.WithoutCancel(ctx), sessionID)
+			if connectionCred == nil {
+				connectionCred = cred
+			}
+			go executor.FlushAssetRefReleases(context.WithoutCancel(ctx), connectionCred)
+		},
 		RuntimeCapabilities: runtimeCapabilities,
 		ManagedWorktrees:    managedWorktrees,
 	})

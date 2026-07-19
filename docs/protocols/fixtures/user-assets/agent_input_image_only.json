@@ -1,0 +1,15 @@
+{
+  "type": "agent_input",
+  "kind": "text",
+  "request_id": "req_user_asset_002",
+  "text": "",
+  "assets": [
+    {
+      "asset_id": 10002,
+      "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "kind": "image",
+      "mime_type": "image/png",
+      "filename": "diagram.png"
+    }
+  ]
+}

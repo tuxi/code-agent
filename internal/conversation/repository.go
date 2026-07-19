@@ -78,3 +78,24 @@ type ArchivableConversationRepository interface {
 type ConversationArchiveCapability interface {
 	SupportsConversationArchive() bool
 }
+
+// TurnInputRepository is the durable Agent Wire v1.5 inbox. It is optional so
+// third-party repositories stay source compatible; image_input is advertised
+// only when this port is present.
+type TurnInputRepository interface {
+	ReserveTurnInput(ctx context.Context, input session.TurnInput, accepted session.EventRecord) (session.TurnInput, bool, int64, error)
+	StartTurnInput(ctx context.Context, input session.TurnInput, sess *session.Session) error
+	SetTurnInputState(ctx context.Context, sessionID, requestID string, state session.TurnInputState) error
+	TurnInput(ctx context.Context, sessionID, requestID string) (session.TurnInput, error)
+	RecoverableTurnInputs(ctx context.Context) ([]session.TurnInput, error)
+}
+
+type AssetRefReleaseRepository interface {
+	EnqueueAssetRefRelease(ctx context.Context, release session.AssetRefRelease) error
+	DeleteWithAssetRefRelease(ctx context.Context, sessionID string, release session.AssetRefRelease) error
+	PendingAssetRefReleases(ctx context.Context, credentialScope string, now time.Time) ([]session.AssetRefRelease, error)
+	RetryAssetRefRelease(ctx context.Context, sessionID string, attempts int, nextAttempt time.Time) error
+	CompleteAssetRefRelease(ctx context.Context, sessionID string) error
+}
+
+type UserAssetsPersistenceCapability interface{ SupportsUserAssetsPersistence() bool }

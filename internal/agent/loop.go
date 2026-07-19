@@ -153,8 +153,9 @@ type Runner struct {
 
 	// AssetUploader turns locally materialized screenshot files into
 	// Gateway-owned references. Nil leaves non-Gateway executions unchanged.
-	AssetUploader    model.AssetUploader
-	assetUploadCache map[string]model.GatewayAssetRef
+	AssetUploader       model.AssetUploader
+	assetUploadCache    map[string]model.GatewayAssetRef
+	UserAssetsSupported bool
 
 	// Correlation IDs stamped onto every emitted event. Set per RunTurn (which is
 	// sequential on a Runner), so an event always carries which session and turn
@@ -162,9 +163,11 @@ type Runner struct {
 	emitSessionID    string
 	emitTurnID       string
 	emitInvocationID string // set at the start of each model call; stamped on all events
+	emitRequestID    string // stable Agent Wire submission identity for Gateway
 	// ReservedTurnID is supplied by the transport when it accepted a queued turn.
 	// Empty preserves the standalone runner's persisted session sequence behavior.
 	ReservedTurnID string
+	RequestID      string
 
 	// emitMu serializes r.emit so concurrent tool workers (P8.8) can't race the
 	// downstream emitter.
@@ -462,6 +465,12 @@ func (r *Runner) RunTurn(ctx context.Context, sess *session.Session, userInput s
 // RunTurnWithAssets carries already-uploaded, Gateway-owned user assets without
 // reading their bytes or URLs in the Runtime.
 func (r *Runner) RunTurnWithAssets(ctx context.Context, sess *session.Session, userInput string, gatewayAssets []model.GatewayAssetRef) (TurnResult, error) {
+	if len(gatewayAssets) > 0 && !r.UserAssetsSupported {
+		return TurnResult{}, UserAssetRuntimeError{Code: "image_input_unsupported", Message: "The selected model cannot process image input"}
+	}
+	if len(gatewayAssets) > 0 && r.RequestID == "" {
+		return TurnResult{}, errors.New("user assets require a stable request id")
+	}
 	if r.Model == nil {
 		return TurnResult{}, errors.New("missing model provider")
 	}
@@ -478,6 +487,7 @@ func (r *Runner) RunTurnWithAssets(ctx context.Context, sess *session.Session, u
 		r.emitTurnID = nextSessionTurnID(sess)
 	}
 	r.emitInvocationID = "" // cleared each turn; set per model call
+	r.emitRequestID = r.RequestID
 
 	// Repair legacy provider-invalid history before appending the new user input.
 	// The invalid assistant tool call and everything after it are not safe to send
@@ -506,10 +516,51 @@ func (r *Runner) RunTurnWithAssets(ctx context.Context, sess *session.Session, u
 		Assets:  gatewayAssets,
 	})
 	sess.UpdatedAt = time.Now()
-	r.emit(Event{Kind: EventTurnStarted, Text: userInput})
+	r.emit(Event{Kind: EventTurnStarted, Text: userInput, UserAssets: append([]model.GatewayAssetRef(nil), gatewayAssets...)})
 
 	return r.drive(ctx, sess)
 }
+
+// RunPreparedTurn executes the last user message after TurnExecutor atomically
+// persisted it with the durable inbox's running transition.
+func (r *Runner) RunPreparedTurn(ctx context.Context, sess *session.Session) (TurnResult, error) {
+	if r.Model == nil {
+		return TurnResult{}, errors.New("missing model provider")
+	}
+	if len(sess.Messages) == 0 || sess.Messages[len(sess.Messages)-1].Role != model.RoleUser {
+		return TurnResult{}, errors.New("prepared turn is missing its user message")
+	}
+	if r.Tools == nil {
+		r.Tools = tools.NewRegistry()
+	}
+	if r.MaxSteps <= 0 {
+		r.MaxSteps = defaultMaxSteps
+	}
+	r.emitSessionID = sess.ID
+	r.emitTurnID = r.ReservedTurnID
+	if r.emitTurnID == "" {
+		r.emitTurnID = nextSessionTurnID(sess)
+	}
+	r.emitInvocationID = ""
+	r.emitRequestID = r.RequestID
+	user := sess.Messages[len(sess.Messages)-1]
+	if len(user.Assets) > 0 && !r.UserAssetsSupported {
+		return TurnResult{}, UserAssetRuntimeError{Code: "image_input_unsupported", Message: "The selected model cannot process image input"}
+	}
+	if len(user.Assets) > 0 && r.RequestID == "" {
+		return TurnResult{}, errors.New("user assets require a stable request id")
+	}
+	r.emit(Event{Kind: EventTurnStarted, Text: user.Content, UserAssets: append([]model.GatewayAssetRef(nil), user.Assets...)})
+	return r.drive(ctx, sess)
+}
+
+type UserAssetRuntimeError struct {
+	Code    string
+	Message string
+}
+
+func (e UserAssetRuntimeError) Error() string              { return e.Message }
+func (e UserAssetRuntimeError) LifecycleErrorCode() string { return e.Code }
 
 // ResumeTurn continues an interrupted turn from the persisted history WITHOUT
 // appending a new user message (v1.2 §3.2). It is the resume counterpart to
@@ -539,6 +590,7 @@ func (r *Runner) ResumeTurn(ctx context.Context, sess *session.Session) (TurnRes
 		r.emitTurnID = nextSessionTurnID(sess)
 	}
 	r.emitInvocationID = ""
+	r.emitRequestID = r.RequestID
 
 	if repair := sess.TruncateInvalidToolCallTail(); repair != nil {
 		r.emit(Event{
@@ -1169,6 +1221,8 @@ func (r *Runner) complete(ctx context.Context, req model.Request, streamed *stri
 	// get it without each call site remembering to.
 	req.Messages = withCurrentDate(withReferenceProtocol(req.Messages), time.Now())
 	req.SessionID = r.emitSessionID
+	req.TurnID = r.emitTurnID
+	req.RequestID = r.emitRequestID
 	req.ExecutionID = r.emitInvocationID
 	if r.Stream {
 		if sp, ok := r.Model.(model.StreamingProvider); ok {

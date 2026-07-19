@@ -49,6 +49,12 @@ type Message struct {
 	// neither bytes nor OSS URLs and are safe to persist with the message.
 	Assets []GatewayAssetRef `json:"assets,omitempty"`
 
+	// OriginTurnID is Runtime-only durable identity for a user message. It is
+	// persisted by the session store but deliberately excluded from Provider JSON:
+	// Gateway history uses session_id for conversation asset references and must
+	// not mistake the current turn for an historical message's origin.
+	OriginTurnID string `json:"-"`
+
 	// ToolCalls is set on assistant messages when the model decides to call one
 	// or more tools. It must be echoed back unchanged in the next request.
 	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
@@ -132,6 +138,8 @@ type Request struct {
 	// SessionID and ExecutionID are Gateway correlation identifiers. They are
 	// carried on the request envelope, never inserted into model-visible text.
 	SessionID   string    `json:"session_id,omitempty"`
+	TurnID      string    `json:"turn_id,omitempty"`
+	RequestID   string    `json:"request_id,omitempty"`
 	ExecutionID string    `json:"execution_id,omitempty"`
 	Messages    []Message `json:"messages"`
 	Model       string    `json:"model"`

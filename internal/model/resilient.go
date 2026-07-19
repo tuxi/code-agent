@@ -65,6 +65,22 @@ func (p *ResilientProvider) AssetUploadScope(ctx context.Context) string {
 	return "gateway:unknown"
 }
 
+func (p *ResilientProvider) ImageInputCapability(ctx context.Context) (bool, error) {
+	prober, ok := p.Inner.(ImageInputCapabilityProber)
+	if !ok {
+		return false, nil
+	}
+	return prober.ImageInputCapability(ctx)
+}
+
+func (p *ResilientProvider) ReleaseConversationAssetRefs(ctx context.Context, sessionID string) error {
+	releaser, ok := p.Inner.(ConversationAssetRefReleaser)
+	if !ok {
+		return errors.New("provider does not support conversation asset-ref release")
+	}
+	return releaser.ReleaseConversationAssetRefs(ctx, sessionID)
+}
+
 func (p *ResilientProvider) Complete(ctx context.Context, req Request) (resp Response, err error) {
 	if p.Inner == nil {
 		return Response{}, errors.New("resilient provider: nil inner provider")
@@ -190,7 +206,7 @@ func (p *ResilientProvider) CompleteStream(ctx context.Context, req Request, onT
 	// A Gateway user-quota error cannot be repaired by switching from stream to
 	// non-stream. Returning it directly avoids one needless second request (and
 	// any configured retry budget) after the allowance is known to be exhausted.
-	if isQuotaExceeded(err) {
+	if isQuotaExceeded(err) || isUserAssetError(err) {
 		return Response{}, err
 	}
 	p.logf("[provider] stream failed: %s — falling back to non-streamed retry\n", errorClass(err))
@@ -280,6 +296,9 @@ func isRetryable(err error) bool {
 
 	var apiErr *APIError
 	if errors.As(err, &apiErr) {
+		if isUserAssetError(err) {
+			return false
+		}
 		// Gateway's user quota exhaustion uses HTTP 429, but no amount of
 		// backoff can change that user's allowance before reset. Keep ordinary
 		// upstream 429s retryable.
@@ -310,6 +329,11 @@ func isRetryable(err error) bool {
 		return true
 	}
 	return false
+}
+
+func isUserAssetError(err error) bool {
+	_, ok := UserAssetErrorCode(err)
+	return ok
 }
 
 func isQuotaExceeded(err error) bool {

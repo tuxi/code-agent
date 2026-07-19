@@ -1,0 +1,11 @@
+{
+  "event_id": "evt_user_asset_002",
+  "kind": "turn_failed",
+  "at": "2026-07-18T08:00:01Z",
+  "session_id": "sess_user_asset_001",
+  "turn_id": "turn_user_asset_001",
+  "error": {
+    "code": "asset_unavailable",
+    "message": "One or more image assets are unavailable"
+  }
+}

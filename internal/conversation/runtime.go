@@ -23,6 +23,22 @@ type AssetTurnRunner interface {
 	RunTurnWithAssets(ctx context.Context, sess *session.Session, userInput string, assets []model.GatewayAssetRef) (agent.TurnResult, error)
 }
 
+// PreparedTurnRunner executes a user message already appended atomically with a
+// durable inbox transition. It must not append the message a second time.
+type PreparedTurnRunner interface {
+	RunPreparedTurn(ctx context.Context, sess *session.Session) (agent.TurnResult, error)
+}
+
+// ModelResolver freezes the resolved wire model at acceptance time.
+type ModelResolver interface {
+	ResolveModel(wireModel string) (string, error)
+}
+
+type AssetRefReleaseService interface {
+	CredentialScope(ctx context.Context, cred credential.Resolver) string
+	ReleaseConversationAssetRefs(ctx context.Context, cred credential.Resolver, sessionID string) error
+}
+
 // RuntimeContext is the parameter bundle for RunBuilder.Build. It collects
 // everything a per-turn Runtime needs — session state, event publisher, and
 // approvers — so the factory signature stays stable as more fields are added.
@@ -39,7 +55,9 @@ type RuntimeContext struct {
 	// the runner looks up this model from config instead of using the server
 	// default. Set from the client's agent_input.model field. Empty means
 	// "use the server's default_model".
-	Model string
+	Model         string
+	ResolvedModel string
+	RequestID     string
 
 	// Credential is the per-session credential resolver. When non-nil, the
 	// turn runner uses this resolver (chained with the base resolver) for

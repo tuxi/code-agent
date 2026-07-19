@@ -1,0 +1,24 @@
+{
+  "session_id": "sess_01J2Y8",
+  "turn_id": "turn_01J2Y9",
+  "request_id": "req_01J2YA",
+  "execution_id": "exec_01J2YB",
+  "model": "deepseek-v4-pro",
+  "messages": [
+    {
+      "role": "user",
+      "content": "解释这张截图里的错误",
+      "assets": [
+        {
+          "asset_id": 10001,
+          "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "kind": "image",
+          "mime_type": "image/jpeg",
+          "filename": "build-error.jpg"
+        }
+      ]
+    }
+  ],
+  "tools": [],
+  "stream": true
+}

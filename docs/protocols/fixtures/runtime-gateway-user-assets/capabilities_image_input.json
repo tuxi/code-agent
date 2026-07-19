@@ -1,0 +1,29 @@
+{
+  "trace_id": "trace_cap_001",
+  "code": 0,
+  "msg": "success",
+  "data": {
+    "contract": "runtime-gateway-user-assets",
+    "contract_version": 1,
+    "capabilities": [
+      "image_input"
+    ],
+    "limits": {
+      "image_input": {
+        "mime_types": [
+          "image/jpeg",
+          "image/png"
+        ],
+        "max_assets_per_message": 4,
+        "max_asset_bytes": 10485760,
+        "max_total_asset_bytes": 20971520,
+        "min_dimension_px": 32,
+        "max_dimension_px": 8192
+      }
+    },
+    "vision": {
+      "direct": false,
+      "bridge": true
+    }
+  }
+}

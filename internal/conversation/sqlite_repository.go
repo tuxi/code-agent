@@ -264,11 +264,112 @@ func (r *sqliteRepository) Close() error {
 	return r.store.Close()
 }
 
+func (r *sqliteRepository) turnInputStore() (session.TurnInputStore, error) {
+	store, ok := r.store.(session.TurnInputStore)
+	if !ok {
+		return nil, fmt.Errorf("conversation repository does not support durable turn inputs")
+	}
+	return store, nil
+}
+
+func (r *sqliteRepository) ReserveTurnInput(ctx context.Context, input session.TurnInput, accepted session.EventRecord) (session.TurnInput, bool, int64, error) {
+	store, err := r.turnInputStore()
+	if err != nil {
+		return session.TurnInput{}, false, 0, err
+	}
+	return store.ReserveTurnInput(ctx, input, accepted)
+}
+
+func (r *sqliteRepository) StartTurnInput(ctx context.Context, input session.TurnInput, sess *session.Session) error {
+	store, err := r.turnInputStore()
+	if err != nil {
+		return err
+	}
+	return store.StartTurnInput(ctx, input, sess)
+}
+
+func (r *sqliteRepository) SetTurnInputState(ctx context.Context, sessionID, requestID string, state session.TurnInputState) error {
+	store, err := r.turnInputStore()
+	if err != nil {
+		return err
+	}
+	return store.SetTurnInputState(ctx, sessionID, requestID, state)
+}
+
+func (r *sqliteRepository) TurnInput(ctx context.Context, sessionID, requestID string) (session.TurnInput, error) {
+	store, err := r.turnInputStore()
+	if err != nil {
+		return session.TurnInput{}, err
+	}
+	return store.TurnInput(ctx, sessionID, requestID)
+}
+
+func (r *sqliteRepository) RecoverableTurnInputs(ctx context.Context) ([]session.TurnInput, error) {
+	store, err := r.turnInputStore()
+	if err != nil {
+		return nil, err
+	}
+	return store.RecoverableTurnInputs(ctx)
+}
+
+func (r *sqliteRepository) assetRefReleaseStore() (session.AssetRefReleaseStore, error) {
+	store, ok := r.store.(session.AssetRefReleaseStore)
+	if !ok {
+		return nil, fmt.Errorf("conversation repository does not support asset-ref release outbox")
+	}
+	return store, nil
+}
+
+func (r *sqliteRepository) SupportsUserAssetsPersistence() bool {
+	_, inbox := r.store.(session.TurnInputStore)
+	_, outbox := r.store.(session.AssetRefReleaseStore)
+	return inbox && outbox
+}
+
+func (r *sqliteRepository) EnqueueAssetRefRelease(ctx context.Context, release session.AssetRefRelease) error {
+	store, err := r.assetRefReleaseStore()
+	if err != nil {
+		return err
+	}
+	return store.EnqueueAssetRefRelease(ctx, release)
+}
+func (r *sqliteRepository) DeleteWithAssetRefRelease(ctx context.Context, sessionID string, release session.AssetRefRelease) error {
+	store, err := r.assetRefReleaseStore()
+	if err != nil {
+		return err
+	}
+	return store.DeleteWithAssetRefRelease(ctx, sessionID, release)
+}
+func (r *sqliteRepository) PendingAssetRefReleases(ctx context.Context, scope string, now time.Time) ([]session.AssetRefRelease, error) {
+	store, err := r.assetRefReleaseStore()
+	if err != nil {
+		return nil, err
+	}
+	return store.PendingAssetRefReleases(ctx, scope, now)
+}
+func (r *sqliteRepository) RetryAssetRefRelease(ctx context.Context, sessionID string, attempts int, next time.Time) error {
+	store, err := r.assetRefReleaseStore()
+	if err != nil {
+		return err
+	}
+	return store.RetryAssetRefRelease(ctx, sessionID, attempts, next)
+}
+func (r *sqliteRepository) CompleteAssetRefRelease(ctx context.Context, sessionID string) error {
+	store, err := r.assetRefReleaseStore()
+	if err != nil {
+		return err
+	}
+	return store.CompleteAssetRefRelease(ctx, sessionID)
+}
+
 // Compile-time check: sqliteRepository satisfies ConversationRepository.
 var _ ConversationRepository = (*sqliteRepository)(nil)
 var _ ReservedConversationRepository = (*sqliteRepository)(nil)
 var _ ArchivableConversationRepository = (*sqliteRepository)(nil)
 var _ ConversationArchiveCapability = (*sqliteRepository)(nil)
+var _ TurnInputRepository = (*sqliteRepository)(nil)
+var _ AssetRefReleaseRepository = (*sqliteRepository)(nil)
+var _ UserAssetsPersistenceCapability = (*sqliteRepository)(nil)
 
 // StoreEventAdapter wraps a session.EventStore as a ConversationEventStore by
 // delegating Append → RecordEvent and Replay → SessionEvents. This is the

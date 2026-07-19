@@ -1,0 +1,16 @@
+{
+  "type": "agent_input",
+  "kind": "text",
+  "request_id": "req_user_asset_001",
+  "text": "解释这张截图里的错误",
+  "model": "default",
+  "assets": [
+    {
+      "asset_id": 10001,
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "kind": "image",
+      "mime_type": "image/jpeg",
+      "filename": "build-error.jpg"
+    }
+  ]
+}

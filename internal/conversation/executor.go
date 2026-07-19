@@ -2,6 +2,7 @@ package conversation
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -23,11 +24,12 @@ import (
 // It does NOT own the Runner — the Runtime is built per-turn and discarded.
 // It does NOT build the Runner itself — that is RuntimeFactory's job.
 type TurnExecutor struct {
-	repo   ConversationRepository
-	events ConversationEventStore
-	active *ActiveTurnRegistry
-	subs   *SubscriptionManager
-	rb     RunBuilder
+	repo         ConversationRepository
+	events       ConversationEventStore
+	active       *ActiveTurnRegistry
+	subs         *SubscriptionManager
+	rb           RunBuilder
+	assetRelease AssetRefReleaseService
 
 	// scheduler is the process-wide admission controller. Its default is a
 	// single worker for backward-compatible FIFO behavior; deployments may raise
@@ -36,6 +38,10 @@ type TurnExecutor struct {
 
 	requestMu     sync.Mutex
 	requestClaims map[string]string // sessionID + NUL + requestID -> accepted turnID
+	recoveryMu    sync.Mutex
+	recovering    map[string]struct{} // sessionID + NUL + requestID currently being rescheduled
+	releaseMu     sync.Mutex
+	releasing     map[string]struct{} // credential scope with an active outbox worker
 
 	// sessionOps closes the TOCTOU gap between accepting a turn and deleting its
 	// conversation. A turn holds a shared per-session claim from before Load until
@@ -118,6 +124,8 @@ func NewTurnExecutor(repo ConversationRepository, events ConversationEventStore,
 		rb:            rb,
 		scheduler:     NewTurnScheduler(1),
 		requestClaims: make(map[string]string),
+		recovering:    make(map[string]struct{}),
+		releasing:     make(map[string]struct{}),
 		sessionOps:    make(map[string]*sessionOperation),
 		sessionCreds:  make(map[string]credential.Resolver),
 	}
@@ -174,7 +182,116 @@ func (e *TurnExecutor) DeleteConversation(ctx context.Context, sessionID string)
 		return err
 	}
 	defer release()
-	return e.repo.Delete(ctx, sessionID)
+	sess, loadErr := e.repo.Load(ctx, sessionID)
+	if loadErr != nil {
+		return loadErr
+	}
+	needsRelease := sessionHasUserAssets(sess)
+	cred := e.sessionCredential(sessionID)
+	if needsRelease {
+		if e.assetRelease == nil {
+			return errors.New("conversation asset-ref release service unavailable")
+		}
+		outbox, ok := e.repo.(AssetRefReleaseRepository)
+		if !ok {
+			return errors.New("conversation asset-ref release outbox unavailable")
+		}
+		scope := e.assetRelease.CredentialScope(ctx, cred)
+		if scope == "" {
+			return errors.New("cannot persist asset-ref release without credential scope")
+		}
+		if err := outbox.DeleteWithAssetRefRelease(ctx, sessionID, session.AssetRefRelease{SessionID: sessionID, CredentialScope: scope, CreatedAt: time.Now().UTC()}); err != nil {
+			return err
+		}
+	} else if err := e.repo.Delete(ctx, sessionID); err != nil {
+		return err
+	}
+	if needsRelease {
+		go e.FlushAssetRefReleases(context.WithoutCancel(ctx), cred)
+	}
+	return nil
+}
+
+func (e *TurnExecutor) SetAssetRefReleaseService(service AssetRefReleaseService) {
+	e.assetRelease = service
+}
+
+func (e *TurnExecutor) FlushAssetRefReleases(ctx context.Context, cred credential.Resolver) {
+	if e.assetRelease == nil {
+		return
+	}
+	outbox, ok := e.repo.(AssetRefReleaseRepository)
+	if !ok {
+		return
+	}
+	scope := e.assetRelease.CredentialScope(ctx, cred)
+	if scope == "" {
+		return
+	}
+	e.releaseMu.Lock()
+	if _, running := e.releasing[scope]; running {
+		e.releaseMu.Unlock()
+		return
+	}
+	e.releasing[scope] = struct{}{}
+	e.releaseMu.Unlock()
+	defer func() {
+		e.releaseMu.Lock()
+		delete(e.releasing, scope)
+		e.releaseMu.Unlock()
+	}()
+
+	now := time.Now().UTC()
+	// Include future backoff entries so restart/reconnect recreates their timer.
+	releases, err := outbox.PendingAssetRefReleases(ctx, scope, time.Date(9999, 12, 31, 0, 0, 0, 0, time.UTC))
+	if err != nil {
+		return
+	}
+	var nextWake time.Time
+	for _, release := range releases {
+		if release.NextAttemptAt.After(now) {
+			if nextWake.IsZero() || release.NextAttemptAt.Before(nextWake) {
+				nextWake = release.NextAttemptAt
+			}
+			continue
+		}
+		releaseErr := e.assetRelease.ReleaseConversationAssetRefs(ctx, cred, release.SessionID)
+		if releaseErr == nil {
+			_ = outbox.CompleteAssetRefRelease(ctx, release.SessionID)
+			continue
+		}
+		var apiErr *model.APIError
+		if errors.As(releaseErr, &apiErr) && (apiErr.StatusCode == 401 || apiErr.StatusCode == 403) {
+			// Leave immediately eligible but do not schedule with an expired
+			// credential. A later SessionReady for this same scope wakes it.
+			continue
+		}
+		attempts := release.Attempts + 1
+		delay := time.Minute << min(attempts-1, 6)
+		next := now.Add(delay)
+		_ = outbox.RetryAssetRefRelease(ctx, release.SessionID, attempts, next)
+		if nextWake.IsZero() || next.Before(nextWake) {
+			nextWake = next
+		}
+	}
+	if !nextWake.IsZero() {
+		delay := time.Until(nextWake)
+		if delay < 0 {
+			delay = 0
+		}
+		time.AfterFunc(delay, func() {
+			e.FlushAssetRefReleases(context.Background(), cred)
+		})
+	}
+}
+
+func sessionHasUserAssets(sess *session.Session) bool {
+	for _, message := range sess.Messages {
+		if message.Role == model.RoleUser && len(message.Assets) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func (e *TurnExecutor) ArchiveConversation(ctx context.Context, sessionID string) (time.Time, error) {
@@ -375,9 +492,18 @@ func (e *TurnExecutor) conversationArchived(ctx context.Context, fallback *sessi
 }
 
 func (e *TurnExecutor) executeWithSessionAssets(parentCtx context.Context, sess *session.Session, requestID, input, modelName string, assets []model.GatewayAssetRef) (agent.TurnResult, error) {
-	res, runErr := e.driveTurn(parentCtx, sess, requestID, modelName,
+	res, runErr := e.driveTurn(parentCtx, sess, requestID, input, modelName, assets, nil,
 		session.TurnStatusRunning,
-		func(ctx context.Context, runner TurnRunner) (agent.TurnResult, error) {
+		func(ctx context.Context, runner TurnRunner, prepared bool) (agent.TurnResult, error) {
+			if prepared {
+				preparedRunner, ok := runner.(PreparedTurnRunner)
+				if ok {
+					return preparedRunner.RunPreparedTurn(ctx, sess)
+				}
+				// The user message is already in durable history. Legacy/custom
+				// runners can safely continue from that checkpoint via ResumeTurn.
+				return runner.ResumeTurn(ctx, sess)
+			}
 			if assetRunner, ok := runner.(AssetTurnRunner); ok {
 				return assetRunner.RunTurnWithAssets(ctx, sess, input, assets)
 			}
@@ -436,8 +562,24 @@ func (e *TurnExecutor) Resume(parentCtx context.Context, sessionID string) (agen
 	if sess.TurnStatus() != session.TurnStatusPaused {
 		return agent.TurnResult{}, nil
 	}
-	return e.driveTurn(parentCtx, sess, "", "", session.TurnStatusResuming,
-		func(ctx context.Context, runner TurnRunner) (agent.TurnResult, error) {
+	var recovered *session.TurnInput
+	if repo, ok := e.repo.(TurnInputRepository); ok {
+		if inputs, listErr := repo.RecoverableTurnInputs(parentCtx); listErr == nil {
+			for i := range inputs {
+				if inputs[i].SessionID == sessionID && inputs[i].State == session.TurnInputRunning && sessionHasOriginTurn(sess, inputs[i].TurnID) {
+					recovered = &inputs[i]
+					break
+				}
+			}
+		}
+	}
+	requestID, inputText, wireModel := "", "", ""
+	var assets []model.GatewayAssetRef
+	if recovered != nil {
+		requestID, inputText, wireModel, assets = recovered.RequestID, recovered.Text, recovered.WireModel, recovered.Assets
+	}
+	return e.driveTurn(parentCtx, sess, requestID, inputText, wireModel, assets, recovered, session.TurnStatusResuming,
+		func(ctx context.Context, runner TurnRunner, _ bool) (agent.TurnResult, error) {
 			return runner.ResumeTurn(ctx, sess)
 		},
 		e.recordResumeStatus,
@@ -453,9 +595,12 @@ func (e *TurnExecutor) driveTurn(
 	parentCtx context.Context,
 	sess *session.Session,
 	requestID string,
-	model string,
+	inputText string,
+	wireModel string,
+	assets []model.GatewayAssetRef,
+	preclaimed *session.TurnInput,
 	runningState string,
-	run func(ctx context.Context, runner TurnRunner) (agent.TurnResult, error),
+	run func(ctx context.Context, runner TurnRunner, prepared bool) (agent.TurnResult, error),
 	recordStatus func(sess *session.Session, runErr error),
 ) (agent.TurnResult, error) {
 	// Repair provider-invalid legacy history before reserving or starting any
@@ -471,12 +616,40 @@ func (e *TurnExecutor) driveTurn(
 	// so reconnecting clients see one complete lifecycle rather than a silent gap.
 	turnID := e.scheduler.ReserveTurnID()
 	pub := &sequencingEmitter{ctx: context.WithoutCancel(parentCtx), events: e.events, live: e.subs.Emitter(sess.ID)}
-	if existingTurnID, duplicate := e.claimRequest(parentCtx, sess.ID, requestID, turnID, pub); duplicate {
+	resolvedModel := wireModel
+	if preclaimed != nil {
+		resolvedModel = preclaimed.ResolvedModel
+	} else if resolver, ok := e.rb.(ModelResolver); ok {
+		var resolveErr error
+		resolvedModel, resolveErr = resolver.ResolveModel(wireModel)
+		if resolveErr != nil {
+			return agent.TurnResult{}, resolveErr
+		}
+	}
+	var claimed session.TurnInput
+	var duplicate bool
+	var claimErr error
+	if preclaimed != nil {
+		claimed = *preclaimed
+		turnID = claimed.TurnID
+		resolvedModel = claimed.ResolvedModel
+	} else {
+		claimed, duplicate, claimErr = e.claimRequest(parentCtx, sess.ID, requestID, turnID, inputText, wireModel, resolvedModel, assets, pub)
+	}
+	if claimErr != nil {
+		return agent.TurnResult{}, claimErr
+	}
+	if duplicate {
+		existingTurnID := claimed.TurnID
 		return agent.TurnResult{TurnID: existingTurnID, Deduplicated: true}, nil
+	}
+	if claimed.TurnID != "" {
+		turnID = claimed.TurnID
 	}
 	if e.executionGuard != nil {
 		releaseGuard, guardErr := e.executionGuard(parentCtx, sess.ID)
 		if guardErr != nil {
+			e.setTurnInputState(parentCtx, claimed, session.TurnInputFailed)
 			sess.SetTurnStatus(session.TurnStatusFailed)
 			pub.Emit(agent.Event{
 				Kind: agent.EventTurnFailed, SessionID: sess.ID, TurnID: turnID,
@@ -502,10 +675,12 @@ func (e *TurnExecutor) driveTurn(
 		Mode:          workspaceExecutionMode(sess.ExecutionPolicy()),
 		RunningState:  runningState,
 	}, func(position int, reason TurnQueueReason) {
+		e.setTurnInputState(parentCtx, claimed, session.TurnInputQueued)
 		pub.Emit(agent.Event{Kind: agent.EventTurnQueued, SessionID: sess.ID, TurnID: turnID, QueuePosition: position, QueueReason: string(reason)})
 	})
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
+			e.setTurnInputState(parentCtx, claimed, session.TurnInputCancelled)
 			pub.Emit(agent.Event{Kind: agent.EventTurnCancelled, SessionID: sess.ID, TurnID: turnID})
 			if persistErr := pub.terminalPersistenceError(); persistErr != nil {
 				return agent.TurnResult{TurnID: turnID}, errors.Join(err, persistErr)
@@ -514,6 +689,28 @@ func (e *TurnExecutor) driveTurn(
 		return agent.TurnResult{TurnID: turnID}, err
 	}
 	defer release()
+
+	prepared := false
+	turnRepo, durableInput := e.repo.(TurnInputRepository)
+	if claimed.RequestID != "" && durableInput {
+		latest, loadErr := e.repo.Load(parentCtx, sess.ID)
+		if loadErr != nil {
+			return agent.TurnResult{TurnID: turnID}, loadErr
+		}
+		*sess = *latest
+		if !sessionHasOriginTurn(sess, turnID) {
+			sess.RemoveEmptyAssistantNoOps()
+			sess.Messages = append(sess.Messages, model.Message{
+				Role: model.RoleUser, Content: claimed.Text,
+				Assets: append([]model.GatewayAssetRef(nil), claimed.Assets...), OriginTurnID: turnID,
+			})
+			sess.UpdatedAt = time.Now()
+		}
+		if startErr := turnRepo.StartTurnInput(context.WithoutCancel(parentCtx), claimed, sess); startErr != nil {
+			return agent.TurnResult{TurnID: turnID}, startErr
+		}
+		prepared = true
+	}
 
 	// 3. Claim the turn (mutual exclusion). This remains the authority for
 	// in-flight cancellation, approvals, and client-tool state.
@@ -528,15 +725,17 @@ func (e *TurnExecutor) driveTurn(
 
 	// 4. Build a fresh turnRunner for this turn.
 	rctx := RuntimeContext{
-		Session:      sess,
-		TurnID:       turnID,
-		Model:        model,
-		Publisher:    pub,
-		Approver:     e.active.Approver(sess.ID),
-		PlanApprover: e.active.PlanApprover(sess.ID),
-		ClientWaiter: e.active.ClientToolWaiter(sess.ID),
-		ClientTools:  e.active.ClientTools(sess.ID),
-		Credential:   e.sessionCredential(sess.ID),
+		Session:       sess,
+		TurnID:        turnID,
+		Model:         wireModel,
+		ResolvedModel: resolvedModel,
+		RequestID:     requestID,
+		Publisher:     pub,
+		Approver:      e.active.Approver(sess.ID),
+		PlanApprover:  e.active.PlanApprover(sess.ID),
+		ClientWaiter:  e.active.ClientToolWaiter(sess.ID),
+		ClientTools:   e.active.ClientTools(sess.ID),
+		Credential:    e.sessionCredential(sess.ID),
 		// Mid-turn crash-safety (v1.2 §2): persist at each loop boundary so a hard
 		// kill loses at most the in-progress step. The turn-boundary Save below is
 		// still the backstop.
@@ -547,7 +746,7 @@ func (e *TurnExecutor) driveTurn(
 	// 5. Run, marking running while in flight so a mid-turn crash leaves a
 	//    detectable "interrupted" status (reconciled to paused on next start).
 	sess.SetTurnStatus(runningState)
-	res, runErr := run(turnCtx, runner)
+	res, runErr := run(turnCtx, runner, prepared)
 	// The executor owns the accepted lifecycle identity. Alternate runners may
 	// return a legacy/generated id, but it must never split one turn's event
 	// stream into two correlations.
@@ -563,6 +762,7 @@ func (e *TurnExecutor) driveTurn(
 	//    so a client sees paused/failed transitions.
 	recordStatus(sess, runErr)
 	e.emitLifecycle(pub, sess, res, runErr)
+	e.setTurnInputState(parentCtx, claimed, turnInputTerminalState(sess, runErr))
 	if persistErr := pub.terminalPersistenceError(); persistErr != nil && !errors.Is(runErr, persistErr) {
 		runErr = errors.Join(runErr, persistErr)
 	}
@@ -601,16 +801,65 @@ func (e *TurnExecutor) repairInvalidToolCallTail(ctx context.Context, sess *sess
 	return nil
 }
 
-func (e *TurnExecutor) claimRequest(ctx context.Context, sessionID, requestID, proposedTurnID string, pub agent.Emitter) (string, bool) {
+type RequestConflictError struct{}
+
+func (RequestConflictError) Error() string {
+	return "request_id was already used with a different payload"
+}
+func (RequestConflictError) AgentInputErrorCode() string { return "request_conflict" }
+func (RequestConflictError) SafeMessage() string {
+	return "request_id was already used with a different payload"
+}
+
+func (e *TurnExecutor) claimRequest(ctx context.Context, sessionID, requestID, proposedTurnID, text, wireModel, resolvedModel string, assets []model.GatewayAssetRef, pub *sequencingEmitter) (session.TurnInput, bool, error) {
 	if requestID == "" {
 		pub.Emit(agent.Event{Kind: agent.EventTurnAccepted, SessionID: sessionID, TurnID: proposedTurnID})
-		return proposedTurnID, false
+		return session.TurnInput{SessionID: sessionID, TurnID: proposedTurnID}, false, nil
+	}
+	if turnRepo, ok := e.repo.(TurnInputRepository); ok {
+		input := session.TurnInput{
+			SessionID: sessionID, RequestID: requestID, TurnID: proposedTurnID,
+			PayloadHash: turnInputPayloadHash(text, wireModel, assets), Text: text,
+			WireModel: wireModel, ResolvedModel: resolvedModel,
+			Assets: append([]model.GatewayAssetRef(nil), assets...), CreatedAt: time.Now().UTC(),
+		}
+		event := agent.Event{
+			Kind: agent.EventTurnAccepted, SessionID: sessionID, TurnID: proposedTurnID,
+			RequestID: requestID, At: input.CreatedAt,
+		}
+		payload, err := json.Marshal(event)
+		if err != nil {
+			return session.TurnInput{}, false, err
+		}
+		stored, created, seq, err := turnRepo.ReserveTurnInput(ctx, input, session.EventRecord{
+			SessionID: sessionID, TurnID: proposedTurnID, Kind: string(agent.EventTurnAccepted), At: event.At, Payload: payload,
+		})
+		if err != nil {
+			return session.TurnInput{}, false, err
+		}
+		if stored.PayloadHash != input.PayloadHash {
+			return session.TurnInput{}, false, RequestConflictError{}
+		}
+		if created {
+			event.Seq = seq
+			pub.EmitPersisted(event)
+		} else {
+			// A client that disconnected before observing accepted retries the
+			// same immutable submission. Re-acknowledge its original identity
+			// live without appending a second accepted event.
+			pub.EmitPersisted(agent.Event{
+				Kind: agent.EventTurnAccepted, SessionID: stored.SessionID,
+				TurnID: stored.TurnID, RequestID: stored.RequestID, At: stored.CreatedAt,
+			})
+		}
+		return stored, !created, nil
 	}
 	key := sessionID + "\x00" + requestID
 	e.requestMu.Lock()
 	defer e.requestMu.Unlock()
 	if turnID := e.requestClaims[key]; turnID != "" {
-		return turnID, true
+		pub.EmitPersisted(agent.Event{Kind: agent.EventTurnAccepted, SessionID: sessionID, TurnID: turnID, RequestID: requestID, At: time.Now().UTC()})
+		return session.TurnInput{SessionID: sessionID, RequestID: requestID, TurnID: turnID}, true, nil
 	}
 	if records, err := e.events.Replay(ctx, sessionID); err == nil {
 		for _, record := range records {
@@ -620,13 +869,57 @@ func (e *TurnExecutor) claimRequest(ctx context.Context, sessionID, requestID, p
 			var event agent.Event
 			if json.Unmarshal(record.Payload, &event) == nil && event.RequestID == requestID && event.TurnID != "" {
 				e.requestClaims[key] = event.TurnID
-				return event.TurnID, true
+				pub.EmitPersisted(event)
+				return session.TurnInput{SessionID: sessionID, RequestID: requestID, TurnID: event.TurnID}, true, nil
 			}
 		}
 	}
 	e.requestClaims[key] = proposedTurnID
 	pub.Emit(agent.Event{Kind: agent.EventTurnAccepted, SessionID: sessionID, TurnID: proposedTurnID, RequestID: requestID})
-	return proposedTurnID, false
+	return session.TurnInput{SessionID: sessionID, RequestID: requestID, TurnID: proposedTurnID}, false, nil
+}
+
+func turnInputPayloadHash(text, wireModel string, assets []model.GatewayAssetRef) string {
+	normalizedAssets := append([]model.GatewayAssetRef{}, assets...)
+	payload := struct {
+		Text   string                  `json:"text"`
+		Model  string                  `json:"model"`
+		Assets []model.GatewayAssetRef `json:"assets"`
+	}{Text: text, Model: wireModel, Assets: normalizedAssets}
+	encoded, _ := json.Marshal(payload)
+	return fmt.Sprintf("%x", sha256.Sum256(encoded))
+}
+
+func sessionHasOriginTurn(sess *session.Session, turnID string) bool {
+	for _, message := range sess.Messages {
+		if message.OriginTurnID == turnID {
+			return true
+		}
+	}
+	return false
+}
+
+func (e *TurnExecutor) setTurnInputState(ctx context.Context, input session.TurnInput, state session.TurnInputState) {
+	if input.RequestID == "" || state == "" {
+		return
+	}
+	if repo, ok := e.repo.(TurnInputRepository); ok {
+		_ = repo.SetTurnInputState(context.WithoutCancel(ctx), input.SessionID, input.RequestID, state)
+	}
+}
+
+func turnInputTerminalState(sess *session.Session, runErr error) session.TurnInputState {
+	switch sess.TurnStatus() {
+	case session.TurnStatusFailed:
+		return session.TurnInputFailed
+	case session.TurnStatusDone:
+		if errors.Is(runErr, context.Canceled) {
+			return session.TurnInputCancelled
+		}
+		return session.TurnInputCompleted
+	default:
+		return ""
+	}
 }
 
 func workspaceExecutionMode(policy string) WorkspaceExecutionMode {
@@ -733,6 +1026,9 @@ func lifecycleErrorCode(err error) string {
 	}
 	var apiErr *model.APIError
 	if errors.As(err, &apiErr) {
+		if code, ok := model.UserAssetErrorCode(apiErr); ok {
+			return code
+		}
 		if apiErr.Code == "quota_exceeded" || apiErr.Type == "quota_exceeded" {
 			return "quota_exceeded"
 		}
@@ -746,6 +1042,9 @@ func lifecycleErrorCode(err error) string {
 func errString(err error) string {
 	if err == nil {
 		return ""
+	}
+	if code, ok := model.UserAssetErrorCode(err); ok {
+		return model.SafeUserAssetErrorMessage(code)
 	}
 	return err.Error()
 }
@@ -780,6 +1079,155 @@ func (e *TurnExecutor) ReconcileInterrupted(ctx context.Context) error {
 		_ = e.repo.Save(ctx, sess)
 	}
 	return nil
+}
+
+// RecoverTurnInputs repairs and reschedules durable v1.5 submissions after a
+// process restart. It is safe to call repeatedly: terminal events win, applied
+// running messages enter the existing pause/resume path, and accepted work keeps
+// its original turn identity.
+func (e *TurnExecutor) RecoverTurnInputs(ctx context.Context) (int, error) {
+	return e.recoverTurnInputs(ctx, "")
+}
+
+// RecoverSessionTurnInputs performs credential-safe recovery for one connected
+// conversation. Server mode calls this only after the reconnecting WebSocket has
+// restored that session's bearer credential; a process restart must never replay
+// another principal's assets through the daemon's default credential.
+func (e *TurnExecutor) RecoverSessionTurnInputs(ctx context.Context, sessionID string) (int, error) {
+	if sessionID == "" {
+		return 0, nil
+	}
+	return e.recoverTurnInputs(ctx, sessionID)
+}
+
+func (e *TurnExecutor) recoverTurnInputs(ctx context.Context, sessionID string) (int, error) {
+	repo, ok := e.repo.(TurnInputRepository)
+	if !ok {
+		return 0, nil
+	}
+	inputs, err := repo.RecoverableTurnInputs(ctx)
+	if err != nil {
+		return 0, err
+	}
+	rescheduled := 0
+	for _, input := range inputs {
+		if sessionID != "" && input.SessionID != sessionID {
+			continue
+		}
+		claimKey := input.SessionID + "\x00" + input.RequestID
+		if !e.claimRecovery(claimKey) {
+			continue
+		}
+		terminal, terminalState := e.durableTurnTerminal(ctx, input.SessionID, input.TurnID)
+		if terminal {
+			_ = repo.SetTurnInputState(ctx, input.SessionID, input.RequestID, terminalState)
+			e.releaseRecovery(claimKey)
+			continue
+		}
+		sess, loadErr := e.repo.Load(ctx, input.SessionID)
+		if loadErr != nil {
+			e.releaseRecovery(claimKey)
+			continue
+		}
+		if input.State == session.TurnInputRunning && sessionHasOriginTurn(sess, input.TurnID) {
+			e.ensureTurnStartedEvent(ctx, input)
+			sess.MarkPaused(time.Now().UTC())
+			_ = e.repo.Save(ctx, sess)
+			e.releaseRecovery(claimKey)
+			continue
+		}
+		if input.State == session.TurnInputRunning {
+			_ = repo.SetTurnInputState(ctx, input.SessionID, input.RequestID, session.TurnInputAccepted)
+			input.State = session.TurnInputAccepted
+		}
+		rescheduled++
+		recovered := input
+		go func() {
+			defer e.releaseRecovery(claimKey)
+			_, _ = e.executeRecoveredTurn(context.WithoutCancel(ctx), recovered)
+		}()
+	}
+	return rescheduled, nil
+}
+
+func (e *TurnExecutor) claimRecovery(key string) bool {
+	e.recoveryMu.Lock()
+	defer e.recoveryMu.Unlock()
+	if _, exists := e.recovering[key]; exists {
+		return false
+	}
+	e.recovering[key] = struct{}{}
+	return true
+}
+
+func (e *TurnExecutor) releaseRecovery(key string) {
+	e.recoveryMu.Lock()
+	delete(e.recovering, key)
+	e.recoveryMu.Unlock()
+}
+
+// The message+running transaction necessarily precedes live turn_started. If a
+// process dies in that narrow window, reconstruct the missing durable event from
+// the immutable inbox before entering pause/resume.
+func (e *TurnExecutor) ensureTurnStartedEvent(ctx context.Context, input session.TurnInput) {
+	records, err := e.events.Replay(ctx, input.SessionID)
+	if err == nil {
+		for _, record := range records {
+			if record.TurnID == input.TurnID && record.Kind == string(agent.EventTurnStarted) {
+				return
+			}
+		}
+	}
+	pub := &sequencingEmitter{ctx: context.WithoutCancel(ctx), events: e.events, live: e.subs.Emitter(input.SessionID)}
+	pub.Emit(agent.Event{
+		Kind: agent.EventTurnStarted, SessionID: input.SessionID, TurnID: input.TurnID,
+		Text: input.Text, UserAssets: append([]model.GatewayAssetRef(nil), input.Assets...), At: time.Now().UTC(),
+	})
+}
+
+func (e *TurnExecutor) executeRecoveredTurn(ctx context.Context, input session.TurnInput) (agent.TurnResult, error) {
+	release, err := e.beginSessionTurn(input.SessionID)
+	if err != nil {
+		return agent.TurnResult{}, err
+	}
+	defer release()
+	sess, err := e.repo.Load(ctx, input.SessionID)
+	if err != nil {
+		return agent.TurnResult{}, err
+	}
+	return e.driveTurn(ctx, sess, input.RequestID, input.Text, input.WireModel, input.Assets, &input,
+		session.TurnStatusRunning,
+		func(runCtx context.Context, runner TurnRunner, prepared bool) (agent.TurnResult, error) {
+			if !prepared {
+				return agent.TurnResult{}, errors.New("recovered turn was not durably prepared")
+			}
+			preparedRunner, ok := runner.(PreparedTurnRunner)
+			if ok {
+				return preparedRunner.RunPreparedTurn(runCtx, sess)
+			}
+			return runner.ResumeTurn(runCtx, sess)
+		}, e.recordRunStatus)
+}
+
+func (e *TurnExecutor) durableTurnTerminal(ctx context.Context, sessionID, turnID string) (bool, session.TurnInputState) {
+	records, err := e.events.Replay(ctx, sessionID)
+	if err != nil {
+		return false, ""
+	}
+	for i := len(records) - 1; i >= 0; i-- {
+		if records[i].TurnID != turnID {
+			continue
+		}
+		switch agent.EventKind(records[i].Kind) {
+		case agent.EventTurnFinished:
+			return true, session.TurnInputCompleted
+		case agent.EventTurnFailed:
+			return true, session.TurnInputFailed
+		case agent.EventTurnCancelled:
+			return true, session.TurnInputCancelled
+		}
+	}
+	return false, ""
 }
 
 // Cancel stops the in-flight turn for a session at the next checkpoint.
@@ -970,6 +1418,10 @@ func (s *sequencingEmitter) Emit(ev agent.Event) {
 	}
 	s.live.Emit(ev)
 }
+
+// EmitPersisted publishes an event already committed by the durable turn-input
+// transaction. Re-appending it would violate request idempotency.
+func (s *sequencingEmitter) EmitPersisted(ev agent.Event) { s.live.Emit(ev) }
 
 func (s *sequencingEmitter) terminalPersistenceError() error {
 	s.mu.Lock()

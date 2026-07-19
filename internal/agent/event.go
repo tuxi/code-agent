@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"code-agent/internal/assetref"
+	"code-agent/internal/model"
 	"code-agent/internal/tools"
 )
 
@@ -98,6 +99,7 @@ type Event struct {
 	SessionID     string
 	TurnID        string
 	RequestID     string // client-generated idempotency/correlation key for agent_input
+	UserAssets    []model.GatewayAssetRef
 	QueuePosition int    // EventTurnQueued: one-based scheduler position
 	QueueReason   string // EventTurnQueued: global_capacity | workspace_lease | session_serialization
 

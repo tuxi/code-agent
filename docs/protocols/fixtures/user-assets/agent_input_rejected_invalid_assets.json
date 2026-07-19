@@ -1,0 +1,8 @@
+{
+  "type": "agent_input_rejected",
+  "request_id": "req_user_asset_003",
+  "error": {
+    "code": "invalid_assets",
+    "message": "asset 10003 has an unsupported mime_type"
+  }
+}

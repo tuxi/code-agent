@@ -11,6 +11,7 @@ import (
 
 	"code-agent/internal/agent"
 	"code-agent/internal/assetref"
+	"code-agent/internal/model"
 	"code-agent/internal/tools"
 )
 
@@ -67,6 +68,14 @@ func cases() map[string]wireCase {
 			Kind: agent.EventToolStarted, At: fixedAt,
 			SessionID: "sess_root", TurnID: "turn_7", CallID: "call_abc", Step: 3,
 			ToolName: "run_command", ToolArgs: `{"command":"go test ./..."}`,
+		}},
+		"turn_started_user_assets": {ev: agent.Event{
+			Kind: agent.EventTurnStarted, At: fixedAt,
+			SessionID: "sess_root", TurnID: "turn_7", Text: "解释这张截图里的错误",
+			UserAssets: []model.GatewayAssetRef{{
+				AssetID: 10001, SHA256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+				Kind: "image", MIMEType: "image/jpeg", Filename: "build-error.jpg",
+			}},
 		}},
 		"tool_started_client": {ev: agent.Event{
 			Kind: agent.EventToolStarted, At: fixedAt,

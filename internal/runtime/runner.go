@@ -99,6 +99,7 @@ func BuildRunner(cfg app.Config, mc app.ModelConfig, provider model.Provider, re
 	// Asset upload is a Gateway-only capability. Direct OpenAI-compatible and
 	// Ollama models must never receive Gateway asset references by accident.
 	if isGatewayModelEndpoint(mc.BaseURL) {
+		runner.UserAssetsSupported = true
 		if uploader, ok := provider.(model.AssetUploader); ok {
 			runner.AssetUploader = uploader
 		}

@@ -27,24 +27,30 @@ var (
 	_ EventAttentionStore      = (*MemoryStore)(nil)
 	_ TelemetryStore           = (*MemoryStore)(nil)
 	_ ConversationArchiveStore = (*MemoryStore)(nil)
+	_ TurnInputStore           = (*MemoryStore)(nil)
+	_ AssetRefReleaseStore     = (*MemoryStore)(nil)
 )
 
 type MemoryStore struct {
-	mu        sync.Mutex
-	sessions  map[string]*Session        // id → session (owned copy)
-	metas     []Meta                     // ordered by UpdatedAt desc
-	events    []EventRecord              // all events, insertion order
-	eventSeq  int64                      // store-wide monotonic event seq (mirrors sqlite rowid)
-	requests  []RequestRecord            // all requests, insertion order
-	worktrees map[string]worktree.Record // client request id → managed worktree reservation
-	closed    bool
+	mu            sync.Mutex
+	sessions      map[string]*Session        // id → session (owned copy)
+	metas         []Meta                     // ordered by UpdatedAt desc
+	events        []EventRecord              // all events, insertion order
+	eventSeq      int64                      // store-wide monotonic event seq (mirrors sqlite rowid)
+	requests      []RequestRecord            // all requests, insertion order
+	worktrees     map[string]worktree.Record // client request id → managed worktree reservation
+	turnInputs    map[string]TurnInput
+	assetReleases map[string]AssetRefRelease
+	closed        bool
 }
 
 // NewMemoryStore returns an empty MemoryStore ready for use.
 func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{
-		sessions:  make(map[string]*Session),
-		worktrees: make(map[string]worktree.Record),
+		sessions:      make(map[string]*Session),
+		worktrees:     make(map[string]worktree.Record),
+		turnInputs:    make(map[string]TurnInput),
+		assetReleases: make(map[string]AssetRefRelease),
 	}
 }
 
@@ -103,6 +109,163 @@ func (m *MemoryStore) Delete(_ context.Context, id string) error {
 		}
 	}
 	m.events = filtered
+	for key, input := range m.turnInputs {
+		if input.SessionID == id {
+			delete(m.turnInputs, key)
+		}
+	}
+	return nil
+}
+
+func turnInputKey(sessionID, requestID string) string { return sessionID + "\x00" + requestID }
+
+func cloneTurnInput(input TurnInput) TurnInput {
+	input.Assets = append([]model.GatewayAssetRef(nil), input.Assets...)
+	return input
+}
+
+func (m *MemoryStore) ReserveTurnInput(_ context.Context, input TurnInput, accepted EventRecord) (TurnInput, bool, int64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := turnInputKey(input.SessionID, input.RequestID)
+	if existing, ok := m.turnInputs[key]; ok {
+		return cloneTurnInput(existing), false, 0, nil
+	}
+	now := input.CreatedAt.UTC()
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	input.CreatedAt, input.UpdatedAt, input.State = now, now, TurnInputAccepted
+	m.turnInputs[key] = cloneTurnInput(input)
+	m.eventSeq++
+	accepted.Seq = m.eventSeq
+	m.events = append(m.events, accepted)
+	return cloneTurnInput(input), true, accepted.Seq, nil
+}
+
+func (m *MemoryStore) StartTurnInput(_ context.Context, input TurnInput, sess *Session) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := turnInputKey(input.SessionID, input.RequestID)
+	stored, ok := m.turnInputs[key]
+	if !ok {
+		return fmt.Errorf("turn input %s/%s not found", input.SessionID, input.RequestID)
+	}
+	stored.State, stored.UpdatedAt = TurnInputRunning, time.Now().UTC()
+	m.turnInputs[key] = stored
+	m.sessions[sess.ID] = deepCopySession(sess)
+	m.reindexMetas()
+	return nil
+}
+
+func (m *MemoryStore) SetTurnInputState(_ context.Context, sessionID, requestID string, state TurnInputState) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := turnInputKey(sessionID, requestID)
+	input, ok := m.turnInputs[key]
+	if !ok {
+		return fmt.Errorf("turn input %s/%s not found", sessionID, requestID)
+	}
+	input.State, input.UpdatedAt = state, time.Now().UTC()
+	m.turnInputs[key] = input
+	return nil
+}
+
+func (m *MemoryStore) TurnInput(_ context.Context, sessionID, requestID string) (TurnInput, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	input, ok := m.turnInputs[turnInputKey(sessionID, requestID)]
+	if !ok {
+		return TurnInput{}, fmt.Errorf("turn input %s/%s not found", sessionID, requestID)
+	}
+	return cloneTurnInput(input), nil
+}
+
+func (m *MemoryStore) RecoverableTurnInputs(_ context.Context) ([]TurnInput, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []TurnInput
+	for _, input := range m.turnInputs {
+		switch input.State {
+		case TurnInputAccepted, TurnInputQueued, TurnInputRunning:
+			out = append(out, cloneTurnInput(input))
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })
+	return out, nil
+}
+
+func (m *MemoryStore) EnqueueAssetRefRelease(_ context.Context, release AssetRefRelease) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, exists := m.assetReleases[release.SessionID]; exists {
+		return nil
+	}
+	now := release.CreatedAt.UTC()
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	release.CreatedAt, release.UpdatedAt, release.NextAttemptAt = now, now, now
+	m.assetReleases[release.SessionID] = release
+	return nil
+}
+
+func (m *MemoryStore) DeleteWithAssetRefRelease(_ context.Context, sessionID string, release AssetRefRelease) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	now := release.CreatedAt.UTC()
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	release.SessionID, release.CreatedAt, release.UpdatedAt, release.NextAttemptAt = sessionID, now, now, now
+	if _, exists := m.assetReleases[sessionID]; !exists {
+		m.assetReleases[sessionID] = release
+	}
+	delete(m.sessions, sessionID)
+	filtered := m.events[:0]
+	for _, event := range m.events {
+		if event.SessionID != sessionID {
+			filtered = append(filtered, event)
+		}
+	}
+	m.events = filtered
+	for key, input := range m.turnInputs {
+		if input.SessionID == sessionID {
+			delete(m.turnInputs, key)
+		}
+	}
+	m.reindexMetas()
+	return nil
+}
+
+func (m *MemoryStore) PendingAssetRefReleases(_ context.Context, scope string, now time.Time) ([]AssetRefRelease, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []AssetRefRelease
+	for _, release := range m.assetReleases {
+		if release.CredentialScope == scope && !release.NextAttemptAt.After(now) {
+			out = append(out, release)
+		}
+	}
+	return out, nil
+}
+
+func (m *MemoryStore) RetryAssetRefRelease(_ context.Context, sessionID string, attempts int, next time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	release, ok := m.assetReleases[sessionID]
+	if !ok {
+		return nil
+	}
+	release.Attempts, release.NextAttemptAt, release.UpdatedAt = attempts, next, time.Now().UTC()
+	m.assetReleases[sessionID] = release
+	return nil
+}
+
+func (m *MemoryStore) CompleteAssetRefRelease(_ context.Context, sessionID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.assetReleases, sessionID)
 	return nil
 }
 
@@ -145,6 +308,8 @@ func (m *MemoryStore) Close() error {
 	m.events = nil
 	m.requests = nil
 	m.worktrees = nil
+	m.turnInputs = nil
+	m.assetReleases = nil
 	return nil
 }
 
