@@ -43,6 +43,12 @@ type Runner struct {
 	// denied (see approve()). Read-only tools never consult it.
 	Approver Approver
 
+	// PathAccessApprover gates read-only access to paths outside the workspace.
+	// When non-nil, read tools (read_file, list_files, grep) request user approval
+	// for external paths instead of hard-rejecting them. When nil (headless mode,
+	// legacy clients), external paths are rejected — the existing behaviour.
+	PathAccessApprover tools.PathAccessApprover
+
 	// ClientWaiter blocks the turn goroutine while a client-executed tool runs.
 	// When nil (no client connected, or headless mode), all tools run server-side.
 	// v1.1: see docs/protocols/agent-wire-v1.1-client-tool-execution.md §5.
@@ -1327,12 +1333,13 @@ func (r *Runner) complete(ctx context.Context, req model.Request, streamedText, 
 
 func (r *Runner) executeTool(ctx context.Context, tool tools.Tool, callID string, input json.RawMessage) (tools.ToolResult, error) {
 	ec := tools.ExecutionContext{
-		WorkspaceRoot: r.WorkspaceRoot,
-		SessionID:     r.emitSessionID,
-		TurnID:        r.emitTurnID,
-		CallID:        callID,
-		ExecutionID:   r.emitInvocationID,
-		PlanMode:      r.PlanState == PlanStatusPlanning || r.PlanState == PlanStatusProposing,
+		WorkspaceRoot:      r.WorkspaceRoot,
+		SessionID:          r.emitSessionID,
+		TurnID:             r.emitTurnID,
+		CallID:             callID,
+		ExecutionID:        r.emitInvocationID,
+		PlanMode:           r.PlanState == PlanStatusPlanning || r.PlanState == PlanStatusProposing,
+		PathAccessApprover: r.PathAccessApprover,
 		OnStdout: func(chunk string) {
 			r.emit(Event{Kind: EventToolStdout, CallID: callID, Chunk: chunk})
 		},

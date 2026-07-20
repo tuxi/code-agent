@@ -146,12 +146,25 @@ func (r *ReadFileTool) Execute(ctx context.Context, ec tools.ExecutionContext, i
 	if err != nil {
 		return tools.ToolResult{}, err
 	}
-	targetAbs, err := filepath.Abs(filepath.Join(rootAbs, filepath.Clean(in.Path)))
-	if err != nil {
-		return tools.ToolResult{}, err
+	targetAbs := workspace.ResolveToolPath(rootAbs, in.Path)
+	var absErr error
+	targetAbs, absErr = filepath.Abs(targetAbs)
+	if absErr != nil {
+		return tools.ToolResult{}, absErr
 	}
-	if err := workspace.ValidatePath(rootAbs, targetAbs); err != nil {
-		return tools.ToolResult{}, fmt.Errorf("path escapes workspace: %s", in.Path)
+	switch workspace.ClassifyPath(rootAbs, targetAbs) {
+	case workspace.PathManagedWorktree:
+		return tools.ToolResult{}, fmt.Errorf("path is not accessible: %s", in.Path)
+	case workspace.PathOutsideWorkspace:
+		if ec.PathAccessApprover == nil {
+			return tools.ToolResult{}, fmt.Errorf("path is outside the workspace: %s", in.Path)
+		}
+		if !ec.PathAccessApprover.ApproveExternalPath(targetAbs, "read") {
+			return tools.ToolResult{}, fmt.Errorf("access to external path was denied: %s", in.Path)
+		}
+		// approved — fall through to execute normally
+	case workspace.PathInsideWorkspace:
+		// proceed
 	}
 	rel, err := filepath.Rel(rootAbs, targetAbs)
 	if err != nil {

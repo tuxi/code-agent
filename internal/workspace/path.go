@@ -11,6 +11,53 @@ const ManagedWorktreesRelativeRoot = ".codeagent/worktrees"
 
 var ErrManagedWorktreeBoundary = errors.New("path is inside the managed worktree root")
 
+// PathClass classifies a target path relative to a workspace root. It replaces
+// the binary inside/outside check with a three-way decision that lets the caller
+// choose how to handle each case: approve external reads, block managed worktree
+// paths absolutely, and proceed without ceremony for paths inside the workspace.
+type PathClass int
+
+const (
+	// PathInsideWorkspace — the target is within the workspace root and is not
+	// inside a managed worktree. Read/write tools proceed directly.
+	PathInsideWorkspace PathClass = iota
+	// PathOutsideWorkspace — the target is outside the workspace root. Read-only
+	// tools may request user approval through a PathAccessApprover before
+	// proceeding; write and shell tools should still reject.
+	PathOutsideWorkspace
+	// PathManagedWorktree — the target is inside .codeagent/worktrees/. Always
+	// blocked for direct workspace tools regardless of approval.
+	PathManagedWorktree
+)
+
+// ClassifyPath categorises a target path relative to the workspace root. It
+// resolves every existing component through symlinks (CanonicalPath) so a
+// symlink escape is caught before a tool reads or writes through it.
+//
+// The caller decides how to handle each class:
+//   - PathInsideWorkspace: proceed
+//   - PathOutsideWorkspace: request approval or reject
+//   - PathManagedWorktree: reject (never approvable)
+func ClassifyPath(root, target string) PathClass {
+	rootCanonical, err := CanonicalPath(root)
+	if err != nil {
+		return PathOutsideWorkspace
+	}
+	targetCanonical, err := CanonicalPath(target)
+	if err != nil {
+		return PathOutsideWorkspace
+	}
+	// Managed worktree check comes first — these paths are technically inside the
+	// workspace but are always blocked for direct workspace tools.
+	if isManagedRelative(root, target) || isManagedRelative(rootCanonical, targetCanonical) {
+		return PathManagedWorktree
+	}
+	if !isSubPathFold(rootCanonical, targetCanonical) {
+		return PathOutsideWorkspace
+	}
+	return PathInsideWorkspace
+}
+
 func IsSubPath(rootAbs, targetAbs string) bool {
 	rel, err := filepath.Rel(rootAbs, targetAbs)
 	if err != nil {
@@ -40,23 +87,17 @@ func ShouldSkipPath(root, path string) bool {
 }
 
 // ValidatePath enforces both workspace containment and the managed-root
-// boundary for direct read/write tools and asset resolution.
+// boundary for direct read/write tools and asset resolution. It delegates to
+// ClassifyPath so the three-way decision is defined in one place.
 func ValidatePath(root, target string) error {
-	rootCanonical, err := CanonicalPath(root)
-	if err != nil {
-		return err
-	}
-	targetCanonical, err := CanonicalPath(target)
-	if err != nil {
-		return err
-	}
-	if !isSubPathFold(rootCanonical, targetCanonical) {
+	switch ClassifyPath(root, target) {
+	case PathInsideWorkspace:
+		return nil
+	case PathManagedWorktree:
+		return ErrManagedWorktreeBoundary
+	default:
 		return errors.New("path escapes workspace")
 	}
-	if isManagedRelative(root, target) || isManagedRelative(rootCanonical, targetCanonical) {
-		return ErrManagedWorktreeBoundary
-	}
-	return nil
 }
 
 // CanonicalPath resolves every existing path component and preserves a clean
@@ -165,4 +206,21 @@ func PathDepth(rel string) int {
 	}
 	return strings.Count(filepath.ToSlash(rel), "/") + 1
 
+}
+
+// ResolveToolPath resolves a user-supplied path (from a tool input) against the
+// workspace root. If the path is already absolute it is used directly (cleaned);
+// otherwise it is joined with the workspace root. The result is not yet passed
+// through filepath.Abs — callers should do that to catch any remaining issues
+// (symlink escapes etc.).
+//
+// This avoids the cross-platform ambiguity of filepath.Join(root, absPath):
+// on some platforms the absolute argument resets the result; on others the
+// behaviour is not guaranteed.
+func ResolveToolPath(rootAbs, inputPath string) string {
+	clean := filepath.Clean(inputPath)
+	if filepath.IsAbs(clean) {
+		return clean
+	}
+	return filepath.Join(rootAbs, clean)
 }

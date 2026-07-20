@@ -252,6 +252,13 @@ func (b *ServeRunBuilder) Build(ctx conversation.RuntimeContext) conversation.Tu
 	planRef.R = runner
 	runner.PlanApprover = ctx.PlanApprover
 	runner.ClientWaiter = ctx.ClientWaiter
+
+	// If the approver can also gate external path access (as RemoteApprover
+	// does), wire it so read tools can request user approval for paths outside
+	// the workspace instead of hard-rejecting.
+	if pa, ok := ctx.Approver.(tools.PathAccessApprover); ok {
+		runner.PathAccessApprover = pa
+	}
 	runner.Checkpointer = ctx.Checkpointer // mid-turn crash-safety (v1.2 §2); nil in headless builds
 	runner.Stream = true                   // emit final-text and reasoning deltas for live client rendering
 	return runner

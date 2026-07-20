@@ -32,12 +32,38 @@ type ExecutionContext struct {
 	// restricting writes to .codeagent/plans/) check this field.
 	PlanMode bool
 
+	// PathAccessApprover gates read-only access to paths outside the workspace.
+	// When non-nil, read tools (read_file, list_files, grep) request approval for
+	// external paths instead of hard-rejecting them. When nil (headless mode,
+	// legacy clients), external access is denied with a "path escapes workspace"
+	// error — the existing behaviour is unchanged.
+	//
+	// Write and shell tools must NOT consult this field; they are always gated
+	// by the side-effecting Approver chain and must reject external paths.
+	PathAccessApprover PathAccessApprover
+
 	// OnStdout, if set, receives stdout chunks as the command produces them.
 	// Tools that support streaming call this during execution; nil-safe.
 	OnStdout func(chunk string)
 	// OnStderr, if set, receives stderr chunks as the command produces them.
 	// Tools that support streaming call this during execution; nil-safe.
 	OnStderr func(chunk string)
+}
+
+// PathAccessApprover gates read-only access to paths outside the workspace
+// boundary. It is intentionally narrow — it only answers "may we read this
+// external path?" and does not cover side-effecting operations (those go through
+// the full agent.Approver chain).
+//
+// Implementations may be synchronous (a channel-backed RemoteApprover) or
+// asynchronous (a Policy that auto-allows known-safe directories). A nil
+// PathAccessApprover is fail-safe: external paths are rejected.
+type PathAccessApprover interface {
+	// ApproveExternalPath asks whether a read-only operation may proceed on a
+	// path that has been classified as outside the workspace. operation is
+	// "read" for read_file and grep, "list" for list_files.
+	// Return true to allow, false to deny.
+	ApproveExternalPath(absolutePath string, operation string) bool
 }
 
 type ToolResult struct {

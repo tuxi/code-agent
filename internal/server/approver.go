@@ -11,6 +11,7 @@ import (
 
 	"code-agent/internal/agent"
 	"code-agent/internal/approve"
+	"code-agent/internal/tools"
 )
 
 // PermissionGranter persists an "always allow" grant for a tool at a scope. It is
@@ -110,7 +111,9 @@ func (a *RemoteApprover) Approve(toolName string, input json.RawMessage) agent.V
 		}
 		// A send failure means the client disconnected mid-send. Don't deny —
 		// the request stays registered and will be re-sent on the next UpdateSink.
-		_ = snk.Send(frame)
+		if err := snk.Send(frame); err != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "[approver] %s send failed: %v\n", toolName, err)
+		}
 	}
 
 	var deadline <-chan time.Time
@@ -139,6 +142,66 @@ func (a *RemoteApprover) Approve(toolName string, input json.RawMessage) agent.V
 		return agent.VerdictDeny // no answer in time: deny
 	}
 }
+
+// ApproveExternalPath implements tools.PathAccessApprover. It sends an
+// approval_request with tool_name "external_path_access" and blocks until the
+// client responds. The client renders the path and operation so the user can
+// decide whether to grant read-only access outside the workspace.
+//
+// Unlike Approve, there is no "always allow" persistence for external path
+// access — the user must approve each external path independently.
+func (a *RemoteApprover) ApproveExternalPath(absolutePath string, operation string) bool {
+	id := newApprovalID()
+	input := json.RawMessage(fmt.Sprintf(`{"path":%q,"operation":%q}`, absolutePath, operation))
+	req := &pendingReq{
+		ch:       make(chan outcome, 1),
+		toolName: "external_path_access",
+		input:    input,
+	}
+
+	a.mu.Lock()
+	if a.closed {
+		a.mu.Unlock()
+		return false
+	}
+	a.pending[id] = req
+	snk := a.sink // capture under lock
+	a.mu.Unlock()
+
+	defer func() {
+		a.mu.Lock()
+		delete(a.pending, id)
+		a.mu.Unlock()
+	}()
+
+	if snk != nil {
+		r := NewApprovalRequest(id, "", "", "external_path_access", string(input), a.timeout.Milliseconds())
+		frame, err := json.Marshal(r)
+		if err != nil {
+			return false
+		}
+		if err := snk.Send(frame); err != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "[approve] external_path_access send failed: %v\n", err)
+			return false
+		}
+	}
+
+	var deadline <-chan time.Time
+	if a.timeout > 0 {
+		t := time.NewTimer(a.timeout)
+		defer t.Stop()
+		deadline = t.C
+	}
+	select {
+	case res := <-req.ch:
+		return res.approved
+	case <-deadline:
+		return false
+	}
+}
+
+// Compile-time check: RemoteApprover implements tools.PathAccessApprover.
+var _ tools.PathAccessApprover = (*RemoteApprover)(nil)
 
 // Resolve delivers a plain approve/deny verdict (plan approvals, and legacy
 // clients that send only `approved`). Unknown or already-resolved ids are ignored.
