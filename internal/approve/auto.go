@@ -74,6 +74,10 @@ func (a *AutoApprover) SetEnabled(on bool) { a.enabled.Store(on) }
 // Enabled reports the current switch state (for `/auto` with no argument).
 func (a *AutoApprover) Enabled() bool { return a.enabled.Load() }
 
+// IsAutoModeEnabled satisfies agent.AutoModeDetector so the ask_user tool can
+// detect unattended mode without a circular import. See agent/ask_user.go.
+func (a *AutoApprover) IsAutoModeEnabled() bool { return a.enabled.Load() }
+
 // Approve implements agent.Approver. It is the verdict-only path for callers that
 // do not audit; the loop uses ApproveAudited so auto-grants are logged.
 func (a *AutoApprover) Approve(toolName string, input json.RawMessage) agent.Verdict {

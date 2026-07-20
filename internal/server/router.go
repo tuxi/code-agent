@@ -42,10 +42,12 @@ type RequestAssetMessageTarget interface {
 // ApprovalResolver is the control plane: deliver a client's approval verdict to
 // the blocked Approve call. *RemoteApprover satisfies it. Resolve carries a plain
 // approve/deny (plan approvals, legacy tool responses); ResolveTool carries a tool
-// approval's three-way verdict plus the scope for an "always allow" grant.
+// approval's three-way verdict plus the scope for an "always allow" grant;
+// ResolveAskUser delivers the user's answer to a blocked AskUser call.
 type ApprovalResolver interface {
 	Resolve(id string, approved bool)
 	ResolveTool(id string, approved, always bool, scope approve.Scope)
+	ResolveAskUser(id string, answer agent.AskUserAnswer)
 }
 
 // ToolResultResolver delivers a client-tool-execution result to the blocked
@@ -179,6 +181,11 @@ func (r Router) Route(ctx context.Context, data []byte) {
 		var m PlanApprovalResponse
 		if json.Unmarshal(data, &m) == nil && r.Approvals != nil {
 			r.Approvals.Resolve(m.ID, m.Approved)
+		}
+	case MsgTypeAskUserResponse:
+		var m AskUserResponse
+		if json.Unmarshal(data, &m) == nil && r.Approvals != nil {
+			r.Approvals.ResolveAskUser(m.ID, m.Answer)
 		}
 	}
 }

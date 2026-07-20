@@ -28,12 +28,14 @@ import (
 )
 
 // WirePlanTools creates the plan-mode tools (enter_plan_mode, propose_plan) and
-// registers them into the given registry. It returns a RunnerRef whose R field
-// must be set after BuildRunner returns.
+// the HITL clarification tool (ask_user), and registers them into the given
+// registry. It returns a RunnerRef whose R field must be set after BuildRunner
+// returns — all three tools dereference it lazily at Execute time.
 func WirePlanTools(registry *tools.Registry, plansDir string) *agent.RunnerRef {
 	ref := &agent.RunnerRef{}
 	registry.Register(agent.NewEnterPlanModeTool(ref))
 	registry.Register(agent.NewProposePlanTool(ref, plansDir))
+	registry.Register(agent.NewAskUserTool(ref))
 	return ref
 }
 

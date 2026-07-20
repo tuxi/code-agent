@@ -109,6 +109,12 @@ type Runner struct {
 	// REPL, TUI, or server to gate plan execution behind a human decision.
 	PlanApprover PlanApprover
 
+	// AskUserApprover presents a clarification question to the user when the
+	// model encounters ambiguity (the Human-in-the-Loop Clarification Query).
+	// When nil, ask_user returns a fallback message so unattended runs don't
+	// block. Set by the REPL, TUI, or server like PlanApprover.
+	AskUserApprover AskUserApprover
+
 	// PlanState tracks the planning workflow phase. Exported so the TUI and REPL
 	// can toggle plan mode manually (Ctrl+P, /plan).
 	PlanState PlanStatus

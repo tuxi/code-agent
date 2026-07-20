@@ -209,6 +209,7 @@ func (h *WSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	sess.SetApprover(approver)
 	sess.SetPlanApprover(approver)
+	sess.SetAskUserApprover(approver)
 
 	// Client-tool waiting belongs to a session, not to this WebSocket. A page
 	// switch/reconnect must not turn an otherwise recoverable tool request into
@@ -337,6 +338,12 @@ func (r revisionApprovalResolver) Resolve(id string, approved bool) {
 func (r revisionApprovalResolver) ResolveTool(id string, approved, always bool, scope approve.Scope) {
 	if r.handler.ownsSessionControl(r.sessionID, r.revision) {
 		r.target.ResolveTool(id, approved, always, scope)
+	}
+}
+
+func (r revisionApprovalResolver) ResolveAskUser(id string, answer agent.AskUserAnswer) {
+	if r.handler.ownsSessionControl(r.sessionID, r.revision) {
+		r.target.ResolveAskUser(id, answer)
 	}
 }
 

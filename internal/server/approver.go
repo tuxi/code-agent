@@ -56,6 +56,14 @@ type RemoteApprover struct {
 	sink    FrameSink // nil when no client connected; mutable via UpdateSink/ClearSink
 	pending map[string]*pendingReq
 	closed  bool
+
+	// ask_user clarification requests use an independent map and mutex so the
+	// different HITL mechanisms don't share data structures. Unlike tool approvals
+	// (deny by default), ask_user has a dedicated timeout (default 5 min) after
+	// which it returns a fallback message rather than waiting forever.
+	askUserMu      sync.Mutex
+	askUserPending map[string]*askUserReq
+	askUserTimeout time.Duration
 }
 
 var _ agent.Approver = (*RemoteApprover)(nil)
@@ -65,7 +73,12 @@ var _ agent.Approver = (*RemoteApprover)(nil)
 // granter (may be nil) persists a client's "always allow" grant into the shared
 // permission store.
 func NewRemoteApprover(sink FrameSink, timeout time.Duration, granter PermissionGranter) *RemoteApprover {
-	return &RemoteApprover{sink: sink, timeout: timeout, granter: granter, pending: make(map[string]*pendingReq)}
+	return &RemoteApprover{
+		sink: sink, timeout: timeout, granter: granter,
+		pending:        make(map[string]*pendingReq),
+		askUserPending: make(map[string]*askUserReq),
+		askUserTimeout: 5 * time.Minute,
+	}
 }
 
 // SetGranter replaces the permission granter for this approver. Called by the
@@ -204,8 +217,124 @@ func (a *RemoteApprover) ApproveExternalPath(absolutePath string, operation stri
 	}
 }
 
-// Compile-time check: RemoteApprover implements tools.PathAccessApprover.
-var _ tools.PathAccessApprover = (*RemoteApprover)(nil)
+// --- ask_user types (independent of pendingReq — no field bloat) ---------
+
+// askUserReq holds a single in-flight ask_user clarification request. It is
+// stored in RemoteApprover.askUserPending (a separate map from pending) so the
+// two HITL mechanisms — permission gates and task clarification — never share
+// data structures. outcome (approved/always/scope) has no meaning here.
+// question is a value copy so re-send in UpdateSink is safe without pointer
+// lifetime concerns.
+type askUserReq struct {
+	ch       chan askUserResult
+	question agent.AskUserQuestion
+}
+
+type askUserResult struct {
+	answer   agent.AskUserAnswer
+	timedOut bool
+}
+
+// AskUser implements agent.AskUserApprover. It sends an ask_user_request frame
+// and blocks until the client responds or the timeout elapses.
+//
+// Lock ordering: askUserMu (pending map), then mu (sink/closed). Close() takes
+// mu then askUserMu — serial, not nested, so no deadlock.
+func (a *RemoteApprover) AskUser(q agent.AskUserQuestion) (agent.AskUserAnswer, error) {
+	id := newApprovalID()
+	req := &askUserReq{
+		ch:       make(chan askUserResult, 1),
+		question: q,
+	}
+
+	a.askUserMu.Lock()
+	if a.askUserPending == nil {
+		a.askUserPending = make(map[string]*askUserReq)
+	}
+	a.askUserPending[id] = req
+	a.askUserMu.Unlock()
+
+	// Read sink and closed under their own lock — they are written under mu,
+	// not askUserMu.
+	a.mu.Lock()
+	closed := a.closed
+	snk := a.sink
+	a.mu.Unlock()
+
+	if closed {
+		a.askUserMu.Lock()
+		delete(a.askUserPending, id)
+		a.askUserMu.Unlock()
+		return agent.AskUserAnswer{}, fmt.Errorf("approver closed")
+	}
+
+	defer func() {
+		a.askUserMu.Lock()
+		delete(a.askUserPending, id)
+		a.askUserMu.Unlock()
+	}()
+
+	if snk != nil {
+		deadlineMS := int64(0)
+		timeout := a.askUserTimeout
+		if timeout <= 0 {
+			timeout = 5 * time.Minute // default ask_user timeout
+		}
+		deadlineMS = timeout.Milliseconds()
+		r := AskUserRequest{
+			Type:       "ask_user_request",
+			ID:         id,
+			Question:   q,
+			DeadlineMS: deadlineMS,
+		}
+		frame, err := json.Marshal(r)
+		if err != nil {
+			return agent.AskUserAnswer{}, err
+		}
+		if err := snk.Send(frame); err != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "[approver] ask_user send failed: %v\n", err)
+		}
+	}
+
+	timeout := a.askUserTimeout
+	if timeout <= 0 {
+		timeout = 5 * time.Minute
+	}
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+
+	select {
+	case res := <-req.ch:
+		if res.timedOut {
+			return agent.AskUserAnswer{}, fmt.Errorf("ask_user timed out")
+		}
+		return res.answer, nil
+	case <-deadline.C:
+		return agent.AskUserAnswer{}, fmt.Errorf("ask_user timed out")
+	}
+}
+
+// ResolveAskUser delivers the client's answer to a blocked AskUser call.
+func (a *RemoteApprover) ResolveAskUser(id string, answer agent.AskUserAnswer) {
+	a.askUserMu.Lock()
+	req, ok := a.askUserPending[id]
+	if ok {
+		delete(a.askUserPending, id)
+	}
+	a.askUserMu.Unlock()
+	if ok {
+		select {
+		case req.ch <- askUserResult{answer: answer}:
+		default:
+		}
+	}
+}
+
+// Compile-time checks.
+var (
+	_ tools.PathAccessApprover = (*RemoteApprover)(nil)
+	_ agent.AskUserApprover    = (*RemoteApprover)(nil)
+)
 
 // Resolve delivers a plain approve/deny verdict (plan approvals, and legacy
 // clients that send only `approved`). Unknown or already-resolved ids are ignored.
@@ -369,6 +498,51 @@ func (a *RemoteApprover) UpdateSink(sink FrameSink) {
 			}
 		}
 	}
+
+	// Re-send pending ask_user requests (independent loop — different data model).
+	// Collect under askUserMu, then read sink under mu to avoid data race.
+	a.askUserMu.Lock()
+	askPending := make([]*askUserReq, 0, len(a.askUserPending))
+	for id, req := range a.askUserPending {
+		askPending = append(askPending, req)
+		_ = id
+	}
+	a.askUserMu.Unlock()
+
+	a.mu.Lock()
+	snk := a.sink
+	timeout := a.askUserTimeout
+	if timeout <= 0 {
+		timeout = 5 * time.Minute
+	}
+	a.mu.Unlock()
+
+	for _, req := range askPending {
+		a.askUserMu.Lock()
+		var reqID string
+		for id, r := range a.askUserPending {
+			if r == req {
+				reqID = id
+				break
+			}
+		}
+		a.askUserMu.Unlock()
+
+		if reqID == "" || snk == nil {
+			continue
+		}
+		r := AskUserRequest{
+			Type:       "ask_user_request",
+			ID:         reqID,
+			Question:   req.question,
+			DeadlineMS: timeout.Milliseconds(),
+		}
+		if frame, err := json.Marshal(r); err == nil {
+			if err := snk.Send(frame); err != nil {
+				_, _ = fmt.Fprintf(os.Stderr, "[approver] ask_user re-send failed: %v\n", err)
+			}
+		}
+	}
 }
 
 // ClearSink detaches the current sink without denying pending requests. The
@@ -380,9 +554,12 @@ func (a *RemoteApprover) ClearSink() {
 	a.mu.Unlock()
 }
 
-// Close denies every pending approval and rejects future ones. Only called at
-// session teardown (DELETE /v1/conversations/{id} or server shutdown), NOT on
-// WebSocket disconnect — the point of this type is to survive reconnects.
+// Close denies every pending approval and ask_user request, and rejects future
+// ones. Only called at session teardown (DELETE /v1/conversations/{id} or server
+// shutdown), NOT on WebSocket disconnect.
+//
+// Lock ordering: mu, then askUserMu — serial, not nested. AskUser() takes
+// askUserMu then mu in separate critical sections, so there is no deadlock risk.
 func (a *RemoteApprover) Close() {
 	a.mu.Lock()
 	a.closed = true
@@ -392,6 +569,17 @@ func (a *RemoteApprover) Close() {
 	for _, req := range pending {
 		select {
 		case req.ch <- outcome{approved: false}:
+		default:
+		}
+	}
+
+	a.askUserMu.Lock()
+	askPending := a.askUserPending
+	a.askUserPending = make(map[string]*askUserReq)
+	a.askUserMu.Unlock()
+	for _, req := range askPending {
+		select {
+		case req.ch <- askUserResult{timedOut: true}:
 		default:
 		}
 	}

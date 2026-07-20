@@ -23,11 +23,12 @@ type ActiveTurnRegistry struct {
 }
 
 type activeTurn struct {
-	cancel       context.CancelFunc     // non-nil while a turn is in flight
-	approver     agent.Approver         // set by WS handler; nil = deny-all
-	planApprover agent.PlanApprover     // set by WS handler; nil = auto-approve
-	clientWaiter agent.ClientToolWaiter // set by WS handler; nil = no client executor
-	clientTools  []agent.ClientToolDef  // set by register_tools message; nil until registered
+	cancel           context.CancelFunc     // non-nil while a turn is in flight
+	approver         agent.Approver         // set by WS handler; nil = deny-all
+	planApprover     agent.PlanApprover     // set by WS handler; nil = auto-approve
+	askUserApprover  agent.AskUserApprover  // set by WS handler; nil = headless fallback
+	clientWaiter     agent.ClientToolWaiter // set by WS handler; nil = no client executor
+	clientTools      []agent.ClientToolDef  // set by register_tools message; nil until registered
 
 	// suspended marks that this in-flight turn was cancelled by SuspendAll (app
 	// backgrounding), not by a user stop. The turn goroutine reads it as it unwinds
@@ -109,7 +110,7 @@ func (r *ActiveTurnRegistry) FinishTurn(sessionID string) {
 		close(t.done) // wake any SuspendAll awaiting this turn's unwind
 		t.done = nil
 	}
-	if t.approver == nil && t.planApprover == nil && t.clientWaiter == nil {
+	if t.approver == nil && t.planApprover == nil && t.askUserApprover == nil && t.clientWaiter == nil {
 		delete(r.turns, sessionID)
 	}
 }
@@ -226,6 +227,37 @@ func (r *ActiveTurnRegistry) SetPlanApprover(sessionID string, pa agent.PlanAppr
 	t.planApprover = pa
 	// If all connection-owned state is cleared and no turn is active, clean up.
 	if pa == nil && t.approver == nil && t.clientWaiter == nil && t.cancel == nil {
+		delete(r.turns, sessionID)
+	}
+}
+
+// AskUserApprover returns the ask_user approver for a session (nil = headless).
+func (r *ActiveTurnRegistry) AskUserApprover(sessionID string) agent.AskUserApprover {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	t, ok := r.turns[sessionID]
+	if !ok {
+		return nil
+	}
+	return t.askUserApprover
+}
+
+// SetAskUserApprover associates (or clears) an ask_user approver for a session.
+// The WS handler sets the same RemoteApprover as for tool and plan approval.
+func (r *ActiveTurnRegistry) SetAskUserApprover(sessionID string, aa agent.AskUserApprover) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.shutdown {
+		return
+	}
+	t, ok := r.turns[sessionID]
+	if !ok {
+		t = &activeTurn{}
+		r.turns[sessionID] = t
+	}
+	t.askUserApprover = aa
+	// If all connection-owned state is cleared and no turn is active, clean up.
+	if aa == nil && t.approver == nil && t.planApprover == nil && t.clientWaiter == nil && t.cancel == nil {
 		delete(r.turns, sessionID)
 	}
 }

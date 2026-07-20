@@ -275,6 +275,7 @@ func (b *ServeRunBuilder) Build(ctx conversation.RuntimeContext) conversation.Tu
 	// runner reference escapes the per-turn registry.
 	planRef.R = runner
 	runner.PlanApprover = ctx.PlanApprover
+	runner.AskUserApprover = ctx.AskUserApprover
 	runner.ClientWaiter = ctx.ClientWaiter
 
 	// If the approver can also gate external path access (as RemoteApprover

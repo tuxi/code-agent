@@ -25,6 +25,7 @@ type Session interface {
 	CommandTarget
 	SetApprover(agent.Approver)
 	SetPlanApprover(agent.PlanApprover)
+	SetAskUserApprover(agent.AskUserApprover)
 	SetClientToolWaiter(agent.ClientToolWaiter) // v1.1: client tool execution
 }
 

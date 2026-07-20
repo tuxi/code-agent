@@ -17,9 +17,10 @@ const (
 	MsgTypeSendMessage          = "send_message"
 	MsgTypeCancelTurn           = "cancel_turn"
 	MsgTypePlanApprovalResponse = "plan_approval_response"
-	MsgTypeAgentInput           = "agent_input"    // v1.1 unified inbound envelope
-	MsgTypeRegisterTools        = "register_tools" // v1.1 client tool registration
-	MsgTypeInvokePrompt         = "invoke_prompt"  // invoke an MCP prompt (server renders → runs a turn)
+	MsgTypeAskUserResponse      = "ask_user_response" // client answered an ask_user question
+	MsgTypeAgentInput           = "agent_input"       // v1.1 unified inbound envelope
+	MsgTypeRegisterTools        = "register_tools"    // v1.1 client tool registration
+	MsgTypeInvokePrompt         = "invoke_prompt"     // invoke an MCP prompt (server renders → runs a turn)
 )
 
 // InvokePrompt asks the server to render an MCP prompt template and run the

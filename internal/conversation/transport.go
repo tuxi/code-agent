@@ -60,6 +60,11 @@ func (s *TransportSession) SetPlanApprover(pa agent.PlanApprover) {
 	s.ex.SetPlanApprover(s.id, pa)
 }
 
+// SetAskUserApprover wires the WS connection's remote ask_user approver. Satisfies server.Session.
+func (s *TransportSession) SetAskUserApprover(aa agent.AskUserApprover) {
+	s.ex.SetAskUserApprover(s.id, aa)
+}
+
 // SetClientToolWaiter wires the WS connection's remote tool-result waiter. Satisfies server.Session.
 func (s *TransportSession) SetClientToolWaiter(w agent.ClientToolWaiter) {
 	s.ex.SetClientToolWaiter(s.id, w)

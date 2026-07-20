@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 
+	"code-agent/internal/agent"
 	"code-agent/internal/approve"
 )
 
@@ -81,6 +82,25 @@ type PlanApprovalResponse struct {
 	Type     string `json:"type"` // always "plan_approval_response"
 	ID       string `json:"id"`
 	Approved bool   `json:"approved"`
+}
+
+// AskUserRequest is sent server->client mid-turn when the model calls ask_user.
+// It carries the full question and options for the client to render. The server
+// blocks until the matching AskUserResponse arrives (or a timeout).
+type AskUserRequest struct {
+	Type       string                `json:"type"` // always "ask_user_request"
+	ID         string                `json:"id"`
+	SessionID  string                `json:"session_id,omitempty"`
+	TurnID     string                `json:"turn_id,omitempty"`
+	Question   agent.AskUserQuestion `json:"question"`
+	DeadlineMS int64                 `json:"deadline_ms,omitempty"`
+}
+
+// AskUserResponse is the client's answer, correlated to a request by ID.
+type AskUserResponse struct {
+	Type   string              `json:"type"` // always "ask_user_response"
+	ID     string              `json:"id"`
+	Answer agent.AskUserAnswer `json:"answer"`
 }
 
 // NewApprovalRequest builds a request, reusing toWireArgs so tool_args is

@@ -35,7 +35,7 @@ var ReadOnlyToolNames = []string{
 // Like ReadOnlyToolNames it is an allow-list, so a write tool can never leak into a
 // planning turn. enter_plan_mode is also callable during plan mode (no-op).
 var PlanModeToolNames = append([]string{
-	"todo_write", "create_file", "propose_plan", "enter_plan_mode",
+	"todo_write", "create_file", "propose_plan", "enter_plan_mode", "ask_user",
 }, ReadOnlyToolNames...)
 
 // DenyAllApprover is a fail-closed Approver: it refuses every side-effecting call. The

@@ -46,10 +46,11 @@ type RuntimeContext struct {
 	Session      *session.Session
 	TurnID       string        // reserved before acceptance; stable across queued → terminal lifecycle events
 	Publisher    agent.Emitter // TurnExecutor assembles the composite emitter
-	Approver     agent.Approver
-	PlanApprover agent.PlanApprover     // nil = auto-approve plans (test/headless path)
-	ClientWaiter agent.ClientToolWaiter // nil = no client tool executor
-	ClientTools  []agent.ClientToolDef  // client-registered tools (nil if none)
+	Approver        agent.Approver
+	PlanApprover    agent.PlanApprover     // nil = auto-approve plans (test/headless path)
+	AskUserApprover agent.AskUserApprover  // nil = headless fallback
+	ClientWaiter    agent.ClientToolWaiter // nil = no client tool executor
+	ClientTools     []agent.ClientToolDef  // client-registered tools (nil if none)
 
 	// Model is the optional model profile name for this turn. When non-empty,
 	// the runner looks up this model from config instead of using the server

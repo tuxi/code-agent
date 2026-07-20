@@ -65,6 +65,8 @@ func (f *fakeResolver) Resolve(id string, approved bool) {
 	f.called <- struct{}{}
 }
 
+func (f *fakeResolver) ResolveAskUser(id string, answer agent.AskUserAnswer) {}
+
 func (f *fakeResolver) ResolveTool(id string, approved, always bool, scope approve.Scope) {
 	f.id = id
 	f.approved = approved

@@ -70,6 +70,14 @@ const (
 	EventPlanApproved EventKind = "plan_approved"
 	EventPlanRejected EventKind = "plan_rejected"
 
+	// Human-in-the-Loop task clarification. AskUserPosted fires when the model
+	// calls ask_user with a question and options. AskUserResolved fires when the
+	// user answers. AskUserTimeout fires when no user is available (headless,
+	// auto mode) and the tool returns its fallback message.
+	EventAskUserPosted  EventKind = "ask_user_posted"
+	EventAskUserResolved EventKind = "ask_user_resolved"
+	EventAskUserTimeout  EventKind = "ask_user_timeout"
+
 	// Background job observability (P8.7 Phase A). A background run_command's
 	// lifecycle as events, persisted under the JOB's own id partition
 	// (SessionID = job id — the same partitioning the subagent uses for its

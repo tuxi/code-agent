@@ -731,10 +731,11 @@ func (e *TurnExecutor) driveTurn(
 		ResolvedModel: resolvedModel,
 		RequestID:     requestID,
 		Publisher:     pub,
-		Approver:      e.active.Approver(sess.ID),
-		PlanApprover:  e.active.PlanApprover(sess.ID),
-		ClientWaiter:  e.active.ClientToolWaiter(sess.ID),
-		ClientTools:   e.active.ClientTools(sess.ID),
+		Approver:        e.active.Approver(sess.ID),
+		PlanApprover:    e.active.PlanApprover(sess.ID),
+		AskUserApprover: e.active.AskUserApprover(sess.ID),
+		ClientWaiter:    e.active.ClientToolWaiter(sess.ID),
+		ClientTools:     e.active.ClientTools(sess.ID),
 		Credential:    e.sessionCredential(sess.ID),
 		// Mid-turn crash-safety (v1.2 §2): persist at each loop boundary so a hard
 		// kill loses at most the in-progress step. The turn-boundary Save below is
@@ -1282,6 +1283,11 @@ func (e *TurnExecutor) SetApprover(sessionID string, a agent.Approver) {
 // SetPlanApprover associates a plan approver with a session.
 func (e *TurnExecutor) SetPlanApprover(sessionID string, pa agent.PlanApprover) {
 	e.active.SetPlanApprover(sessionID, pa)
+}
+
+// SetAskUserApprover associates an ask_user approver with a session.
+func (e *TurnExecutor) SetAskUserApprover(sessionID string, aa agent.AskUserApprover) {
+	e.active.SetAskUserApprover(sessionID, aa)
 }
 
 // SetClientToolWaiter associates a client tool waiter with a session.

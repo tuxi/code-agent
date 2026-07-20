@@ -21,8 +21,9 @@ func (s *controlTestSink) Send([]byte) error { return nil }
 
 type controlApprovalTarget struct{ calls int }
 
-func (t *controlApprovalTarget) Resolve(string, bool)                          { t.calls++ }
-func (t *controlApprovalTarget) ResolveTool(string, bool, bool, approve.Scope) { t.calls++ }
+func (t *controlApprovalTarget) Resolve(string, bool)                            { t.calls++ }
+func (t *controlApprovalTarget) ResolveTool(string, bool, bool, approve.Scope)   { t.calls++ }
+func (t *controlApprovalTarget) ResolveAskUser(string, agent.AskUserAnswer)       { t.calls++ }
 
 type controlToolTarget struct{ calls int }
 
@@ -166,7 +167,8 @@ func (s *testSession) SendMessage(context.Context, string, string) (agent.TurnRe
 }
 func (s *testSession) Cancel()                                    {}
 func (s *testSession) SetApprover(agent.Approver)                 {}
-func (s *testSession) SetPlanApprover(agent.PlanApprover)         {}
+func (s *testSession) SetPlanApprover(agent.PlanApprover)            {}
+func (s *testSession) SetAskUserApprover(agent.AskUserApprover)      {}
 func (s *testSession) SetClientToolWaiter(agent.ClientToolWaiter) {}
 func (s *testSession) RegisterTools([]agent.ClientToolDef)        {}
 
