@@ -14,14 +14,8 @@ import (
 	"code-agent/internal/tools"
 )
 
-// PermissionGranter persists an "always allow" grant for a tool at a scope. It is
-// the narrow slice of *approve.RuleStore the RemoteApprover needs, injected so a
-// wire client's "always" verdict adds a rule to the same store the loop's
-// allowlist reads from. Nil disables persistence (an "always" is treated as a
-// one-time allow).
-type PermissionGranter interface {
-	GrantTool(toolName string, scope approve.Scope) (rule string, err error)
-}
+// Deprecated: use approve.Granter instead.
+type PermissionGranter = approve.Granter
 
 // outcome is a client's three-way verdict delivered to a blocked Approve call.
 type outcome struct {
@@ -72,6 +66,16 @@ var _ agent.Approver = (*RemoteApprover)(nil)
 // permission store.
 func NewRemoteApprover(sink FrameSink, timeout time.Duration, granter PermissionGranter) *RemoteApprover {
 	return &RemoteApprover{sink: sink, timeout: timeout, granter: granter, pending: make(map[string]*pendingReq)}
+}
+
+// SetGranter replaces the permission granter for this approver. Called by the
+// serve builder when a turn's workspace path is resolved, so "Always allow"
+// grants persist to the workspace's .codeagent/settings.local.json instead of
+// the user-global settings file (preventing workspace-to-workspace pollution).
+func (a *RemoteApprover) SetGranter(g approve.Granter) {
+	a.mu.Lock()
+	a.granter = g
+	a.mu.Unlock()
 }
 
 // Approve sends an approval_request and blocks until the verdict arrives, the

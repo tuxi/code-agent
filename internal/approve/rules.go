@@ -23,6 +23,13 @@ const (
 	ScopeUser
 )
 
+// Granter persists an "always allow" decision into a permission store. It is the
+// narrow slice of RuleStore that terminal approvers (TUI, RemoteApprover) depend
+// on, so they stay decoupled from the full store implementation.
+type Granter interface {
+	GrantTool(toolName string, scope Scope) (string, error)
+}
+
 // ParseScope maps a wire/string scope to a Scope. Anything other than "user"
 // (including "local", "project-local", "", or an unknown value) defaults to
 // ScopeProjectLocal — the conservative, machine-local choice.

@@ -35,30 +35,27 @@ type ServeRunBuilder struct {
 	// falls back to this when the workspace has no MCP config or fails to resolve.
 	ToolReg *tools.Registry
 	WSReg   *WorkspaceRegistry
-	// rules is the process-wide permission store, created once so a grant persists
-	// across turns. Interactive "Always allow" over the wire is not wired yet, but
-	// rules loaded from config + settings files are enforced here.
+	// rules is the process-wide fallback permission store (no project root).
+	// Per-workspace RuleStores are in wsRules and take priority when the
+	// session has a known workspacePath.
 	rules *approve.RuleStore
 
 	mu         sync.RWMutex
 	mc         app.ModelConfig
 	provider   model.Provider
 	credential credential.Resolver
+
+	wsRulesMu sync.Mutex
+	wsRules   map[string]*approve.RuleStore // workspacePath → scoped store
 }
 
 // NewServeRunBuilder constructs the builder with the initial model + provider.
 func NewServeRunBuilder(cfg app.Config, mc app.ModelConfig, provider model.Provider, cred credential.Resolver, toolReg *tools.Registry, wsReg *WorkspaceRegistry, _ *agent.RunnerRef) *ServeRunBuilder {
 	return &ServeRunBuilder{
 		Cfg: cfg, ToolReg: toolReg, WSReg: wsReg,
-		// Pre-GA: RuleStore should be workspace-scoped via WorkspaceInstance.Rules
-		// (Phase 3). For now, seed from config permissions only — workspace-level
-		// persistence (scopeProjectLocal) resolves against the conversation's
-		// workspacePath rather than a fixed daemon root via the build-time routing
-		// below. The empty root means "no project-local persistence path," so
-		// grants default to the user scope, which is workspace-independent and
-		// correct for serve mode until Phase 3 lands.
-		rules: approve.NewRuleStore("", cfg.Permissions.Allow, cfg.Permissions.Deny),
-		mc:    mc, provider: provider, credential: cred,
+		rules:     approve.NewRuleStore("", cfg.Permissions.Allow, cfg.Permissions.Deny),
+		wsRules:   make(map[string]*approve.RuleStore),
+		mc:        mc, provider: provider, credential: cred,
 	}
 }
 
@@ -66,6 +63,25 @@ func NewServeRunBuilder(cfg app.Config, mc app.ModelConfig, provider model.Provi
 // it with the RemoteApprover (which grants a client's "always allow" into it) —
 // the same instance the per-turn allowlist reads, so a grant takes effect at once.
 func (b *ServeRunBuilder) Rules() *approve.RuleStore { return b.rules }
+
+// workspaceRules returns the permission store for a workspace, creating one
+// lazily if needed. Each workspace gets its own RuleStore so grants are scoped
+// to that workspace's .codeagent/settings.local.json rather than the user-global
+// settings file — preventing workspace pollution. When root is empty (server
+// default), falls back to the process-wide store.
+func (b *ServeRunBuilder) workspaceRules(root string) *approve.RuleStore {
+	if root == "" {
+		return b.rules
+	}
+	b.wsRulesMu.Lock()
+	ws, ok := b.wsRules[root]
+	if !ok {
+		ws = approve.NewRuleStore(root, b.Cfg.Permissions.Allow, b.Cfg.Permissions.Deny)
+		b.wsRules[root] = ws
+	}
+	b.wsRulesMu.Unlock()
+	return ws
+}
 
 // Reconfigure hot-swaps the model config and provider used by future turns
 // (v1.2 §3.3). It does not touch the listener or any in-flight turn.
@@ -230,7 +246,15 @@ func (b *ServeRunBuilder) Build(ctx conversation.RuntimeContext) conversation.Tu
 		))
 	}
 
-	runner := BuildRunner(b.Cfg, mc, provider, turnTools, skillReg, ctx.Approver, ctx.Publisher, b.rules, workspacePath)
+	// Resolve the permission store for this workspace. Each workspace gets its
+	// own RuleStore so an "Always allow" grant stays scoped to that workspace's
+	// .codeagent/settings.local.json and never pollutes other workspaces.
+	wsRules := b.workspaceRules(workspacePath)
+	if ra, ok := ctx.Approver.(interface{ SetGranter(approve.Granter) }); ok {
+		ra.SetGranter(wsRules)
+	}
+
+	runner := BuildRunner(b.Cfg, mc, provider, turnTools, skillReg, ctx.Approver, ctx.Publisher, wsRules, workspacePath)
 	runner.ReservedTurnID = ctx.TurnID
 	runner.RequestID = ctx.RequestID
 	if workspacePath != "" {
