@@ -83,13 +83,24 @@ func (t *EditFileTool) Execute(ctx context.Context, ec tools.ExecutionContext, i
 	if err != nil {
 		return tools.ToolResult{}, err
 	}
-	targetAbs := filepath.Join(rootAbs, filepath.Clean(in.Path))
+	targetAbs := workspace.ResolveToolPath(rootAbs, in.Path)
 	targetAbs, err = filepath.Abs(targetAbs)
 	if err != nil {
 		return tools.ToolResult{}, err
 	}
-	if err := workspace.ValidatePath(rootAbs, targetAbs); err != nil {
-		return tools.ToolResult{}, fmt.Errorf("path escapes workspace: %s", in.Path)
+	switch workspace.ClassifyPath(rootAbs, targetAbs) {
+	case workspace.PathManagedWorktree:
+		return tools.ToolResult{}, fmt.Errorf("path is not accessible: %s", in.Path)
+	case workspace.PathOutsideWorkspace:
+		if ec.PathAccessApprover == nil {
+			return tools.ToolResult{}, fmt.Errorf("path is outside the workspace: %s", in.Path)
+		}
+		if !ec.PathAccessApprover.ApproveExternalPath(targetAbs, "write") {
+			return tools.ToolResult{Content: fmt.Sprintf("Access to external path was denied: %s", in.Path)}, nil
+		}
+		// approved — fall through to execute normally
+	case workspace.PathInsideWorkspace:
+		// proceed
 	}
 
 	info, err := os.Stat(targetAbs)
