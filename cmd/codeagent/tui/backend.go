@@ -18,9 +18,10 @@ import (
 //
 // Construct it, hand Emitter/Approver to buildRunner, then pass it to Run.
 type Backend struct {
-	Emitter      agent.Emitter
-	Approver     agent.Approver
-	PlanApprover agent.PlanApprover
+	Emitter         agent.Emitter
+	Approver        agent.Approver
+	PlanApprover    agent.PlanApprover
+	AskUserApprover agent.AskUserApprover
 
 	events          chan agent.Event
 	approvals       chan approvalReq
@@ -31,6 +32,7 @@ type Backend struct {
 	modelSwapResult chan modelSwappedMsg  // /use: run loop → TUI (result)
 	planToggle      chan bool             // plan key: TUI → run loop (desired plan mode)
 	planApprovals   chan planApprovalReq  // plan approval: run loop → TUI (blocking, like approvals)
+	askUsers        chan askUserReq       // ask_user: run loop → TUI (blocking, like plan approvals)
 	goalStart       chan string           // /goal: TUI → run loop (objective to pursue; "" resumes)
 	goalDone        chan goalDoneMsg      // /goal: run loop → TUI (outcome summary)
 	goalCtl         chan goalCtlReq       // /goal status|clear: TUI → run loop (quick, reply-back)
@@ -64,6 +66,7 @@ func NewBackend() *Backend {
 	mSwapResult := make(chan modelSwappedMsg, 1)
 	planToggle := make(chan bool, 1)
 	planApprovals := make(chan planApprovalReq)
+	askUsers := make(chan askUserReq)
 	goalStart := make(chan string, 1)
 	goalDone := make(chan goalDoneMsg, 1)
 	goalCtl := make(chan goalCtlReq)
@@ -71,6 +74,7 @@ func NewBackend() *Backend {
 		Emitter:         tuiEmitter{ch: events},
 		Approver:        tuiApprover{ch: approvals},
 		PlanApprover:    &tuiPlanApprover{ch: planApprovals},
+		AskUserApprover: &tuiAskUserApprover{ch: askUsers},
 		events:          events,
 		approvals:       approvals,
 		inputs:          inputs,
@@ -80,6 +84,7 @@ func NewBackend() *Backend {
 		modelSwapResult: mSwapResult,
 		planToggle:      planToggle,
 		planApprovals:   planApprovals,
+		askUsers:        askUsers,
 		goalStart:       goalStart,
 		goalDone:        goalDone,
 		goalCtl:         goalCtl,
@@ -232,5 +237,36 @@ func waitForPlanApproval(ch chan planApprovalReq) tea.Cmd {
 			return nil
 		}
 		return planApprovalMsg(req)
+	}
+}
+
+// --- AskUser Approver ------------------------------------------------------
+
+// askUserReq carries a clarification question to the TUI for a human decision.
+// The runner goroutine blocks on reply until the UI answers.
+type askUserReq struct {
+	q     agent.AskUserQuestion
+	reply chan agent.AskUserAnswer
+}
+
+type askUserMsg askUserReq
+
+// tuiAskUserApprover implements agent.AskUserApprover for the TUI. AskUser runs
+// on the runner goroutine, posts the question, and blocks until the UI answers.
+type tuiAskUserApprover struct{ ch chan askUserReq }
+
+func (a *tuiAskUserApprover) AskUser(q agent.AskUserQuestion) (agent.AskUserAnswer, error) {
+	reply := make(chan agent.AskUserAnswer, 1)
+	a.ch <- askUserReq{q: q, reply: reply}
+	return <-reply, nil
+}
+
+func waitForAskUser(ch chan askUserReq) tea.Cmd {
+	return func() tea.Msg {
+		req, ok := <-ch
+		if !ok {
+			return nil
+		}
+		return askUserMsg(req)
 	}
 }

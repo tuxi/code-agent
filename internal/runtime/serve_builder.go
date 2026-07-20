@@ -234,6 +234,7 @@ func (b *ServeRunBuilder) Build(ctx conversation.RuntimeContext) conversation.Tu
 	planRef := &agent.RunnerRef{}
 	turnTools.Replace(agent.NewEnterPlanModeTool(planRef))
 	turnTools.Replace(agent.NewProposePlanTool(planRef, filepath.Join(workspacePath, ".codeagent", "plans")))
+	turnTools.Replace(agent.NewAskUserTool(planRef))
 
 	// Replace the shared LoadSkillTool with one that uses this workspace's own
 	// skill registry, so hot-reload (triggered on cache miss) only affects this

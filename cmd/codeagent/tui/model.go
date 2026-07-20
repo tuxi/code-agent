@@ -57,10 +57,13 @@ type model struct {
 	picker    *sessionPicker // /resume overlay; nil when closed
 	modelPick *modelPicker   // /use overlay; nil when closed
 
-	pending     *approvalReq     // set while a side-effecting tool awaits y/n
-	planPending *planApprovalReq // set while a plan awaits approval (a/r)
-	approveIdx  int              // 0 = allow once, 1 = always allow, 2 = deny — ↑/↓ switches
-	showPreview bool             // 'v' toggles the diff preview below the approval card
+	pending       *approvalReq     // set while a side-effecting tool awaits y/n
+	planPending   *planApprovalReq // set while a plan awaits approval (a/r)
+	askUserPending *askUserReq     // set while ask_user awaits the user's answer
+	askUserSelected int            // highlighted option index (↑/↓)
+	askUserMulti   map[int]bool    // selected indices when multiSelect is on
+	approveIdx    int              // 0 = allow once, 1 = always allow, 2 = deny — ↑/↓ switches
+	showPreview   bool             // 'v' toggles the diff preview below the approval card
 	busy        bool             // a turn is running; submit is locked
 	thinking    bool             // a model call is in flight; show the spinner
 	lastErr     error
@@ -130,6 +133,7 @@ func (m model) Init() tea.Cmd {
 		waitForEvent(m.b.events),
 		waitForApproval(m.b.approvals),
 		waitForPlanApproval(m.b.planApprovals),
+		waitForAskUser(m.b.askUsers),
 		waitForDone(m.b.done),
 		waitForGoalDone(m.b.goalDone),
 	}
@@ -147,6 +151,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
+		if m.askUserPending != nil {
+			return m.handleAskUserKey(msg)
+		}
 		if m.planPending != nil {
 			return m.handlePlanApprovalKey(msg)
 		}
@@ -211,6 +218,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.syncComposer()
 
 		return m, cmd
+
+	case askUserMsg:
+		req := askUserReq(msg)
+		m.askUserPending = &req
+		m.askUserSelected = 0
+		if req.q.MultiSelect {
+			m.askUserMulti = make(map[int]bool)
+		}
+		return m, waitForAskUser(m.b.askUsers)
 
 	case planApprovalMsg:
 		req := planApprovalReq(msg)
@@ -411,6 +427,71 @@ func (m model) submit() (tea.Model, tea.Cmd) {
 
 	b := m.b
 	return m, func() tea.Msg { b.inputs <- input; return nil }
+}
+
+// handleAskUserKey drives the ask_user card. Index 0 is always the custom-text
+// input; indices 1..N map to q.Options[0..N-1]. ↑/↓ navigates, Space toggles
+// multi-select, Enter confirms, Esc cancels.
+func (m model) handleAskUserKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	q := m.askUserPending.q
+	optCount := len(q.Options) + 1 // +1 for the always-present custom input
+
+	switch msg.String() {
+	case "up", "k", "ctrl+p":
+		if m.askUserSelected > 0 {
+			m.askUserSelected--
+		}
+	case "down", "j", "ctrl+n":
+		if m.askUserSelected < optCount-1 {
+			m.askUserSelected++
+		}
+	case " ":
+		if q.MultiSelect {
+			if m.askUserMulti == nil {
+				m.askUserMulti = make(map[int]bool)
+			}
+			m.askUserMulti[m.askUserSelected] = !m.askUserMulti[m.askUserSelected]
+		}
+	case "enter":
+		return m.confirmAskUser()
+	case "esc", "escape", "ctrl+c":
+		// Cancel: send empty answer (model gets "user skipped").
+		m.askUserPending.reply <- agent.AskUserAnswer{}
+		m.askUserPending = nil
+		m.askUserMulti = nil
+		return m, nil
+	}
+	return m, nil
+}
+
+// confirmAskUser builds the answer from the user's selection and hands it back.
+// Index 0 = custom text input, 1..N = q.Options[0..N-1].
+func (m model) confirmAskUser() (tea.Model, tea.Cmd) {
+	q := m.askUserPending.q
+	answer := agent.AskUserAnswer{}
+
+	if q.MultiSelect && m.askUserMulti != nil {
+		for idx, sel := range m.askUserMulti {
+			if sel {
+				if idx == 0 {
+					answer.Selected = append(answer.Selected, "Other")
+				} else if optIdx := idx - 1; optIdx < len(q.Options) {
+					answer.Selected = append(answer.Selected, q.Options[optIdx].Label)
+				}
+			}
+		}
+	} else if m.askUserSelected == 0 {
+		// Custom input selected: mark "Other" so the model knows the user had
+		// their own answer (free-text notes come from the composer).
+		answer.Selected = []string{"Other"}
+	} else if optIdx := m.askUserSelected - 1; optIdx < len(q.Options) {
+		answer.Selected = []string{q.Options[optIdx].Label}
+	}
+
+	m.askUserPending.reply <- answer
+	m.askUserPending = nil
+	m.askUserMulti = nil
+	return m, nil
 }
 
 // handlePlanApprovalKey drives the plan approval card: a approves, r rejects.
@@ -850,6 +931,10 @@ func (m model) View() string {
 	lines = append(lines, m.todoPanel()...)
 	lines = append(lines, m.statusLine())
 	switch {
+	case m.askUserPending != nil:
+		q := m.askUserPending.q
+		card := renderAskUserCard(q, m.askUserSelected, m.askUserMulti, m.width)
+		lines = append(lines, card...)
 	case m.planPending != nil:
 		lines = append(lines, renderPlanApprovalCard(m.planPending.plan, m.width)...)
 	case m.pending != nil:

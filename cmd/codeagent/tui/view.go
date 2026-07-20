@@ -486,6 +486,68 @@ func approvalSelector(idx int) string {
 	return strings.Join(parts, "  ") + "  " + styleMeta.Render("[v] preview  (↑/↓ select · enter confirm · esc cancel)")
 }
 
+// renderAskUserCard renders a clarification question card with selectable
+// options in the live region. selected is the currently highlighted option index:
+// 0 = custom text input (always shown), 1..N = q.Options[0..N-1].
+// When multi is non-nil, multi-select mode is active: Space toggles.
+func renderAskUserCard(q agent.AskUserQuestion, selected int, multi map[int]bool, width int) []string {
+	innerW := width - 4
+	if innerW < 20 {
+		innerW = 20
+	}
+
+	var lines []string
+	lines = append(lines, styleSkill.Render("▸ "+q.Header+": "+q.Question))
+	lines = append(lines, "")
+
+	// Index 0: always a custom text input.
+	{
+		prefix := "  "
+		if selected == 0 {
+			prefix = styleApproveBox.Render("▶") + " "
+		} else {
+			prefix += "  "
+		}
+		lines = append(lines, prefix+styleBody.Render("💬 输入自定义回答（选中后按 Enter，在下方输入）"))
+		lines = append(lines, "")
+	}
+
+	for i, opt := range q.Options {
+		optIdx := i + 1 // shift by 1 for the custom input
+		prefix := "  "
+		suffix := ""
+		if q.MultiSelect && multi != nil {
+			if multi[optIdx] {
+				prefix += "[x] "
+			} else {
+				prefix += "[ ] "
+			}
+		} else if optIdx == selected {
+			prefix = styleApproveBox.Render("▶") + " "
+		} else {
+			prefix += "  "
+		}
+		label := opt.Label
+		if opt.Description != "" {
+			suffix = styleMeta.Render(" — " + opt.Description)
+		}
+		ln := prefix + styleBody.Render(label) + suffix
+		if w := runewidth.StringWidth(ln); w > innerW {
+			ln = runewidth.Truncate(ln, innerW, "…")
+		}
+		lines = append(lines, ln)
+	}
+
+	lines = append(lines, "")
+	hint := "  [↑/↓] navigate  [enter] confirm  [esc] cancel"
+	if q.MultiSelect {
+		hint = "  [↑/↓] navigate  [space] toggle  [enter] confirm  [esc] cancel"
+	}
+	lines = append(lines, styleMeta.Render(hint))
+
+	return strings.Split(styleApproveBox.Width(innerW).Render(strings.Join(lines, "\n")), "\n")
+}
+
 // renderPlanApprovalCard renders a plan for user approval in the live region.
 func renderPlanApprovalCard(plan agent.Plan, width int) []string {
 	innerW := width - 4

@@ -642,6 +642,7 @@ func runTUI(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider mo
 	planRef.R = runner
 	runner.Stream = true // 8.6: stream the model's text live (TUI only)
 	runner.PlanApprover = backend.PlanApprover
+	runner.AskUserApprover = backend.AskUserApprover
 	if autoMode {
 		fmt.Fprintln(os.Stderr, "auto mode: ON (in-workspace edits auto-approved; commands still confirmed) — /auto off to disable")
 	}

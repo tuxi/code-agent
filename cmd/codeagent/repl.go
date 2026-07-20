@@ -124,6 +124,7 @@ func repl(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider mode
 	runner := runtime.BuildRunner(cfg, mc, provider, registry, skillReg, approver, runtime.WithEventStore(buildEmitter(), store, ctx), rules, root)
 	planRef.R = runner // wire plan tools to the runner (late binding)
 	runner.PlanApprover = &replPlanApprover{ask: ask}
+	runner.AskUserApprover = &replAskUserApprover{ask: ask}
 	if auto {
 		fmt.Println("auto mode: ON (in-workspace edits auto-approved; commands still confirmed) — /auto off to disable")
 	}
@@ -533,4 +534,91 @@ func (a *replPlanApprover) ApprovePlan(plan agent.Plan) agent.PlanDecision {
 			fmt.Println("  type 'a' to approve or 'r' to reject")
 		}
 	}
+}
+
+// replAskUserApprover implements agent.AskUserApprover for the REPL. It prints
+// the question and options, then reads the user's selection via the `ask` prompt.
+type replAskUserApprover struct {
+	ask func(prompt string) (string, error)
+}
+
+func (a *replAskUserApprover) AskUser(q agent.AskUserQuestion) (agent.AskUserAnswer, error) {
+	fmt.Println()
+	fmt.Printf("▸ %s: %s\n", q.Header, q.Question)
+	fmt.Println(strings.Repeat("─", 60))
+	for i, opt := range q.Options {
+		fmt.Printf("  [%d] %s", i+1, opt.Label)
+		if opt.Description != "" {
+			fmt.Printf(" — %s", opt.Description)
+		}
+		fmt.Println()
+	}
+	if q.AllowCustom {
+		fmt.Println("  [0] Other — type your own answer")
+	}
+	fmt.Println(strings.Repeat("─", 60))
+	if q.MultiSelect {
+		fmt.Println("  Enter numbers separated by commas (e.g. 1,3), or 0 for Other")
+	} else {
+		fmt.Println("  Enter a number, or type your own answer for Other")
+	}
+
+	for {
+		line, err := a.ask("> ")
+		if err != nil {
+			return agent.AskUserAnswer{}, err
+		}
+		line = strings.TrimSpace(line)
+		if line == "" {
+			// Empty → skip
+			return agent.AskUserAnswer{}, nil
+		}
+
+		// Try parsing as number(s).
+		if q.MultiSelect {
+			answer, ok := parseMultiSelect(line, q)
+			if ok {
+				return answer, nil
+			}
+		} else {
+			answer, ok := parseSingleSelect(line, q)
+			if ok {
+				return answer, nil
+			}
+		}
+		// Anything else → treat as free-text notes (custom answer).
+		return agent.AskUserAnswer{Notes: line}, nil
+	}
+}
+
+func parseSingleSelect(line string, q agent.AskUserQuestion) (agent.AskUserAnswer, bool) {
+	// "0" means Other with follow-up input expected — but in single-select we just
+	// return "Other" and let the next prompt handle notes. For now, treat 0 as
+	// other with empty notes.
+	n := 0
+	if _, err := fmt.Sscanf(line, "%d", &n); err != nil || n < 0 || n > len(q.Options) {
+		return agent.AskUserAnswer{}, false
+	}
+	if n == 0 {
+		return agent.AskUserAnswer{Selected: []string{"Other"}}, true
+	}
+	return agent.AskUserAnswer{Selected: []string{q.Options[n-1].Label}}, true
+}
+
+func parseMultiSelect(line string, q agent.AskUserQuestion) (agent.AskUserAnswer, bool) {
+	parts := strings.Split(line, ",")
+	var selected []string
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		n := 0
+		if _, err := fmt.Sscanf(p, "%d", &n); err != nil || n < 0 || n > len(q.Options) {
+			return agent.AskUserAnswer{}, false
+		}
+		if n == 0 {
+			selected = append(selected, "Other")
+		} else {
+			selected = append(selected, q.Options[n-1].Label)
+		}
+	}
+	return agent.AskUserAnswer{Selected: selected}, true
 }
