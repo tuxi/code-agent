@@ -11,10 +11,9 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
-	"github.com/tuxi/flux-workflow/definition"
 	"github.com/tuxi/flux-workflow/domain"
-	"github.com/tuxi/flux-workflow/repository/query"
 	workflowruntime "github.com/tuxi/flux-workflow/runtime"
 	fluxtool "github.com/tuxi/flux-workflow/tool"
 	fluxmodel "github.com/tuxi/flux/model"
@@ -31,6 +30,45 @@ var fluxExcludedTools = map[string]bool{
 	"propose_plan":    true,
 	"ask_user":        true,
 	"todo":            true,
+	"workflow_status": true,
+}
+
+// runtimePool holds one started Runtime per workspace db. After the first
+// plan_workflow call starts workers, subsequent calls in the same workspace
+// reuse the Runtime so tasks queue up and execute in FIFO order.
+var runtimePool sync.Map // key: dbPath (string), value: *workflowruntime.Runtime
+
+func getOrCreateRuntime(ctx context.Context, workspaceRoot string) (*workflowruntime.Runtime, error) {
+	dbPath := fluxDBPath(workspaceRoot)
+	if v, ok := runtimePool.Load(dbPath); ok {
+		return v.(*workflowruntime.Runtime), nil
+	}
+	rt, err := newFluxRuntime(workspaceRoot)
+	if err != nil {
+		return nil, err
+	}
+	// Embedded/mobile mode: only the task worker is needed (consumes queue).
+	// AsyncWorker, AwaitPollWorker, and RecoveryScanner are server-side
+	// machinery — pointless full-table scans on a single-workflow device.
+	if err := rt.Start(context.Background(),
+		workflowruntime.WithTaskWorkers(1),
+		workflowruntime.WithAsyncWorkers(0),
+		workflowruntime.WithAwaitPollWorkers(0),
+		workflowruntime.WithRecoveryScanner(false),
+	); err != nil {
+		rt.Shutdown()
+		return nil, fmt.Errorf("start runtime: %w", err)
+	}
+	actual, loaded := runtimePool.LoadOrStore(dbPath, rt)
+	if loaded {
+		// Another goroutine raced us and won — shut down our duplicate.
+		rt.Shutdown()
+	}
+	return actual.(*workflowruntime.Runtime), nil
+}
+
+func fluxDBPath(workspaceRoot string) string {
+	return filepath.Join(workspaceRoot, ".codeagent", "flux-workflows", "flux-workflows.db")
 }
 
 // FluxWorkflowTool is a turn-aware code-agent tool. Flux owns planning and
@@ -48,11 +86,19 @@ func NewFluxWorkflowTool(provider model.Provider, modelName string) *FluxWorkflo
 func (t *FluxWorkflowTool) Name() string { return "plan_workflow" }
 
 func (t *FluxWorkflowTool) Description() string {
-	return "把复杂目标生成并校验为确定性 DAG，再由 Flux Workflow Engine 执行；适合有依赖、并行和可恢复节点的多步任务。"
+	return "Execute a known, multi-step task as a pre-planned DAG — NO reflection, NO self-correction. " +
+		"Every step must be known in advance because the DAG is frozen after user approval. " +
+		"Use this ONLY when the steps and their dependencies are already clear: " +
+		"parallel work across many files or modules, " +
+		"sequential pipelines with well-defined inputs/outputs (A → B → C), " +
+		"or long-running operations that may need to resume after failure. " +
+		"Do NOT use this to explore or figure out an approach — " +
+		"if you need to research, read code, or decide what to do as you go, use enter_plan_mode instead. " +
+		"For simple single-step changes, skip this and act directly."
 }
 
 func (t *FluxWorkflowTool) InputSchema() json.RawMessage {
-	return json.RawMessage(`{"type":"object","properties":{"goal":{"type":"string","description":"要完成的复杂目标"},"action":{"type":"string","enum":["new","retry"],"description":"new=新建并执行；retry=恢复已失败的 workflow 并从指定节点重试"},"workflow_id":{"type":"string","description":"重试时必填：要恢复的 workflow ID"},"task_id":{"type":"integer","description":"重试时必填：要重试的 task ID"},"resume_from":{"type":"string","description":"重试时可选：从哪个节点开始重试，为空则自动收集失败根节点"}},"required":["goal"],"additionalProperties":false}`)
+	return json.RawMessage(`{"type":"object","properties":{"goal":{"type":"string","description":"A complete description of the multi-step task to execute. Describe every step, their dependencies, and what success looks like. Example: 'Initialize a React+TS project, add ESLint and Prettier configs, create a Button component with tests, then run the test suite.'"},"action":{"type":"string","enum":["new","retry"],"description":"new=create and execute; retry=recover a failed workflow from a specific node"},"workflow_id":{"type":"string","description":"Required for retry: the workflow ID to recover"},"task_id":{"type":"integer","description":"Required for retry: the task ID to retry"},"resume_from":{"type":"string","description":"Optional for retry: node name to resume from; empty auto-collects failed roots"}},"required":["goal"],"additionalProperties":false}`)
 }
 
 func (t *FluxWorkflowTool) Execute(ctx context.Context, ec tools.ExecutionContext, input json.RawMessage) (tools.ToolResult, error) {
@@ -97,18 +143,23 @@ func (t *FluxWorkflowTool) Execute(ctx context.Context, ec tools.ExecutionContex
 	}
 
 	dagPlanner := planner.NewDAGPlanner(provider, t.modelName, args.Goal, fluxReg)
-	def, err := dagPlanner.GenerateWorkflow(ctx, nil)
+	// Planner LLM calls can easily exceed the HTTP request timeout (large system
+	// prompt + complex DAG generation). Use a detached context with a generous
+	// deadline while still respecting the tool's own cancellation (e.g. Ctrl-C).
+	planCtx, planCancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer planCancel()
+	def, err := dagPlanner.GenerateWorkflow(planCtx, nil)
 	if err != nil {
 		emitWorkflowFailure(ec, workflowID, "planning", err.Error())
 		return tools.ToolResult{Content: "flux workflow planning failed: " + err.Error(), ModelUsage: usage.snapshot()}, nil
 	}
-	rewriteClientToolNodes(def, fluxReg)
-	rt, err := newFluxRuntime(ec.WorkspaceRoot)
+	rt, err := getOrCreateRuntime(ctx, ec.WorkspaceRoot)
 	if err != nil {
 		emitWorkflowFailure(ec, workflowID, "initializing", err.Error())
 		return tools.ToolResult{Content: "flux workflow runtime failed: " + err.Error(), ModelUsage: usage.snapshot()}, nil
 	}
-	defer rt.Shutdown()
+	// Tools registered before Submit so workers resolve tool nodes correctly.
+	// Re-register each time in case the turn's registry has changed.
 	for _, projected := range fluxReg.List() {
 		rt.ToolRegistry().Register(projected)
 	}
@@ -121,10 +172,7 @@ func (t *FluxWorkflowTool) Execute(ctx context.Context, ec tools.ExecutionContex
 		"nodes": def.Nodes, "edges": def.Edges, "output": def.Output,
 	})
 
-	// Block for user approval before creating a task and starting execution.
-	// The client renders the DAG from workflow_plan_ready; the user reviews
-	// it and taps approve/deny. Auto-approve when WorkflowPlanApproval is nil
-	// (headless/test/CI path).
+	// Block for user approval before enqueuing the task.
 	if ec.WorkflowPlanApproval != nil {
 		dagJSON, _ := json.Marshal(map[string]any{"nodes": def.Nodes, "edges": def.Edges})
 		if !ec.WorkflowPlanApproval(workflowID, args.Goal, string(dagJSON)) {
@@ -135,56 +183,35 @@ func (t *FluxWorkflowTool) Execute(ctx context.Context, ec tools.ExecutionContex
 		}
 	}
 
-	cancelEvents := bridgeFluxEvents(rt, ec, workflowID)
-	result, runErr := rt.Run(ctx, def, map[string]any{"goal": args.Goal, "workflow_id": workflowID})
-	for runErr == nil && result != nil && result.Status == "suspended" {
-		emitWorkflow(ec, "workflow_suspended", map[string]any{
-			"workflow_id": workflowID, "parent_call_id": ec.CallID,
-			"task_id": result.TaskID, "status": result.Status,
-			"node_name": result.SuspendNode, "reason": result.SuspendReason,
-			"resumable": true,
+	// Subscribe to events before Submit to avoid missing terminal events.
+	bridgeCtx, bridgeCancel := context.WithCancel(context.Background())
+	bridgeFluxEventsAsync(bridgeCtx, rt, ec, workflowID)
+
+	taskID, err := rt.Submit(ctx, def.Name, map[string]any{"goal": args.Goal, "workflow_id": workflowID})
+	if err != nil {
+		bridgeCancel() // task never enqueued → goroutine would leak
+		emitWorkflowFailure(ec, workflowID, "executing", err.Error())
+		return tools.ToolResult{Content: "flux workflow submission failed: " + err.Error(), ModelUsage: usage.snapshot()}, nil
+	}
+	// Submit succeeded — goroutine self-cleans on terminal; don't cancel.
+	_ = bridgeCancel
+
+	// Always async — same model as subagent, job, and wait. Events flow via
+	// WS; client observes progress in real-time or queries snapshot at any time.
+	if ec.OnWorkflowEvent != nil {
+		emitWorkflow(ec, "workflow_task_started", map[string]any{
+			"workflow_id":    workflowID,
+			"parent_call_id": ec.CallID,
+			"task_id":        taskID,
+			"status":         "pending",
 		})
-		if !isClientAwaitNode(def, result.SuspendNode) {
-			break
-		}
-		result, runErr = resumeClientAwait(ctx, rt, def, fluxReg, result, nestedUsage)
-	}
-	cancelEvents()
-	if runErr != nil {
-		emitWorkflowFailure(ec, workflowID, "executing", runErr.Error())
-		return tools.ToolResult{Content: "flux workflow execution failed: " + runErr.Error(), ModelUsage: usage.snapshot(), NestedUsages: nestedUsage.snapshot()}, nil
-	}
-	if result == nil {
-		emitWorkflowFailure(ec, workflowID, "executing", "workflow engine returned no result")
-		return tools.ToolResult{Content: "flux workflow execution failed: workflow engine returned no result", ModelUsage: usage.snapshot(), NestedUsages: nestedUsage.snapshot()}, nil
 	}
 
 	payload := map[string]any{
 		"workflow_id": workflowID,
-		"task_id":     result.TaskID,
-		"status":      result.Status,
+		"task_id":     taskID,
+		"status":      "queued",
 	}
-	if result.Task != nil && len(result.Task.OutputJSON) > 0 {
-		var output any
-		if json.Unmarshal(result.Task.OutputJSON, &output) == nil {
-			payload["output"] = output
-		}
-	}
-	if result.Err != nil {
-		payload["error"] = result.Err.Error()
-	}
-	terminalKind := "workflow_finished"
-	if result.Status == "failed" || result.Err != nil {
-		terminalKind = "workflow_failed"
-	} else if result.Status == "suspended" {
-		terminalKind = "workflow_suspended"
-	}
-	// Every suspended result was already emitted inside the resume loop with
-	// suspend node/reason. Do not append a duplicate suspension event here.
-	if terminalKind != "workflow_suspended" {
-		emitWorkflow(ec, terminalKind, payload)
-	}
-
 	out, _ := json.Marshal(payload)
 	return tools.ToolResult{
 		Content:      string(out),
@@ -199,6 +226,34 @@ func RegisterFluxTool(registry *tools.Registry, provider model.Provider, modelNa
 		return
 	}
 	_ = registry.Register(NewFluxWorkflowTool(provider, modelName))
+	_ = registry.Register(&workflowStatusTool{})
+}
+
+// workflowStatusTool lets the model query a previously-submitted workflow's
+// current state. After plan_workflow returns {"status":"queued"}, the model
+// can call this to check progress before deciding its next action.
+type workflowStatusTool struct{}
+
+func (t *workflowStatusTool) Name() string        { return "workflow_status" }
+func (t *workflowStatusTool) Description() string { return "Query the current state of a previously-submitted plan_workflow. Returns the task status, each node's state and error, and any output produced so far." }
+func (t *workflowStatusTool) InputSchema() json.RawMessage {
+	return json.RawMessage(`{"type":"object","properties":{"workflow_id":{"type":"string","description":"The workflow ID returned by plan_workflow"}},"required":["workflow_id"],"additionalProperties":false}`)
+}
+
+func (t *workflowStatusTool) Execute(ctx context.Context, ec tools.ExecutionContext, input json.RawMessage) (tools.ToolResult, error) {
+	var args struct {
+		WorkflowID string `json:"workflow_id"`
+	}
+	if err := json.Unmarshal(input, &args); err != nil || args.WorkflowID == "" {
+		return tools.ToolResult{Content: "workflow_id is required"}, nil
+	}
+	snapFunc := NewWorkflowSnapshotFunc()
+	snap, err := snapFunc(ctx, ec.WorkspaceRoot, args.WorkflowID)
+	if err != nil {
+		return tools.ToolResult{Content: fmt.Sprintf("workflow_status: %v", err)}, nil
+	}
+	out, _ := json.Marshal(snap)
+	return tools.ToolResult{Content: string(out), Output: out}, nil
 }
 
 func fluxWorkflowID(ec tools.ExecutionContext, goal string) string {
@@ -233,123 +288,6 @@ func projectFluxTools(ctx context.Context, ec tools.ExecutionContext, usage *nes
 		reg.Register(&codeAgentFluxTool{tool: candidate, ec: ec, parentCtx: ctx, usage: usage, attempts: map[string]int{}})
 	}
 	return reg
-}
-
-func rewriteClientToolNodes(def *definition.WorkflowDefinition, registry *fluxtool.Registry) {
-	if def == nil || registry == nil {
-		return
-	}
-	for i := range def.Nodes {
-		node := &def.Nodes[i]
-		if node.Type != definition.NodeTool || node.Config == nil {
-			continue
-		}
-		toolName, _ := node.Config["tool"].(string)
-		projected, ok := registry.Get(toolName)
-		if !ok {
-			continue
-		}
-		adapter, ok := projected.(*codeAgentFluxTool)
-		if !ok || !adapter.isClientTool() {
-			continue
-		}
-		correlation := make(map[string]any, len(node.InputMapping))
-		for inputName := range node.InputMapping {
-			correlation[inputName] = inputName
-		}
-		node.Type = definition.NodeAwait
-		node.Config = map[string]any{
-			"await_type":  "client_tool",
-			"source":      "client",
-			"client_tool": toolName,
-			"correlation": correlation,
-		}
-	}
-}
-
-func isClientAwaitNode(def *definition.WorkflowDefinition, nodeName string) bool {
-	if def == nil || nodeName == "" {
-		return false
-	}
-	for i := range def.Nodes {
-		node := &def.Nodes[i]
-		if node.Name == nodeName && node.Type == definition.NodeAwait && node.Config != nil {
-			_, ok := node.Config["client_tool"].(string)
-			return ok
-		}
-	}
-	return false
-}
-
-func resumeClientAwait(
-	ctx context.Context,
-	rt *workflowruntime.Runtime,
-	def *definition.WorkflowDefinition,
-	registry *fluxtool.Registry,
-	suspended *workflowruntime.RunResult,
-	usage *nestedUsageCollector,
-) (*workflowruntime.RunResult, error) {
-	if suspended == nil || rt == nil {
-		return nil, fmt.Errorf("client await: workflow result or runtime is nil")
-	}
-	toolName := ""
-	for i := range def.Nodes {
-		if def.Nodes[i].Name == suspended.SuspendNode {
-			toolName, _ = def.Nodes[i].Config["client_tool"].(string)
-			break
-		}
-	}
-	projected, ok := registry.Get(toolName)
-	if !ok {
-		return completeFluxAwait(ctx, rt, suspended.TaskID, suspended.SuspendNode, nil, "client tool not found: "+toolName)
-	}
-	adapter, ok := projected.(*codeAgentFluxTool)
-	if !ok {
-		return completeFluxAwait(ctx, rt, suspended.TaskID, suspended.SuspendNode, nil, "client tool adapter is unavailable: "+toolName)
-	}
-	binding, err := query.NewAwaitBindingRepository(rt.DB()).GetByTaskAndNode(ctx, suspended.TaskID, suspended.SuspendNode)
-	if err != nil {
-		return nil, fmt.Errorf("load client await binding: %w", err)
-	}
-	input := map[string]any{}
-	if binding != nil && binding.Correlation != nil {
-		input = binding.Correlation
-	}
-	result, invokeErr := adapter.invoke(ctx, suspended.SuspendNode, input)
-	if result.Usage != nil {
-		usage.add(result.Usage)
-	}
-	if invokeErr != nil {
-		return completeFluxAwait(ctx, rt, suspended.TaskID, suspended.SuspendNode, nil, invokeErr.Error())
-	}
-	return completeFluxAwait(ctx, rt, suspended.TaskID, suspended.SuspendNode, fluxToolResultData(result), "")
-}
-
-// completeFluxAwait intentionally uses the public Engine/DB surface available
-// since flux-workflow v1.0.3. Newer flux-workflow releases expose equivalent
-// Runtime.AwaitBinding/CompleteAwait helpers, but code-agent remains independently
-// buildable while the three repositories are released in sequence.
-func completeFluxAwait(
-	ctx context.Context,
-	rt *workflowruntime.Runtime,
-	taskID int64,
-	nodeName string,
-	meta map[string]any,
-	errMsg string,
-) (*workflowruntime.RunResult, error) {
-	engineResult := rt.Engine().CompleteNodeAndResume(taskID, nodeName, meta, errMsg)
-	task, statusErr := rt.Status(ctx, taskID)
-	if statusErr != nil {
-		return nil, statusErr
-	}
-	status := string(engineResult.Status)
-	if task != nil {
-		status = string(task.Status)
-	}
-	return &workflowruntime.RunResult{
-		TaskID: taskID, Status: status, Err: engineResult.Err, Task: task,
-		SuspendReason: engineResult.SuspendReason, SuspendNode: engineResult.SuspendNode,
-	}, nil
 }
 
 type codeAgentFluxTool struct {
@@ -552,17 +490,86 @@ func (c *nestedUsageCollector) snapshot() []*tools.ToolUsage {
 	return out
 }
 
-func bridgeFluxEvents(rt *workflowruntime.Runtime, ec tools.ExecutionContext, workflowID string) func() {
+// bridgeFluxEventsAsync subscribes to the Engine event bus before Submit and
+// returns a channel that closes when the task reaches a terminal state. Events
+// are forwarded to the code-agent stream via emitWorkflow.
+func bridgeFluxEventsAsync(ctx context.Context, rt *workflowruntime.Runtime, ec tools.ExecutionContext, workflowID string) {
 	types := []string{
 		domain.TaskEventStarted, domain.TaskEventSucceeded, domain.TaskEventFailed, domain.TaskEventSuspended,
 		"task_state_changed", "node_state_changed", "task_progress",
 		"node_progress", "node_debug", "tool_progress", "tool_log", "tool_stream", "tool_stream_end", "fanout_progress",
 	}
-	var cancels []func()
-	var wg sync.WaitGroup
+
+	type sub struct {
+		ch     <-chan *domain.TaskEvent
+		cancel func()
+	}
+	var subs []sub
 	for _, eventType := range types {
-		ch, cancel := rt.Subscribe(eventType)
-		cancels = append(cancels, cancel)
+		ch, c := rt.Subscribe(eventType)
+		subs = append(subs, sub{ch, c})
+	}
+
+	termCh, termCancel := rt.Subscribe(domain.TaskEventSucceeded)
+	failCh, failCancel := rt.Subscribe(domain.TaskEventFailed)
+
+	go func() {
+		defer func() {
+			termCancel()
+			failCancel()
+			for _, s := range subs {
+				s.cancel()
+			}
+		}()
+		for _, s := range subs {
+			go func(ch <-chan *domain.TaskEvent) {
+				for event := range ch {
+					payload := flattenFluxTaskEvent(event, workflowID, ec.CallID)
+					kind := "workflow_" + event.Type
+					emitWorkflow(ec, kind, payload)
+				}
+			}(s.ch)
+		}
+		// Only terminal events end the bridge. Suspension is transient —
+		// the forwarder goroutines above emit workflow_task_suspended, and
+		// the worker will resume the task when the client returns its result.
+		var terminalEv *domain.TaskEvent
+		select {
+		case <-ctx.Done():
+			return
+		case ev := <-termCh:
+			terminalEv = ev
+		case ev := <-failCh:
+			terminalEv = ev
+		}
+		if terminalEv != nil {
+			emitWorkflowTerminalWithTask(ctx, rt, ec, workflowID, terminalEv)
+		}
+	}()
+}
+
+// bridgeFluxEvents subscribes to the Engine event bus and forwards events into
+// the code-agent event stream. Used for the synchronous retry path.
+func bridgeFluxEvents(rt *workflowruntime.Runtime, ec tools.ExecutionContext, workflowID string, taskID int64) (cancel func()) {
+	_ = taskID // reserved for sync retry filtering
+	types := []string{
+		domain.TaskEventStarted, domain.TaskEventSucceeded, domain.TaskEventFailed, domain.TaskEventSuspended,
+		"task_state_changed", "node_state_changed", "task_progress",
+		"node_progress", "node_debug", "tool_progress", "tool_log", "tool_stream", "tool_stream_end", "fanout_progress",
+	}
+
+	type sub struct {
+		ch     <-chan *domain.TaskEvent
+		cancel func()
+	}
+	var subs []sub
+	for _, eventType := range types {
+		ch, c := rt.Subscribe(eventType)
+		subs = append(subs, sub{ch, c})
+	}
+
+	var wg sync.WaitGroup
+	for _, s := range subs {
 		wg.Add(1)
 		go func(ch <-chan *domain.TaskEvent) {
 			defer wg.Done()
@@ -571,11 +578,11 @@ func bridgeFluxEvents(rt *workflowruntime.Runtime, ec tools.ExecutionContext, wo
 				kind := "workflow_" + event.Type
 				emitWorkflow(ec, kind, payload)
 			}
-		}(ch)
+		}(s.ch)
 	}
 	return func() {
-		for _, cancel := range cancels {
-			cancel()
+		for _, s := range subs {
+			s.cancel()
 		}
 		wg.Wait()
 	}
@@ -605,6 +612,65 @@ func emitWorkflow(ec tools.ExecutionContext, kind string, payload map[string]any
 	if err == nil {
 		ec.OnWorkflowEvent(kind, raw)
 	}
+}
+
+func emitWorkflowTerminal(ec tools.ExecutionContext, workflowID, status, errMsg string, ev *domain.TaskEvent) {
+	payload := map[string]any{
+		"workflow_id": workflowID,
+		"status":      status,
+	}
+	if ev != nil {
+		payload["task_id"] = ev.TaskID
+	}
+	if errMsg != "" {
+		payload["error"] = errMsg
+	}
+	kind := "workflow_finished"
+	if status == "failed" {
+		kind = "workflow_failed"
+	}
+	emitWorkflow(ec, kind, payload)
+}
+
+// emitWorkflowTerminalWithTask queries the task output from the Runtime and
+// includes it in the terminal event. Used by the async bridge goroutine which
+// has access to the Runtime but not the synchronous Run result.
+func emitWorkflowTerminalWithTask(ctx context.Context, rt *workflowruntime.Runtime, ec tools.ExecutionContext, workflowID string, ev *domain.TaskEvent) {
+	status := "success"
+	errMsg := ""
+	if ev != nil && ev.Type == domain.TaskEventFailed {
+		status = "failed"
+		if ev.Error != "" {
+			errMsg = ev.Error
+		}
+	}
+	payload := map[string]any{
+		"workflow_id": workflowID,
+		"status":      status,
+	}
+	if ev != nil {
+		payload["task_id"] = ev.TaskID
+		task, err := rt.Status(ctx, ev.TaskID)
+		if err == nil && task != nil {
+			if task.ErrorMessage != "" {
+				payload["error"] = task.ErrorMessage
+			}
+			if len(task.OutputJSON) > 0 {
+				var output any
+				if json.Unmarshal(task.OutputJSON, &output) == nil {
+					payload["output"] = output
+				}
+			}
+		}
+	}
+	if errMsg != "" && payload["error"] == nil {
+		payload["error"] = errMsg
+	}
+	kind := "workflow_finished"
+	if status == "failed" {
+		kind = "workflow_failed"
+	}
+	emitWorkflow(ec, kind, payload)
 }
 
 func emitWorkflowFailure(ec tools.ExecutionContext, workflowID, stage, message string) {
@@ -655,7 +721,7 @@ func (t *FluxWorkflowTool) executeRetry(
 		"stage": "retrying", "task_id": args.TaskID, "resume_from": args.ResumeFrom,
 	})
 
-	cancelEvents := bridgeFluxEvents(rt, ec, args.WorkflowID)
+	cancelEvents := bridgeFluxEvents(rt, ec, args.WorkflowID, 0)
 	defer cancelEvents()
 
 	// Subscribe to terminal events on a dedicated channel so we can wait.

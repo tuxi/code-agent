@@ -138,15 +138,15 @@ func NewWorkflowSnapshotFunc() WorkflowSnapshotFunc {
 		type nodeRow struct {
 			NodeName   string  `gorm:"column:node_name"`
 			State      string  `gorm:"column:state"`
-			Progress   float64 `gorm:"column:progress"`
 			Error      *string `gorm:"column:error"`
 			OutputJSON []byte  `gorm:"column:output_json"`
 		}
 		var rows []nodeRow
+		// sort_order and progress columns were added after v1.0.3 — not present
+		// in older DBs created by published flux-workflow releases.
 		if err := gdb.Table("task_nodes").
-			Select("node_name, state, progress, error, output_json").
+			Select("node_name, state, error, output_json").
 			Where("task_id = ?", latestTask.ID).
-			Order("sort_order ASC").
 			Find(&rows).Error; err != nil {
 			return nil, fmt.Errorf("query nodes: %w", err)
 		}
@@ -162,7 +162,7 @@ func NewWorkflowSnapshotFunc() WorkflowSnapshotFunc {
 			ns := WorkflowNodeState{
 				Name:     r.NodeName,
 				State:    r.State,
-				Progress: r.Progress,
+				Progress: 0, // not queried — column added after v1.0.3
 				Error:    errStr,
 				Output:   output,
 				Terminal: isTermNodeState(domain.NodeState(r.State)),
@@ -187,11 +187,11 @@ func queryEdges(db *gorm.DB, versionID int64) []WorkflowEdgeDTO {
 	if versionID == 0 {
 		return nil
 	}
-	var defJSON []byte
-	if err := db.Table("workflow_versions").Select("definition_json").Where("id = ?", versionID).Scan(&defJSON); err != nil {
+	var defJSON string
+	if err := db.Table("workflow_versions").Select("definition_json").Where("id = ?", versionID).Scan(&defJSON).Error; err != nil {
 		return nil
 	}
-	if len(defJSON) == 0 {
+	if defJSON == "" {
 		return nil
 	}
 	var def struct {
@@ -200,7 +200,7 @@ func queryEdges(db *gorm.DB, versionID int64) []WorkflowEdgeDTO {
 			DependsOn []string `json:"depends_on"`
 		} `json:"nodes"`
 	}
-	if err := json.Unmarshal(defJSON, &def); err != nil {
+	if err := json.Unmarshal([]byte(defJSON), &def); err != nil {
 		return nil
 	}
 	var edges []WorkflowEdgeDTO

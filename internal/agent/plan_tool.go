@@ -42,7 +42,9 @@ func (t *enterPlanModeTool) Description() string {
 		"In plan mode you can read, search, and write plan files, " +
 		"but you CANNOT edit project files or run commands — " +
 		"this ensures you research and design before implementing. " +
-		"When you have a complete plan, call propose_plan to get user approval."
+		"When you have a complete plan, call propose_plan to get user approval. " +
+		"For tasks that already have clear steps and dependencies (no research needed), " +
+		"consider plan_workflow instead — it generates an execution DAG and runs it."
 }
 
 func (t *enterPlanModeTool) InputSchema() json.RawMessage {

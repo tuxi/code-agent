@@ -216,8 +216,12 @@ func (r *Runner) emit(e Event) {
 		return
 	}
 	e.At = time.Now()
-	e.SessionID = r.emitSessionID
-	e.TurnID = r.emitTurnID
+	if e.SessionID == "" {
+		e.SessionID = r.emitSessionID
+	}
+	if e.TurnID == "" {
+		e.TurnID = r.emitTurnID
+	}
 	e.InvocationID = r.emitInvocationID
 	// Serialize emits: with parallel tool execution (P8.8) a concurrent worker's
 	// tool may stream stdout/stderr chunks through r.emit while the main
@@ -1366,10 +1370,14 @@ func (r *Runner) workflowPlanApproval(callID string) func(planID, title, content
 }
 
 func (r *Runner) executeTool(ctx context.Context, tool tools.Tool, callID string, input json.RawMessage) (tools.ToolResult, error) {
+	// Capture turn identity before the closure so async workflow events
+	// (emitted after Execute returns) carry the correct correlation IDs.
+	turnID := r.emitTurnID
+	sessionID := r.emitSessionID
 	ec := tools.ExecutionContext{
 		WorkspaceRoot:      r.WorkspaceRoot,
-		SessionID:          r.emitSessionID,
-		TurnID:             r.emitTurnID,
+		SessionID:          sessionID,
+		TurnID:             turnID,
 		CallID:             callID,
 		ExecutionID:        r.emitInvocationID,
 		RequestID:          r.RequestID,
@@ -1384,7 +1392,7 @@ func (r *Runner) executeTool(ctx context.Context, tool tools.Tool, callID string
 		NestedExecutor: r,
 		ToolRegistry:   r.Tools,
 		OnWorkflowEvent: func(kind string, payload json.RawMessage) {
-			r.emit(Event{Kind: EventKind(kind), CallID: callID, Workflow: payload})
+			r.emit(Event{Kind: EventKind(kind), CallID: callID, TurnID: turnID, SessionID: sessionID, Workflow: payload})
 		},
 		WorkflowPlanApproval: r.workflowPlanApproval(callID),
 	}

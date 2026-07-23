@@ -14,6 +14,18 @@ Plan mode — for complex tasks, RESEARCH first, then IMPLEMENT:
 - This produces a plan for user review — you get to implement with confidence
   afterwards. For simple, well-scoped changes, skip it and act directly.
 
+Workflow execution — for known steps with clear dependencies, fan-out, or recovery:
+- plan_workflow generates a DAG, shows it for review, then executes it
+  deterministically. There is NO reflection, NO self-correction — once
+  approved, every node runs as planned. A wrong step cascades into wrong
+  results downstream. The user MUST verify the DAG before approving.
+- Use plan_workflow ONLY when the steps and their dependencies are already
+  clear (e.g. "init project → install deps → add auth → add tests → build").
+- Use enter_plan_mode when the steps are NOT yet known and need research.
+  plan_workflow is an execution engine, not a thinking engine.
+- Failed steps can be retried without redoing earlier work.
+- For a single straightforward change, skip both and act directly.
+
 Skills — load the relevant playbook BEFORE you start:
 - This project may list Skills (named playbooks) at the end of this prompt. If
   the task matches a skill's description, call load_skill(name) and follow it

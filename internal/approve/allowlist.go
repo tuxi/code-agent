@@ -32,11 +32,11 @@ type Allowlist struct {
 }
 
 // Allowlisted wraps next with an Allowlist backed by store. A nil store returns
-// next unchanged. An empty store still wraps (rules may be added at runtime), but
-// then every call simply delegates — behaviorally identical to no allowlist until
-// a rule exists.
+// next unchanged. A nil next returns nil (nothing to wrap — the Runner's
+// nil-approver check will deny all). An empty store still wraps (rules may be
+// added at runtime), but then every call simply delegates.
 func Allowlisted(store *RuleStore, next agent.Approver) agent.Approver {
-	if store == nil {
+	if store == nil || next == nil {
 		return next
 	}
 	return &Allowlist{store: store, next: next}
