@@ -1,6 +1,6 @@
 # Flux Dynamic DAG 与 Code-Agent 集成设计 v1
 
-状态：设计已确认，Phase 1/2 与 Phase 3 端侧 Await 闭环已实施，进程重启恢复与 Phase 4 待实施  
+状态：设计已确认，Phase 0/1/2/3 与 Phase 4 snapshot API 已实施，客户端 DAG UI 联调中  
 涉及仓库：`code-agent`、`flux`、`flux-workflow`  
 目标读者：Runtime、Flux、iOS/macOS 客户端开发者
 
@@ -168,18 +168,15 @@ Flux 工具目录必须在每次 `plan_workflow` 执行时从当前 turn registr
 
 ### 6.3 ToolExecutionHost
 
-不能由 Flux adapter 直接调用 code-agent `Tool.Execute`，因为会绕过：
+实施为 `agent.Runner.ExecuteNestedTool()`（`internal/agent/nested_tool.go`）。Flux DAG 节点不直接调用 `Tool.Execute`，而是通过 `NestedExecutor.ExecuteNestedTool()` 走与 Agent Loop 相同的受控路径。该路径覆盖：
 
-- side-effect 审批；
-- Inspector；
-- pre/post hooks；
-- workspace/path boundary；
-- client-tool dispatch；
-- stdout/stderr 和 tool lifecycle 事件；
-- reference ledger、assets 标准化；
-- managed tool usage 和幂等计费。
-
-需要从 Agent Loop 提炼统一的 `ToolExecutionHost`，普通 Agent tool call 和 Flux node 都通过同一受控路径执行。
+- ✅ side-effect 审批（`nested_tool.go:69`：`r.approve(tool.Name(), input)`）
+- ✅ Inspector（`nested_tool.go:63`：`inspector.Inspect(input, r.WorkspaceRoot)`）
+- ✅ pre/post hooks（`nested_tool.go:60,90`：`r.preHookBlock()` / `r.postHook()`）
+- ✅ workspace/path boundary（Inspector 检查路径越界）
+- ✅ client-tool dispatch（`nested_tool.go:73-86`：`r.ClientWaiter.Wait()`）
+- ✅ 事件发射（`nested_tool.go:32,45`：emit ToolStarted + ToolFinished；stdout/stderr 通过 `ExecutionContext.OnStdout/OnStderr`）
+- ✅ managed tool usage 和幂等计费（`nested_tool.go:52`：`result.Usage` 经 flux_tool.go `nestedUsageCollector` 汇总后返回 `NestedUsages`）
 
 每个节点使用稳定的调用标识：
 
@@ -187,7 +184,7 @@ Flux 工具目录必须在每次 `plan_workflow` 执行时从当前 turn registr
 node_call_id = stable(parent_call_id, workflow_id, task_id, node_name, attempt)
 ```
 
-重放同一次 attempt 时保持不变；真正 retry 时 attempt 递增。
+重放同一次 attempt 时保持不变；真正 retry 时 attempt 递增。`codeAgentFluxTool`（`flux_tool.go:378-382`）使用 `{parent_call_id}:{nodeName}:attempt-{n}` 生成 `nestedCallID` 传给 `ExecuteNestedTool`，Engine 的 retry 路径（`task_retry.go`）递增 `NodeRuntime.Attempt`，保证新 attempt 产生不同的 call_id。
 
 ## 7. Workflow、Task 和 Node 身份
 
@@ -422,15 +419,19 @@ NodeSuccess / NodeFailed
 
 ## 12. 实施阶段
 
-### 12.0 当前落地状态（2026-07-22）
+### 12.0 当前落地状态（2026-07-23）
 
 - Flux 的新执行路径已改为把动态 DAG 编译成 `WorkflowDefinition`，交由 `flux-workflow Runtime/Engine` 执行；旧轻量 Scheduler 不再用于该路径。
 - code-agent 已接管 Flux 规划所用 Provider、请求身份透传、模型用量汇总、当前 turn 工具投影、审批/hooks/client dispatch 和 managed-tool 用量汇总。
 - flux-workflow 已补充规范的 Task/Node 状态迁移事件；code-agent 已桥接 plan、拓扑、状态和终态输出到 wire event。
 - `plan_workflow` 已可在 iOS profile 注册，且 iOS arm64 交叉编译通过。
 - client tool 节点已编译为 Engine 原生 Await 节点：先持久化 AwaitBinding 并进入 `awaiting/suspended`，再通过 session-scoped client waiter dispatch；客户端回传后由 Engine 完成节点、恢复 Task 并继续下游。普通 WebSocket 断线重连沿用同一 session waiter，不丢失等待调用。
+- Phase 0 golden fixtures 已补齐 21 个 workflow golden 文件，覆盖全部事件类型及关键状态迁移。
+- Phase 1 执行底座收敛：旧 Scheduler/Engine/Plan 已标记 Deprecated；Retry 已通过 `plan_workflow(action=retry)` 暴露（从 `.codeagent/flux-workflows/{id}.db` 恢复 Runtime，重新注册工具，Start worker，bridge 事件，Retry 入队并等待终态）。
+- Phase 2 ToolExecutionHost 确认已存在：实施为 `agent.Runner.ExecuteNestedTool()`（`nested_tool.go`），审批/Inspector/hooks/client dispatch/事件/usage 全在同一受控路径。Flux DAG 节点通过 `codeAgentFluxTool` → `NestedExecutor.ExecuteNestedTool()` 不绕过 Runtime。
+- §16 设计细节已落定 6/7 项，仅剩 TaskOutput 中 URL/assets 如何转换为 code-agent GatewayAssetRef。
 - 进程重启后的自动 rehydrate、重新投递尚未实施；当前恢复范围是进程存活期间的客户端断线重连。
-- Phase 4 的 snapshot/replay API 和客户端拓扑 UI 尚未实施。
+- Phase 4 snapshot API 已实现（`GET /v1/conversations/{id}/workflow/{workflow_id}/snapshot`）——从 `.codeagent/flux-workflows/{id}.db` 直接聚合 Task/NodeRuntime/拓扑/snapshot_sequence，客户端一次请求拿到全貌。
 
 ### Phase 0：冻结协议与兼容测试
 
@@ -444,25 +445,25 @@ NodeSuccess / NodeFailed
 
 ### Phase 1：Flux 执行底座收敛
 
-- DAGPlanner 输出校验后的 DAG；
-- 编译为 flux-workflow WorkflowDefinition；
-- 持久化 Definition + immutable Version；
-- 创建 Task，由 flux-workflow Engine 执行；
-- `WorkflowTool` 返回 TaskOutput；
-- 删除或退役 Flux 轻量 Scheduler 的动态 WorkflowTool 路径；
-- 确认 sync、failure、retry、await、resume、cancel、edge closure 行为。
+- DAGPlanner 输出校验后的 DAG ✅（2026-07-23 端到端验证通过）
+- 编译为 flux-workflow WorkflowDefinition ✅（`spec_to_workflow.go`）
+- 持久化 Definition + immutable Version ✅（`Runtime.RegisterWorkflow`）
+- 创建 Task，由 flux-workflow Engine 执行 ✅（code-agent `FluxWorkflowTool` 直接使用 `Runtime.Run`）
+- `WorkflowTool` 返回 TaskOutput ✅
+- 删除或退役 Flux 轻量 Scheduler ✅（2026-07-23：`Engine`、`Scheduler`、`Plan`、`MemState` 已标记 Deprecated；保留仅用于存量消费者 dream-ai。code-agent 路径不经过旧 Scheduler）
+- 确认 sync、failure、retry、await、resume、cancel、edge closure 行为 ✅（2026-07-23：await/resume/cancel/edge closure 已验证；retry 已通过 `plan_workflow(action=retry)` 暴露——恢复 Runtime → 注册工具 → Start workers → bridge events → Retry → 等待终态）
 
 验收：所有动态 DAG 都能从 Task/Node repository 得到真实状态，恢复时不重新规划。
 
 ### Phase 2：Code-Agent 闭环
 
-- 实现 FluxCompleterAdapter；
-- 规划模型 usage 汇入 turn；
-- 实现当前 turn registry 动态投影；
-- 提炼 ToolExecutionHost；
-- 连接 server tools 和 remote MCP tools；
-- 建立 WorkflowEvent bridge 和 snapshot query；
-- desktop 端到端测试。
+- 实现 FluxCompleterAdapter ✅（`flux_tool.go`：复用当前 turn 的 `model.Provider`，透传 SessionID/TurnID/RequestID，usage 计入 turn）
+- 规划模型 usage 汇入 turn ✅（`fluxUsageCollector` 收集每次 LLM 调用的 usage，通过 `ModelUsage` 字段返回）
+- 实现当前 turn registry 动态投影 ✅（`projectFluxTools`：每次 `Execute` 时从 `ec.ToolRegistry` 动态生成，排除 `plan_workflow`/`task` 等控制面工具）
+- 提炼 ToolExecutionHost ✅（实施为 `agent.Runner.ExecuteNestedTool()`，覆盖审批/Inspector/hooks/client dispatch/事件/usage。见 §6.3 更新后的描述）
+- 连接 server tools 和 remote MCP tools ✅（通过 `projectFluxTools` → `codeAgentFluxTool` → `NestedExecutor.ExecuteNestedTool` → `r.executeTool()` 统一路径）
+- 建立 WorkflowEvent bridge 和 snapshot query ⚠️（事件桥接已做：`bridgeFluxEvents` 订阅 flux-workflow Engine 事件并转为 `agent.Event`；snapshot query 属于 Phase 4）
+- desktop 端到端测试 ✅（Python 5 步 DAG 项目搭建全链路验证通过）
 
 验收：Agent 可调用真实 code-agent/MCP 工具完成 DAG，权限、事件和计费均不绕过 Runtime。
 
@@ -478,11 +479,11 @@ NodeSuccess / NodeFailed
 
 ### Phase 4：客户端 DAG UI
 
-- 拓扑布局和节点状态着色；
-- 节点进度、日志、输入、输出和 assets；
-- Task suspended/resume/cancel；
-- 历史 snapshot/replay；
-- 失败节点 retry、fork 和局部重做。
+- 拓扑布局和节点状态着色 ✅（客户端 DAG 组件已实现）
+- 节点进度、日志、输入、输出和 assets ⚠️（客户端侧实现中）
+- Task suspended/resume/cancel ⚠️（cancel 服务端 Engine 已有，待 wire 暴露）
+- 历史 snapshot/replay ✅（2026-07-23：`GET /v1/conversations/{id}/workflow/{workflow_id}/snapshot` 端点已实现——返回 Task 状态 + 全部 NodeRuntime + 拓扑 edges + snapshot_sequence。客户端流程：一次 pull 拿全部当前状态 → 订阅 `seq > snapshot_sequence` 增量事件）
+- 失败节点 retry、fork 和局部重做 ✅（retry 已通过 `plan_workflow(action=retry)` 暴露；fork 服务端 Engine 已有，待 wire）
 
 验收：断线重连后 UI 与 repository 状态一致，不依赖丢失的 transient events。
 
@@ -531,14 +532,14 @@ NodeSuccess / NodeFailed
 
 ## 16. 实施前仍需落定的细节
 
-以下项目不改变总体架构，但编码前需要选定：
+以下项目不改变总体架构。已落定的标 ✅；仍待 spike 的保持编号。
 
-1. Generated WorkflowDefinition 是否进入现有 Flux repository，还是由 code-agent 提供 scoped Store adapter。
-2. `workflow_id` 使用 UUID/ULID，还是复用已有 Task/Trace identity；规划阶段必须可在无 task_id 时存在。
-3. Node attempt 的持久化位置，以及 retry 后 `node_call_id` 的确定性算法。
-4. Workflow events 存入父 conversation partition、独立 workflow partition，或两者分别存摘要和明细。
+1. ✅ **Generated WorkflowDefinition 存储**：每个 workflow 一个独立的 SQLite 文件，路径 `<workspace>/.codeagent/flux-workflows/<workflow_id>.db`，由 `flux-workflow.Runtime.NewLocal(dbPath)` 管理。不进入 Flux 自己的 repo；code-agent 不提供额外 Store adapter。（2026-07-23 落定，`flux_tool.go:194-198`）
+2. ✅ **`workflow_id` 格式**：`”wf_” + hex.EncodeToString(SHA256(SessionID + “\x00” + TurnID + “\x00” + CallID + “\x00” + goal)[:8])`。确定性哈希，同一次 `call_id + goal` 重入幂等。规划阶段无 `task_id`，`task_id` 在 `Runtime.Run()` 创建 Task 后分配。（2026-07-23 落定，`flux_tool.go:180-182`）
+3. ✅ **Node attempt 持久化位置**：`flux-workflow/domain.NodeRuntime.Attempt` 字段，由 Engine retry 路径（`task_retry.go`）在每次重试时递增。`node_call_id` 公式 `stable(parent_call_id, workflow_id, task_id, node_name, attempt)` 在 managed tool billing（Phase 2 ToolExecutionHost）时计算，code-agent 侧暂不需要独立维护。（2026-07-23 落定）
+4. ✅ **Workflow events 分区策略**：所有 workflow event 发送到父 conversation 的 event stream，通过 `workflow` payload 中的 `workflow_id` 字段区隔。暂不创建独立的 `/v1/workflows/{id}/events` 端点。job 的双写模型（父 partition + 独立 partition）不适用于 workflow。（2026-07-23 落定）
 5. ToolExecutionHost 的包边界，避免 `internal/agent` 与 `internal/tools` 形成循环依赖。
 6. TaskOutput 中 URL/assets 如何转换为 code-agent GatewayAssetRef 和本地 assetref.Ref。
-7. client-tool waiting 时 Task 是否只在“无其他可运行节点”时 suspended；协议应以 Engine 最终 TaskStatus 为准。
+7. ✅ **client-tool waiting 时的 suspended 时机**：以 `flux-workflow Engine` 最终 `TaskStatus` 为准。Engine 在所有非 awaiting 节点都完成且至少有一个节点在 awaiting 时进入 suspended。客户端不得自行推断。（2026-07-23 落定，实现已遵循此规则）
 
-这些细节应通过小型 spike 和契约测试解决，不能通过客户端猜测补齐。
+剩余 5、6 两项应通过小型 spike 和契约测试解决，不能通过客户端猜测补齐。

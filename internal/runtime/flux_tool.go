@@ -52,17 +52,27 @@ func (t *FluxWorkflowTool) Description() string {
 }
 
 func (t *FluxWorkflowTool) InputSchema() json.RawMessage {
-	return json.RawMessage(`{"type":"object","properties":{"goal":{"type":"string","description":"要完成的复杂目标"}},"required":["goal"],"additionalProperties":false}`)
+	return json.RawMessage(`{"type":"object","properties":{"goal":{"type":"string","description":"要完成的复杂目标"},"action":{"type":"string","enum":["new","retry"],"description":"new=新建并执行；retry=恢复已失败的 workflow 并从指定节点重试"},"workflow_id":{"type":"string","description":"重试时必填：要恢复的 workflow ID"},"task_id":{"type":"integer","description":"重试时必填：要重试的 task ID"},"resume_from":{"type":"string","description":"重试时可选：从哪个节点开始重试，为空则自动收集失败根节点"}},"required":["goal"],"additionalProperties":false}`)
 }
 
 func (t *FluxWorkflowTool) Execute(ctx context.Context, ec tools.ExecutionContext, input json.RawMessage) (tools.ToolResult, error) {
 	var args struct {
-		Goal string `json:"goal"`
+		Goal       string `json:"goal"`
+		Action     string `json:"action"`
+		WorkflowID string `json:"workflow_id"`
+		TaskID     int64  `json:"task_id"`
+		ResumeFrom string `json:"resume_from"`
 	}
 	if err := json.Unmarshal(input, &args); err != nil {
 		return tools.ToolResult{Content: "invalid input: " + err.Error()}, nil
 	}
 	args.Goal = strings.TrimSpace(args.Goal)
+
+	// Retry path: recover existing workflow from its durable .db and re-run.
+	if args.Action == "retry" {
+		return t.executeRetry(ctx, ec, args)
+	}
+
 	if args.Goal == "" {
 		return tools.ToolResult{Content: "goal is required"}, nil
 	}
@@ -93,7 +103,7 @@ func (t *FluxWorkflowTool) Execute(ctx context.Context, ec tools.ExecutionContex
 		return tools.ToolResult{Content: "flux workflow planning failed: " + err.Error(), ModelUsage: usage.snapshot()}, nil
 	}
 	rewriteClientToolNodes(def, fluxReg)
-	rt, err := newFluxRuntime(ec.WorkspaceRoot, workflowID)
+	rt, err := newFluxRuntime(ec.WorkspaceRoot)
 	if err != nil {
 		emitWorkflowFailure(ec, workflowID, "initializing", err.Error())
 		return tools.ToolResult{Content: "flux workflow runtime failed: " + err.Error(), ModelUsage: usage.snapshot()}, nil
@@ -111,8 +121,22 @@ func (t *FluxWorkflowTool) Execute(ctx context.Context, ec tools.ExecutionContex
 		"nodes": def.Nodes, "edges": def.Edges, "output": def.Output,
 	})
 
+	// Block for user approval before creating a task and starting execution.
+	// The client renders the DAG from workflow_plan_ready; the user reviews
+	// it and taps approve/deny. Auto-approve when WorkflowPlanApproval is nil
+	// (headless/test/CI path).
+	if ec.WorkflowPlanApproval != nil {
+		dagJSON, _ := json.Marshal(map[string]any{"nodes": def.Nodes, "edges": def.Edges})
+		if !ec.WorkflowPlanApproval(workflowID, args.Goal, string(dagJSON)) {
+			emitWorkflow(ec, "workflow_rejected", map[string]any{
+				"workflow_id": workflowID, "parent_call_id": ec.CallID, "reason": "user_rejected",
+			})
+			return tools.ToolResult{Content: "workflow cancelled by user"}, nil
+		}
+	}
+
 	cancelEvents := bridgeFluxEvents(rt, ec, workflowID)
-	result, runErr := rt.Run(ctx, def, map[string]any{"goal": args.Goal})
+	result, runErr := rt.Run(ctx, def, map[string]any{"goal": args.Goal, "workflow_id": workflowID})
 	for runErr == nil && result != nil && result.Status == "suspended" {
 		emitWorkflow(ec, "workflow_suspended", map[string]any{
 			"workflow_id": workflowID, "parent_call_id": ec.CallID,
@@ -178,11 +202,11 @@ func RegisterFluxTool(registry *tools.Registry, provider model.Provider, modelNa
 }
 
 func fluxWorkflowID(ec tools.ExecutionContext, goal string) string {
-	h := sha256.Sum256([]byte(ec.SessionID + "\x00" + ec.TurnID + "\x00" + ec.CallID + "\x00" + goal))
+	h := sha256.Sum256([]byte(ec.SessionID + "\x00" + goal))
 	return "wf_" + hex.EncodeToString(h[:8])
 }
 
-func newFluxRuntime(workspaceRoot, workflowID string) (*workflowruntime.Runtime, error) {
+func newFluxRuntime(workspaceRoot string) (*workflowruntime.Runtime, error) {
 	root := workspaceRoot
 	if root == "" {
 		var err error
@@ -195,7 +219,7 @@ func newFluxRuntime(workspaceRoot, workflowID string) (*workflowruntime.Runtime,
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, err
 	}
-	return workflowruntime.NewLocal(filepath.Join(dir, workflowID+".db"))
+	return workflowruntime.NewLocal(filepath.Join(dir, "flux-workflows.db"))
 }
 
 func projectFluxTools(ctx context.Context, ec tools.ExecutionContext, usage *nestedUsageCollector) *fluxtool.Registry {
@@ -590,6 +614,104 @@ func emitWorkflowFailure(ec tools.ExecutionContext, workflowID, stage, message s
 		"stage":          stage,
 		"error":          message,
 	})
+}
+
+// executeRetry recovers a previously persisted Runtime from its durable .db file,
+// re-attaches tools and event bridging, and calls Retry on the target task.
+func (t *FluxWorkflowTool) executeRetry(
+	ctx context.Context,
+	ec tools.ExecutionContext,
+	args struct {
+		Goal       string `json:"goal"`
+		Action     string `json:"action"`
+		WorkflowID string `json:"workflow_id"`
+		TaskID     int64  `json:"task_id"`
+		ResumeFrom string `json:"resume_from"`
+	},
+) (tools.ToolResult, error) {
+	if args.WorkflowID == "" || args.TaskID == 0 {
+		return tools.ToolResult{Content: "retry requires workflow_id and task_id"}, nil
+	}
+
+	rt, err := newFluxRuntime(ec.WorkspaceRoot)
+	if err != nil {
+		return tools.ToolResult{Content: "failed to recover workflow runtime: " + err.Error()}, nil
+	}
+	defer rt.Shutdown()
+
+	// Re-register tools — the in-memory tool registry is empty after recovery.
+	nestedUsage := &nestedUsageCollector{}
+	fluxReg := projectFluxTools(ctx, ec, nestedUsage)
+	for _, projected := range fluxReg.List() {
+		rt.ToolRegistry().Register(projected)
+	}
+
+	if err := rt.Start(ctx); err != nil {
+		return tools.ToolResult{Content: "failed to start workflow runtime: " + err.Error()}, nil
+	}
+
+	emitWorkflow(ec, "workflow_started", map[string]any{
+		"workflow_id": args.WorkflowID, "parent_call_id": ec.CallID,
+		"stage": "retrying", "task_id": args.TaskID, "resume_from": args.ResumeFrom,
+	})
+
+	cancelEvents := bridgeFluxEvents(rt, ec, args.WorkflowID)
+	defer cancelEvents()
+
+	// Subscribe to terminal events on a dedicated channel so we can wait.
+	terminalCh, terminalCancel := rt.Subscribe(domain.TaskEventSucceeded)
+	defer terminalCancel()
+	failedCh, failedCancel := rt.Subscribe(domain.TaskEventFailed)
+	defer failedCancel()
+	suspendedCh, suspendedCancel := rt.Subscribe(domain.TaskEventSuspended)
+	defer suspendedCancel()
+
+	if err := rt.Retry(ctx, args.TaskID, args.ResumeFrom, nil); err != nil {
+		return tools.ToolResult{Content: "retry failed: " + err.Error()}, nil
+	}
+
+	// Wait for the retried task to reach a terminal state.
+	// Workers consume the enqueued task and drive the DAG; we block until
+	// the task finishes, fails, or is suspended again (e.g. awaiting a client tool).
+	for {
+		select {
+		case <-ctx.Done():
+			return tools.ToolResult{Content: "retry cancelled: " + ctx.Err().Error()}, nil
+		case evt := <-terminalCh:
+			if evt != nil && evt.TaskID == args.TaskID {
+				return retryResult(args.WorkflowID, args.TaskID, "success", "", rt)
+			}
+		case evt := <-failedCh:
+			if evt != nil && evt.TaskID == args.TaskID {
+				return retryResult(args.WorkflowID, args.TaskID, "failed", evt.Error, rt)
+			}
+		case evt := <-suspendedCh:
+			if evt != nil && evt.TaskID == args.TaskID {
+				return retryResult(args.WorkflowID, args.TaskID, "suspended", "", rt)
+			}
+		}
+	}
+}
+
+func retryResult(workflowID string, taskID int64, status string, errMsg string, rt *workflowruntime.Runtime) (tools.ToolResult, error) {
+	// Best-effort fetch of the updated task to include any partial output.
+	task, _ := rt.Status(context.Background(), taskID)
+	payload := map[string]any{"workflow_id": workflowID, "task_id": taskID, "status": status}
+	if errMsg != "" {
+		payload["error"] = errMsg
+	}
+	if task != nil && len(task.OutputJSON) > 0 {
+		var output any
+		if json.Unmarshal(task.OutputJSON, &output) == nil {
+			payload["output"] = output
+		}
+	}
+	out, _ := json.Marshal(payload)
+	content := fmt.Sprintf("retry workflow %s task %d: %s", workflowID, taskID, status)
+	if errMsg != "" {
+		content += " (" + errMsg + ")"
+	}
+	return tools.ToolResult{Content: content, Output: out}, nil
 }
 
 var _ tools.Tool = (*FluxWorkflowTool)(nil)

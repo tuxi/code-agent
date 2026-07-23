@@ -1,0 +1,17 @@
+{
+  "event_id": "evt_fixed",
+  "kind": "workflow_suspended",
+  "at": "2026-06-24T10:00:00.123Z",
+  "session_id": "sess_root",
+  "turn_id": "turn_42",
+  "call_id": "call_plan_1",
+  "workflow": {
+    "workflow_id": "wf_a1b2c3d4e5f6a7b8",
+    "parent_call_id": "call_plan_1",
+    "task_id": 1001,
+    "status": "suspended",
+    "node_name": "get_device_info",
+    "reason": "client_tool_await",
+    "resumable": true
+  }
+}

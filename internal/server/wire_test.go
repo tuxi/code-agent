@@ -232,6 +232,140 @@ func cases() map[string]wireCase {
 			ExitCode: 2,
 			Err:      "exit code 2",
 		}},
+
+		// ── Workflow events (v1.3) ───────────────────────────────────
+
+		"workflow_started": {ev: agent.Event{
+			Kind: agent.EventWorkflowStarted, At: fixedAt,
+			SessionID: "sess_root", TurnID: "turn_42", CallID: "call_plan_1",
+			Workflow: json.RawMessage(`{"workflow_id":"wf_a1b2c3d4e5f6a7b8","parent_call_id":"call_plan_1","stage":"planning","goal":"搭建 Python CLI 项目"}`),
+		}},
+
+		"workflow_plan_ready": {ev: agent.Event{
+			Kind: agent.EventWorkflowPlanReady, At: fixedAt,
+			SessionID: "sess_root", TurnID: "turn_42", CallID: "call_plan_1",
+			Workflow: json.RawMessage(`{"workflow_id":"wf_a1b2c3d4e5f6a7b8","parent_call_id":"call_plan_1","stage":"executing","goal":"搭建 Python CLI 项目","nodes":[{"name":"create_dirs","tool":"run_command","depends_on":[]},{"name":"write_pkg_init","tool":"write_file","depends_on":["create_dirs"]},{"name":"write_core_lib","tool":"write_file","depends_on":["write_pkg_init"]},{"name":"write_cli","tool":"write_file","depends_on":["write_core_lib"]},{"name":"write_tests","tool":"write_file","depends_on":["write_core_lib"]},{"name":"run_tests","tool":"run_command","depends_on":["write_cli","write_tests"]}],"edges":[{"from":"create_dirs","to":"write_pkg_init"},{"from":"write_pkg_init","to":"write_core_lib"},{"from":"write_core_lib","to":"write_cli"},{"from":"write_core_lib","to":"write_tests"},{"from":"write_cli","to":"run_tests"},{"from":"write_tests","to":"run_tests"}],"output":{"result_type":"merged"}}`),
+		}},
+
+		// Task state transitions — canonical from flux-workflow TaskStatus.
+		"workflow_task_state_changed_pending_to_running": {ev: agent.Event{
+			Kind: agent.EventWorkflowTaskStateChanged, At: fixedAt,
+			SessionID: "sess_root", TurnID: "turn_42", CallID: "call_plan_1",
+			Workflow: json.RawMessage(`{"workflow_id":"wf_a1b2c3d4e5f6a7b8","parent_call_id":"call_plan_1","task_id":1001,"root_task_id":1001,"from":"pending","to":"running","message":"Task is running","progress":0,"sequence":5,"created_at":"2026-07-23T10:00:01.000Z"}`),
+		}},
+
+		"workflow_task_state_changed_running_to_suspended": {ev: agent.Event{
+			Kind: agent.EventWorkflowTaskStateChanged, At: fixedAt,
+			SessionID: "sess_root", TurnID: "turn_42", CallID: "call_plan_1",
+			Workflow: json.RawMessage(`{"workflow_id":"wf_a1b2c3d4e5f6a7b8","parent_call_id":"call_plan_1","task_id":1001,"root_task_id":1001,"from":"running","to":"suspended","message":"Task suspended: waiting for client tool get_device_info","progress":0.35,"sequence":16,"created_at":"2026-07-23T10:00:05.100Z"}`),
+		}},
+
+		"workflow_task_state_changed_suspended_to_running": {ev: agent.Event{
+			Kind: agent.EventWorkflowTaskStateChanged, At: fixedAt,
+			SessionID: "sess_root", TurnID: "turn_42", CallID: "call_plan_1",
+			Workflow: json.RawMessage(`{"workflow_id":"wf_a1b2c3d4e5f6a7b8","parent_call_id":"call_plan_1","task_id":1001,"root_task_id":1001,"from":"suspended","to":"running","message":"Task resumed after client result","progress":0.35,"sequence":20,"created_at":"2026-07-23T10:00:06.000Z"}`),
+		}},
+
+		"workflow_task_state_changed_running_to_success": {ev: agent.Event{
+			Kind: agent.EventWorkflowTaskStateChanged, At: fixedAt,
+			SessionID: "sess_root", TurnID: "turn_42", CallID: "call_plan_1",
+			Workflow: json.RawMessage(`{"workflow_id":"wf_a1b2c3d4e5f6a7b8","parent_call_id":"call_plan_1","task_id":1001,"root_task_id":1001,"from":"running","to":"success","message":"Task completed","progress":1,"sequence":25,"created_at":"2026-07-23T10:00:08.000Z"}`),
+		}},
+
+		// Node state transitions — canonical from flux-workflow NodeState.
+		"workflow_node_state_changed_pending_to_running": {ev: agent.Event{
+			Kind: agent.EventWorkflowNodeStateChanged, At: fixedAt,
+			SessionID: "sess_root", TurnID: "turn_42", CallID: "call_plan_1",
+			Workflow: json.RawMessage(`{"workflow_id":"wf_a1b2c3d4e5f6a7b8","parent_call_id":"call_plan_1","task_id":1001,"node_name":"create_dirs","from":"pending","to":"running","message":"Node is running","progress":0,"sequence":6,"created_at":"2026-07-23T10:00:01.500Z"}`),
+		}},
+
+		"workflow_node_state_changed_running_to_awaiting": {ev: agent.Event{
+			Kind: agent.EventWorkflowNodeStateChanged, At: fixedAt,
+			SessionID: "sess_root", TurnID: "turn_42", CallID: "call_plan_1",
+			Workflow: json.RawMessage(`{"workflow_id":"wf_a1b2c3d4e5f6a7b8","parent_call_id":"call_plan_1","task_id":1001,"node_name":"get_device_info","from":"running","to":"awaiting","message":"Dispatched to client, awaiting result","progress":0.35,"sequence":15,"created_at":"2026-07-23T10:00:05.000Z"}`),
+		}},
+
+		"workflow_node_state_changed_awaiting_to_success_pending_edges": {ev: agent.Event{
+			Kind: agent.EventWorkflowNodeStateChanged, At: fixedAt,
+			SessionID: "sess_root", TurnID: "turn_42", CallID: "call_plan_1",
+			Workflow: json.RawMessage(`{"workflow_id":"wf_a1b2c3d4e5f6a7b8","parent_call_id":"call_plan_1","task_id":1001,"node_name":"get_device_info","from":"awaiting","to":"success_pending_edges","message":"Client result received, finalizing edges","progress":0.9,"sequence":21,"created_at":"2026-07-23T10:00:06.500Z"}`),
+		}},
+
+		"workflow_node_state_changed_success_pending_to_success": {ev: agent.Event{
+			Kind: agent.EventWorkflowNodeStateChanged, At: fixedAt,
+			SessionID: "sess_root", TurnID: "turn_42", CallID: "call_plan_1",
+			Workflow: json.RawMessage(`{"workflow_id":"wf_a1b2c3d4e5f6a7b8","parent_call_id":"call_plan_1","task_id":1001,"node_name":"create_dirs","from":"success_pending_edges","to":"success","message":"Node completed, edges closed","progress":1,"sequence":8,"created_at":"2026-07-23T10:00:02.100Z"}`),
+		}},
+
+		"workflow_node_state_changed_running_to_failed": {ev: agent.Event{
+			Kind: agent.EventWorkflowNodeStateChanged, At: fixedAt,
+			SessionID: "sess_root", TurnID: "turn_42", CallID: "call_plan_1",
+			Workflow: json.RawMessage(`{"workflow_id":"wf_a1b2c3d4e5f6a7b8","parent_call_id":"call_plan_1","task_id":1001,"node_name":"write_cli","from":"running","to":"failed","message":"Node execution failed","error":"file not found: src/cli.py","progress":0.3,"sequence":18,"created_at":"2026-07-23T10:00:06.500Z"}`),
+		}},
+
+		"workflow_node_state_changed_pending_to_skipped": {ev: agent.Event{
+			Kind: agent.EventWorkflowNodeStateChanged, At: fixedAt,
+			SessionID: "sess_root", TurnID: "turn_42", CallID: "call_plan_1",
+			Workflow: json.RawMessage(`{"workflow_id":"wf_a1b2c3d4e5f6a7b8","parent_call_id":"call_plan_1","task_id":1001,"node_name":"optional_lint","from":"pending","to":"skipped","message":"Condition not met, skipped","progress":0,"sequence":19,"created_at":"2026-07-23T10:00:06.600Z"}`),
+		}},
+
+		// Terminal workflow events.
+		"workflow_finished": {ev: agent.Event{
+			Kind: agent.EventWorkflowFinished, At: fixedAt,
+			SessionID: "sess_root", TurnID: "turn_42", CallID: "call_plan_1",
+			Workflow: json.RawMessage(`{"workflow_id":"wf_a1b2c3d4e5f6a7b8","task_id":1001,"status":"success","output":{"result_type":"merged","primary_file_url":"workspace://app-local/src/pkg/string_utils.py","extras":{"test_summary":"3 passed in 0.12s"}}}`),
+		}},
+
+		"workflow_failed": {ev: agent.Event{
+			Kind: agent.EventWorkflowFailed, At: fixedAt,
+			SessionID: "sess_root", TurnID: "turn_42", CallID: "call_plan_1",
+			Workflow: json.RawMessage(`{"workflow_id":"wf_a1b2c3d4e5f6a7b8","parent_call_id":"call_plan_1","stage":"executing","error":"node \"run_tests\" failed: exit code 1"}`),
+		}},
+
+		"workflow_failed_planning": {ev: agent.Event{
+			Kind: agent.EventWorkflowFailed, At: fixedAt,
+			SessionID: "sess_root", TurnID: "turn_42", CallID: "call_plan_1",
+			Workflow: json.RawMessage(`{"workflow_id":"wf_a1b2c3d4e5f6a7b8","parent_call_id":"call_plan_1","stage":"planning","error":"no eligible tools are available"}`),
+		}},
+
+		// Suspension event — emitted when Task enters suspended for client await.
+		"workflow_suspended": {ev: agent.Event{
+			Kind: agent.EventWorkflowSuspended, At: fixedAt,
+			SessionID: "sess_root", TurnID: "turn_42", CallID: "call_plan_1",
+			Workflow: json.RawMessage(`{"workflow_id":"wf_a1b2c3d4e5f6a7b8","parent_call_id":"call_plan_1","task_id":1001,"status":"suspended","node_name":"get_device_info","reason":"client_tool_await","resumable":true}`),
+		}},
+
+		// Transient progress/log — high-frequency, not persisted.
+		"workflow_node_progress": {ev: agent.Event{
+			Kind: agent.EventWorkflowNodeProgress, At: fixedAt,
+			SessionID: "sess_root", TurnID: "turn_42", CallID: "call_plan_1",
+			Workflow: json.RawMessage(`{"workflow_id":"wf_a1b2c3d4e5f6a7b8","parent_call_id":"call_plan_1","task_id":1001,"node_name":"run_tests","message":"Running pytest...","progress":0.7,"sequence":23,"created_at":"2026-07-23T10:00:07.500Z"}`),
+		}},
+
+		"workflow_tool_log": {ev: agent.Event{
+			Kind: agent.EventWorkflowToolLog, At: fixedAt,
+			SessionID: "sess_root", TurnID: "turn_42", CallID: "call_plan_1",
+			Workflow: json.RawMessage(`{"workflow_id":"wf_a1b2c3d4e5f6a7b8","parent_call_id":"call_plan_1","task_id":1001,"node_name":"run_tests","message":"test_string_utils.py::test_reverse_string PASSED [ 33%]","progress":0.8,"sequence":24,"created_at":"2026-07-23T10:00:07.800Z"}`),
+		}},
+
+		// Task lifecycle bracket events.
+		"workflow_task_succeeded": {ev: agent.Event{
+			Kind: agent.EventWorkflowTaskSucceeded, At: fixedAt,
+			SessionID: "sess_root", TurnID: "turn_42", CallID: "call_plan_1",
+			Workflow: json.RawMessage(`{"workflow_id":"wf_a1b2c3d4e5f6a7b8","parent_call_id":"call_plan_1","task_id":1001,"root_task_id":1001,"message":"Task completed successfully","progress":1,"sequence":25,"created_at":"2026-07-23T10:00:08.000Z"}`),
+		}},
+
+		"workflow_task_failed": {ev: agent.Event{
+			Kind: agent.EventWorkflowTaskFailed, At: fixedAt,
+			SessionID: "sess_root", TurnID: "turn_42", CallID: "call_plan_1",
+			Workflow: json.RawMessage(`{"workflow_id":"wf_a1b2c3d4e5f6a7b8","parent_call_id":"call_plan_1","task_id":1001,"root_task_id":1001,"message":"Task failed","error":"node execution error","progress":0.5,"sequence":22,"created_at":"2026-07-23T10:00:07.000Z"}`),
+		}},
+
+		"workflow_task_suspended": {ev: agent.Event{
+			Kind: agent.EventWorkflowTaskSuspended, At: fixedAt,
+			SessionID: "sess_root", TurnID: "turn_42", CallID: "call_plan_1",
+			Workflow: json.RawMessage(`{"workflow_id":"wf_a1b2c3d4e5f6a7b8","parent_call_id":"call_plan_1","task_id":1001,"root_task_id":1001,"message":"Task suspended","progress":0.35,"sequence":17,"created_at":"2026-07-23T10:00:05.200Z"}`),
+		}},
 	}
 }
 

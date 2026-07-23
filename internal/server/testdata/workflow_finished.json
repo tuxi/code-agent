@@ -1,0 +1,20 @@
+{
+  "event_id": "evt_fixed",
+  "kind": "workflow_finished",
+  "at": "2026-06-24T10:00:00.123Z",
+  "session_id": "sess_root",
+  "turn_id": "turn_42",
+  "call_id": "call_plan_1",
+  "workflow": {
+    "workflow_id": "wf_a1b2c3d4e5f6a7b8",
+    "task_id": 1001,
+    "status": "success",
+    "output": {
+      "result_type": "merged",
+      "primary_file_url": "workspace://app-local/src/pkg/string_utils.py",
+      "extras": {
+        "test_summary": "3 passed in 0.12s"
+      }
+    }
+  }
+}

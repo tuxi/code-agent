@@ -503,6 +503,7 @@ func Assemble(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider 
 		},
 		RuntimeCapabilities: runtimeCapabilities,
 		ManagedWorktrees:    managedWorktrees,
+		WorkflowSnapshot:    runtime.NewWorkflowSnapshotFunc(),
 	})
 	rt := &Runtime{Executor: executor, Builder: rb, Repo: repo}
 	return handler, rt, closers, nil

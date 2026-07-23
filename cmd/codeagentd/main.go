@@ -194,6 +194,7 @@ func run() error {
 		},
 		RuntimeCapabilities: runtimeCapabilities,
 		ManagedWorktrees:    managedWorktrees,
+		WorkflowSnapshot:    runtime.NewWorkflowSnapshotFunc(),
 	})
 
 	srv := &http.Server{Addr: addr, Handler: handler}

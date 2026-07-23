@@ -91,3 +91,8 @@ require (
 )
 
 tool golang.org/x/mobile/cmd/gobind
+
+replace (
+	github.com/tuxi/flux => /Users/xiaoyuan/Documents/work/git/flux
+	github.com/tuxi/flux-workflow => /Users/xiaoyuan/Documents/work/git/flux-workflow
+)

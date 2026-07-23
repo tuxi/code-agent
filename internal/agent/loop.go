@@ -1337,6 +1337,34 @@ func (r *Runner) complete(ctx context.Context, req model.Request, streamedText, 
 	return r.Model.Complete(ctx, req)
 }
 
+// workflowPlanApproval returns a PlanApproval callback wired to the Runner's
+// PlanApprover. Nil PlanApprover → auto-approve (headless/test path).
+func (r *Runner) workflowPlanApproval(callID string) func(planID, title, content string) bool {
+	if r.PlanApprover == nil {
+		return nil // nil = auto-approve in flux_tool.go
+	}
+	return func(planID, title, content string) bool {
+		plan := Plan{
+			ID:      planID,
+			Title:   title,
+			Content: content,
+		}
+		decision := r.PlanApprover.ApprovePlan(plan)
+		if decision == PlanApproved {
+			r.emit(Event{
+				Kind: EventPlanApproved, CallID: callID,
+				Text: planID,
+			})
+		} else {
+			r.emit(Event{
+				Kind: EventPlanRejected, CallID: callID,
+				Text: planID,
+			})
+		}
+		return decision == PlanApproved
+	}
+}
+
 func (r *Runner) executeTool(ctx context.Context, tool tools.Tool, callID string, input json.RawMessage) (tools.ToolResult, error) {
 	ec := tools.ExecutionContext{
 		WorkspaceRoot:      r.WorkspaceRoot,
@@ -1358,6 +1386,7 @@ func (r *Runner) executeTool(ctx context.Context, tool tools.Tool, callID string
 		OnWorkflowEvent: func(kind string, payload json.RawMessage) {
 			r.emit(Event{Kind: EventKind(kind), CallID: callID, Workflow: payload})
 		},
+		WorkflowPlanApproval: r.workflowPlanApproval(callID),
 	}
 	result, err := tool.Execute(ctx, ec, input)
 	if err != nil {

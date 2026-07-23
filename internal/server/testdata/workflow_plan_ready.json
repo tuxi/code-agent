@@ -1,0 +1,86 @@
+{
+  "event_id": "evt_fixed",
+  "kind": "workflow_plan_ready",
+  "at": "2026-06-24T10:00:00.123Z",
+  "session_id": "sess_root",
+  "turn_id": "turn_42",
+  "call_id": "call_plan_1",
+  "workflow": {
+    "workflow_id": "wf_a1b2c3d4e5f6a7b8",
+    "parent_call_id": "call_plan_1",
+    "stage": "executing",
+    "goal": "搭建 Python CLI 项目",
+    "nodes": [
+      {
+        "name": "create_dirs",
+        "tool": "run_command",
+        "depends_on": []
+      },
+      {
+        "name": "write_pkg_init",
+        "tool": "write_file",
+        "depends_on": [
+          "create_dirs"
+        ]
+      },
+      {
+        "name": "write_core_lib",
+        "tool": "write_file",
+        "depends_on": [
+          "write_pkg_init"
+        ]
+      },
+      {
+        "name": "write_cli",
+        "tool": "write_file",
+        "depends_on": [
+          "write_core_lib"
+        ]
+      },
+      {
+        "name": "write_tests",
+        "tool": "write_file",
+        "depends_on": [
+          "write_core_lib"
+        ]
+      },
+      {
+        "name": "run_tests",
+        "tool": "run_command",
+        "depends_on": [
+          "write_cli",
+          "write_tests"
+        ]
+      }
+    ],
+    "edges": [
+      {
+        "from": "create_dirs",
+        "to": "write_pkg_init"
+      },
+      {
+        "from": "write_pkg_init",
+        "to": "write_core_lib"
+      },
+      {
+        "from": "write_core_lib",
+        "to": "write_cli"
+      },
+      {
+        "from": "write_core_lib",
+        "to": "write_tests"
+      },
+      {
+        "from": "write_cli",
+        "to": "run_tests"
+      },
+      {
+        "from": "write_tests",
+        "to": "run_tests"
+      }
+    ],
+    "output": {
+      "result_type": "merged"
+    }
+  }
+}

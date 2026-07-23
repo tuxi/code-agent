@@ -218,12 +218,17 @@ func TestFluxWorkflowToolRunsGeneratedDefinitionWithCanonicalEngine(t *testing.T
 	}
 	foundPlan := false
 	foundFinished := false
+	foundNodeState := false
 	for _, kind := range eventKinds {
 		foundPlan = foundPlan || kind == "workflow_plan_ready"
 		foundFinished = foundFinished || kind == "workflow_finished"
+		foundNodeState = foundNodeState || kind == "workflow_node_state_changed"
 	}
 	if !foundPlan || !foundFinished {
 		t.Fatalf("workflow lifecycle events = %v", eventKinds)
+	}
+	if !foundNodeState {
+		t.Fatalf("bridge events missing workflow_node_state_changed, got: %v", eventKinds)
 	}
 }
 

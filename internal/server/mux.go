@@ -19,6 +19,7 @@ import (
 	"code-agent/internal/managedworktree"
 	"code-agent/internal/mcp"
 	"code-agent/internal/repos"
+	runtime "code-agent/internal/runtime"
 	"code-agent/internal/session"
 	"code-agent/internal/worktree"
 
@@ -248,6 +249,10 @@ type MuxOptions struct {
 	// ManagedWorktrees provisions explicitly requested Runtime-owned checkouts.
 	// Nil keeps managed creation fail-closed.
 	ManagedWorktrees *managedworktree.Manager
+	// WorkflowSnapshot resolves a workflow snapshot from its durable .db file.
+	// Nil disables the GET /v1/conversations/{id}/workflow/{workflow_id}/snapshot
+	// endpoint (returns 404).
+	WorkflowSnapshot runtime.WorkflowSnapshotFunc
 }
 
 // RuntimeCapabilities is the explicit concurrency handshake consumed by
@@ -1101,6 +1106,13 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 		}
 		w.WriteHeader(http.StatusNoContent)
 	})
+
+	// Workflow snapshot — Phase 4 §9.4. Clients pull this once to initialize
+	// the DAG UI with current node states, then subscribe to incremental events.
+	if opts.WorkflowSnapshot != nil {
+		mux.HandleFunc("GET /v1/conversations/{id}/workflow/{workflow_id}/snapshot",
+			workflowSnapshotHandler(repo, opts.WorkflowSnapshot))
+	}
 
 	return mux
 }
