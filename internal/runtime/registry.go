@@ -170,18 +170,12 @@ func BuildBaseRegistry(ctx context.Context, cfg app.Config, mc app.ModelConfig, 
 		}
 	}
 
-	// Flux v3 (plan_workflow) stays gated on subprocess support: its internal
-	// registry needs a shell, so on a sandboxed host the DAG planner can't validate
-	// any real plan (see the note below). This is separate from MCP transport.
-	if cfg.Profile.AllowsSubprocess() && cfg.Agent.ToolAllowed("plan_workflow") {
-		RegisterFluxTool(registry, mc, nil, false) // mc → reuse resolved LLM creds; nil → in-memory stores
+	// Flux projects the current turn's code-agent tools at execution time and no
+	// longer owns a private shell registry, so the planner is available on both
+	// desktop and sandboxed/iOS profiles.
+	if cfg.Agent.ToolAllowed("plan_workflow") {
+		RegisterFluxTool(registry, provider, mc.Model)
 	}
-
-	// Flux (plan_workflow) is intentionally NOT registered on sandboxed hosts (iOS).
-	// Without a shell, the only tool in flux's internal registry is merge_result —
-	// the DAG planner can't validate any real plan, and every invocation wastes a
-	// turn on "plan did not validate". It will be re-enabled when flux supports
-	// injecting code-agent's own tool set (instead of its separate, isolated registry).
 
 	// Plan mode tools: enter_plan_mode and propose_plan. They use a RunnerRef for
 	// late binding — the Runner is constructed after the registry. The returned ref

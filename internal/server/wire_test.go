@@ -65,6 +65,22 @@ func TestToWireTurnUsageSummary(t *testing.T) {
 	}
 }
 
+func TestWireWorkflowPayload(t *testing.T) {
+	payload := json.RawMessage(`{"workflow_id":"wf_1","task_id":42,"to":"running"}`)
+	w := toWire(agent.Event{
+		Kind:     agent.EventKind("workflow_node_state_changed"),
+		At:       fixedAt,
+		CallID:   "parent-call",
+		Workflow: payload,
+	})
+	if w.Kind != "workflow_node_state_changed" || w.CallID != "parent-call" {
+		t.Fatalf("workflow event header = %+v", w)
+	}
+	if !bytes.Equal(w.Workflow, payload) {
+		t.Fatalf("workflow payload = %s, want %s", w.Workflow, payload)
+	}
+}
+
 type wireCase struct {
 	ev     agent.Event
 	parent string

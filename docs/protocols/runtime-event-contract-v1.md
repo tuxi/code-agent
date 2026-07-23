@@ -49,7 +49,7 @@ agent-core (Layer 1)          agent-server (Layer 2)         frontends (Layer 3)
   "type": "hello",
   "protocol_version": 1,
   "server": "codeagent/x.y",
-  "capabilities": ["streaming", "thinking", "reasoning_streaming", "tool_streaming", "plan_mode", "subagents", "session_resume", "client_tool_execution"]
+  "capabilities": ["streaming", "thinking", "reasoning_streaming", "tool_streaming", "plan_mode", "subagents", "session_resume", "client_tool_execution", "workflow_execution"]
 }
 ```
 
@@ -72,6 +72,7 @@ agent-core (Layer 1)          agent-server (Layer 2)         frontends (Layer 3)
 | `subagents` | v1.0 | 支持 `task_started` / `task_finished` |
 | `session_resume` | v1.2 | 支持 `GET /events` 恢复 + `attach(since:)` |
 | `client_tool_execution` | v1.1 | 支持 `executor:"client"` + `tool_result` 回传 |
+| `workflow_execution` | v1.3 | 支持 `workflow_*` DAG、Task 和 Node 结构化事件 |
 
 ---
 
@@ -491,6 +492,42 @@ Task list changed.
 }
 ```
 
+### 5.8 Flux Workflow Events (since v1.3)
+
+All workflow events use the normal event header. `call_id` is the parent
+`plan_workflow` call and workflow-specific fields are carried in the structured
+`workflow` object.
+
+| Kind | Meaning |
+|------|---------|
+| `workflow_started` | Planning started; contains stable `workflow_id` |
+| `workflow_plan_ready` | Validated topology is persisted; contains `nodes`, `edges`, and output mapping |
+| `workflow_task_started/succeeded/failed/suspended` | Engine lifecycle facts; UI state must still follow `workflow_task_state_changed` |
+| `workflow_task_state_changed` | Canonical TaskStatus transition from flux-workflow |
+| `workflow_node_state_changed` | Canonical NodeState transition from flux-workflow |
+| `workflow_node_progress` / `workflow_task_progress` | Non-authoritative progress update |
+| `workflow_tool_progress/log/stream/stream_end` | Transient node-tool telemetry |
+| `workflow_suspended` | Task is resumable and waiting at `node_name` |
+| `workflow_finished` | Terminal success and final output |
+| `workflow_failed` | Planning, registration, execution, or Task terminal failure |
+
+Task status is an open string set currently containing `pending`, `running`,
+`suspended`, `success`, `failed`, and `canceled`. Node state is an open string
+set currently containing `pending`, `ready`, `running`, `awaiting`, `retrying`,
+`success_pending_edges`, `failed_pending_edges`, `success`, `failed`, `skipped`,
+and `canceled`. Unknown future values must render as a generic active/terminal
+state according to `workflow.terminal`; clients must not infer state from logs.
+
+For client tools, the required order is:
+
+```text
+node running → node awaiting → task suspended → tool_started(executor=client)
+→ tool_result → task running → node success/failed → workflow_finished/failed
+```
+
+`workflow_plan_ready`, state transitions, suspension, and terminal events are
+persisted and replayable. Progress/log/stream events may be transient.
+
 ---
 
 ## 6. Control Plane
@@ -834,6 +871,15 @@ Job 子流（`GET /v1/jobs/{id}/stream`）使用**相同的事件信封**（§4�
 | `plan_proposed` | v1.0 | Plan | ✅ | ✅ |
 | `plan_approved` | v1.0 | Plan | ✅ | ✅ |
 | `plan_rejected` | v1.0 | Plan | ✅ | ✅ |
+| `workflow_started` | v1.3 | Workflow | ✅ | ✅ |
+| `workflow_plan_ready` | v1.3 | Workflow | ✅ | ✅ |
+| `workflow_task_state_changed` | v1.3 | Workflow | ✅ | ✅ |
+| `workflow_node_state_changed` | v1.3 | Workflow | ✅ | ✅ |
+| `workflow_node_progress` | v1.3 | Workflow | ❌ | ❌ |
+| `workflow_tool_progress/log/stream/stream_end` | v1.3 | Workflow | ❌ | ❌ |
+| `workflow_suspended` | v1.3 | Workflow | ✅ | ✅ |
+| `workflow_finished` | v1.3 | Workflow | ✅ | ✅ |
+| `workflow_failed` | v1.3 | Workflow | ✅ | ✅ |
 
 > \* `token_delta` and `reasoning_delta` are live-only and never replayed. Their
 > authoritative snapshots are `turn_finished.text` and `thinking.text` respectively.

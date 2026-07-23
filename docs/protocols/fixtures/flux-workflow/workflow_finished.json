@@ -1,0 +1,17 @@
+{
+  "kind": "workflow_finished",
+  "session_id": "session_1",
+  "turn_id": "turn_1",
+  "call_id": "call_plan_1",
+  "workflow": {
+    "workflow_id": "wf_0123456789abcdef",
+    "task_id": 1001,
+    "status": "success",
+    "output": {
+      "final": {
+        "result_type": "generic",
+        "extras": {"report": "完成"}
+      }
+    }
+  }
+}

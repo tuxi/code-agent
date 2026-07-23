@@ -52,6 +52,7 @@ type wireEvent struct {
 	SkillVersion    string                  `json:"skill_version,omitempty"`
 	SkillSource     string                  `json:"skill_source,omitempty"`
 	Executor        string                  `json:"executor,omitempty"`
+	Workflow        json.RawMessage         `json:"workflow,omitempty"`
 
 	// Todo checklist.
 	Todos []tools.Todo `json:"todos,omitempty"`
@@ -126,6 +127,7 @@ func toWire(e agent.Event) wireEvent {
 		SkillVersion:       e.Version,
 		SkillSource:        e.SkillSource,
 		Executor:           e.Executor,
+		Workflow:           e.Workflow,
 		Todos:              e.Todos,
 		Text:               e.Text,
 		PromptTokens:       e.PromptTokens,

@@ -252,9 +252,11 @@ func TestSequencingEmitterStampsLiveSeq(t *testing.T) {
 	se.Emit(agent.Event{Kind: agent.EventThinking, SessionID: "s"})
 	se.Emit(agent.Event{Kind: agent.EventTokenDelta, SessionID: "s"}) // ephemeral
 	se.Emit(agent.Event{Kind: agent.EventReasoningDelta, SessionID: "s"})
+	se.Emit(agent.Event{Kind: agent.EventWorkflowNodeStateChanged, SessionID: "s"})
+	se.Emit(agent.Event{Kind: agent.EventWorkflowNodeProgress, SessionID: "s"})
 
-	if len(live) != 4 {
-		t.Fatalf("live got %d events, want 4", len(live))
+	if len(live) != 6 {
+		t.Fatalf("live got %d events, want 6", len(live))
 	}
 	if live[0].Seq != 1 || live[1].Seq != 2 {
 		t.Errorf("live seqs = %d,%d want 1,2", live[0].Seq, live[1].Seq)
@@ -265,8 +267,14 @@ func TestSequencingEmitterStampsLiveSeq(t *testing.T) {
 	if live[3].Seq != 0 {
 		t.Errorf("reasoning_delta live seq = %d, want 0 (not persisted)", live[3].Seq)
 	}
-	if len(events.records) != 2 {
-		t.Errorf("persisted %d events, want 2 (token_delta skipped)", len(events.records))
+	if live[4].Seq != 3 {
+		t.Errorf("workflow_node_state_changed live seq = %d, want 3", live[4].Seq)
+	}
+	if live[5].Seq != 0 {
+		t.Errorf("workflow_node_progress live seq = %d, want 0 (not persisted)", live[5].Seq)
+	}
+	if len(events.records) != 3 {
+		t.Errorf("persisted %d events, want 3 (deltas/progress skipped)", len(events.records))
 	}
 }
 

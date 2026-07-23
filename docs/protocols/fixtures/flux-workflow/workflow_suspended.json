@@ -1,0 +1,15 @@
+{
+  "kind": "workflow_suspended",
+  "session_id": "session_1",
+  "turn_id": "turn_1",
+  "call_id": "call_plan_1",
+  "workflow": {
+    "workflow_id": "wf_0123456789abcdef",
+    "parent_call_id": "call_plan_1",
+    "task_id": 1001,
+    "status": "suspended",
+    "node_name": "capture",
+    "reason": "workflow suspended: async node",
+    "resumable": true
+  }
+}

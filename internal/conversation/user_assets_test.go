@@ -17,6 +17,8 @@ import (
 type durableInputBuilder struct {
 	resolved atomic.Value
 	builds   atomic.Int32
+	prepared atomic.Int32
+	resumed  atomic.Int32
 }
 
 func newDurableInputBuilder(model string) *durableInputBuilder {
@@ -29,10 +31,13 @@ func (b *durableInputBuilder) ResolveModel(string) (string, error) {
 }
 func (b *durableInputBuilder) Build(ctx RuntimeContext) TurnRunner {
 	b.builds.Add(1)
-	return durableInputRunner{ctx: ctx}
+	return durableInputRunner{ctx: ctx, builder: b}
 }
 
-type durableInputRunner struct{ ctx RuntimeContext }
+type durableInputRunner struct {
+	ctx     RuntimeContext
+	builder *durableInputBuilder
+}
 
 type releaseServiceStub struct {
 	err   error
@@ -51,12 +56,46 @@ func (r durableInputRunner) RunTurn(context.Context, *session.Session, string) (
 	return agent.TurnResult{}, errors.New("unexpected legacy turn")
 }
 func (r durableInputRunner) ResumeTurn(context.Context, *session.Session) (agent.TurnResult, error) {
+	r.builder.resumed.Add(1)
 	return agent.TurnResult{TurnID: r.ctx.TurnID}, nil
 }
 func (r durableInputRunner) RunPreparedTurn(_ context.Context, sess *session.Session) (agent.TurnResult, error) {
+	r.builder.prepared.Add(1)
 	sess.Messages = append(sess.Messages, model.Message{Role: model.RoleAssistant, Content: "done"})
 	r.ctx.Publisher.Emit(agent.Event{Kind: agent.EventTurnFinished, SessionID: sess.ID, TurnID: r.ctx.TurnID, Text: "done"})
 	return agent.TurnResult{TurnID: r.ctx.TurnID, Final: "done"}, nil
+}
+
+func TestRecoverProgressedTurnResumesInsteadOfPreparingAgain(t *testing.T) {
+	executor, store, repo, builder := newDurableExecutor(t)
+	input := session.TurnInput{
+		SessionID: "s", RequestID: "progressed", TurnID: "turn_progressed",
+		PayloadHash: turnInputPayloadHash("scan", "", nil), Text: "scan",
+		ResolvedModel: "resolved-A",
+	}
+	accepted := agent.Event{Kind: agent.EventTurnAccepted, SessionID: "s", TurnID: input.TurnID, RequestID: input.RequestID, At: time.Now().UTC()}
+	payload, _ := json.Marshal(accepted)
+	if _, _, _, err := store.ReserveTurnInput(context.Background(), input, session.EventRecord{SessionID: "s", TurnID: input.TurnID, Kind: string(accepted.Kind), At: accepted.At, Payload: payload}); err != nil {
+		t.Fatal(err)
+	}
+	sess, err := repo.Load(context.Background(), "s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess.Messages = append(sess.Messages,
+		model.Message{Role: model.RoleUser, Content: input.Text, OriginTurnID: input.TurnID},
+		model.Message{Role: model.RoleAssistant, ToolCalls: []model.ToolCall{{ID: "scan_call", Type: "function", Function: model.FunctionCall{Name: "scan_document", Arguments: `{}`}}}},
+		model.Message{Role: model.RoleTool, ToolCallID: "scan_call", Content: `{"success":true}`},
+	)
+	if err := store.StartTurnInput(context.Background(), input, sess); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := executor.executeRecoveredTurn(context.Background(), input); err != nil {
+		t.Fatal(err)
+	}
+	if builder.resumed.Load() != 1 || builder.prepared.Load() != 0 {
+		t.Fatalf("resumed=%d prepared=%d", builder.resumed.Load(), builder.prepared.Load())
+	}
 }
 
 func newDurableExecutor(t *testing.T) (*TurnExecutor, session.TurnInputStore, ConversationRepository, *durableInputBuilder) {

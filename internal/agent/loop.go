@@ -1344,6 +1344,7 @@ func (r *Runner) executeTool(ctx context.Context, tool tools.Tool, callID string
 		TurnID:             r.emitTurnID,
 		CallID:             callID,
 		ExecutionID:        r.emitInvocationID,
+		RequestID:          r.RequestID,
 		PlanMode:           r.PlanState == PlanStatusPlanning || r.PlanState == PlanStatusProposing,
 		PathAccessApprover: r.PathAccessApprover,
 		OnStdout: func(chunk string) {
@@ -1351,6 +1352,11 @@ func (r *Runner) executeTool(ctx context.Context, tool tools.Tool, callID string
 		},
 		OnStderr: func(chunk string) {
 			r.emit(Event{Kind: EventToolStderr, CallID: callID, Chunk: chunk})
+		},
+		NestedExecutor: r,
+		ToolRegistry:   r.Tools,
+		OnWorkflowEvent: func(kind string, payload json.RawMessage) {
+			r.emit(Event{Kind: EventKind(kind), CallID: callID, Workflow: payload})
 		},
 	}
 	result, err := tool.Execute(ctx, ec, input)

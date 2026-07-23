@@ -27,6 +27,9 @@ type ExecutionContext struct {
 	// Managed tools forward it to Gateway for end-to-end correlation.
 	ExecutionID string
 
+	// RequestID is the client-generated turn correlation key.
+	RequestID string
+
 	// PlanMode is true when the runner is in a planning/proposing state.
 	// Tools that need different behavior during plan mode (e.g. write_file
 	// restricting writes to .codeagent/plans/) check this field.
@@ -48,6 +51,32 @@ type ExecutionContext struct {
 	// OnStderr, if set, receives stderr chunks as the command produces them.
 	// Tools that support streaming call this during execution; nil-safe.
 	OnStderr func(chunk string)
+
+	// NestedExecutor runs a tool selected by an embedded deterministic
+	// workflow. It preserves the same approval, inspection, client-dispatch and
+	// lifecycle rules as an ordinary Agent tool call. Nil means nested tool
+	// execution is unavailable in this host.
+	NestedExecutor NestedToolExecutor
+
+	// OnWorkflowEvent publishes structured progress from an embedded workflow
+	// into the parent Agent event stream.
+	OnWorkflowEvent func(kind string, payload json.RawMessage)
+
+	// ToolRegistry is the current turn-local registry, including workspace MCP
+	// and session-scoped client tools.
+	ToolRegistry *Registry
+}
+
+// NestedToolExecutor is the controlled re-entry point used by embedded
+// workflow engines. nestedCallID must be stable for the workflow node attempt.
+type NestedToolExecutor interface {
+	ExecuteNestedTool(
+		ctx context.Context,
+		parentCallID string,
+		nestedCallID string,
+		tool Tool,
+		input json.RawMessage,
+	) (ToolResult, error)
 }
 
 // PathAccessApprover gates read-only access to paths outside the workspace
@@ -73,6 +102,19 @@ type ToolResult struct {
 	// Usage is populated by billable managed tools. Local tools leave it nil.
 	// It is an event side-channel and is not included in the model observation.
 	Usage *ToolUsage `json:"usage,omitempty"`
+	// ModelUsage is model work performed inside a composite tool, such as Flux
+	// DAG generation/repair. The Runner folds it into ModelBillingUnits.
+	ModelUsage *ModelUsage `json:"model_usage,omitempty"`
+	// NestedUsages are managed-tool receipts produced by workflow nodes.
+	NestedUsages []*ToolUsage `json:"nested_usages,omitempty"`
+}
+
+type ModelUsage struct {
+	PromptTokens       int   `json:"prompt_tokens"`
+	CompletionTokens   int   `json:"completion_tokens"`
+	TotalTokens        int   `json:"total_tokens"`
+	BillingUnits       int64 `json:"billing_units"`
+	CachedPromptTokens int   `json:"cached_prompt_tokens,omitempty"`
 }
 
 // ToolUsage is the provider-neutral billing receipt returned by a managed tool.

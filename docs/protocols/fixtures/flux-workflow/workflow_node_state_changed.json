@@ -1,0 +1,19 @@
+{
+  "kind": "workflow_node_state_changed",
+  "session_id": "session_1",
+  "turn_id": "turn_1",
+  "call_id": "call_plan_1",
+  "workflow": {
+    "workflow_id": "wf_0123456789abcdef",
+    "parent_call_id": "call_plan_1",
+    "task_id": 1001,
+    "root_task_id": 1001,
+    "node_runtime_id": 2031,
+    "node_name": "read",
+    "from": "ready",
+    "to": "running",
+    "terminal": false,
+    "progress": 0,
+    "sequence": 104
+  }
+}

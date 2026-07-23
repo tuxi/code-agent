@@ -74,7 +74,7 @@ const (
 	// calls ask_user with a question and options. AskUserResolved fires when the
 	// user answers. AskUserTimeout fires when no user is available (headless,
 	// auto mode) and the tool returns its fallback message.
-	EventAskUserPosted  EventKind = "ask_user_posted"
+	EventAskUserPosted   EventKind = "ask_user_posted"
 	EventAskUserResolved EventKind = "ask_user_resolved"
 	EventAskUserTimeout  EventKind = "ask_user_timeout"
 
@@ -93,6 +93,29 @@ const (
 	EventJobFinished EventKind = "job_finished"
 
 	EventSessionRepaired EventKind = "session_repaired"
+
+	// Embedded Flux workflow lifecycle. The Workflow payload carries topology,
+	// canonical flux-workflow Task/Node transitions and terminal output. Task
+	// and Node status values remain an open set owned by flux-workflow/domain.
+	EventWorkflowStarted          EventKind = "workflow_started"
+	EventWorkflowPlanReady        EventKind = "workflow_plan_ready"
+	EventWorkflowTaskStarted      EventKind = "workflow_task_started"
+	EventWorkflowTaskStateChanged EventKind = "workflow_task_state_changed"
+	EventWorkflowNodeStateChanged EventKind = "workflow_node_state_changed"
+	EventWorkflowTaskProgress     EventKind = "workflow_task_progress"
+	EventWorkflowNodeProgress     EventKind = "workflow_node_progress"
+	EventWorkflowNodeDebug        EventKind = "workflow_node_debug"
+	EventWorkflowToolProgress     EventKind = "workflow_tool_progress"
+	EventWorkflowToolLog          EventKind = "workflow_tool_log"
+	EventWorkflowToolStream       EventKind = "workflow_tool_stream"
+	EventWorkflowToolStreamEnd    EventKind = "workflow_tool_stream_end"
+	EventWorkflowFanoutProgress   EventKind = "workflow_fanout_progress"
+	EventWorkflowTaskSucceeded    EventKind = "workflow_task_succeeded"
+	EventWorkflowTaskFailed       EventKind = "workflow_task_failed"
+	EventWorkflowTaskSuspended    EventKind = "workflow_task_suspended"
+	EventWorkflowFinished         EventKind = "workflow_finished"
+	EventWorkflowFailed           EventKind = "workflow_failed"
+	EventWorkflowSuspended        EventKind = "workflow_suspended"
 )
 
 // Event is a single point in a turn — a discriminated union where Kind selects
@@ -143,6 +166,7 @@ type Event struct {
 	Output          json.RawMessage         // EventToolFinished: structured tool-specific output side-channel
 	Assets          []assets.Ref            // EventToolFinished: normalized clickable assets side-channel
 	ToolUsage       *tools.ToolUsage        // EventToolFinished: managed-tool billing receipt; nil for local tools
+	Workflow        json.RawMessage         // workflow_*: structured DAG/task/node payload
 	TextAnnotations []assets.TextAnnotation // EventTurnFinished: assistant-text ranges linked to assets
 	Chunk           string                  // stdout/stderr chunk (ToolStdout / ToolStderr)
 	Failure         string                  // EventObserved: the classified FailureType (e.g. "compile")

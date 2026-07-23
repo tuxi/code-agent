@@ -53,9 +53,9 @@ type ServeRunBuilder struct {
 func NewServeRunBuilder(cfg app.Config, mc app.ModelConfig, provider model.Provider, cred credential.Resolver, toolReg *tools.Registry, wsReg *WorkspaceRegistry, _ *agent.RunnerRef) *ServeRunBuilder {
 	return &ServeRunBuilder{
 		Cfg: cfg, ToolReg: toolReg, WSReg: wsReg,
-		rules:     approve.NewRuleStore("", cfg.Permissions.Allow, cfg.Permissions.Deny),
-		wsRules:   make(map[string]*approve.RuleStore),
-		mc:        mc, provider: provider, credential: cred,
+		rules:   approve.NewRuleStore("", cfg.Permissions.Allow, cfg.Permissions.Deny),
+		wsRules: make(map[string]*approve.RuleStore),
+		mc:      mc, provider: provider, credential: cred,
 	}
 }
 
@@ -272,6 +272,10 @@ func (b *ServeRunBuilder) Build(ctx conversation.RuntimeContext) conversation.Tu
 		}
 		runner.Tools = reg
 	}
+	// plan_workflow is turn-scoped: bind the selected provider/model after model
+	// override and after client tools have been merged. Its Execute path projects
+	// runner.Tools, so workspace MCP and session client tools become DAG nodes.
+	runner.Tools.Replace(NewFluxWorkflowTool(provider, mc.Model))
 	// Wire only this turn's plan tools, approver, and client tool waiter. No
 	// runner reference escapes the per-turn registry.
 	planRef.R = runner

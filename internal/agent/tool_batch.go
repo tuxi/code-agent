@@ -61,6 +61,8 @@ type toolCallResult struct {
 	output      json.RawMessage
 	assetRefs   []assets.Ref
 	usage       *tools.ToolUsage
+	nestedUsage []*tools.ToolUsage
+	modelUsage  *tools.ModelUsage
 	executed    bool
 	succeeded   bool
 	stepError   string // non-empty => a genuine tool error (not a cancel)
@@ -287,6 +289,8 @@ func (r *Runner) runToolCall(ctx context.Context, p toolCallPlan) toolCallResult
 			output = toolResult.Output
 			assetRefs = toolResult.Assets
 			res.usage = toolResult.Usage
+			res.nestedUsage = toolResult.NestedUsages
+			res.modelUsage = toolResult.ModelUsage
 			// Post-tool hook (8.5): react to the change (format/lint). It runs the
 			// configured command but does not alter the result in v1.
 			r.postHook(ctx, p.call.Function.Name, p.wireInput, observation)
@@ -324,19 +328,15 @@ func (r *Runner) commitToolResult(ctx context.Context, sess *session.Session, tu
 		turn.SucceededToolCalls++
 	}
 	if res.usage != nil {
-		callID := res.usage.ToolCallID
-		if callID == "" {
-			callID = p.call.ID
-		}
-		if turn.billedToolCallIDs == nil {
-			turn.billedToolCallIDs = make(map[string]struct{})
-		}
-		if _, seen := turn.billedToolCallIDs[callID]; !seen {
-			turn.billedToolCallIDs[callID] = struct{}{}
-			turn.BillableToolCalls++
-			turn.ToolBillingUnits += res.usage.BillingUnits
-			turn.BillingUnits += res.usage.BillingUnits
-		}
+		applyToolUsage(turn, res.usage, p.call.ID)
+	}
+	for _, usage := range res.nestedUsage {
+		applyToolUsage(turn, usage, p.call.ID)
+	}
+	if res.modelUsage != nil {
+		turn.ModelBillingUnits += res.modelUsage.BillingUnits
+		turn.BillingUnits += res.modelUsage.BillingUnits
+		turn.TokensUsed += res.modelUsage.PromptTokens + res.modelUsage.CompletionTokens
 	}
 	observation := res.observation
 	// A compliant MCP tool puts descriptors in its original structuredContent.
@@ -417,4 +417,22 @@ func (r *Runner) commitToolResult(ctx context.Context, sess *session.Session, tu
 		Assets:     gatewayAssets,
 	})
 	sess.UpdatedAt = time.Now()
+}
+
+func applyToolUsage(turn *TurnResult, usage *tools.ToolUsage, fallbackCallID string) {
+	if usage != nil {
+		callID := usage.ToolCallID
+		if callID == "" {
+			callID = fallbackCallID
+		}
+		if turn.billedToolCallIDs == nil {
+			turn.billedToolCallIDs = make(map[string]struct{})
+		}
+		if _, seen := turn.billedToolCallIDs[callID]; !seen {
+			turn.billedToolCallIDs[callID] = struct{}{}
+			turn.BillableToolCalls++
+			turn.ToolBillingUnits += usage.BillingUnits
+			turn.BillingUnits += usage.BillingUnits
+		}
+	}
 }

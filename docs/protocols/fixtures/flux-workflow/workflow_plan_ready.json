@@ -1,0 +1,21 @@
+{
+  "kind": "workflow_plan_ready",
+  "session_id": "session_1",
+  "turn_id": "turn_1",
+  "call_id": "call_plan_1",
+  "workflow": {
+    "workflow_id": "wf_0123456789abcdef",
+    "parent_call_id": "call_plan_1",
+    "stage": "executing",
+    "goal": "读取项目并生成报告",
+    "nodes": [
+      {"name": "start", "type": "start"},
+      {"name": "read", "type": "tool", "config": {"tool": "read_file"}},
+      {"name": "end", "type": "end"}
+    ],
+    "edges": [
+      {"from": "start", "to": "read", "type": "normal"},
+      {"from": "read", "to": "end", "type": "normal"}
+    ]
+  }
+}

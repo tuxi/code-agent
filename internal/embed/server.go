@@ -46,6 +46,7 @@ var defaultCapabilities = []string{
 	"subagents",
 	"session_resume",
 	"client_tool_execution",
+	"workflow_execution",
 }
 
 // Options configures an embedded server. Every field is supplied in-memory by the

@@ -34,6 +34,7 @@ var defaultCapabilities = []string{
 	"subagents",
 	"session_resume",
 	"client_tool_execution",
+	"workflow_execution",
 }
 
 func main() {

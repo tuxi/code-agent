@@ -725,18 +725,18 @@ func (e *TurnExecutor) driveTurn(
 
 	// 4. Build a fresh turnRunner for this turn.
 	rctx := RuntimeContext{
-		Session:       sess,
-		TurnID:        turnID,
-		Model:         wireModel,
-		ResolvedModel: resolvedModel,
-		RequestID:     requestID,
-		Publisher:     pub,
+		Session:         sess,
+		TurnID:          turnID,
+		Model:           wireModel,
+		ResolvedModel:   resolvedModel,
+		RequestID:       requestID,
+		Publisher:       pub,
 		Approver:        e.active.Approver(sess.ID),
 		PlanApprover:    e.active.PlanApprover(sess.ID),
 		AskUserApprover: e.active.AskUserApprover(sess.ID),
 		ClientWaiter:    e.active.ClientToolWaiter(sess.ID),
 		ClientTools:     e.active.ClientTools(sess.ID),
-		Credential:    e.sessionCredential(sess.ID),
+		Credential:      e.sessionCredential(sess.ID),
 		// Mid-turn crash-safety (v1.2 §2): persist at each loop boundary so a hard
 		// kill loses at most the in-progress step. The turn-boundary Save below is
 		// still the backstop.
@@ -1202,12 +1202,26 @@ func (e *TurnExecutor) executeRecoveredTurn(ctx context.Context, input session.T
 			if !prepared {
 				return agent.TurnResult{}, errors.New("recovered turn was not durably prepared")
 			}
-			preparedRunner, ok := runner.(PreparedTurnRunner)
-			if ok {
-				return preparedRunner.RunPreparedTurn(runCtx, sess)
+			// A running durable input may have progressed beyond its initial user
+			// boundary before the process/app was suspended (for example, while
+			// waiting for a client tool result). RunPreparedTurn is valid only at
+			// that initial boundary; progressed history must resume from its latest
+			// balanced checkpoint instead of requiring the tail to still be user.
+			if preparedTurnAtUserBoundary(sess, input.TurnID) {
+				if preparedRunner, ok := runner.(PreparedTurnRunner); ok {
+					return preparedRunner.RunPreparedTurn(runCtx, sess)
+				}
 			}
 			return runner.ResumeTurn(runCtx, sess)
 		}, e.recordRunStatus)
+}
+
+func preparedTurnAtUserBoundary(sess *session.Session, turnID string) bool {
+	if len(sess.Messages) == 0 {
+		return false
+	}
+	last := sess.Messages[len(sess.Messages)-1]
+	return last.Role == model.RoleUser && last.OriginTurnID == turnID
 }
 
 func (e *TurnExecutor) durableTurnTerminal(ctx context.Context, sessionID, turnID string) (bool, session.TurnInputState) {
@@ -1378,7 +1392,8 @@ func (e *TurnExecutor) generateTitleAsync(sess *session.Session) {
 // replay path (ReplaySince) will report (v1.2 §4). Non-terminal persistence
 // remains best-effort. Terminal persistence is authoritative: a failed append is
 // retained for the executor and the unsequenced terminal is not forwarded live.
-// Ephemeral text/reasoning deltas are not persisted and carry no seq.
+// Ephemeral text/reasoning deltas and workflow progress/log streams are not
+// persisted and carry no seq; canonical workflow state transitions are.
 type sequencingEmitter struct {
 	ctx    context.Context
 	events ConversationEventStore
@@ -1389,7 +1404,7 @@ type sequencingEmitter struct {
 }
 
 func (s *sequencingEmitter) Emit(ev agent.Event) {
-	if ev.Kind == agent.EventTokenDelta || ev.Kind == agent.EventReasoningDelta {
+	if isEphemeralRuntimeEvent(ev.Kind) {
 		s.live.Emit(ev)
 		return
 	}
@@ -1423,6 +1438,24 @@ func (s *sequencingEmitter) Emit(ev agent.Event) {
 		return
 	}
 	s.live.Emit(ev)
+}
+
+func isEphemeralRuntimeEvent(kind agent.EventKind) bool {
+	switch kind {
+	case agent.EventTokenDelta,
+		agent.EventReasoningDelta,
+		agent.EventWorkflowTaskProgress,
+		agent.EventWorkflowNodeProgress,
+		agent.EventWorkflowNodeDebug,
+		agent.EventWorkflowToolProgress,
+		agent.EventWorkflowToolLog,
+		agent.EventWorkflowToolStream,
+		agent.EventWorkflowToolStreamEnd,
+		agent.EventWorkflowFanoutProgress:
+		return true
+	default:
+		return false
+	}
 }
 
 // EmitPersisted publishes an event already committed by the durable turn-input
