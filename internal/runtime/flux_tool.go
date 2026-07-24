@@ -18,6 +18,7 @@ import (
 	fluxtool "github.com/tuxi/flux-workflow/tool"
 	fluxmodel "github.com/tuxi/flux/model"
 	"github.com/tuxi/flux/planner"
+	"gorm.io/gorm"
 
 	"code-agent/internal/model"
 	"code-agent/internal/tools"
@@ -30,7 +31,10 @@ var fluxExcludedTools = map[string]bool{
 	"propose_plan":    true,
 	"ask_user":        true,
 	"todo":            true,
-	"workflow_status": true,
+	"workflow_status":     true,
+	"workflow_list":       true,
+	"workflow_definition": true,
+	"workflow_events":     true,
 }
 
 // runtimePool holds one started Runtime per workspace db. After the first
@@ -227,11 +231,269 @@ func RegisterFluxTool(registry *tools.Registry, provider model.Provider, modelNa
 	}
 	_ = registry.Register(NewFluxWorkflowTool(provider, modelName))
 	_ = registry.Register(&workflowStatusTool{})
+	_ = registry.Register(&workflowListTool{})
+	_ = registry.Register(&workflowDefTool{})
+	_ = registry.Register(&workflowEventsTool{})
+}
+
+// workflowListTool lists all workflows ever submitted in the workspace, with
+// their latest task status. Like `ls` for workflows.
+type workflowListTool struct{}
+
+func (t *workflowListTool) Name() string        { return "workflow_list" }
+func (t *workflowListTool) Description() string { return "List all plan_workflow runs in this workspace. Returns each workflow's ID, goal, latest task ID, status, progress, and error." }
+func (t *workflowListTool) InputSchema() json.RawMessage {
+	return json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`)
+}
+
+func (t *workflowListTool) Execute(ctx context.Context, ec tools.ExecutionContext, _ json.RawMessage) (tools.ToolResult, error) {
+	db, err := openWorkflowDB(ec.WorkspaceRoot)
+	if err != nil {
+		return tools.ToolResult{Content: fmt.Sprintf("workflow_list: %v", err)}, nil
+	}
+	gdb := db.WithContext(ctx)
+
+	type row struct {
+		ID             int64  `gorm:"column:id"`
+		Status         string `gorm:"column:status"`
+		Progress       float64
+		ErrorMessage   *string `gorm:"column:error_message"`
+		InputJSON      []byte  `gorm:"column:input_json"`
+		CreatedAt      string  `gorm:"column:created_at"`
+	}
+	var rows []row
+	if err := gdb.Table("tasks").
+		Select("id, status, progress, error_message, input_json, created_at").
+		Order("id DESC").
+		Find(&rows).Error; err != nil {
+		return tools.ToolResult{Content: fmt.Sprintf("workflow_list: query tasks: %v", err)}, nil
+	}
+
+	type item struct {
+		WorkflowID string `json:"workflow_id"`
+		Goal       string `json:"goal,omitempty"`
+		TaskID     int64  `json:"task_id"`
+		Status     string `json:"status"`
+		Progress   float64 `json:"progress"`
+		Error      string `json:"error,omitempty"`
+		CreatedAt  string `json:"created_at,omitempty"`
+	}
+	var items []item
+	for _, r := range rows {
+		var input struct {
+			WorkflowID string `json:"workflow_id"`
+			Goal       string `json:"goal"`
+		}
+		json.Unmarshal(r.InputJSON, &input)
+		if input.WorkflowID == "" {
+			continue
+		}
+		errStr := ""
+		if r.ErrorMessage != nil {
+			errStr = *r.ErrorMessage
+		}
+		items = append(items, item{
+			WorkflowID: input.WorkflowID,
+			Goal:       input.Goal,
+			TaskID:     r.ID,
+			Status:     r.Status,
+			Progress:   r.Progress,
+			Error:      errStr,
+			CreatedAt:  r.CreatedAt,
+		})
+	}
+	out, _ := json.Marshal(items)
+	return tools.ToolResult{Content: fmt.Sprintf("%d workflows", len(items)), Output: out}, nil
+}
+
+// workflowDefTool returns the DAG topology (nodes + edges) for a workflow.
+type workflowDefTool struct{}
+
+func (t *workflowDefTool) Name() string        { return "workflow_definition" }
+func (t *workflowDefTool) Description() string { return "Get the DAG topology (nodes and edges) for a workflow. The client can render this as a graph." }
+func (t *workflowDefTool) InputSchema() json.RawMessage {
+	return json.RawMessage(`{"type":"object","properties":{"workflow_id":{"type":"string","description":"The workflow ID to get the DAG for"}},"required":["workflow_id"],"additionalProperties":false}`)
+}
+
+func (t *workflowDefTool) Execute(ctx context.Context, ec tools.ExecutionContext, input json.RawMessage) (tools.ToolResult, error) {
+	var args struct {
+		WorkflowID string `json:"workflow_id"`
+	}
+	if err := json.Unmarshal(input, &args); err != nil || args.WorkflowID == "" {
+		return tools.ToolResult{Content: "workflow_id is required"}, nil
+	}
+	db, err := openWorkflowDB(ec.WorkspaceRoot)
+	if err != nil {
+		return tools.ToolResult{Content: fmt.Sprintf("workflow_definition: %v", err)}, nil
+	}
+	gdb := db.WithContext(ctx)
+
+	// Find latest task for this workflow_id, then its version definition.
+	type taskRow struct {
+		ID                int64  `gorm:"column:id"`
+		WorkflowVersionID int64  `gorm:"column:workflow_version_id"`
+		InputJSON         []byte `gorm:"column:input_json"`
+	}
+	var tasks []taskRow
+	if err := gdb.Table("tasks").
+		Select("id, workflow_version_id, input_json").
+		Order("id DESC").
+		Find(&tasks).Error; err != nil {
+		return tools.ToolResult{Content: fmt.Sprintf("workflow_definition: query tasks: %v", err)}, nil
+	}
+	var versionID int64
+	var goal string
+	for _, tsk := range tasks {
+		var input struct {
+			WorkflowID string `json:"workflow_id"`
+			Goal       string `json:"goal"`
+		}
+		json.Unmarshal(tsk.InputJSON, &input)
+		if input.WorkflowID == args.WorkflowID {
+			versionID = tsk.WorkflowVersionID
+			goal = input.Goal
+			break
+		}
+	}
+	if versionID == 0 {
+		return tools.ToolResult{Content: fmt.Sprintf("workflow not found: %s", args.WorkflowID)}, nil
+	}
+
+	var defJSON string
+	if err := gdb.Table("workflow_versions").
+		Select("definition_json").
+		Where("id = ?", versionID).
+		Scan(&defJSON).Error; err != nil || defJSON == "" {
+		return tools.ToolResult{Content: fmt.Sprintf("workflow_definition: version not found: %v", err)}, nil
+	}
+
+	var def struct {
+		Nodes []struct {
+			Name      string   `json:"name"`
+			Tool      string   `json:"tool"`
+			DependsOn []string `json:"depends_on"`
+		} `json:"nodes"`
+		Edges []struct {
+			From string `json:"from"`
+			To   string `json:"to"`
+		} `json:"edges,omitempty"`
+	}
+	json.Unmarshal([]byte(defJSON), &def)
+
+	// Build edges from depends_on if not present explicitly.
+	if len(def.Edges) == 0 {
+		for _, n := range def.Nodes {
+			for _, dep := range n.DependsOn {
+				def.Edges = append(def.Edges, struct {
+					From string `json:"from"`
+					To   string `json:"to"`
+				}{From: dep, To: n.Name})
+			}
+		}
+	}
+
+	result := map[string]any{
+		"workflow_id": args.WorkflowID,
+		"goal":        goal,
+		"nodes":       def.Nodes,
+		"edges":       def.Edges,
+	}
+	out, _ := json.Marshal(result)
+	return tools.ToolResult{Content: fmt.Sprintf("%d nodes, %d edges", len(def.Nodes), len(def.Edges)), Output: out}, nil
+}
+
+// workflowEventsTool returns event history for a workflow task.
+type workflowEventsTool struct{}
+
+func (t *workflowEventsTool) Name() string        { return "workflow_events" }
+func (t *workflowEventsTool) Description() string { return "Get the event history for a workflow task. Returns node state changes, task transitions, and any errors." }
+func (t *workflowEventsTool) InputSchema() json.RawMessage {
+	return json.RawMessage(`{"type":"object","properties":{"workflow_id":{"type":"string","description":"The workflow ID to get events for"}},"required":["workflow_id"],"additionalProperties":false}`)
+}
+
+func (t *workflowEventsTool) Execute(ctx context.Context, ec tools.ExecutionContext, input json.RawMessage) (tools.ToolResult, error) {
+	var args struct {
+		WorkflowID string `json:"workflow_id"`
+	}
+	if err := json.Unmarshal(input, &args); err != nil || args.WorkflowID == "" {
+		return tools.ToolResult{Content: "workflow_id is required"}, nil
+	}
+	db, err := openWorkflowDB(ec.WorkspaceRoot)
+	if err != nil {
+		return tools.ToolResult{Content: fmt.Sprintf("workflow_events: %v", err)}, nil
+	}
+	gdb := db.WithContext(ctx)
+
+	// Find the latest task for this workflow_id.
+	type taskRow struct {
+		ID        int64  `gorm:"column:id"`
+		InputJSON []byte `gorm:"column:input_json"`
+	}
+	var tasks []taskRow
+	if err := gdb.Table("tasks").Select("id, input_json").Order("id DESC").Find(&tasks).Error; err != nil {
+		return tools.ToolResult{Content: fmt.Sprintf("workflow_events: query tasks: %v", err)}, nil
+	}
+	var taskID int64
+	for _, tsk := range tasks {
+		var input struct {
+			WorkflowID string `json:"workflow_id"`
+		}
+		json.Unmarshal(tsk.InputJSON, &input)
+		if input.WorkflowID == args.WorkflowID {
+			taskID = tsk.ID
+			break
+		}
+	}
+	if taskID == 0 {
+		return tools.ToolResult{Content: fmt.Sprintf("workflow not found: %s", args.WorkflowID)}, nil
+	}
+
+	type evtRow struct {
+		ID        int64  `gorm:"column:id"`
+		Type      string `gorm:"column:type"`
+		Message   string `gorm:"column:message"`
+		Meta      []byte `gorm:"column:meta"`
+		CreatedAt string `gorm:"column:created_at"`
+	}
+	var evts []evtRow
+	if err := gdb.Table("task_events").
+		Select("id, type, message, meta, created_at").
+		Where("task_id = ?", taskID).
+		Order("id ASC").
+		Find(&evts).Error; err != nil {
+		return tools.ToolResult{Content: fmt.Sprintf("workflow_events: query events: %v", err)}, nil
+	}
+
+	type evt struct {
+		ID        int64          `json:"id"`
+		Type      string         `json:"type"`
+		Message   string         `json:"message"`
+		Meta      map[string]any `json:"meta,omitempty"`
+		CreatedAt string         `json:"created_at,omitempty"`
+	}
+	var result []evt
+	for _, e := range evts {
+		item := evt{ID: e.ID, Type: e.Type, Message: e.Message, CreatedAt: e.CreatedAt}
+		if len(e.Meta) > 0 {
+			json.Unmarshal(e.Meta, &item.Meta)
+		}
+		result = append(result, item)
+	}
+	out, _ := json.Marshal(result)
+	return tools.ToolResult{Content: fmt.Sprintf("%d events", len(result)), Output: out}, nil
+}
+
+// openWorkflowDB opens the workspace-shared flux-workflow database.
+func openWorkflowDB(workspaceRoot string) (*gorm.DB, error) {
+	rt, err := getOrCreateRuntime(context.Background(), workspaceRoot)
+	if err != nil {
+		return nil, err
+	}
+	return rt.DB(), nil
 }
 
 // workflowStatusTool lets the model query a previously-submitted workflow's
-// current state. After plan_workflow returns {"status":"queued"}, the model
-// can call this to check progress before deciding its next action.
+// current state.
 type workflowStatusTool struct{}
 
 func (t *workflowStatusTool) Name() string        { return "workflow_status" }
