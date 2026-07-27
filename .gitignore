@@ -66,3 +66,4 @@ internal/tools/project_graph/indexstore-helper/.build/
 internal/tools/project_graph/indexstore-helper/.swiftpm/
 
 .DS_Store
+/tmp

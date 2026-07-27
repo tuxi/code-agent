@@ -121,6 +121,7 @@ func turnInputKey(sessionID, requestID string) string { return sessionID + "\x00
 
 func cloneTurnInput(input TurnInput) TurnInput {
 	input.Assets = append([]model.GatewayAssetRef(nil), input.Assets...)
+	input.LocalAssets = append([]model.LocalAssetRef(nil), input.LocalAssets...)
 	return input
 }
 
@@ -682,6 +683,8 @@ func deepCopySession(s *Session) *Session {
 			copy(tc, m.ToolCalls)
 			c.Messages[i].ToolCalls = tc
 		}
+		c.Messages[i].Assets = append([]model.GatewayAssetRef(nil), m.Assets...)
+		c.Messages[i].LocalAssets = append([]model.LocalAssetRef(nil), m.LocalAssets...)
 	}
 	c.Metadata = make(map[string]any, len(s.Metadata))
 	for k, v := range s.Metadata {

@@ -17,7 +17,7 @@ cd "$(dirname "$0")/.."
 
 # --- knobs ---------------------------------------------------------------------
 FRAMEWORK_NAME="CodeAgentRuntime"   # => Swift module name: `import CodeAgentRuntime`
-IOS_MIN="15.0"               # MinimumOSVersion written into every inner Info.plist
+IOS_MIN="18.0"               # MinimumOSVersion written into every inner Info.plist (aligned with Talkify IPHONEOS_DEPLOYMENT_TARGET)
 PKG="./mobile"               # Go package bound (symbol prefix is `Mobile`, its package name)
 OUT_DIR="${1:-build}"
 # Skills shipped with the iOS app. These SKILL.md files are user-level (global)
@@ -76,6 +76,9 @@ echo "==> normalizing MinimumOSVersion -> ${IOS_MIN}"
 while IFS= read -r -d '' plist; do
   /usr/libexec/PlistBuddy -c "Set :MinimumOSVersion ${IOS_MIN}" "${plist}" 2>/dev/null \
     || /usr/libexec/PlistBuddy -c "Add :MinimumOSVersion string ${IOS_MIN}" "${plist}" 2>/dev/null \
+    || true
+  /usr/libexec/PlistBuddy -c "Set :LSMinimumSystemVersion ${IOS_MIN}" "${plist}" 2>/dev/null \
+    || /usr/libexec/PlistBuddy -c "Add :LSMinimumSystemVersion string ${IOS_MIN}" "${plist}" 2>/dev/null \
     || true
 done < <(find "${OUT}" -name Info.plist -print0)
 

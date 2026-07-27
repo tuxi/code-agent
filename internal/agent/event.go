@@ -132,6 +132,7 @@ type Event struct {
 	TurnID        string
 	RequestID     string // client-generated idempotency/correlation key for agent_input
 	UserAssets    []model.GatewayAssetRef
+	LocalAssets   []model.LocalAssetRef
 	QueuePosition int    // EventTurnQueued: one-based scheduler position
 	QueueReason   string // EventTurnQueued: global_capacity | workspace_lease | session_serialization
 

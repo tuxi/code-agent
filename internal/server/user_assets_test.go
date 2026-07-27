@@ -21,6 +21,16 @@ func (c conflictCommands) SendMessageWithRequestIDAndAssets(context.Context, str
 	return agent.TurnResult{}, testInputError{}
 }
 
+type localAssetCommands struct {
+	*fakeCommands
+	received chan []model.LocalAssetRef
+}
+
+func (c localAssetCommands) SendMessageWithRequestIDAndAllAssets(_ context.Context, _ string, _ string, _ string, _ []model.GatewayAssetRef, localAssets []model.LocalAssetRef) (agent.TurnResult, error) {
+	c.received <- localAssets
+	return agent.TurnResult{}, nil
+}
+
 type testInputError struct{}
 
 func (testInputError) Error() string               { return "conflict" }
@@ -90,5 +100,100 @@ func TestRouterReturnsNonPersistentInputRejections(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("request conflict was not returned")
+	}
+}
+
+func TestLocalAssetsValidateWithoutImageCapabilityAndAllowEmptyText(t *testing.T) {
+	payload := `{"type":"agent_input","kind":"text","request_id":"local-1","local_assets":[{"id":"a-1","relative_path":"user-assets/a-1/report.pdf","filename":"report.pdf","mime_type":"application/pdf","kind":"pdf","size_bytes":42,"sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","transfer_policy":"local_only"}]}`
+	input, rejected := decodeAndValidateAgentInput([]byte(payload), false)
+	if rejected != nil {
+		t.Fatalf("local-only input rejected without image_input: %+v", rejected)
+	}
+	if len(input.LocalAssets) != 1 || input.LocalAssets[0].RelativePath != "user-assets/a-1/report.pdf" {
+		t.Fatalf("decoded local assets = %+v", input.LocalAssets)
+	}
+}
+
+func TestRouterDispatchesLocalAssetsWithoutImageCapability(t *testing.T) {
+	commands := localAssetCommands{fakeCommands: newFakeCommands(), received: make(chan []model.LocalAssetRef, 1)}
+	router := Router{Commands: commands, ImageInput: false}
+	router.Route(context.Background(), []byte(`{"type":"agent_input","kind":"text","request_id":"local-1","local_assets":[{"id":"a-1","relative_path":"user-assets/a-1/report.pdf","filename":"report.pdf","mime_type":"application/pdf","kind":"pdf","size_bytes":42,"sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","transfer_policy":"local_only"}]}`))
+	select {
+	case localAssets := <-commands.received:
+		if len(localAssets) != 1 || localAssets[0].ID != "a-1" {
+			t.Fatalf("routed local assets = %+v", localAssets)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("local asset input was not dispatched")
+	}
+}
+
+func TestRouterRejectsLocalAssetsWhenTargetDoesNotSupportThem(t *testing.T) {
+	commands := newFakeCommands()
+	rejections := rejectionRecorder{ch: make(chan AgentInputRejected, 1)}
+	router := Router{Commands: commands, Rejections: rejections, ImageInput: false}
+	router.Route(context.Background(), []byte(`{"type":"agent_input","kind":"text","request_id":"local-unsupported","text":"inspect","local_assets":[{"id":"a-1","relative_path":"user-assets/a-1/report.pdf","filename":"report.pdf","mime_type":"application/pdf","kind":"pdf","size_bytes":42,"sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","transfer_policy":"local_only"}]}`))
+	select {
+	case rejected := <-rejections.ch:
+		if rejected.RequestID != "local-unsupported" || rejected.Error.Code != "local_assets_unsupported" {
+			t.Fatalf("rejected = %+v", rejected)
+		}
+	case text := <-commands.text:
+		t.Fatalf("local assets were silently downgraded to text %q", text)
+	case <-time.After(time.Second):
+		t.Fatal("unsupported local assets produced no rejection")
+	}
+}
+
+func TestLocalAssetValidationRejectsUnsafeShapes(t *testing.T) {
+	valid := `"id":"a","relative_path":"user-assets/a/file.pdf","filename":"file.pdf","mime_type":"application/pdf","kind":"pdf","size_bytes":1,"sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","transfer_policy":"local_only"`
+	tests := []string{
+		`"id":"a","relative_path":"/tmp/file.pdf","filename":"file.pdf","mime_type":"application/pdf","kind":"pdf","size_bytes":1,"sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","transfer_policy":"local_only"`,
+		`"id":"a","relative_path":"user-assets/../file.pdf","filename":"file.pdf","mime_type":"application/pdf","kind":"pdf","size_bytes":1,"sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","transfer_policy":"local_only"`,
+		`"id":"a","relative_path":"user-assets\\file.pdf","filename":"file.pdf","mime_type":"application/pdf","kind":"pdf","size_bytes":1,"sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","transfer_policy":"local_only"`,
+		`"id":"a","relative_path":"https://example.test/file.pdf","filename":"file.pdf","mime_type":"application/pdf","kind":"pdf","size_bytes":1,"sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","transfer_policy":"local_only"`,
+		`"id":"a","relative_path":"C:/Users/file.pdf","filename":"file.pdf","mime_type":"application/pdf","kind":"pdf","size_bytes":1,"sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","transfer_policy":"local_only"`,
+		`"id":"a","relative_path":"user-assets/a/file.pdf","filename":"file.pdf","mime_type":"application/pdf","kind":"pdf","size_bytes":1,"sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","transfer_policy":"upload"`,
+		valid + `,"bytes":"secret"`,
+		valid + `,"future_bytes":"secret"`,
+	}
+	for i, object := range tests {
+		payload := `{"type":"agent_input","kind":"text","request_id":"r","local_assets":[{` + object + `}]}`
+		_, rejected := decodeAndValidateAgentInput([]byte(payload), false)
+		if rejected == nil || rejected.Error.Code != "invalid_local_assets" {
+			t.Fatalf("case %d rejected=%+v", i, rejected)
+		}
+	}
+}
+
+func TestUploadedAndLocalCopyCannotBeSentTogether(t *testing.T) {
+	payload := `{"type":"agent_input","kind":"text","request_id":"r","assets":[{"asset_id":1,"kind":"image","mime_type":"image/png","filename":"a.png","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}],"local_assets":[{"id":"a","relative_path":"user-assets/a/a.png","filename":"a.png","mime_type":"image/png","kind":"image","size_bytes":1,"sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","transfer_policy":"local_only"}]}`
+	_, rejected := decodeAndValidateAgentInput([]byte(payload), true)
+	if rejected == nil || rejected.Error.Code != "invalid_assets" {
+		t.Fatalf("rejected=%+v", rejected)
+	}
+}
+
+func TestMixedAssetsRequireGatewaySHA256(t *testing.T) {
+	payload := `{"type":"agent_input","kind":"text","request_id":"r","assets":[{"asset_id":1,"kind":"image","mime_type":"image/png","filename":"cloud.png"}],"local_assets":[{"id":"a","relative_path":"user-assets/a/local.pdf","filename":"local.pdf","mime_type":"application/pdf","kind":"pdf","size_bytes":1,"sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","transfer_policy":"local_only"}]}`
+	_, rejected := decodeAndValidateAgentInput([]byte(payload), true)
+	if rejected == nil || rejected.Error.Code != "invalid_assets" {
+		t.Fatalf("rejected=%+v", rejected)
+	}
+}
+
+func TestMixedAssetsWithDistinctSHA256Validate(t *testing.T) {
+	payload := `{"type":"agent_input","kind":"text","request_id":"r","assets":[{"asset_id":1,"kind":"image","mime_type":"image/png","filename":"cloud.png","sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}],"local_assets":[{"id":"a","relative_path":"user-assets/a/local.pdf","filename":"local.pdf","mime_type":"application/pdf","kind":"pdf","size_bytes":1,"sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","transfer_policy":"local_only"}]}`
+	input, rejected := decodeAndValidateAgentInput([]byte(payload), true)
+	if rejected != nil || len(input.Assets) != 1 || len(input.LocalAssets) != 1 {
+		t.Fatalf("input=%+v rejected=%+v", input, rejected)
+	}
+}
+
+func TestToWireIncludesLocalAssetsOnTurnStarted(t *testing.T) {
+	local := model.LocalAssetRef{ID: "a", RelativePath: "user-assets/a/file.txt", Filename: "file.txt", MIMEType: "text/plain", Kind: "document", SizeBytes: 3, SHA256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", TransferPolicy: "local_only"}
+	w := toWire(agent.Event{Kind: agent.EventTurnStarted, LocalAssets: []model.LocalAssetRef{local}})
+	if len(w.LocalAssets) != 1 || w.LocalAssets[0].ID != "a" {
+		t.Fatalf("wire local assets = %+v", w.LocalAssets)
 	}
 }

@@ -74,6 +74,7 @@ CREATE TABLE IF NOT EXISTS messages (
 	tool_calls   TEXT,
 	tool_call_id TEXT,
 	assets       TEXT,
+	local_assets TEXT,
 	origin_turn_id TEXT,
 	PRIMARY KEY (session_id, seq)
 );
@@ -119,6 +120,7 @@ CREATE TABLE IF NOT EXISTS turn_inputs (
 	wire_model TEXT NOT NULL,
 	resolved_model TEXT NOT NULL,
 	assets TEXT NOT NULL,
+	local_assets TEXT NOT NULL DEFAULT '[]',
 	state TEXT NOT NULL,
 	created_at TEXT NOT NULL,
 	updated_at TEXT NOT NULL,
@@ -204,7 +206,9 @@ func (s *Store) open() error {
 		`ALTER TABLE sessions ADD COLUMN reference_ledger TEXT`,
 		`ALTER TABLE sessions ADD COLUMN archived_at TEXT`,
 		`ALTER TABLE messages ADD COLUMN assets TEXT`,
+		`ALTER TABLE messages ADD COLUMN local_assets TEXT`,
 		`ALTER TABLE messages ADD COLUMN origin_turn_id TEXT`,
+		`ALTER TABLE turn_inputs ADD COLUMN local_assets TEXT NOT NULL DEFAULT '[]'`,
 		`ALTER TABLE managed_worktrees ADD COLUMN remove_force INTEGER NOT NULL DEFAULT 0`,
 		// v2: re-index session_events by at for chronological ordering.
 		// The original index was on (session_id, id); rebuild on (session_id, at).
@@ -330,10 +334,18 @@ func (s *Store) saveSessionTx(ctx context.Context, tx *sql.Tx, sess *session.Ses
 			}
 			assetRefs = string(b)
 		}
+		localAssetRefs := ""
+		if len(m.LocalAssets) > 0 {
+			b, err := json.Marshal(m.LocalAssets)
+			if err != nil {
+				return fmt.Errorf("marshal message local assets: %w", err)
+			}
+			localAssetRefs = string(b)
+		}
 		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO messages (session_id, seq, role, content, tool_calls, tool_call_id, assets, origin_turn_id)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-			sess.ID, i, string(m.Role), m.Content, toolCalls, m.ToolCallID, assetRefs, m.OriginTurnID); err != nil {
+			INSERT INTO messages (session_id, seq, role, content, tool_calls, tool_call_id, assets, local_assets, origin_turn_id)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			sess.ID, i, string(m.Role), m.Content, toolCalls, m.ToolCallID, assetRefs, localAssetRefs, m.OriginTurnID); err != nil {
 			return fmt.Errorf("save message %d: %w", i, err)
 		}
 	}
@@ -396,14 +408,14 @@ func (s *Store) Load(ctx context.Context, id string) (*session.Session, error) {
 	}
 
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT role, content, tool_calls, tool_call_id, COALESCE(assets, ''), COALESCE(origin_turn_id, '') FROM messages WHERE session_id=? ORDER BY seq`, id)
+		SELECT role, content, tool_calls, tool_call_id, COALESCE(assets, ''), COALESCE(local_assets, ''), COALESCE(origin_turn_id, '') FROM messages WHERE session_id=? ORDER BY seq`, id)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var role, content, toolCalls, toolCallID, assetRefs, originTurnID string
-		if err := rows.Scan(&role, &content, &toolCalls, &toolCallID, &assetRefs, &originTurnID); err != nil {
+		var role, content, toolCalls, toolCallID, assetRefs, localAssetRefs, originTurnID string
+		if err := rows.Scan(&role, &content, &toolCalls, &toolCallID, &assetRefs, &localAssetRefs, &originTurnID); err != nil {
 			return nil, err
 		}
 		m := model.Message{Role: model.Role(role), Content: content, ToolCallID: toolCallID, OriginTurnID: originTurnID}
@@ -415,6 +427,11 @@ func (s *Store) Load(ctx context.Context, id string) (*session.Session, error) {
 		if assetRefs != "" {
 			if err := json.Unmarshal([]byte(assetRefs), &m.Assets); err != nil {
 				return nil, fmt.Errorf("unmarshal message assets: %w", err)
+			}
+		}
+		if localAssetRefs != "" {
+			if err := json.Unmarshal([]byte(localAssetRefs), &m.LocalAssets); err != nil {
+				return nil, fmt.Errorf("unmarshal message local assets: %w", err)
 			}
 		}
 		sess.Messages = append(sess.Messages, m)

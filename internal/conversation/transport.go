@@ -45,6 +45,10 @@ func (s *TransportSession) SendMessageWithRequestIDAndAssets(ctx context.Context
 	return s.ex.ExecuteWithRequestIDAndAssets(ctx, s.id, requestID, text, modelName, assets)
 }
 
+func (s *TransportSession) SendMessageWithRequestIDAndAllAssets(ctx context.Context, requestID, text, modelName string, assets []model.GatewayAssetRef, localAssets []model.LocalAssetRef) (agent.TurnResult, error) {
+	return s.ex.ExecuteWithRequestIDAndAllAssets(ctx, s.id, requestID, text, modelName, assets, localAssets)
+}
+
 // Cancel stops the in-flight turn. Satisfies server.CommandTarget.
 func (s *TransportSession) Cancel() {
 	s.ex.Cancel(s.id)

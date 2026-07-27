@@ -22,7 +22,8 @@ func TestTurnInputReserveStartAndReload(t *testing.T) {
 	if err := store.Save(ctx, sess); err != nil {
 		t.Fatal(err)
 	}
-	input := session.TurnInput{SessionID: "s", RequestID: "r", TurnID: "t", PayloadHash: "hash", Text: "look", WireModel: "", ResolvedModel: "gateway-model", Assets: []model.GatewayAssetRef{{AssetID: 1, Kind: "image", MIMEType: "image/png", Filename: "a.png"}}}
+	local := model.LocalAssetRef{ID: "local", RelativePath: "user-assets/local/a.pdf", Filename: "a.pdf", MIMEType: "application/pdf", Kind: "pdf", SizeBytes: 2, SHA256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", TransferPolicy: "local_only"}
+	input := session.TurnInput{SessionID: "s", RequestID: "r", TurnID: "t", PayloadHash: "hash", Text: "look", WireModel: "", ResolvedModel: "gateway-model", Assets: []model.GatewayAssetRef{{AssetID: 1, Kind: "image", MIMEType: "image/png", Filename: "a.png"}}, LocalAssets: []model.LocalAssetRef{local}}
 	event := session.EventRecord{SessionID: "s", TurnID: "t", Kind: "turn_accepted", At: time.Now().UTC(), Payload: json.RawMessage(`{"kind":"turn_accepted"}`)}
 	stored, created, seq, err := store.ReserveTurnInput(ctx, input, event)
 	if err != nil || !created || seq == 0 || stored.ResolvedModel != "gateway-model" {
@@ -33,7 +34,7 @@ func TestTurnInputReserveStartAndReload(t *testing.T) {
 		t.Fatalf("duplicate=%+v created=%v err=%v", duplicate, created, err)
 	}
 
-	sess.Messages = append(sess.Messages, model.Message{Role: model.RoleUser, Content: input.Text, Assets: input.Assets, OriginTurnID: input.TurnID})
+	sess.Messages = append(sess.Messages, model.Message{Role: model.RoleUser, Content: input.Text, Assets: input.Assets, LocalAssets: input.LocalAssets, OriginTurnID: input.TurnID})
 	if err := store.StartTurnInput(ctx, input, sess); err != nil {
 		t.Fatal(err)
 	}
@@ -41,11 +42,11 @@ func TestTurnInputReserveStartAndReload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := loaded.Messages[len(loaded.Messages)-1]; got.OriginTurnID != "t" || len(got.Assets) != 1 {
+	if got := loaded.Messages[len(loaded.Messages)-1]; got.OriginTurnID != "t" || len(got.Assets) != 1 || len(got.LocalAssets) != 1 || got.LocalAssets[0].RelativePath != local.RelativePath {
 		t.Fatalf("message=%+v", got)
 	}
 	gotInput, err := store.TurnInput(ctx, "s", "r")
-	if err != nil || gotInput.State != session.TurnInputRunning {
+	if err != nil || gotInput.State != session.TurnInputRunning || len(gotInput.LocalAssets) != 1 || gotInput.LocalAssets[0].ID != "local" {
 		t.Fatalf("input=%+v err=%v", gotInput, err)
 	}
 }

@@ -164,9 +164,13 @@ type Runner struct {
 
 	// AssetUploader turns locally materialized screenshot files into
 	// Gateway-owned references. Nil leaves non-Gateway executions unchanged.
-	AssetUploader       model.AssetUploader
-	assetUploadCache    map[string]model.GatewayAssetRef
-	UserAssetsSupported bool
+	AssetUploader model.AssetUploader
+	// AutoUploadCaptureAssets requires an explicit host opt-in. Merely wiring a
+	// Gateway uploader never authorizes screenshots or photos to leave the
+	// workspace.
+	AutoUploadCaptureAssets bool
+	assetUploadCache        map[string]model.GatewayAssetRef
+	UserAssetsSupported     bool
 
 	// Correlation IDs stamped onto every emitted event. Set per RunTurn (which is
 	// sequential on a Runner), so an event always carries which session and turn
@@ -335,7 +339,7 @@ func normalizeToolAssets(refs []assets.Ref, workspaceRoot, turnID, callID string
 // in subsequent turns. It covers both server-side MCP captures (screenshot_capture)
 // and client-side captures (capture_photo, take_screenshot).
 func (r *Runner) gatewayImageCaptureAssets(ctx context.Context, sess *session.Session, toolName string, refs []assets.Ref) ([]model.GatewayAssetRef, string) {
-	if r.AssetUploader == nil || !isImageCaptureTool(toolName) {
+	if !r.AutoUploadCaptureAssets || r.AssetUploader == nil || !isImageCaptureTool(toolName) {
 		return nil, ""
 	}
 	var out []model.GatewayAssetRef
@@ -571,6 +575,12 @@ func (r *Runner) RunTurn(ctx context.Context, sess *session.Session, userInput s
 // RunTurnWithAssets carries already-uploaded, Gateway-owned user assets without
 // reading their bytes or URLs in the Runtime.
 func (r *Runner) RunTurnWithAssets(ctx context.Context, sess *session.Session, userInput string, gatewayAssets []model.GatewayAssetRef) (TurnResult, error) {
+	return r.RunTurnWithAllAssets(ctx, sess, userInput, gatewayAssets, nil)
+}
+
+// RunTurnWithAllAssets keeps local attachment metadata in Runtime state and
+// exposes only a safe textual manifest to Provider requests.
+func (r *Runner) RunTurnWithAllAssets(ctx context.Context, sess *session.Session, userInput string, gatewayAssets []model.GatewayAssetRef, localAssets []model.LocalAssetRef) (TurnResult, error) {
 	if len(gatewayAssets) > 0 && !r.UserAssetsSupported {
 		return TurnResult{}, UserAssetRuntimeError{Code: "image_input_unsupported", Message: "The selected model cannot process image input"}
 	}
@@ -617,12 +627,17 @@ func (r *Runner) RunTurnWithAssets(ctx context.Context, sess *session.Session, u
 
 	// Append the user's turn to the persistent session history.
 	sess.Messages = append(sess.Messages, model.Message{
-		Role:    model.RoleUser,
-		Content: userInput,
-		Assets:  gatewayAssets,
+		Role:        model.RoleUser,
+		Content:     userInput,
+		Assets:      gatewayAssets,
+		LocalAssets: append([]model.LocalAssetRef(nil), localAssets...),
 	})
 	sess.UpdatedAt = time.Now()
-	r.emit(Event{Kind: EventTurnStarted, Text: userInput, UserAssets: append([]model.GatewayAssetRef(nil), gatewayAssets...)})
+	r.emit(Event{
+		Kind: EventTurnStarted, Text: userInput,
+		UserAssets:  append([]model.GatewayAssetRef(nil), gatewayAssets...),
+		LocalAssets: append([]model.LocalAssetRef(nil), localAssets...),
+	})
 
 	return r.drive(ctx, sess)
 }
@@ -656,8 +671,40 @@ func (r *Runner) RunPreparedTurn(ctx context.Context, sess *session.Session) (Tu
 	if len(user.Assets) > 0 && r.RequestID == "" {
 		return TurnResult{}, errors.New("user assets require a stable request id")
 	}
-	r.emit(Event{Kind: EventTurnStarted, Text: user.Content, UserAssets: append([]model.GatewayAssetRef(nil), user.Assets...)})
+	r.emit(Event{
+		Kind: EventTurnStarted, Text: user.Content,
+		UserAssets:  append([]model.GatewayAssetRef(nil), user.Assets...),
+		LocalAssets: append([]model.LocalAssetRef(nil), user.LocalAssets...),
+	})
 	return r.drive(ctx, sess)
+}
+
+func withLocalAssetManifests(messages []model.Message) []model.Message {
+	var out []model.Message
+	for i := range messages {
+		if len(messages[i].LocalAssets) == 0 {
+			continue
+		}
+		if out == nil {
+			out = append([]model.Message(nil), messages...)
+		}
+		var manifest strings.Builder
+		manifest.WriteString("\n\n[Local attachment manifest]\n")
+		manifest.WriteString("The following files are stored in the workspace. Their contents are currently NOT visible to you. ")
+		manifest.WriteString("Do not guess their contents. Use an appropriate client-side local tool such as analyze_local_image, read_pdf, or render_pdf_pages to inspect them.\n")
+		for _, asset := range messages[i].LocalAssets {
+			fmt.Fprintf(&manifest, "- path=%q; filename=%q; kind=%q; mime_type=%q; size_bytes=%d\n",
+				asset.RelativePath, asset.Filename, asset.Kind, asset.MIMEType, asset.SizeBytes)
+		}
+		out[i].Content += manifest.String()
+		// Defense in depth: a Provider inspecting Request directly receives no
+		// structured local attachment metadata.
+		out[i].LocalAssets = nil
+	}
+	if out == nil {
+		return messages
+	}
+	return out
 }
 
 type UserAssetRuntimeError struct {
@@ -811,6 +858,7 @@ func (r *Runner) drive(ctx context.Context, sess *session.Session) (TurnResult, 
 		if r.PlanState == PlanStatusPlanning {
 			msgs = appendEphemeralUser(msgs, planningPrompt)
 		}
+		msgs = withLocalAssetManifests(msgs)
 
 		r.emitInvocationID = newInvocationID()
 		r.emit(Event{Kind: EventModelStarted})
@@ -1213,6 +1261,7 @@ func (r *Runner) finalAnswerAfterLimit(ctx context.Context, sess *session.Sessio
 		Role:    model.RoleUser,
 		Content: stepLimitNudge,
 	})
+	msgs = withLocalAssetManifests(msgs)
 
 	r.emitInvocationID = newInvocationID()
 	r.emit(Event{Kind: EventModelStarted})

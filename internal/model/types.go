@@ -49,6 +49,11 @@ type Message struct {
 	// neither bytes nor OSS URLs and are safe to persist with the message.
 	Assets []GatewayAssetRef `json:"assets,omitempty"`
 
+	// LocalAssets are workspace-relative, local-only attachment references. They
+	// are persisted by Runtime stores but deliberately excluded from Provider
+	// JSON. The agent loop exposes only a textual manifest to the model.
+	LocalAssets []LocalAssetRef `json:"-"`
+
 	// OriginTurnID is Runtime-only durable identity for a user message. It is
 	// persisted by the session store but deliberately excluded from Provider JSON:
 	// Gateway history uses session_id for conversation asset references and must
@@ -62,6 +67,19 @@ type Message struct {
 	// ToolCallID is set on tool-result messages (Role == RoleTool) to bind the
 	// result to the assistant tool call it answers.
 	ToolCallID string `json:"tool_call_id,omitempty"`
+}
+
+// LocalAssetRef identifies a file already staged inside the conversation
+// workspace. It never contains bytes, an absolute path, or a remote URL.
+type LocalAssetRef struct {
+	ID             string `json:"id"`
+	RelativePath   string `json:"relative_path"`
+	Filename       string `json:"filename"`
+	MIMEType       string `json:"mime_type"`
+	Kind           string `json:"kind"`
+	SizeBytes      int64  `json:"size_bytes"`
+	SHA256         string `json:"sha256"`
+	TransferPolicy string `json:"transfer_policy"`
 }
 
 // GatewayAssetRef is the minimal asset-first contract sent to Agent Gateway.

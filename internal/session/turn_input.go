@@ -30,6 +30,7 @@ type TurnInput struct {
 	WireModel     string
 	ResolvedModel string
 	Assets        []model.GatewayAssetRef
+	LocalAssets   []model.LocalAssetRef
 	State         TurnInputState
 	CreatedAt     time.Time
 	UpdatedAt     time.Time

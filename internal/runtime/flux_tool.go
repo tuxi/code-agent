@@ -303,7 +303,21 @@ func (t *workflowListTool) Execute(ctx context.Context, ec tools.ExecutionContex
 		})
 	}
 	out, _ := json.Marshal(items)
-	return tools.ToolResult{Content: fmt.Sprintf("%d workflows", len(items)), Output: out}, nil
+	var lines []string
+	for _, it := range items {
+		errPart := ""
+		if it.Error != "" {
+			errPart = " error=" + it.Error
+		}
+		goal := it.Goal
+		if len(goal) > 80 {
+			goal = goal[:80] + "..."
+		}
+		lines = append(lines, fmt.Sprintf("%s | %s | %s | progress=%.1f%s | task=%d",
+			it.WorkflowID, it.Status, goal, it.Progress, errPart, it.TaskID))
+	}
+	content := fmt.Sprintf("%d workflows:\n%s", len(items), strings.Join(lines, "\n"))
+	return tools.ToolResult{Content: content, Output: out}, nil
 }
 
 // workflowDefTool returns the DAG topology (nodes + edges) for a workflow.
@@ -399,24 +413,39 @@ func (t *workflowDefTool) Execute(ctx context.Context, ec tools.ExecutionContext
 		"edges":       def.Edges,
 	}
 	out, _ := json.Marshal(result)
-	return tools.ToolResult{Content: fmt.Sprintf("%d nodes, %d edges", len(def.Nodes), len(def.Edges)), Output: out}, nil
+	var nodeDescs []string
+	for _, n := range def.Nodes {
+		deps := ""
+		if len(n.DependsOn) > 0 {
+			deps = " ← " + strings.Join(n.DependsOn, ", ")
+		}
+		nodeDescs = append(nodeDescs, fmt.Sprintf("  %s (%s)%s", n.Name, n.Tool, deps))
+	}
+	content := fmt.Sprintf("workflow %s: %d nodes, %d edges\n%s",
+		args.WorkflowID, len(def.Nodes), len(def.Edges), strings.Join(nodeDescs, "\n"))
+	return tools.ToolResult{Content: content, Output: out}, nil
 }
 
 // workflowEventsTool returns event history for a workflow task.
 type workflowEventsTool struct{}
 
 func (t *workflowEventsTool) Name() string        { return "workflow_events" }
-func (t *workflowEventsTool) Description() string { return "Get the event history for a workflow task. Returns node state changes, task transitions, and any errors." }
+func (t *workflowEventsTool) Description() string { return "Get the event history for a workflow task. Returns node state changes, task transitions, and any errors. Use limit and after_id for pagination." }
 func (t *workflowEventsTool) InputSchema() json.RawMessage {
-	return json.RawMessage(`{"type":"object","properties":{"workflow_id":{"type":"string","description":"The workflow ID to get events for"}},"required":["workflow_id"],"additionalProperties":false}`)
+	return json.RawMessage(`{"type":"object","properties":{"workflow_id":{"type":"string","description":"The workflow ID to get events for"},"limit":{"type":"integer","description":"Max events to return (default 20)"},"after_id":{"type":"integer","description":"Return only events with id > after_id. Use the last event's id from the previous page as the cursor."}},"required":["workflow_id"],"additionalProperties":false}`)
 }
 
 func (t *workflowEventsTool) Execute(ctx context.Context, ec tools.ExecutionContext, input json.RawMessage) (tools.ToolResult, error) {
 	var args struct {
 		WorkflowID string `json:"workflow_id"`
+		Limit      int    `json:"limit"`
+		AfterID    int64  `json:"after_id"`
 	}
 	if err := json.Unmarshal(input, &args); err != nil || args.WorkflowID == "" {
 		return tools.ToolResult{Content: "workflow_id is required"}, nil
+	}
+	if args.Limit <= 0 || args.Limit > 50 {
+		args.Limit = 20
 	}
 	db, err := openWorkflowDB(ec.WorkspaceRoot)
 	if err != nil {
@@ -435,11 +464,11 @@ func (t *workflowEventsTool) Execute(ctx context.Context, ec tools.ExecutionCont
 	}
 	var taskID int64
 	for _, tsk := range tasks {
-		var input struct {
+		var inp struct {
 			WorkflowID string `json:"workflow_id"`
 		}
-		json.Unmarshal(tsk.InputJSON, &input)
-		if input.WorkflowID == args.WorkflowID {
+		json.Unmarshal(tsk.InputJSON, &inp)
+		if inp.WorkflowID == args.WorkflowID {
 			taskID = tsk.ID
 			break
 		}
@@ -456,11 +485,13 @@ func (t *workflowEventsTool) Execute(ctx context.Context, ec tools.ExecutionCont
 		CreatedAt string `gorm:"column:created_at"`
 	}
 	var evts []evtRow
-	if err := gdb.Table("task_events").
+	query := gdb.Table("task_events").
 		Select("id, type, message, meta, created_at").
-		Where("task_id = ?", taskID).
-		Order("id ASC").
-		Find(&evts).Error; err != nil {
+		Where("task_id = ?", taskID)
+	if args.AfterID > 0 {
+		query = query.Where("id > ?", args.AfterID)
+	}
+	if err := query.Order("id ASC").Limit(args.Limit).Find(&evts).Error; err != nil {
 		return tools.ToolResult{Content: fmt.Sprintf("workflow_events: query events: %v", err)}, nil
 	}
 
@@ -480,7 +511,30 @@ func (t *workflowEventsTool) Execute(ctx context.Context, ec tools.ExecutionCont
 		result = append(result, item)
 	}
 	out, _ := json.Marshal(result)
-	return tools.ToolResult{Content: fmt.Sprintf("%d events", len(result)), Output: out}, nil
+	var lines []string
+	var lastID int64
+	for _, e := range result {
+		metaStr := ""
+		if from, ok := e.Meta["from"].(string); ok {
+			if to, ok2 := e.Meta["to"].(string); ok2 {
+				metaStr = fmt.Sprintf(" %s→%s", from, to)
+			}
+		}
+		if e.Message != "" && metaStr == "" {
+			metaStr = " " + e.Message
+		}
+		lines = append(lines, fmt.Sprintf("  [%d] %s%s", e.ID, e.Type, metaStr))
+		lastID = e.ID
+	}
+	header := fmt.Sprintf("%d events for task %d", len(result), taskID)
+	if args.AfterID > 0 {
+		header += fmt.Sprintf(" (after id %d)", args.AfterID)
+	}
+	if len(result) > 0 {
+		header += fmt.Sprintf(", next cursor: after_id=%d", lastID)
+	}
+	content := header + ":\n" + strings.Join(lines, "\n")
+	return tools.ToolResult{Content: content, Output: out}, nil
 }
 
 // openWorkflowDB opens the workspace-shared flux-workflow database.

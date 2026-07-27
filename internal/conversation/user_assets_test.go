@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -209,6 +210,16 @@ func TestTurnInputPayloadHashNormalizesEmptyAssetsAndPreservesOrder(t *testing.T
 	if turnInputPayloadHash("look", "", []model.GatewayAssetRef{a, b}) == turnInputPayloadHash("look", "", []model.GatewayAssetRef{b, a}) {
 		t.Fatal("asset order must participate in payload identity")
 	}
+	localA := model.LocalAssetRef{ID: "a", RelativePath: "user-assets/a/a.pdf"}
+	localB := model.LocalAssetRef{ID: "b", RelativePath: "user-assets/b/b.pdf"}
+	if turnInputPayloadHashWithLocalAssets("look", "", nil, []model.LocalAssetRef{localA, localB}) ==
+		turnInputPayloadHashWithLocalAssets("look", "", nil, []model.LocalAssetRef{localB, localA}) {
+		t.Fatal("local asset order must participate in payload identity")
+	}
+	if turnInputPayloadHashWithLocalAssets("look", "", nil, nil) ==
+		turnInputPayloadHashWithLocalAssets("look", "", nil, []model.LocalAssetRef{localA}) {
+		t.Fatal("local assets must participate in payload identity")
+	}
 }
 
 func TestAssetRefReleaseAuthFailureWaitsForCredentialRecovery(t *testing.T) {
@@ -235,7 +246,8 @@ func TestAssetRefReleaseAuthFailureWaitsForCredentialRecovery(t *testing.T) {
 func TestRecoverRunningTurnRepairsMissingTurnStartedOnce(t *testing.T) {
 	executor, store, repo, _ := newDurableExecutor(t)
 	asset := model.GatewayAssetRef{AssetID: 9, Kind: "image", MIMEType: "image/png", Filename: "crash.png"}
-	input := session.TurnInput{SessionID: "s", RequestID: "crash", TurnID: "turn_crash", PayloadHash: turnInputPayloadHash("inspect", "", []model.GatewayAssetRef{asset}), Text: "inspect", ResolvedModel: "resolved-A", Assets: []model.GatewayAssetRef{asset}}
+	local := model.LocalAssetRef{ID: "local-crash", RelativePath: "user-assets/local-crash/report.pdf", Filename: "report.pdf", MIMEType: "application/pdf", Kind: "pdf", SizeBytes: 12, SHA256: strings.Repeat("a", 64), TransferPolicy: "local_only"}
+	input := session.TurnInput{SessionID: "s", RequestID: "crash", TurnID: "turn_crash", PayloadHash: turnInputPayloadHashWithLocalAssets("inspect", "", []model.GatewayAssetRef{asset}, []model.LocalAssetRef{local}), Text: "inspect", ResolvedModel: "resolved-A", Assets: []model.GatewayAssetRef{asset}, LocalAssets: []model.LocalAssetRef{local}}
 	accepted := agent.Event{Kind: agent.EventTurnAccepted, SessionID: "s", TurnID: input.TurnID, RequestID: input.RequestID, At: time.Now().UTC()}
 	payload, _ := json.Marshal(accepted)
 	if _, _, _, err := store.ReserveTurnInput(context.Background(), input, session.EventRecord{SessionID: "s", TurnID: input.TurnID, Kind: string(accepted.Kind), At: accepted.At, Payload: payload}); err != nil {
@@ -245,7 +257,7 @@ func TestRecoverRunningTurnRepairsMissingTurnStartedOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sess.Messages = append(sess.Messages, model.Message{Role: model.RoleUser, Content: input.Text, Assets: input.Assets, OriginTurnID: input.TurnID})
+	sess.Messages = append(sess.Messages, model.Message{Role: model.RoleUser, Content: input.Text, Assets: input.Assets, LocalAssets: input.LocalAssets, OriginTurnID: input.TurnID})
 	if err := store.StartTurnInput(context.Background(), input, sess); err != nil {
 		t.Fatal(err)
 	}
@@ -264,7 +276,8 @@ func TestRecoverRunningTurnRepairsMissingTurnStartedOnce(t *testing.T) {
 		if record.TurnID == input.TurnID && record.Kind == string(agent.EventTurnStarted) {
 			started++
 			var event agent.Event
-			if err := json.Unmarshal(record.Payload, &event); err != nil || len(event.UserAssets) != 1 || event.UserAssets[0].AssetID != asset.AssetID {
+			if err := json.Unmarshal(record.Payload, &event); err != nil || len(event.UserAssets) != 1 || event.UserAssets[0].AssetID != asset.AssetID ||
+				len(event.LocalAssets) != 1 || event.LocalAssets[0].ID != local.ID {
 				t.Fatalf("repaired event=%+v err=%v", event, err)
 			}
 		}

@@ -39,6 +39,12 @@ type RequestAssetMessageTarget interface {
 	SendMessageWithRequestIDAndAssets(ctx context.Context, requestID, text, model string, assets []model.GatewayAssetRef) (agent.TurnResult, error)
 }
 
+// RequestLocalAssetMessageTarget accepts the complete attachment submission.
+// Local assets are intentionally independent from the image_input capability.
+type RequestLocalAssetMessageTarget interface {
+	SendMessageWithRequestIDAndAllAssets(ctx context.Context, requestID, text, model string, assets []model.GatewayAssetRef, localAssets []model.LocalAssetRef) (agent.TurnResult, error)
+}
+
 // ApprovalResolver is the control plane: deliver a client's approval verdict to
 // the blocked Approve call. *RemoteApprover satisfies it. Resolve carries a plain
 // approve/deny (plan approvals, legacy tool responses); ResolveTool carries a tool
@@ -114,6 +120,20 @@ func (r Router) Route(ctx context.Context, data []byte) {
 				// connection closing.
 				turnCtx := context.WithoutCancel(ctx)
 				modelName := m.Model
+				if len(m.LocalAssets) > 0 {
+					withAllAssets, ok := r.Commands.(RequestLocalAssetMessageTarget)
+					if !ok {
+						r.reject(*rejectInput(m.RequestID, "local_assets_unsupported", "local assets are not supported by this command target"))
+						return
+					}
+					assets := copyGatewayAssetRefs(m.Assets)
+					localAssets := copyLocalAssetRefs(m.LocalAssets)
+					go func() {
+						_, err := withAllAssets.SendMessageWithRequestIDAndAllAssets(turnCtx, m.RequestID, m.Text, modelName, assets, localAssets)
+						r.rejectError(m.RequestID, err)
+					}()
+					return
+				}
 				if withRequestAssets, ok := r.Commands.(RequestAssetMessageTarget); ok && m.RequestID != "" && len(m.Assets) > 0 {
 					assets := copyGatewayAssetRefs(m.Assets)
 					go func() {

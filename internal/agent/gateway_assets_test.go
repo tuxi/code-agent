@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"code-agent/internal/assetref"
@@ -40,7 +41,7 @@ func (t fakeScreenshotTool) Execute(context.Context, tools.ExecutionContext, jso
 	}}, nil
 }
 
-func TestScreenshotUploadsThenSendsGatewayAssetReference(t *testing.T) {
+func TestScreenshotDoesNotUploadMerelyBecauseUploaderIsConfigured(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "screenshot.png")
 	if err := os.WriteFile(path, []byte("png"), 0o600); err != nil {
 		t.Fatal(err)
@@ -58,13 +59,13 @@ func TestScreenshotUploadsThenSendsGatewayAssetReference(t *testing.T) {
 	if _, err := runner.RunTurn(context.Background(), &session.Session{ID: "session", Messages: []model.Message{{Role: model.RoleSystem, Content: "test"}}, Metadata: map[string]any{}}, "inspect"); err != nil {
 		t.Fatalf("RunTurn: %v", err)
 	}
-	if uploader.calls != 1 || uploader.upload.AssetClass != "agent_screenshot" || uploader.upload.BusinessType != "agent_screenshot" || uploader.upload.SHA256 == "" {
-		t.Fatalf("upload = %+v calls=%d", uploader.upload, uploader.calls)
+	if uploader.calls != 0 {
+		t.Fatalf("screenshot was uploaded without explicit authorization: upload=%+v calls=%d", uploader.upload, uploader.calls)
 	}
 	for _, message := range provider.lastMessages {
 		if message.Role == model.RoleTool && message.ToolCallID == "call_screenshot" {
-			if len(message.Assets) != 1 || message.Assets[0].AssetID != 42 {
-				t.Fatalf("tool assets = %+v", message.Assets)
+			if len(message.Assets) != 0 {
+				t.Fatalf("tool result unexpectedly contains Gateway assets: %+v", message.Assets)
 			}
 			if provider.lastRequest.SessionID != "session" || provider.lastRequest.ExecutionID == "" {
 				t.Fatalf("gateway correlation missing: %+v", provider.lastRequest)
@@ -72,7 +73,7 @@ func TestScreenshotUploadsThenSendsGatewayAssetReference(t *testing.T) {
 			return
 		}
 	}
-	t.Fatal("next model request did not include screenshot tool result")
+	t.Fatal("next model request did not include local screenshot tool result")
 }
 
 func TestRunTurnWithAssetsPreservesUserGatewayAsset(t *testing.T) {
@@ -87,5 +88,34 @@ func TestRunTurnWithAssetsPreservesUserGatewayAsset(t *testing.T) {
 	}
 	if len(provider.lastMessages) < 2 || len(provider.lastMessages[1].Assets) != 1 || provider.lastMessages[1].Assets[0].AssetID != 7 {
 		t.Fatalf("user assets lost: %+v", provider.lastMessages)
+	}
+}
+
+func TestRunTurnWithLocalAssetsSendsOnlySafeManifestToProvider(t *testing.T) {
+	provider := &scriptedProvider{responses: []model.Response{{Content: "done"}}}
+	runner := &Runner{Model: provider, Tools: tools.NewRegistry(), MaxSteps: 1, RequestID: "req_local", ReservedTurnID: "turn_local"}
+	local := model.LocalAssetRef{
+		ID: "doc", RelativePath: "user-assets/doc/report.pdf", Filename: "report.pdf",
+		MIMEType: "application/pdf", Kind: "pdf", SizeBytes: 42,
+		SHA256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", TransferPolicy: "local_only",
+	}
+	sess := &session.Session{ID: "session", Messages: []model.Message{{Role: model.RoleSystem, Content: "test"}}, Metadata: map[string]any{}}
+	if _, err := runner.RunTurnWithAllAssets(context.Background(), sess, "", nil, []model.LocalAssetRef{local}); err != nil {
+		t.Fatal(err)
+	}
+	if len(sess.Messages[1].LocalAssets) != 1 || sess.Messages[1].Content != "" {
+		t.Fatalf("runtime session did not preserve local attachment: %+v", sess.Messages[1])
+	}
+	if len(provider.lastMessages) < 2 || len(provider.lastMessages[1].LocalAssets) != 0 {
+		t.Fatalf("provider received structured local assets: %+v", provider.lastMessages)
+	}
+	content := provider.lastMessages[1].Content
+	for _, want := range []string{"user-assets/doc/report.pdf", "report.pdf", "application/pdf", "size_bytes=42", "NOT visible", "Do not guess", "read_pdf"} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("manifest %q does not contain %q", content, want)
+		}
+	}
+	if strings.Contains(content, local.SHA256) {
+		t.Fatalf("manifest leaked sha256: %q", content)
 	}
 }

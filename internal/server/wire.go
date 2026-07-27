@@ -45,6 +45,7 @@ type wireEvent struct {
 	Output          json.RawMessage         `json:"output,omitempty"`
 	Assets          []assets.Ref            `json:"assets,omitempty"`
 	UserAssets      []model.GatewayAssetRef `json:"user_assets,omitempty"`
+	LocalAssets     []model.LocalAssetRef   `json:"local_assets,omitempty"`
 	ToolUsage       *tools.ToolUsage        `json:"usage,omitempty"`
 	TextAnnotations []assets.TextAnnotation `json:"text_annotations,omitempty"`
 	Chunk           string                  `json:"chunk,omitempty"`
@@ -120,6 +121,7 @@ func toWire(e agent.Event) wireEvent {
 		Output:             e.Output,
 		Assets:             e.Assets,
 		UserAssets:         e.UserAssets,
+		LocalAssets:        e.LocalAssets,
 		ToolUsage:          e.ToolUsage,
 		TextAnnotations:    e.TextAnnotations,
 		Chunk:              e.Chunk,

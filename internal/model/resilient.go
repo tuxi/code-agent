@@ -209,7 +209,7 @@ func (p *ResilientProvider) CompleteStream(ctx context.Context, req Request, onT
 	if isQuotaExceeded(err) || isUserAssetError(err) {
 		return Response{}, err
 	}
-	p.logf("[provider] stream failed: %s — falling back to non-streamed retry\n", errorClass(err))
+	//p.logf("[provider] stream failed: %s — falling back to non-streamed retry\n", errorClass(err))
 	return p.Complete(ctx, req)
 }
 

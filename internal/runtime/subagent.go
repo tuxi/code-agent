@@ -147,6 +147,12 @@ func (s *SubAgent) Run(ctx context.Context, ec tools.ExecutionContext, taskPromp
 		CompactKeepTokens: s.Cfg.CompactKeepTokens(s.MC),
 		Emitter:           emitter, // store-only (or nil) — never the parent's live renderer
 		WorkspaceRoot:     workspaceRoot,
+		// Forward the parent's PathAccessApprover so the subagent can request
+		// user approval for read-only access to paths outside the workspace,
+		// exactly as the main conversation does. The subagent remains read-only
+		// (ReadOnlyToolNames), so only "read"/"list" operations can trigger
+		// approval; writes are blocked by DenyAllApprover regardless.
+		PathAccessApprover: ec.PathAccessApprover,
 	}
 
 	res, err := sub.RunTurn(ctx, sess, taskPrompt)

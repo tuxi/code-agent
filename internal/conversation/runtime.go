@@ -23,6 +23,10 @@ type AssetTurnRunner interface {
 	RunTurnWithAssets(ctx context.Context, sess *session.Session, userInput string, assets []model.GatewayAssetRef) (agent.TurnResult, error)
 }
 
+type LocalAssetTurnRunner interface {
+	RunTurnWithAllAssets(ctx context.Context, sess *session.Session, userInput string, assets []model.GatewayAssetRef, localAssets []model.LocalAssetRef) (agent.TurnResult, error)
+}
+
 // PreparedTurnRunner executes a user message already appended atomically with a
 // durable inbox transition. It must not append the message a second time.
 type PreparedTurnRunner interface {
@@ -43,9 +47,9 @@ type AssetRefReleaseService interface {
 // everything a per-turn Runtime needs — session state, event publisher, and
 // approvers — so the factory signature stays stable as more fields are added.
 type RuntimeContext struct {
-	Session      *session.Session
-	TurnID       string        // reserved before acceptance; stable across queued → terminal lifecycle events
-	Publisher    agent.Emitter // TurnExecutor assembles the composite emitter
+	Session         *session.Session
+	TurnID          string        // reserved before acceptance; stable across queued → terminal lifecycle events
+	Publisher       agent.Emitter // TurnExecutor assembles the composite emitter
 	Approver        agent.Approver
 	PlanApprover    agent.PlanApprover     // nil = auto-approve plans (test/headless path)
 	AskUserApprover agent.AskUserApprover  // nil = headless fallback
