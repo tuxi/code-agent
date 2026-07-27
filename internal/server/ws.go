@@ -160,6 +160,14 @@ func (h *WSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.CloseNow()
 
+	// coder/websocket defaults to a 32KB read limit per message — far too small
+	// for client-tool results (image analysis, large file diffs, etc.). Disable
+	// the limit so tool_result messages aren't silently rejected at the framing
+	// layer before they reach the Router. The connection is authenticated and tool
+	// execution is bounded by ClientToolTimeout, so memory exhaustion is not a
+	// realistic concern.
+	conn.SetReadLimit(-1)
+
 	// The request context is unreliable once the connection is hijacked (see
 	// websocket.Accept), so the stream runs on its own context. The read loop
 	// cancels it the moment the client disconnects.
@@ -355,9 +363,16 @@ type revisionToolResultResolver struct {
 }
 
 func (r revisionToolResultResolver) Deliver(callID string, result agent.ToolCallResult) {
-	if r.handler.ownsSessionControl(r.sessionID, r.revision) {
-		r.target.Deliver(callID, result)
-	}
+	// Accept tool results from any active WS connection, not just the latest.
+	// RemoteToolResultWaiter.Deliver already guards against unknown/stale callIDs
+	// (silently dropped), already-completed calls (done channel), and duplicates
+	// (entry removed from pending map on first delivery). Gating by
+	// ownsSessionControl causes legitimate results to be silently dropped when a
+	// single client opens multiple connections to the same session — e.g. a brief
+	// reconnect during app foreground/background or network change. Meanwhile
+	// cancel_turn bypasses this check entirely (it calls r.Commands.Cancel()
+	// directly), making the hung-turn symptom especially confusing.
+	r.target.Deliver(callID, result)
 }
 
 // ensureApprover returns the session-scoped RemoteApprover for sessionID,

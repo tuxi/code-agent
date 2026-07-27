@@ -87,8 +87,10 @@ func TestWSHandlerLatestConnectionOwnsSessionControl(t *testing.T) {
 	newTool := revisionToolResultResolver{handler: h, sessionID: "session", revision: secondRevision, target: toolTarget}
 	oldTool.Deliver("call", agent.ToolCallResult{Content: "stale"})
 	newTool.Deliver("call", agent.ToolCallResult{Content: "current"})
-	if toolTarget.calls != 1 {
-		t.Fatalf("tool deliveries=%d want only current owner", toolTarget.calls)
+	// Tool results are accepted from any active connection — RemoteToolResultWaiter
+	// already guards against unknown/stale callIDs. See ws.go revisionToolResultResolver.
+	if toolTarget.calls != 2 {
+		t.Fatalf("tool deliveries=%d want both connections accepted", toolTarget.calls)
 	}
 
 	// A late disconnect from the old socket must not clear the replacement sink.
@@ -146,16 +148,19 @@ func TestWSHandlerAttentionRejectsStaleControlResults(t *testing.T) {
 	}
 	staleTool := revisionToolResultResolver{handler: h, sessionID: "session", revision: firstRevision, target: waiter}
 	currentTool := revisionToolResultResolver{handler: h, sessionID: "session", revision: secondRevision, target: waiter}
+	// Tool results are accepted from any active connection. The stale resolver
+	// resolves the call and attention drops to 0. The current resolver's subsequent
+	// delivery is a no-op (call already completed).
 	staleTool.Deliver("call", agent.ToolCallResult{Content: "stale"})
-	if got := h.BrokerAttention()["session"].PendingClientToolCount; got != 1 {
-		t.Fatalf("stale tool result changed attention to %d", got)
+	if got := h.BrokerAttention()["session"].PendingClientToolCount; got != 0 {
+		t.Fatalf("stale tool result delivery left attention=%d, want 0 (accepted from any connection)", got)
 	}
 	currentTool.Deliver("call", agent.ToolCallResult{Content: "current"})
 	if got := h.BrokerAttention()["session"].PendingClientToolCount; got != 0 {
-		t.Fatalf("current tool result left attention=%d", got)
+		t.Fatalf("current tool result delivery left attention=%d, want 0", got)
 	}
-	if got := <-toolResult; got.Content != "current" {
-		t.Fatalf("tool result=%+v", got)
+	if got := <-toolResult; got.Content != "stale" {
+		t.Fatalf("tool result=%+v, want stale (first delivery from any connection wins)", got)
 	}
 }
 
