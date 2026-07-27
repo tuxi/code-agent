@@ -44,6 +44,7 @@ var defaultCapabilities = []string{
 	"tool_streaming",
 	"plan_mode",
 	"subagents",
+	"child_streaming",
 	"session_resume",
 	"client_tool_execution",
 	"workflow_execution",
@@ -146,15 +147,19 @@ func (h *Handle) Port() int { return h.port }
 // It is safe to call once; further calls are no-ops.
 func (h *Handle) Stop() error {
 	if h.srv == nil {
+		fmt.Fprintf(os.Stderr, "[lifecycle] Handle.Stop(): already nil, no-op\n")
 		return nil
 	}
+	fmt.Fprintf(os.Stderr, "[lifecycle] Handle.Stop(): closing server (port=%d)\n", h.port)
 	err := h.srv.Close()
 	if h.cancel != nil {
 		h.cancel()
+		fmt.Fprintf(os.Stderr, "[lifecycle] Handle.Stop(): context cancelled\n")
 	}
 	for i := len(h.closers) - 1; i >= 0; i-- {
 		h.closers[i]()
 	}
+	fmt.Fprintf(os.Stderr, "[lifecycle] Handle.Stop(): %d closers run, DB closed\n", len(h.closers))
 	h.srv = nil
 	return err
 }
@@ -369,6 +374,7 @@ func StartServer(ctx context.Context, opt Options) (*Handle, error) {
 	}()
 
 	ok = true
+	fmt.Fprintf(os.Stderr, "[lifecycle] StartServer() OK: port=%d dataDir=%s storeBase=%s\n", h.port, dataDir, runtime.StoreBaseDir())
 	return h, nil
 }
 

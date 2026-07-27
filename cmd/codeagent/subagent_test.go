@@ -9,8 +9,26 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
+	"sync"
 	"testing"
 )
+
+type capturedEvents struct {
+	mu     sync.Mutex
+	events []agent.Event
+}
+
+func (c *capturedEvents) Emit(event agent.Event) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.events = append(c.events, event)
+}
+
+func (c *capturedEvents) snapshot() []agent.Event {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]agent.Event(nil), c.events...)
+}
 
 // answerProvider returns a fixed text answer with no tool calls — the subagent's
 // turn finishes immediately with this as its conclusion.
@@ -214,7 +232,14 @@ func TestSubAgentForwardsBracketsToParent(t *testing.T) {
 	store := testStore(t)
 	sa := testSubAgent(answerProvider{content: "done"}, t.TempDir())
 	sa.Store = store
+	childLive := &capturedEvents{}
 	sa.Forwarder = runtime.NewJobEventSink(context.Background(), store)
+	sa.Forwarder.SetLiveResolver(func(id string) agent.Emitter {
+		if id == "sess_parent" {
+			return nil
+		}
+		return childLive
+	})
 
 	ec := tools.ExecutionContext{WorkspaceRoot: sa.Root, SessionID: "sess_parent", TurnID: "turn_5", CallID: "call_task_9"}
 	if _, err := sa.Run(context.Background(), ec, "trace the auth flow"); err != nil {
@@ -245,5 +270,22 @@ func TestSubAgentForwardsBracketsToParent(t *testing.T) {
 	// call_id lets the client correlate the bracket with the `task` tool card.
 	if started.CallID != "call_task_9" {
 		t.Errorf("payload call_id = %q, want the originating task call", started.CallID)
+	}
+
+	child, err := store.SessionEvents(context.Background(), started.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(child) < 2 || child[0].Kind != string(agent.EventTaskStarted) || child[len(child)-1].Kind != string(agent.EventTaskFinished) {
+		t.Fatalf("child partition is not bracketed: %+v", child)
+	}
+	live := childLive.snapshot()
+	if len(live) != len(child) {
+		t.Fatalf("child live events=%d, persisted=%d", len(live), len(child))
+	}
+	for i := range child {
+		if live[i].Seq != child[i].Seq {
+			t.Fatalf("child live[%d].seq=%d, persisted seq=%d", i, live[i].Seq, child[i].Seq)
+		}
 	}
 }

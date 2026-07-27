@@ -927,6 +927,48 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 	}
 	mux.Handle("GET /v1/jobs/{id}/stream", jobStream)
 
+	// Generic read-only child streams. Task subagents and future multi-agent
+	// workers use the same event partition contract as jobs: durable backlog plus
+	// a live bus keyed by the opaque child id. The parent conversation still sees
+	// only discovery/terminal brackets.
+	mux.HandleFunc("GET /v1/child-streams/{id}/events", func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+		recs, ok := loadChildEventsSince(r.Context(), eventStore, id, parseSince(r), w)
+		if !ok {
+			return
+		}
+		frames := make([]json.RawMessage, 0, len(recs))
+		for _, rec := range recs {
+			ev, ok := decodeStoredEvent(rec)
+			if !ok {
+				continue
+			}
+			ev.Seq = rec.Seq
+			if frame, err := Encode(ev, "", ""); err == nil {
+				frames = append(frames, frame)
+			}
+		}
+		writeJSON(w, r, http.StatusOK, frames)
+	})
+
+	childStream := &JobStreamHandler{
+		ServerName:   opts.ServerName,
+		Capabilities: opts.Capabilities,
+		Accept:       opts.Accept,
+		Resolve: func(r *http.Request) (Subscriber, error) {
+			id := r.PathValue("id")
+			recs, err := eventStore.ReplaySince(r.Context(), id, 0)
+			if err != nil {
+				return nil, err
+			}
+			if len(recs) == 0 {
+				return nil, fmt.Errorf("child stream %q not found", id)
+			}
+			return conversation.NewChildStreamSubscriber(id, executor), nil
+		},
+	}
+	mux.Handle("GET /v1/child-streams/{id}/stream", childStream)
+
 	// GET /v1/prompts — list the MCP prompts a client can invoke via invoke_prompt.
 	// Server-wide (MCP servers are global), so it needs no conversation id.
 	mux.HandleFunc("GET /v1/prompts", func(w http.ResponseWriter, r *http.Request) {
@@ -1326,6 +1368,39 @@ func loadEventsSince(ctx context.Context, eventStore conversation.ConversationEv
 			http.Error(w, "conversation not found", http.StatusNotFound)
 			return nil, false
 		}
+	}
+	return recs, true
+}
+
+// loadChildEventsSince resolves existence exclusively from the event partition:
+// child agents intentionally have no row in the root conversation repository.
+// When an incremental request is already at the tail, a full replay distinguishes
+// a known child with no newer events ([]) from an unknown id (404).
+func loadChildEventsSince(ctx context.Context, eventStore conversation.ConversationEventStore, id string, sinceSeq int64, w http.ResponseWriter) ([]session.EventRecord, bool) {
+	var recs []session.EventRecord
+	var err error
+	if sinceSeq > 0 {
+		recs, err = eventStore.ReplaySince(ctx, id, sinceSeq)
+	} else {
+		recs, err = eventStore.Replay(ctx, id)
+	}
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return nil, false
+	}
+	if len(recs) == 0 && sinceSeq > 0 {
+		known, loadErr := eventStore.Replay(ctx, id)
+		if loadErr != nil {
+			http.Error(w, loadErr.Error(), http.StatusInternalServerError)
+			return nil, false
+		}
+		if len(known) > 0 {
+			return recs, true
+		}
+	}
+	if len(recs) == 0 {
+		http.Error(w, "child stream not found", http.StatusNotFound)
+		return nil, false
 	}
 	return recs, true
 }

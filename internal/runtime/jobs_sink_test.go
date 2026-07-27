@@ -172,6 +172,35 @@ func TestJobEventSinkDualPartition(t *testing.T) {
 	}
 }
 
+func TestChildEventEmitterPersistsAndFansLive(t *testing.T) {
+	store := &fakeEventStore{}
+	live := &recordingEmitter{}
+	sink := NewJobEventSink(context.Background(), store)
+	sink.SetLiveResolver(func(id string) agent.Emitter {
+		if id != "task_child_1" {
+			t.Fatalf("resolved unexpected child id %q", id)
+		}
+		return live
+	})
+
+	sink.Emit(agent.Event{
+		Kind: agent.EventToolStarted, SessionID: "task_child_1",
+		TurnID: "turn_child", CallID: "call_read", At: time.Now(),
+	})
+
+	recs, _ := store.SessionEvents(context.Background(), "task_child_1")
+	if len(recs) != 1 || recs[0].Kind != string(agent.EventToolStarted) {
+		t.Fatalf("persisted child events = %v, want tool_started", kindsOf(recs))
+	}
+	events := live.snapshot()
+	if len(events) != 1 || events[0].Kind != agent.EventToolStarted {
+		t.Fatalf("live child events = %+v, want tool_started", events)
+	}
+	if events[0].Seq != recs[0].Seq {
+		t.Fatalf("live seq = %d, want persisted child seq %d", events[0].Seq, recs[0].Seq)
+	}
+}
+
 func TestJobEventSinkUnowned(t *testing.T) {
 	store := &fakeEventStore{}
 	var childLive int

@@ -39,6 +39,7 @@ agent-core (Layer 1)          agent-server (Layer 2)         frontends (Layer 3)
 |--------|------|-----------|-------|
 | Conversation | `GET /v1/conversations/{id}/stream` | bidirectional | v1.0 |
 | Job (subagent) | `GET /v1/jobs/{id}/stream` | server→client (read-only) | v1.0 |
+| Child agent stream | `GET /v1/child-streams/{id}/stream` | server→client (read-only) | v1.0 |
 
 ### 2.2 Hello Frame
 

@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -43,6 +44,35 @@ func openSQLiteStore(root string) (session.Store, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	// --- diagnostic: session DB startup trace (iOS conversation-loss investigation) ---
+	dbDir := filepath.Dir(path)
+	fmt.Fprintf(os.Stderr, "[session-db] startup root=%q path=%q\n", root, path)
+
+	// List existing session DB files — main + corrupt quarantine + WAL sidecars.
+	if entries, listErr := os.ReadDir(dbDir); listErr == nil {
+		for _, e := range entries {
+			n := e.Name()
+			if strings.HasPrefix(n, "sessions.db") {
+				info, _ := e.Info()
+				size := int64(-1)
+				if info != nil {
+					size = info.Size()
+				}
+				fmt.Fprintf(os.Stderr, "[session-db] existing file: %s (size=%d)\n", filepath.Join(dbDir, n), size)
+			}
+		}
+		// Check for quarantined (corrupt) copies — proof the quarantine logic fired previously.
+		corrupts, _ := filepath.Glob(filepath.Join(dbDir, "sessions.db.corrupt-*"))
+		if len(corrupts) > 0 {
+			fmt.Fprintf(os.Stderr, "[session-db] ⚠️ FOUND %d QUARANTINED DB(s) — previous startup isolated these:\n", len(corrupts))
+			for _, c := range corrupts {
+				fmt.Fprintf(os.Stderr, "[session-db]   quarantined: %s\n", c)
+			}
+		}
+	}
+	// -------------------------------------------------------------------------------------
+
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, fmt.Errorf("create session store dir: %w", err)
 	}
@@ -63,6 +93,7 @@ func openSQLiteStore(root string) (session.Store, error) {
 		// The DB won't open — it may be a corrupt copy migrated from a synced
 		// folder that was being clobbered. Quarantine it (non-destructively, kept
 		// for manual recovery) and start fresh rather than block startup forever.
+		fmt.Fprintf(os.Stderr, "[session-db] ❌ DB OPEN FAILED: %v — triggering quarantine\n", err)
 		quarantine := path + ".corrupt-" + time.Now().Format("20060102-150405")
 		if os.Rename(path, quarantine) == nil {
 			// Move the WAL sidecars aside with it: a stale -wal/-shm left next to
@@ -72,11 +103,13 @@ func openSQLiteStore(root string) (session.Store, error) {
 			for _, ext := range dbSidecars {
 				_ = os.Rename(path+ext, quarantine+ext)
 			}
-			fmt.Fprintf(os.Stderr, "warning: session DB unreadable (%v); moved aside to %s, starting fresh\n", err, quarantine)
+			fmt.Fprintf(os.Stderr, "[session-db] ❌ QUARANTINED → %s (all sessions lost, starting empty)\n", quarantine)
 			return sqlite.New(path)
 		}
+		fmt.Fprintf(os.Stderr, "[session-db] ❌ quarantine rename failed, returning error\n")
 		return nil, err
 	}
+	fmt.Fprintf(os.Stderr, "[session-db] ✅ DB opened successfully\n")
 	return store, nil
 }
 
@@ -124,6 +157,9 @@ var storeBaseDir string
 // absolute, writable path; call it before any store is opened. Empty restores the
 // $HOME/.codeagent default.
 func SetStoreBaseDir(dir string) { storeBaseDir = dir }
+
+// StoreBaseDir returns the current session-store base directory (may be empty).
+func StoreBaseDir() string { return storeBaseDir }
 
 // MigrateStore copies the session database from oldRoot to newRoot when the new
 // store does not yet exist and the old one does. It is a one-shot migration for

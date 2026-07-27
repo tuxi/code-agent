@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/google/uuid"
 	"io"
 	"os"
 	"path/filepath"
@@ -198,12 +199,10 @@ type Runner struct {
 	emitMu sync.Mutex
 }
 
-// invocationSeq backs per-turn invocation ids; monotonically increases within a
-// single process. Combined with turn_id on the wire, clients get globally unique
-// (session, turn, invocation) triples.
-var invocationSeq atomic.Uint64
-
-func newInvocationID() string { return fmt.Sprintf("inv_%d", invocationSeq.Add(1)) }
+// newInvocationID returns a globally-unique invocation identifier so the
+// gateway can safely treat (user_id, invocation_id) as an idempotency key
+// across process restarts and multiple Runtime instances.
+func newInvocationID() string { return uuid.New().String() }
 
 // nextSessionTurnID returns a session-scoped, monotonic turn identifier. Unlike
 // a process-global counter (which resets on restart and can produce duplicates

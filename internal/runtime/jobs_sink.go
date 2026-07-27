@@ -54,14 +54,30 @@ func NewJobEventSink(ctx context.Context, store session.EventStore) *JobEventSin
 	return &JobEventSink{ctx: ctx, store: store, pending: make(map[string]*pendingOutput)}
 }
 
-// SetLiveResolver wires live fan-out for the parent-stream bracket copies —
-// serve passes the SubscriptionManager's Emitter so a connected client sees
-// job_started/job_finished in real time. Late-bound because the subscription
-// manager is assembled after the tool registry; nil-safe (store-only until set).
+// SetLiveResolver wires live fan-out for both child partitions and parent-stream
+// bracket copies. Serve passes the SubscriptionManager's Emitter after assembling
+// the subscription manager; nil keeps the sink durable-only.
 func (s *JobEventSink) SetLiveResolver(f func(sessionID string) agent.Emitter) {
 	s.mu.Lock()
 	s.live = f
 	s.mu.Unlock()
+}
+
+// Emit persists an arbitrary child-agent event under its own SessionID and
+// fans it to that child partition's live subscribers. Implementing
+// agent.Emitter lets task subagents and future agent kinds share the same
+// durable/live child-stream primitive as background jobs.
+func (s *JobEventSink) Emit(ev agent.Event) {
+	if s == nil || ev.SessionID == "" {
+		return
+	}
+	// Deltas are live previews. Authoritative thinking/turn-finished snapshots
+	// remain durable, matching EventStoreEmitter and the root conversation stream.
+	if ev.Kind == agent.EventTokenDelta || ev.Kind == agent.EventReasoningDelta {
+		s.fanLive(ev.SessionID, ev)
+		return
+	}
+	s.emitChild(ev)
 }
 
 func (s *JobEventSink) JobStarted(snap jobs.Snapshot) {
@@ -115,10 +131,10 @@ func (s *JobEventSink) publish(ev agent.Event, owner jobs.Owner) {
 	s.ForwardBracket(ev, owner.SessionID)
 }
 
-// emitChild persists ev under the child (job) partition AND fans it to the
-// job's OWN live stream (Phase C: GET /v1/jobs/{id}/stream attaches to the bus
-// keyed on the job id), with the child-partition seq stamped on the live frame
-// so the client's per-job cursor works. ev.Seq MUST be 0 on entry — record
+// emitChild persists ev under its child partition AND fans it to the child's own
+// live stream (`/v1/jobs/{id}/stream` or `/v1/child-streams/{id}/stream`), with
+// the child-partition seq stamped on the live frame so the client's cursor works.
+// ev.Seq MUST be 0 on entry — record
 // marshals the payload, which must never carry seq (it lives in the row). ev is
 // taken by value, so the local seq stamp never leaks back to the caller (which
 // may still forward the same event to the parent with a different seq).

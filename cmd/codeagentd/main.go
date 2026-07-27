@@ -32,6 +32,7 @@ var defaultCapabilities = []string{
 	"tool_streaming",
 	"plan_mode",
 	"subagents",
+	"child_streaming",
 	"session_resume",
 	"client_tool_execution",
 	"workflow_execution",

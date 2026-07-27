@@ -204,6 +204,51 @@ func (s *fakeEventStore) Attention(_ context.Context, sinceSequence int64) (sess
 	return session.EventAttentionSnapshot{LastSequence: cursor, Sessions: out}, nil
 }
 
+func TestMuxGenericChildStreamBacklogAndTail(t *testing.T) {
+	repo := newFakeConversationRepo()
+	events := &fakeEventStore{}
+	childID := "task_child_1"
+	seq, err := events.Append(context.Background(), storedEvent(agent.Event{
+		Kind: agent.EventTaskStarted, SessionID: childID, TurnID: "turn_1",
+		At: time.Now(), Text: "inspect repository",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	srv := httptest.NewServer(NewMux(repo, events, nil, MuxOptions{}))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/v1/child-streams/" + childID + "/events")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), `"kind":"task_started"`) {
+		t.Fatalf("backlog status=%d body=%s", resp.StatusCode, body)
+	}
+
+	resp, err = http.Get(fmt.Sprintf("%s/v1/child-streams/%s/events?since=%d", srv.URL, childID, seq))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), `"data":[]`) {
+		t.Fatalf("tail status=%d body=%s, want known empty child stream", resp.StatusCode, body)
+	}
+
+	resp, err = http.Get(srv.URL + "/v1/child-streams/missing/events")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("missing status=%d, want 404", resp.StatusCode)
+	}
+}
+
 func storedEvent(ev agent.Event) session.EventRecord {
 	p, _ := json.Marshal(ev)
 	return session.EventRecord{SessionID: ev.SessionID, TurnID: ev.TurnID, Kind: string(ev.Kind), At: ev.At, Payload: p}

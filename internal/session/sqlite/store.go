@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -162,6 +163,19 @@ CREATE INDEX IF NOT EXISTS idx_session_events_session ON session_events(session_
 // Used at construction and to recover the connection after the file moved out
 // from under it (SQLITE_READONLY_DBMOVED) — see Save.
 func (s *Store) open() error {
+	// --- diagnostic: WAL state at open time (iOS cold-start investigation) ---
+	if info, err := os.Stat(s.path); err == nil {
+		fmt.Fprintf(os.Stderr, "[session-db] open(): main DB exists, size=%d\n", info.Size())
+	} else {
+		fmt.Fprintf(os.Stderr, "[session-db] open(): main DB does not exist yet (%v)\n", err)
+	}
+	for _, ext := range []string{"-wal", "-shm"} {
+		if info, err := os.Stat(s.path + ext); err == nil {
+			fmt.Fprintf(os.Stderr, "[session-db] open(): %s exists, size=%d (leftover from previous process)\n", ext, info.Size())
+		}
+	}
+	// -------------------------------------------------------------------------
+
 	// WAL + synchronous=NORMAL is the crash-safe storage config the iOS lifecycle
 	// contract requires (docs/protocols/agent-wire-v1.2-lifecycle-suspend-resume.md
 	// §2.2.1): a per-turn-iteration checkpoint must survive a jetsam SIGKILL

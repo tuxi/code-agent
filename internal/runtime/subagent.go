@@ -108,15 +108,18 @@ func (s *SubAgent) Run(ctx context.Context, ec tools.ExecutionContext, taskPromp
 	sess.Model = s.MC.Model
 
 	// Observability, two sinks fanned out by MultiEmitter:
-	//   - store: persists the FULL transcript under the sub-session's id (inspect
-	//     later with `codeagent task-trace <id>`), and indexes the delegation.
+	//   - Forwarder: persists the FULL transcript under the sub-session's id and
+	//     fans it to that child's live bus. Store is the compatibility fallback
+	//     for constructions that do not wire the shared child sink.
 	//   - progress: a CONDENSED live heartbeat (run/repl), so `task` is not a black
 	//     box while it runs.
 	// Crucially, NEITHER is the parent's live renderer, so the full sub-stream
 	// never floods the parent — default-quiet holds. task_started/finished bracket
 	// the run. Both sinks nil (e.g. tests / piped output) degrades to fully quiet.
 	sinks := make(MultiEmitter, 0, 2)
-	if s.Store != nil {
+	if s.Forwarder != nil {
+		sinks = append(sinks, s.Forwarder)
+	} else if s.Store != nil {
 		sinks = append(sinks, EventStoreEmitter{Ctx: ctx, Store: s.Store})
 	}
 	if s.Progress != nil {
@@ -146,7 +149,7 @@ func (s *SubAgent) Run(ctx context.Context, ec tools.ExecutionContext, taskPromp
 		Reflector:         agent.DefaultReflector{},
 		Compactor:         BuildCompactor(s.Cfg, s.MC, s.Provider),
 		CompactKeepTokens: s.Cfg.CompactKeepTokens(s.MC),
-		Emitter:           emitter, // store-only (or nil) — never the parent's live renderer
+		Emitter:           emitter, // child partition only — never floods the parent renderer
 		WorkspaceRoot:     workspaceRoot,
 		// Forward the parent's PathAccessApprover so the subagent can request
 		// user approval for read-only access to paths outside the workspace,
