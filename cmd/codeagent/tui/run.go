@@ -149,7 +149,7 @@ func Run(ctx context.Context, b *Backend, runner *agent.Runner, sess *session.Se
 				// Applied at a turn boundary (the select can't fire mid-RunTurn), so
 				// the next turn runs in the chosen mode — no hot-swap of a live turn.
 				if on {
-					runner.PlanState = agent.PlanStatusPlanning
+					runner.BeginPlanning("")
 				} else {
 					runner.PlanState = agent.PlanStatusNone
 				}

@@ -135,6 +135,15 @@ type Runner struct {
 	// confusing user-visible text with provider reasoning.
 	lastAssistantText string
 
+	// Harness gates persist across user turns while an approved plan is active.
+	// A passing critic is required before proposal; any implementation mutation
+	// invalidates the independent change review until a reviewer passes it again.
+	planCriticPassed        bool
+	planCriticPath          string
+	planCriticDigest        string
+	plannedMutation         bool
+	independentReviewPassed bool
+
 	Compactor session.Compactor
 
 	// CompactKeepTokens mirrors the compactor's verbatim-tail budget for tier-0
@@ -775,6 +784,7 @@ func (r *Runner) drive(ctx context.Context, sess *session.Session) (TurnResult, 
 	// ephemeral nudge to apply on the next request once it fires.
 	reflected := false
 	pendingReflection := ""
+	pendingHarness := ""
 
 	// Pre-mutation self-check (P4.3-R Move 3) per-turn state: at most one
 	// hypothesis nudge before an edit that follows a failure, and the ephemeral
@@ -822,7 +832,7 @@ func (r *Runner) drive(ctx context.Context, sess *session.Session) (TurnResult, 
 		// appended only to this request, never persisted — so it keeps applying
 		// pressure without polluting history. (max_steps still backstops it.)
 		msgs := sess.Messages
-		if n := len(turn.Steps); n >= r.nudgeThreshold() {
+		if n := len(turn.Steps); r.PlanState != PlanStatusPlanning && n >= r.nudgeThreshold() {
 			msgs = withConvergenceNudge(sess.Messages, n)
 		}
 		// Reflection nudge (P4.3): apply the self-check once, ephemerally — the
@@ -831,6 +841,10 @@ func (r *Runner) drive(ctx context.Context, sess *session.Session) (TurnResult, 
 		if pendingReflection != "" {
 			msgs = appendEphemeralUser(msgs, pendingReflection)
 			pendingReflection = ""
+		}
+		if pendingHarness != "" {
+			msgs = appendEphemeralUser(msgs, pendingHarness)
+			pendingHarness = ""
 		}
 		// Pre-mutation self-check nudge (P4.3-R Move 3): same ephemeral mechanism,
 		// fired before an edit that follows a failure rather than at the finish line.
@@ -857,6 +871,9 @@ func (r *Runner) drive(ctx context.Context, sess *session.Session) (TurnResult, 
 		// The restricted toolset already prevents edits; this shapes the output.
 		if r.PlanState == PlanStatusPlanning {
 			msgs = appendEphemeralUser(msgs, planningPrompt)
+			if !r.independentTaskAvailable() {
+				msgs = appendEphemeralUser(msgs, criticUnavailablePrompt)
+			}
 		}
 		msgs = withLocalAssetManifests(msgs)
 
@@ -954,6 +971,14 @@ func (r *Runner) drive(ctx context.Context, sess *session.Session) (TurnResult, 
 
 		// No tool calls => the model wants to finish.
 		if !resp.HasToolCalls() {
+			// Planning is a compilation phase, not an answer-writing phase. Plain
+			// assistant text cannot silently escape it: only propose_plan may move
+			// the state machine forward.
+			if r.PlanState == PlanStatusPlanning {
+				pendingHarness = planningContinuationPrompt
+				r.emit(Event{Kind: EventReflected, Text: pendingHarness})
+				continue
+			}
 			// Reflection (P4.3 / P4.3-R): before accepting "done", run one grounded
 			// self-check. Do NOT persist this premature finish (persisting it would
 			// leave a retracted answer, and two assistant turns in a row, in history).
@@ -993,6 +1018,12 @@ func (r *Runner) drive(ctx context.Context, sess *session.Session) (TurnResult, 
 					r.emit(Event{Kind: EventReflected, Text: nudge})
 					continue
 				}
+			}
+			if r.PlanState == PlanStatusExecuting && r.independentTaskAvailable() &&
+				r.plannedMutation && !r.independentReviewPassed {
+				pendingHarness = changeReviewPrompt
+				r.emit(Event{Kind: EventReflected, Text: pendingHarness})
+				continue
 			}
 			sess.Messages = append(sess.Messages, resp.AssistantMessage())
 			sess.UpdatedAt = time.Now()
@@ -1051,6 +1082,22 @@ func (r *Runner) drive(ctx context.Context, sess *session.Session) (TurnResult, 
 	// results in the history, so give it one final tool-free call to answer from
 	// what it has — instead of a useless "stopped" message that forces the user to
 	// re-ask (and re-pay for the whole investigation).
+	if r.PlanState == PlanStatusPlanning {
+		turn.Final = "Planning paused at the step limit before a review-ready plan was proposed. Continue discovery and call propose_plan with the required readiness evidence."
+		if r.independentTaskAvailable() {
+			turn.Final = "Planning paused at the step limit before a review-ready plan was proposed. Continue discovery, run a passing plan_critic task, then call propose_plan."
+		}
+		turn.HitStepLimit = true
+		r.emit(Event{Kind: EventTurnFinished, Text: turn.Final})
+		return turn, nil
+	}
+	if r.PlanState == PlanStatusExecuting && r.independentTaskAvailable() &&
+		r.plannedMutation && !r.independentReviewPassed {
+		turn.Final = "Implementation paused at the step limit before the latest changes received a passing independent review. Continue with a change_review task before finalizing."
+		turn.HitStepLimit = true
+		r.emit(Event{Kind: EventTurnFinished, Text: turn.Final})
+		return turn, nil
+	}
 	final, finalTokens, finalBillingUnits := r.finalAnswerAfterLimit(ctx, sess)
 	turn.Final = final
 	turn.TokensUsed += finalTokens
@@ -1179,18 +1226,40 @@ func (r *Runner) runFinalizeVerify(ctx context.Context) (passed bool, summary st
 // blocks project edits; this tells the model what to produce instead.
 const planningPrompt = "[plan mode] You are in PLAN MODE. You can read, search, and write plan " +
 	"files to .codeagent/plans/, but you CANNOT edit project files or run commands. " +
+	"Treat this as a discovery and graph-compilation phase: delay convergence until the evidence supports the design. " +
 	"Research the task thoroughly, then produce a concrete implementation plan. " +
 	"Your plan should include:\n" +
 	"1. Problem summary — what needs to be done\n" +
 	"2. Files to change — list each file and what changes\n" +
 	"3. Approach — the implementation strategy and key design decisions\n" +
 	"4. Step-by-step order — the sequence of changes\n" +
-	"5. Risks and edge cases — what could go wrong and how to handle it\n" +
+	"5. Evidence — concrete workspace-relative files and findings that support the design\n" +
+	"6. Constraints and unknowns — resolve blocking unknowns with ask_user; do not propose while any remain\n" +
+	"7. Risks and edge cases — what could go wrong and how to handle it\n" +
+	"8. Verification — exact tests/checks that will prove the implementation\n" +
+	"Before proposing, delegate an independent critique with task kind plan_critic and subject_path set to " +
+	"the authoritative plan file. Give it the plan path, " +
+	"require it to inspect the relevant code independently, and require a first-line VERDICT: PASS or " +
+	"VERDICT: REQUEST_CHANGES. Revise and re-run the critic until it passes. " +
 	"When your plan is complete, write it to a markdown file under .codeagent/plans/, " +
-	"then call propose_plan with plan_path set to that workspace-relative file path. " +
+	"then call propose_plan with plan_path, evidence_paths, verification, blocking_unknowns, and critic_summary. " +
 	"Keep the accompanying text brief; the plan file is the authoritative content " +
 	"submitted for approval. Do NOT make any project changes. " +
 	"You may track your plan's steps with todo_write."
+
+const planningContinuationPrompt = "[plan mode] Plain assistant text cannot finish PLAN MODE. " +
+	"Continue discovery. Write the authoritative plan under .codeagent/plans/, obtain a passing independent " +
+	"task with kind plan_critic, then call propose_plan with the readiness evidence."
+
+const criticUnavailablePrompt = "[plan mode capability override] The task tool is disabled in this configuration, " +
+	"so the independent plan_critic requirement is waived. Complete the other readiness fields and set " +
+	"critic_summary to explain that the isolated critic capability was unavailable."
+
+const changeReviewPrompt = "[review gate] The approved plan changed the workspace, but no passing independent " +
+	"review follows the latest mutation. Delegate task with kind change_review and a self-contained prompt " +
+	"containing the requirement, approved plan path, changed scope, and verification results. Require the " +
+	"reviewer to inspect git_diff and relevant files independently and return first-line VERDICT: PASS or " +
+	"VERDICT: REQUEST_CHANGES. If it requests changes, fix them and review again; do not give a final answer yet."
 
 // withConvergenceNudge returns a copy of msgs with a transient reminder appended,
 // steering the model to answer now instead of over-investigating.

@@ -335,7 +335,7 @@ func handleCommand(line string, cfg app.Config, mc *app.ModelConfig, runner *age
 		if runner.PlanState == agent.PlanStatusPlanning {
 			runner.PlanState = agent.PlanStatusNone
 		} else {
-			runner.PlanState = agent.PlanStatusPlanning
+			runner.BeginPlanning("")
 		}
 		if runner.PlanState == agent.PlanStatusPlanning {
 			fmt.Println("Plan mode ON — read-only: I'll research and produce a plan, no edits. /plan again to exit.")

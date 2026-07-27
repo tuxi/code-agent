@@ -2,9 +2,11 @@ package agent
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -339,6 +341,14 @@ func (r *Runner) commitToolResult(ctx context.Context, sess *session.Session, tu
 		turn.TokensUsed += res.modelUsage.PromptTokens + res.modelUsage.CompletionTokens
 	}
 	observation := res.observation
+	if p.known && res.succeeded && res.stepError == "" {
+		r.updateHarnessGates(
+			p.call.Function.Name,
+			p.input,
+			observation,
+			tools.HasSideEffectsFor(p.tool, p.input),
+		)
+	}
 	// A compliant MCP tool puts descriptors in its original structuredContent.
 	// Register them before observation/compaction so no opaque MCP identifier
 	// reaches the model transcript. Output remains raw for standard hosts and
@@ -417,6 +427,67 @@ func (r *Runner) commitToolResult(ctx context.Context, sess *session.Session, tu
 		Assets:     gatewayAssets,
 	})
 	sess.UpdatedAt = time.Now()
+}
+
+func (r *Runner) updateHarnessGates(toolName string, input json.RawMessage, observation string, sideEffecting bool) {
+	if sideEffecting {
+		if r.PlanState == PlanStatusPlanning {
+			// A critic only approves the plan version it saw.
+			r.planCriticPassed = false
+			r.planCriticPath = ""
+			r.planCriticDigest = ""
+		}
+		if r.PlanState == PlanStatusExecuting {
+			r.plannedMutation = true
+			r.independentReviewPassed = false
+		}
+		return
+	}
+	if toolName != "task" {
+		return
+	}
+	var in struct {
+		Kind        string `json:"kind"`
+		SubjectPath string `json:"subject_path"`
+	}
+	if json.Unmarshal(input, &in) != nil || !hasPassingReviewVerdict(observation) {
+		return
+	}
+	switch in.Kind {
+	case "plan_critic":
+		if r.PlanState == PlanStatusPlanning {
+			content, _, relativePath, err := loadPlanFile(
+				r.WorkspaceRoot,
+				filepath.Join(r.WorkspaceRoot, ".codeagent", "plans"),
+				in.SubjectPath,
+			)
+			if err != nil {
+				return
+			}
+			r.planCriticPassed = true
+			r.planCriticPath = relativePath
+			r.planCriticDigest = planContentDigest(content)
+		}
+	case "change_review":
+		if r.PlanState == PlanStatusExecuting && r.plannedMutation {
+			r.independentReviewPassed = true
+		}
+	}
+}
+
+func planContentDigest(content string) string {
+	sum := sha256.Sum256([]byte(content))
+	return fmt.Sprintf("%x", sum[:])
+}
+
+func hasPassingReviewVerdict(observation string) bool {
+	for _, line := range strings.Split(observation, "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			return strings.EqualFold(line, "VERDICT: PASS")
+		}
+	}
+	return false
 }
 
 func applyToolUsage(turn *TurnResult, usage *tools.ToolUsage, fallbackCallID string) {

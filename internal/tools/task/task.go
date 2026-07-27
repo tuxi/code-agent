@@ -52,11 +52,23 @@ func (t *Tool) Description() string {
 		"the files it already covered. " +
 		"The subagent sees NOTHING of this conversation — its only input is your prompt, so put every " +
 		"file path, error message, and the precise question into that prompt. It is read-only (no edits, " +
-		"no commands). Returns the subagent's findings."
+		"no commands). For a harness gate, set kind to plan_critic or change_review and require the first " +
+		"line to be exactly VERDICT: PASS or VERDICT: REQUEST_CHANGES. Returns the subagent's findings."
 }
 
 func (t *Tool) InputSchema() json.RawMessage {
 	return tools.Object(map[string]tools.Property{
+		"kind": {
+			Type: "string",
+			Enum: []string{"investigation", "plan_critic", "change_review"},
+			Description: "Optional harness role. Use plan_critic to challenge a plan before proposal, " +
+				"and change_review for the independent review after implementation.",
+		},
+		"subject_path": {
+			Type: "string",
+			Description: "For plan_critic, the workspace-relative .codeagent/plans/*.md file that " +
+				"the critic inspected. The harness binds PASS to this exact file version.",
+		},
 		"prompt": {
 			Type: "string",
 			Description: "The self-contained task for the subagent. Include all context it needs " +
@@ -66,7 +78,9 @@ func (t *Tool) InputSchema() json.RawMessage {
 }
 
 type input struct {
-	Prompt string `json:"prompt"`
+	Kind        string `json:"kind"`
+	SubjectPath string `json:"subject_path"`
+	Prompt      string `json:"prompt"`
 }
 
 func (t *Tool) Execute(ctx context.Context, ec tools.ExecutionContext, raw json.RawMessage) (tools.ToolResult, error) {
@@ -77,10 +91,39 @@ func (t *Tool) Execute(ctx context.Context, ec tools.ExecutionContext, raw json.
 	if strings.TrimSpace(in.Prompt) == "" {
 		return tools.ToolResult{}, fmt.Errorf("task requires a non-empty prompt")
 	}
+	prompt, err := harnessPrompt(in)
+	if err != nil {
+		return tools.ToolResult{}, err
+	}
 
-	conclusion, err := t.agent.Run(ctx, ec, in.Prompt)
+	conclusion, err := t.agent.Run(ctx, ec, prompt)
 	if err != nil {
 		return tools.ToolResult{}, err
 	}
 	return tools.ToolResult{Content: conclusion}, nil
+}
+
+func harnessPrompt(in input) (string, error) {
+	switch in.Kind {
+	case "plan_critic":
+		if strings.TrimSpace(in.SubjectPath) == "" {
+			return "", fmt.Errorf("task kind plan_critic requires subject_path")
+		}
+		return "You are an independent Plan Critic. Inspect the repository evidence yourself; do not " +
+			"trust the parent agent's conclusions. The authoritative plan to review is `" +
+			strings.TrimSpace(in.SubjectPath) + "`. Check scope, dependencies, architectural fit, " +
+			"missing inputs, edge cases, and whether the proposed verification can prove correctness. " +
+			"Your first non-empty line MUST be exactly `VERDICT: PASS` or " +
+			"`VERDICT: REQUEST_CHANGES`. Use PASS only when no blocking issue remains.\n\n" +
+			in.Prompt, nil
+	case "change_review":
+		return "You are an independent Change Reviewer. Inspect git_diff and the relevant files yourself; " +
+			"do not trust the implementing agent's summary. Compare the changes with the stated requirement " +
+			"and approved plan. Look for wrong-direction implementation, regressions, missing tests, unsafe " +
+			"behavior, and verification gaps. Your first non-empty line MUST be exactly `VERDICT: PASS` or " +
+			"`VERDICT: REQUEST_CHANGES`. Use PASS only when no blocking issue remains.\n\n" +
+			in.Prompt, nil
+	default:
+		return in.Prompt, nil
+	}
 }
