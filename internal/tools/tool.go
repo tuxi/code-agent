@@ -71,6 +71,13 @@ type ExecutionContext struct {
 	// ToolRegistry is the current turn-local registry, including workspace MCP
 	// and session-scoped client tools.
 	ToolRegistry *Registry
+
+	// Model is the parent turn's resolved model name. The task subagent reads
+	// this to populate its own model when the frozen config has an empty model
+	// field (as Gateway does — the server chooses the model per-turn). Without
+	// it, an empty model reaches the Gateway API, which rejects the request
+	// with "400 Model field required" for new sessions.
+	Model string
 }
 
 // NestedToolExecutor is the controlled re-entry point used by embedded

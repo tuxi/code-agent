@@ -114,7 +114,17 @@ func (s *SubAgent) Run(ctx context.Context, ec tools.ExecutionContext, taskPromp
 	if err != nil {
 		return "", err
 	}
-	sess.Model = s.MC.Model
+	// Gateway config has model: "" (server-side default). The parent turn's
+	// resolved model is passed through ExecutionContext.Model; use it when the
+	// frozen subagent config has no model of its own, so the Gateway API never
+	// sees an empty model field for a new sub-session.
+	modelName := s.MC.Model
+	subMC := s.MC
+	if modelName == "" && ec.Model != "" {
+		modelName = ec.Model
+		subMC.Model = modelName
+	}
+	sess.Model = modelName
 
 	// Observability, two sinks fanned out by MultiEmitter:
 	//   - Forwarder: persists the FULL transcript under the sub-session's id and
@@ -149,15 +159,15 @@ func (s *SubAgent) Run(ctx context.Context, ec tools.ExecutionContext, taskPromp
 
 	sub := &agent.Runner{
 		Model:             s.Provider,
-		ModelName:         s.MC.Model,
+		ModelName:         modelName,
 		Temperature:       s.MC.Temperature,
 		Tools:             s.ReadOnly,
 		MaxSteps:          SubAgentMaxSteps,
 		Approver:          DenyAllApprover{}, // fail-closed; should be unreachable (read-only set)
 		Observer:          observation.DefaultObserver{},
 		Reflector:         agent.DefaultReflector{},
-		Compactor:         BuildCompactor(s.Cfg, s.MC, s.Provider),
-		CompactKeepTokens: s.Cfg.CompactKeepTokens(s.MC),
+		Compactor:         BuildCompactor(s.Cfg, subMC, s.Provider),
+		CompactKeepTokens: s.Cfg.CompactKeepTokens(subMC),
 		Emitter:           emitter, // child partition only — never floods the parent renderer
 		WorkspaceRoot:     workspaceRoot,
 		// Forward the parent's PathAccessApprover so the subagent can request

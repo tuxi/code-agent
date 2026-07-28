@@ -1500,6 +1500,7 @@ func (r *Runner) executeTool(ctx context.Context, tool tools.Tool, callID string
 		RequestID:          r.RequestID,
 		PlanMode:           r.PlanState == PlanStatusPlanning || r.PlanState == PlanStatusProposing,
 		PathAccessApprover: r.PathAccessApprover,
+		Model:              r.ModelName,
 		OnStdout: func(chunk string) {
 			r.emit(Event{Kind: EventToolStdout, CallID: callID, Chunk: chunk})
 		},
