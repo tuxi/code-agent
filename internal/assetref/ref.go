@@ -32,7 +32,7 @@ type Ref struct {
 	Range    *Range            `json:"range,omitempty"`
 	Preview  string            `json:"preview,omitempty"`
 	MIMEType string            `json:"mime_type,omitempty"`
-	Metadata map[string]string `json:"metadata,omitempty"`
+	Metadata map[string]any `json:"metadata,omitempty"`
 
 	SourceTurnID string `json:"source_turn_id,omitempty"`
 	SourceCallID string `json:"source_call_id,omitempty"`

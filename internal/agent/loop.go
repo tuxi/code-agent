@@ -419,7 +419,7 @@ func (r *Runner) gatewayImageCaptureAssets(ctx context.Context, sess *session.Se
 			sess.GatewayAssetCache[contentKey] = gatewayRef
 		}
 		if ref.Metadata == nil {
-			ref.Metadata = map[string]string{}
+			ref.Metadata = map[string]any{}
 		}
 		ref.Metadata["gateway_asset_id"] = strconv.FormatInt(gatewayRef.AssetID, 10)
 		ref.Metadata["gateway_sha256"] = gatewayRef.SHA256

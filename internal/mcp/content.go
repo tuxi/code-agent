@@ -148,7 +148,7 @@ func aliasResourceLinkToMedia(ctx contentAssetContext, ordinal int, uri, preview
 	ref.WorkspaceID = media.WorkspaceID
 	ref.DisplayName = displayNameForMCPAsset(media.Kind, "resource_link", uri, ordinal)
 	if ref.Metadata == nil {
-		ref.Metadata = map[string]string{}
+		ref.Metadata = map[string]any{}
 	}
 	ref.Metadata["alias_of"] = media.ID
 	ref.Metadata["materialized"] = media.Metadata["materialized"]
@@ -207,7 +207,7 @@ func metadataBytes(ref assets.Ref) int {
 		return 0
 	}
 	var n int
-	_, _ = fmt.Sscanf(ref.Metadata["bytes"], "%d", &n)
+	_, _ = fmt.Sscanf(fmt.Sprint(ref.Metadata["bytes"]), "%d", &n)
 	return n
 }
 
@@ -223,7 +223,7 @@ func nonTextAsset(ctx contentAssetContext, ordinal int, kind, contentKind, uri, 
 		uri = mcpContentURI(ctx, ordinal)
 	}
 	id := assets.StableID(ctx.TurnID, ctx.CallID, ordinal, "mcp", contentKind, uri, mime, fmt.Sprint(bytes))
-	meta := map[string]string{
+	meta := map[string]any{
 		"source":       "mcp",
 		"content_kind": contentKind,
 		"mcp_type":     contentKind,
@@ -280,7 +280,7 @@ func materializeInlineAsset(ctx contentAssetContext, ref *assets.Ref, data []byt
 	ref.WorkspaceRelativePath = rel
 	ref.AbsolutePath = abs
 	if ref.Metadata == nil {
-		ref.Metadata = map[string]string{}
+		ref.Metadata = map[string]any{}
 	}
 	ref.Metadata["materialized"] = "true"
 	ref.Metadata["materialized_path"] = rel

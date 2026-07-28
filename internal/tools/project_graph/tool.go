@@ -381,7 +381,7 @@ func (t *ProjectGraphTool) symbolResult(root string, ec tools.ExecutionContext, 
 			Range:                 rng,
 			Preview:               preview,
 			MIMEType:              assets.MIMEType(rel),
-			Metadata: map[string]string{
+			Metadata: map[string]any{
 				"symbol_kind": s.Kind,
 				"language":    lang,
 			},
@@ -442,7 +442,7 @@ func (t *ProjectGraphTool) referenceResult(root string, ec tools.ExecutionContex
 			Range:                 rng,
 			Preview:               preview,
 			MIMEType:              assets.MIMEType(rel),
-			Metadata: map[string]string{
+			Metadata: map[string]any{
 				"language": lang,
 			},
 			SourceTurnID: ec.TurnID,
