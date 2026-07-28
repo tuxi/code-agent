@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Build CodeAgentRuntime.xcframework from ./mobile for embedding the codeagent runtime
-# inside the iOS/macOS app. Produces a verified .xcframework (the only binary
+# inside iOS and macOS apps. Produces a verified .xcframework (the only binary
 # format SPM's .binaryTarget accepts) with a correct module name and a sane
 # MinimumOSVersion — directly consumable, no manual post-processing.
 #
-# A current gomobile (`-target=ios,iossimulator`) emits a proper .xcframework
-# containing both the device and simulator slices, so a single bind is enough.
+# A current gomobile emits one XCFramework containing iOS device/simulator and
+# universal macOS slices, so AgentKit can consume the same artifact on both hosts.
 # If an outdated gomobile emits something else, the script dumps what it produced
 # and tells you to update — rather than silently assembling a broken artifact.
 #
@@ -18,9 +18,10 @@ cd "$(dirname "$0")/.."
 # --- knobs ---------------------------------------------------------------------
 FRAMEWORK_NAME="CodeAgentRuntime"   # => Swift module name: `import CodeAgentRuntime`
 IOS_MIN="18.0"               # MinimumOSVersion written into every inner Info.plist (aligned with Talkify IPHONEOS_DEPLOYMENT_TARGET)
+MACOS_MIN="15.0"             # aligned with Talkify MACOSX_DEPLOYMENT_TARGET
 PKG="./mobile"               # Go package bound (symbol prefix is `Mobile`, its package name)
 OUT_DIR="${1:-build}"
-# Skills shipped with the iOS app. These SKILL.md files are user-level (global)
+# Skills shipped with the app. These SKILL.md files are user-level (global)
 # skills, copied into the Application Support directory on first launch so they
 # are available to every workspace. The user can add their own skills there later.
 # List skill directory names (not full paths).
@@ -45,10 +46,11 @@ gomobile init
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
-echo "==> gomobile bind (ios + iossimulator)"
+echo "==> gomobile bind (ios + iossimulator + macos)"
 gomobile bind \
-  -target=ios,iossimulator \
+  -target=ios,iossimulator,macos \
   -iosversion="${IOS_MIN}" \
+  -macosversion="${MACOS_MIN}" \
   -o "${WORK}/${FRAMEWORK_NAME}.xcframework" \
   "${PKG}"
 
@@ -71,16 +73,23 @@ rm -rf "${OUT}"
 mv "${PRODUCED}" "${OUT}"
 
 # Belt-and-suspenders: force MinimumOSVersion on every inner Info.plist, in case a
-# gomobile build wrote a bogus value (e.g. 100.0).
-echo "==> normalizing MinimumOSVersion -> ${IOS_MIN}"
+# gomobile build wrote a bogus value (e.g. 100.0). Do not stamp the iOS minimum
+# onto the macOS slice.
+echo "==> normalizing platform deployment targets"
 while IFS= read -r -d '' plist; do
-  /usr/libexec/PlistBuddy -c "Set :MinimumOSVersion ${IOS_MIN}" "${plist}" 2>/dev/null \
-    || /usr/libexec/PlistBuddy -c "Add :MinimumOSVersion string ${IOS_MIN}" "${plist}" 2>/dev/null \
-    || true
-  /usr/libexec/PlistBuddy -c "Set :LSMinimumSystemVersion ${IOS_MIN}" "${plist}" 2>/dev/null \
-    || /usr/libexec/PlistBuddy -c "Add :LSMinimumSystemVersion string ${IOS_MIN}" "${plist}" 2>/dev/null \
-    || true
-done < <(find "${OUT}" -name Info.plist -print0)
+  if [[ "${plist}" == *"/macos-"* ]]; then
+    /usr/libexec/PlistBuddy -c "Set :MinimumOSVersion ${MACOS_MIN}" "${plist}" 2>/dev/null \
+      || /usr/libexec/PlistBuddy -c "Add :MinimumOSVersion string ${MACOS_MIN}" "${plist}" 2>/dev/null \
+      || true
+    /usr/libexec/PlistBuddy -c "Set :LSMinimumSystemVersion ${MACOS_MIN}" "${plist}" 2>/dev/null \
+      || /usr/libexec/PlistBuddy -c "Add :LSMinimumSystemVersion string ${MACOS_MIN}" "${plist}" 2>/dev/null \
+      || true
+  else
+    /usr/libexec/PlistBuddy -c "Set :MinimumOSVersion ${IOS_MIN}" "${plist}" 2>/dev/null \
+      || /usr/libexec/PlistBuddy -c "Add :MinimumOSVersion string ${IOS_MIN}" "${plist}" 2>/dev/null \
+      || true
+  fi
+done < <(find "${OUT}" -mindepth 2 -name Info.plist -print0)
 
 # ---- package skills alongside the xcframework -----------------------------------
 echo "==> packaging skills"
@@ -103,6 +112,13 @@ done
 echo "    skills: ${copied} bundled, ${skipped} skipped"
 
 echo "==> verifying"
+for platform in ios macos; do
+  if ! /usr/libexec/PlistBuddy -c "Print :AvailableLibraries" "${OUT}/Info.plist" | grep -q "${platform}"; then
+    echo "error: ${FRAMEWORK_NAME}.xcframework is missing the ${platform} slice"
+    exit 1
+  fi
+done
+
 echo "    slices:"
 find "${OUT}" -maxdepth 1 -mindepth 1 -type d -exec basename {} \; | sed 's/^/      /'
 echo "    frameworks:"

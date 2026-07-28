@@ -60,11 +60,12 @@ CHECKSUM=$(swift package compute-checksum "build/${ZIP_NAME}")
 echo "    ${CHECKSUM}"
 
 # --- GitHub Release ------------------------------------------------------------
-NOTES="CodeAgentRuntime.xcframework — built with \`gomobile bind -target=ios,iossimulator\`
+NOTES="CodeAgentRuntime.xcframework — built with \`gomobile bind -target=ios,iossimulator,macos\`
 
 **Slices:**
 - \`ios-arm64\` — device
 - \`ios-arm64_x86_64-simulator\` — simulator
+- \`macos-arm64_x86_64\` — Apple Silicon + Intel Mac
 
 **AgentKit Package.swift:**
 \`\`\`swift
