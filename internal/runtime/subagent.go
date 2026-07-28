@@ -3,6 +3,7 @@ package runtime
 import (
 	"code-agent/internal/agent"
 	"code-agent/internal/app"
+	"code-agent/internal/credential"
 	"code-agent/internal/model"
 	"code-agent/internal/observation"
 	"code-agent/internal/prompt"
@@ -75,7 +76,15 @@ type SubAgent struct {
 // read-only tool subset from the parent registry as it stands now — so tools added
 // to the parent later (task itself, MCP tools) are never in the subagent's set.
 func NewSubAgent(cfg app.Config, mc app.ModelConfig, parent model.Provider, root string, full *tools.Registry, skillsIndex string, store session.Store, progress agent.Emitter, forwarder *JobEventSink) *SubAgent {
-	provider, subMC := ResolveSubAgentModel(cfg, mc, parent)
+	return NewSubAgentWithCredential(cfg, mc, parent, nil, root, full, skillsIndex, store, progress, forwarder)
+}
+
+// NewSubAgentWithCredential is the embedded/server constructor. Unlike the
+// compatibility NewSubAgent entry point, it carries the host-injected credential
+// chain into a separately configured subagent model. This matters on iOS, where
+// credentials arrive through secretsJSON rather than process environment vars.
+func NewSubAgentWithCredential(cfg app.Config, mc app.ModelConfig, parent model.Provider, cred credential.Resolver, root string, full *tools.Registry, skillsIndex string, store session.Store, progress agent.Emitter, forwarder *JobEventSink) *SubAgent {
+	provider, subMC := ResolveSubAgentModelWithCredential(context.Background(), cfg, mc, parent, cred)
 	return &SubAgent{
 		Root:        root,
 		Provider:    provider,
@@ -192,6 +201,14 @@ func (s *SubAgent) Run(ctx context.Context, ec tools.ExecutionContext, taskPromp
 // in the cost report — acceptable until 8.1 lands; inheriting the parent (the
 // default) is fully recorded.
 func ResolveSubAgentModel(cfg app.Config, mc app.ModelConfig, parent model.Provider) (model.Provider, app.ModelConfig) {
+	return ResolveSubAgentModelWithCredential(context.Background(), cfg, mc, parent, nil)
+}
+
+// ResolveSubAgentModelWithCredential resolves a dedicated subagent model using
+// the same injected credential chain as the parent runtime. If the requested
+// credential is unavailable, it falls back before the first API call instead of
+// constructing a provider that can only fail later with a misleading 401.
+func ResolveSubAgentModelWithCredential(ctx context.Context, cfg app.Config, mc app.ModelConfig, parent model.Provider, cred credential.Resolver) (model.Provider, app.ModelConfig) {
 	name := cfg.Agent.SubagentModel
 	if name == "" || name == mc.Name {
 		return parent, mc
@@ -201,7 +218,18 @@ func ResolveSubAgentModel(cfg app.Config, mc app.ModelConfig, parent model.Provi
 		fmt.Fprintf(os.Stderr, "[subagent] model %q unusable (%v); using %s\n", name, err, mc.Name)
 		return parent, mc
 	}
-	subProvider, err := BuildProvider(subMC, cfg.Provider, nil)
+	if cred != nil && !subMC.Credential.IsZero() {
+		resolved, resolveErr := cred.Resolve(ctx, subMC.Credential.Target())
+		if resolveErr != nil || resolved.IsZero() {
+			if resolveErr != nil {
+				fmt.Fprintf(os.Stderr, "[subagent] credential for %q unavailable (%v); using %s\n", name, resolveErr, mc.Name)
+			} else {
+				fmt.Fprintf(os.Stderr, "[subagent] credential for %q unavailable; using %s\n", name, mc.Name)
+			}
+			return parent, mc
+		}
+	}
+	subProvider, err := BuildProvider(subMC, cfg.Provider, cred)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[subagent] cannot build provider for %q (%v); using %s\n", name, err, mc.Name)
 		return parent, mc

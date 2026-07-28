@@ -13,6 +13,7 @@ import (
 	"code-agent/internal/credential"
 	"code-agent/internal/model"
 	"code-agent/internal/runtime"
+	"code-agent/internal/tools"
 )
 
 // stubChatHandler returns a minimal valid chat completion response and records
@@ -127,6 +128,150 @@ models:
 
 	if authHeader != "Bearer jwt-gateway-token" {
 		t.Errorf("Authorization = %q, want %q", authHeader, "Bearer jwt-gateway-token")
+	}
+}
+
+// TestE0_SubagentFallsBackToInjectedGateway reproduces the iOS-device setup:
+// AgentKit injects only gateway/default, while an older bundled config pins
+// agent.subagent_model to DeepSeek. The task subagent must reuse the authenticated
+// parent provider instead of issuing an unauthenticated DeepSeek request (401).
+func TestE0_SubagentFallsBackToInjectedGateway(t *testing.T) {
+	var gatewayAuth string
+	gateway := httptest.NewServer(stubChatHandler(t, &gatewayAuth, 200, ""))
+	defer gateway.Close()
+
+	deepseekCalls := 0
+	deepseek := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		deepseekCalls++
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer deepseek.Close()
+	t.Setenv("DEEPSEEK_API_KEY", "")
+
+	cfgYAML := `
+default_model: gateway
+credentials:
+  gateway:
+    default:
+      source: injected
+  llm:
+    deepseek:
+      source: env
+      env: DEEPSEEK_API_KEY
+models:
+  gateway:
+    provider: openai
+    base_url: "` + gateway.URL + `"
+    model: "gateway-model"
+    credential:
+      namespace: gateway
+      name: default
+  deepseek:
+    provider: openai
+    base_url: "` + deepseek.URL + `"
+    model: "deepseek-model"
+    credential:
+      namespace: llm
+      name: deepseek
+agent:
+  subagent_model: deepseek
+`
+	cfg, err := app.LoadConfigBytes([]byte(cfgYAML))
+	if err != nil {
+		t.Fatalf("LoadConfigBytes: %v", err)
+	}
+	injected := injectSecrets(&cfg, map[string]string{
+		"gateway/default": `{"type":"bearer","secret":"ios-gateway-token"}`,
+	})
+	chain := cfg.CredentialResolver(injected)
+	mc, err := cfg.SelectModel("")
+	if err != nil {
+		t.Fatalf("SelectModel: %v", err)
+	}
+	parent, err := runtime.BuildProvider(mc, cfg.Provider, chain)
+	if err != nil {
+		t.Fatalf("BuildProvider parent: %v", err)
+	}
+
+	root := t.TempDir()
+	subagent := runtime.NewSubAgentWithCredential(
+		cfg, mc, parent, chain, root, tools.NewRegistry(), "", nil, nil, nil,
+	)
+	if subagent.MC.Name != "gateway" {
+		t.Fatalf("subagent model = %q, want gateway fallback", subagent.MC.Name)
+	}
+	conclusion, err := subagent.Run(context.Background(), tools.ExecutionContext{WorkspaceRoot: root}, "investigate")
+	if err != nil {
+		t.Fatalf("subagent Run: %v", err)
+	}
+	if conclusion != "ok" {
+		t.Errorf("subagent conclusion = %q, want ok", conclusion)
+	}
+	if gatewayAuth != "Bearer ios-gateway-token" {
+		t.Errorf("gateway Authorization = %q, want injected iOS token", gatewayAuth)
+	}
+	if deepseekCalls != 0 {
+		t.Errorf("DeepSeek calls = %d, want 0 when its credential is unavailable", deepseekCalls)
+	}
+}
+
+// TestE0_SubagentUsesInjectedDedicatedCredential verifies that the fallback does
+// not disable intentional model separation when the host supplies both secrets.
+func TestE0_SubagentUsesInjectedDedicatedCredential(t *testing.T) {
+	var deepseekAuth string
+	deepseek := httptest.NewServer(stubChatHandler(t, &deepseekAuth, 200, ""))
+	defer deepseek.Close()
+
+	cfgYAML := `
+default_model: gateway
+models:
+  gateway:
+    provider: openai
+    base_url: "https://gateway.invalid"
+    model: "gateway-model"
+    credential:
+      namespace: gateway
+      name: default
+  deepseek:
+    provider: openai
+    base_url: "` + deepseek.URL + `"
+    model: "deepseek-model"
+    credential:
+      namespace: llm
+      name: deepseek
+agent:
+  subagent_model: deepseek
+`
+	cfg, err := app.LoadConfigBytes([]byte(cfgYAML))
+	if err != nil {
+		t.Fatalf("LoadConfigBytes: %v", err)
+	}
+	injected := injectSecrets(&cfg, map[string]string{
+		"gateway/default": `{"type":"bearer","secret":"gateway-token"}`,
+		"llm/deepseek":    `{"type":"bearer","secret":"dedicated-subagent-token"}`,
+	})
+	chain := cfg.CredentialResolver(injected)
+	mc, err := cfg.SelectModel("")
+	if err != nil {
+		t.Fatalf("SelectModel: %v", err)
+	}
+	parent, err := runtime.BuildProvider(mc, cfg.Provider, chain)
+	if err != nil {
+		t.Fatalf("BuildProvider parent: %v", err)
+	}
+
+	subProvider, subMC := runtime.ResolveSubAgentModelWithCredential(context.Background(), cfg, mc, parent, chain)
+	if subMC.Name != "deepseek" {
+		t.Fatalf("subagent model = %q, want dedicated deepseek", subMC.Name)
+	}
+	_, err = subProvider.Complete(context.Background(), model.Request{
+		Model: subMC.Model, Messages: []model.Message{{Role: model.RoleUser, Content: "investigate"}},
+	})
+	if err != nil {
+		t.Fatalf("subagent Complete: %v", err)
+	}
+	if deepseekAuth != "Bearer dedicated-subagent-token" {
+		t.Errorf("DeepSeek Authorization = %q, want dedicated injected token", deepseekAuth)
 	}
 }
 

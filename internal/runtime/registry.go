@@ -163,7 +163,7 @@ func BuildBaseRegistry(ctx context.Context, cfg app.Config, mc app.ModelConfig, 
 	// the PARENT. Because the subset is taken now, `task` can never be in it, so a
 	// subagent cannot spawn a subagent: recursion is capped at depth 1 by
 	// construction (see tools.Subset / NewSubAgent).
-	sub := NewSubAgent(cfg, mc, provider, root, registry, skillReg.PromptIndex(), store, progress, jobSink)
+	sub := NewSubAgentWithCredential(cfg, mc, provider, cred, root, registry, skillReg.PromptIndex(), store, progress, jobSink)
 	if taskTool := task.NewTool(sub); cfg.Agent.ToolAllowed(taskTool.Name()) {
 		if err := registry.Register(taskTool); err != nil {
 			return nil, nil, nil, nil, err
