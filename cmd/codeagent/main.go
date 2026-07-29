@@ -43,6 +43,7 @@ func run() error {
 	args := os.Args[1:]
 	modelName, args := runtime.ExtractModelFlag(args)
 	autoMode, args := runtime.ExtractAutoFlag(args)
+	noContextFiles, args := runtime.ExtractNoContextFilesFlag(args)
 
 	cfg, err := app.LoadConfig("config.yaml")
 	if err != nil {
@@ -98,6 +99,8 @@ func run() error {
 			return runPlugin(args[1:])
 		case "skill":
 			return runSkill(args[1:])
+		case "init":
+			return runInit(args[1:])
 		}
 	}
 
@@ -134,7 +137,7 @@ func run() error {
 	}
 
 	if len(args) == 0 {
-		return runTUI(ctx, cfg, mc, provider, autoMode)
+		return runTUI(ctx, cfg, mc, provider, autoMode, noContextFiles)
 	}
 
 	command := args[0]
@@ -144,18 +147,18 @@ func run() error {
 	case "ask":
 		return runAsk(ctx, mc, provider, goal)
 	case "run":
-		return runAgent(ctx, cfg, mc, provider, goal, autoMode)
+		return runAgent(ctx, cfg, mc, provider, goal, autoMode, noContextFiles)
 	case "goal":
-		return runGoal(ctx, cfg, mc, provider, goal, autoMode)
+		return runGoal(ctx, cfg, mc, provider, goal, autoMode, noContextFiles)
 	case "tui":
-		return runTUI(ctx, cfg, mc, provider, autoMode)
+		return runTUI(ctx, cfg, mc, provider, autoMode, noContextFiles)
 	case "repl":
-		return repl(ctx, cfg, mc, provider, "", autoMode)
+		return repl(ctx, cfg, mc, provider, "", autoMode, noContextFiles)
 	case "resume":
 		if len(args) < 2 {
 			return fmt.Errorf("usage: codeagent resume <session-id>  (see 'codeagent sessions')")
 		}
-		return repl(ctx, cfg, mc, provider, args[1], autoMode)
+		return repl(ctx, cfg, mc, provider, args[1], autoMode, noContextFiles)
 	default:
 		printUsage()
 		return fmt.Errorf("unknown command: %s", command)
@@ -494,7 +497,7 @@ func runAsk(ctx context.Context, mc app.ModelConfig, provider model.Provider, qu
 	return nil
 }
 
-func runAgent(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider model.Provider, goal string, autoMode bool) error {
+func runAgent(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider model.Provider, goal string, autoMode bool, noContextFiles bool) error {
 	root, _ := os.Getwd()
 
 	store, err := runtime.OpenStore(root)
@@ -522,6 +525,7 @@ func runAgent(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider 
 	planRef.R = runner
 
 	sess, err := session.NewBuilder(root).
+		WithNoContextFiles(noContextFiles).
 		WithBudget(mc.ContextWindow, cfg.CompactThreshold(mc)).
 		WithSkillsIndex(skillReg.PromptIndex()).
 		Build()
@@ -553,7 +557,7 @@ func runAgent(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider 
 // with a code reflecting the result (achieved=0; blocked/errored/budget/paused
 // distinct) so CI can branch on it. Same setup as runAgent; the pursuit and the
 // exit-code mapping live in pursueHeadless.
-func runGoal(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider model.Provider, objective string, autoMode bool) error {
+func runGoal(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider model.Provider, objective string, autoMode bool, noContextFiles bool) error {
 	if strings.TrimSpace(objective) == "" {
 		return fmt.Errorf(`usage: codeagent [--auto] goal "<objective>"`)
 	}
@@ -584,6 +588,7 @@ func runGoal(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider m
 	planRef.R = runner
 
 	sess, err := session.NewBuilder(root).
+		WithNoContextFiles(noContextFiles).
 		WithBudget(mc.ContextWindow, cfg.CompactThreshold(mc)).
 		WithSkillsIndex(skillReg.PromptIndex()).
 		Build()
@@ -613,7 +618,7 @@ func (o mcpPromptOps) Render(command string, args []string) (string, error) {
 // as `run`/`repl` (buildRunner) but with channel-backed Emitter/Approver, so the
 // loop runs on a background goroutine while the program owns the terminal. The
 // agent is unchanged; only the renderer differs.
-func runTUI(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider model.Provider, autoMode bool) error {
+func runTUI(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider model.Provider, autoMode bool, noContextFiles bool) error {
 	root, _ := os.Getwd()
 
 	store, err := runtime.OpenStore(root)
@@ -640,6 +645,7 @@ func runTUI(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider mo
 	}
 
 	sess, err := session.NewBuilder(root).
+		WithNoContextFiles(noContextFiles).
 		WithBudget(mc.ContextWindow, cfg.CompactThreshold(mc)).
 		WithSkillsIndex(skillReg.PromptIndex()).
 		Build()
@@ -765,6 +771,8 @@ func printUsage() {
   codeagent [--model NAME] run "..."       run a single task
   codeagent [--model NAME] [--auto] goal "..."  pursue a goal to a verifiable end (exit code = outcome)
   codeagent [--model NAME] ask "..."       one-off question (no tools)
+  codeagent init                           create an AGENTS.md in the current project
+  codeagent init --global                  create a global AGENTS.md in ~/.codeagent/
   codeagent sessions                       list saved sessions
   codeagent stats                          aggregate compaction + provider telemetry
   codeagent trace [N]                      show the last N requests, per attempt
@@ -774,6 +782,11 @@ func printUsage() {
   codeagent plugin install <url> [name]    install skill plugins from a marketplace repo
   codeagent plugin list                    list installed plugins
   codeagent plugin remove <name>           remove an installed plugin
+
+Flags:
+  --model, -model NAME     select a model from config.yaml
+  --auto, -auto            enable auto-approval mode
+  --no-context-files, -nc  skip AGENTS.md/CLAUDE.md discovery
 
 Sessions are stored per-project in .codeagent/sessions.db and persist across
 runs, so a long conversation (and its summary) survives exit.

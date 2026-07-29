@@ -35,3 +35,15 @@ func ExtractAutoFlag(args []string) (bool, []string) {
 	}
 	return false, args
 }
+
+// ExtractNoContextFilesFlag pulls --no-context-files (or -nc) out of args,
+// returning whether to skip AGENTS.md/CLAUDE.md discovery and the remaining args.
+func ExtractNoContextFilesFlag(args []string) (bool, []string) {
+	for i := 0; i < len(args); i++ {
+		if args[i] == "--no-context-files" || args[i] == "-nc" {
+			rest := append(append([]string{}, args[:i]...), args[i+1:]...)
+			return true, rest
+		}
+	}
+	return false, args
+}

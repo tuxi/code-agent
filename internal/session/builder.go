@@ -5,6 +5,7 @@ import (
 	"code-agent/internal/prompt"
 	"crypto/rand"
 	"encoding/hex"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,7 +13,7 @@ import (
 )
 
 // Builder assembles the initial context for a session: the system identity plus
-// static project context (CODEAGENT.md).
+// static project context (AGENTS.md / CLAUDE.md).
 //
 // Important boundary: only STATIC context belongs here. Dynamic context that
 // changes during a session — git status, workspace summaries — must not be
@@ -26,6 +27,16 @@ const (
 	defaultContextWindow    = 128000
 	defaultCompactThreshold = 90000
 )
+
+// contextFile is a loaded project context file with its absolute path and content.
+type contextFile struct {
+	Path    string
+	Content string
+}
+
+// contextFileCandidates lists the filenames to search for, in priority order.
+// AGENTS.md is the community convention; CLAUDE.md is Claude Code's native format.
+var contextFileCandidates = []string{"AGENTS.md", "AGENTS.MD", "CLAUDE.md", "CLAUDE.MD"}
 
 type Builder struct {
 	WorkspaceRoot string
@@ -44,6 +55,10 @@ type Builder struct {
 	// its own short, strict instructions in place of the full interactive-agent
 	// prompt. Project memory and the skills index, if present, are still appended.
 	SystemPrompt string
+
+	// NoContextFiles disables AGENTS.md/CLAUDE.md discovery entirely. Set by the
+	// --no-context-files / -nc CLI flag.
+	NoContextFiles bool
 }
 
 // WithID installs a pre-reserved durable identity. Managed worktree creation
@@ -88,18 +103,31 @@ func (b *Builder) WithSystemPrompt(p string) *Builder {
 	return b
 }
 
+// WithNoContextFiles disables AGENTS.md/CLAUDE.md discovery. When true, no project
+// context files are loaded — not from the workspace, not from ancestors, not from
+// the global ~/.codeagent/ directory.
+func (b *Builder) WithNoContextFiles(v bool) *Builder {
+	b.NoContextFiles = v
+	return b
+}
+
 func (b *Builder) Build() (*Session, error) {
 	systemContent := prompt.AgentSystemPrompt
 	if b.SystemPrompt != "" {
 		systemContent = b.SystemPrompt
 	}
 
-	memory, err := b.loadProjectMemory()
+	contextFiles, err := b.loadContextFiles()
 	if err != nil {
 		return nil, err
 	}
-	if memory != "" {
-		systemContent += "\n\n# Project memory (from CODEAGENT.md)\n\n" + memory
+	if len(contextFiles) > 0 {
+		systemContent += "\n\n<project_context>\n\n"
+		systemContent += "Project-specific instructions and guidelines:\n\n"
+		for _, cf := range contextFiles {
+			systemContent += fmt.Sprintf("<project_instructions path=\"%s\">\n%s\n</project_instructions>\n\n", cf.Path, cf.Content)
+		}
+		systemContent += "</project_context>\n"
 	}
 
 	// Skills index (L1): the model loads a skill's body on demand via load_skill.
@@ -138,16 +166,78 @@ func NewID() string {
 	return time.Now().UTC().Format("20060102-150405") + "-" + hex.EncodeToString(b[:])
 }
 
-// loadProjectMemory reads CODEAGENT.md from the workspace root if present. A
-// missing file is not an error — it just means there is no project memory.
-func (b *Builder) loadProjectMemory() (string, error) {
-	path := filepath.Join(b.WorkspaceRoot, "CODEAGENT.md")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return "", nil
-		}
-		return "", err
+// loadContextFiles discovers AGENTS.md / CLAUDE.md files from three sources:
+//  1. Global: ~/.codeagent/<candidate> (user-level, shared across all projects)
+//  2. Ancestor chain: walk up from WorkspaceRoot to the filesystem root, looking
+//     for a candidate file in each directory (closest ancestor first)
+//
+// Deduplication ensures the same absolute path is never loaded twice. A missing
+// file at any level is silent — it just means there is no context there.
+// When NoContextFiles is true, returns an empty slice immediately.
+func (b *Builder) loadContextFiles() ([]contextFile, error) {
+	if b.NoContextFiles {
+		return nil, nil
 	}
-	return strings.TrimSpace(string(data)), nil
+
+	var files []contextFile
+	seen := make(map[string]bool)
+
+	// 1. Global context file (~/.codeagent/<candidate>).
+	if home, err := os.UserHomeDir(); err == nil {
+		globalDir := filepath.Join(home, ".codeagent")
+		if cf, ok := loadContextFileFromDir(globalDir); ok {
+			files = append(files, cf)
+			seen[cf.Path] = true
+		}
+	}
+
+	// 2. Walk ancestor directories from WorkspaceRoot up to the filesystem root.
+	// collectAncestors returns [start, parent, grandparent, ..., /].
+	// Load closest ancestors first (iterate forward: start → parent → ...).
+	ancestors := collectAncestors(b.WorkspaceRoot)
+	for _, dir := range ancestors {
+		cf, ok := loadContextFileFromDir(dir)
+		if !ok || seen[cf.Path] {
+			continue
+		}
+		files = append(files, cf)
+		seen[cf.Path] = true
+	}
+
+	return files, nil
+}
+
+// loadContextFileFromDir looks for the first matching context file in dir.
+// Candidates are tried in order (AGENTS.md, CLAUDE.md, etc.); the first one
+// that exists as a regular file wins.
+func loadContextFileFromDir(dir string) (contextFile, bool) {
+	for _, name := range contextFileCandidates {
+		p := filepath.Join(dir, name)
+		info, err := os.Stat(p)
+		if err != nil || info.IsDir() {
+			continue
+		}
+		data, err := os.ReadFile(p)
+		if err != nil {
+			continue
+		}
+		return contextFile{Path: p, Content: strings.TrimSpace(string(data))}, true
+	}
+	return contextFile{}, false
+}
+
+// collectAncestors returns all ancestor directories from start up to the
+// filesystem root. start itself is included.
+func collectAncestors(start string) []string {
+	var dirs []string
+	cur := filepath.Clean(start)
+	for {
+		dirs = append(dirs, cur)
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			break // reached filesystem root
+		}
+		cur = parent
+	}
+	return dirs
 }

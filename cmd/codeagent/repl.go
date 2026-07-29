@@ -61,7 +61,7 @@ type lineReader func(prompt string) (string, error)
 // mode mishandles wide CJK characters (a backspace erases one display column, so
 // half a character lingers) and can drive some terminals into buggy wide-char
 // wrap rendering.
-func repl(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider model.Provider, resumeID string, auto bool) error {
+func repl(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider model.Provider, resumeID string, auto bool, noContextFiles bool) error {
 	root, _ := os.Getwd()
 
 	store, err := runtime.OpenStore(root)
@@ -138,6 +138,7 @@ func repl(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider mode
 		fmt.Printf("Resumed session %s (%d messages)\n", sess.ID, len(sess.Messages))
 	} else {
 		sess, err = session.NewBuilder(root).
+			WithNoContextFiles(noContextFiles).
 			WithBudget(mc.ContextWindow, cfg.CompactThreshold(mc)).
 			WithSkillsIndex(skillReg.PromptIndex()).
 			Build()
