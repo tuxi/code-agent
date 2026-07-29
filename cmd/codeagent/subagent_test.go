@@ -205,7 +205,10 @@ func TestDenyAllRefusesEverything(t *testing.T) {
 func TestResolveSubAgentModelInheritsWhenUnset(t *testing.T) {
 	parent := answerProvider{content: "x"}
 	mc := app.ModelConfig{Name: "main", Model: "main-model"}
-	prov, gotMC := runtime.ResolveSubAgentModel(app.Config{}, mc, parent)
+	prov, gotMC, err := runtime.ResolveSubAgentModel(app.Config{}, mc, parent)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if gotMC.Name != "main" {
 		t.Fatalf("unset subagent_model should inherit the parent, got %q", gotMC.Name)
 	}
@@ -214,13 +217,13 @@ func TestResolveSubAgentModelInheritsWhenUnset(t *testing.T) {
 	}
 }
 
-func TestResolveSubAgentModelFallsBackOnUnknown(t *testing.T) {
+func TestResolveSubAgentModelRejectsUnknown(t *testing.T) {
 	parent := answerProvider{content: "x"}
 	mc := app.ModelConfig{Name: "main", Model: "main-model"}
 	cfg := app.Config{Agent: app.AgentConfig{SubagentModel: "ghost"}} // not in Models
-	_, gotMC := runtime.ResolveSubAgentModel(cfg, mc, parent)
-	if gotMC.Name != "main" {
-		t.Fatalf("an unknown subagent_model should fall back to the parent, got %q", gotMC.Name)
+	_, _, err := runtime.ResolveSubAgentModel(cfg, mc, parent)
+	if err == nil {
+		t.Fatal("an unknown explicit subagent_model must fail")
 	}
 }
 

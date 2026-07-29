@@ -147,9 +147,15 @@ func (r Router) Route(ctx context.Context, data []byte) {
 					}()
 				} else if withAssets, ok := r.Commands.(AssetMessageTarget); ok && len(m.Assets) > 0 {
 					assets := copyGatewayAssetRefs(m.Assets)
-					go func() { _, _ = withAssets.SendMessageWithAssets(turnCtx, m.Text, modelName, assets) }()
+					go func() {
+						_, err := withAssets.SendMessageWithAssets(turnCtx, m.Text, modelName, assets)
+						r.rejectError(m.RequestID, err)
+					}()
 				} else {
-					go func() { _, _ = r.Commands.SendMessage(turnCtx, m.Text, modelName) }()
+					go func() {
+						_, err := r.Commands.SendMessage(turnCtx, m.Text, modelName)
+						r.rejectError(m.RequestID, err)
+					}()
 				}
 			}
 		case "tool_result":

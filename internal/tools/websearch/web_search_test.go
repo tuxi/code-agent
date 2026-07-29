@@ -1,14 +1,35 @@
 package websearch
 
 import (
-	"code-agent/internal/tools"
 	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"code-agent/internal/app"
+	"code-agent/internal/tools"
 )
+
+func TestNewToolReturnsNilWhenSearchIsUnavailable(t *testing.T) {
+	cases := []app.WebConfig{
+		{},
+		{Search: app.WebSearchConfig{Provider: "disabled"}},
+		{Search: app.WebSearchConfig{Provider: "tavily"}},
+		{Search: app.WebSearchConfig{Provider: "brave"}},
+	}
+	for _, cfg := range cases {
+		if tool := NewTool(cfg, nil); tool != nil {
+			t.Errorf("provider %q produced an unusable web_search tool", cfg.Search.Provider)
+		}
+	}
+	if tool := NewTool(app.WebConfig{
+		Search: app.WebSearchConfig{Provider: "searxng"},
+	}, nil); tool == nil {
+		t.Fatal("configured keyless searxng provider must register web_search")
+	}
+}
 
 type stubSearchProvider struct {
 	response SearchResponse

@@ -1061,7 +1061,7 @@ func lifecycleErrorCode(err error) string {
 		if apiErr.Code == "quota_exceeded" || apiErr.Type == "quota_exceeded" {
 			return "quota_exceeded"
 		}
-		if apiErr.StatusCode == 401 {
+		if apiErr.StatusCode == 401 || apiErr.StatusCode == 403 {
 			return "auth_expired"
 		}
 	}

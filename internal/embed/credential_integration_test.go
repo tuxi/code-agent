@@ -131,11 +131,10 @@ models:
 	}
 }
 
-// TestE0_SubagentFallsBackToInjectedGateway reproduces the iOS-device setup:
-// AgentKit injects only gateway/default, while an older bundled config pins
-// agent.subagent_model to DeepSeek. The task subagent must reuse the authenticated
-// parent provider instead of issuing an unauthenticated DeepSeek request (401).
-func TestE0_SubagentFallsBackToInjectedGateway(t *testing.T) {
+// TestE0_SubagentRejectsUnavailableExplicitCredential verifies that an explicit
+// subagent model never falls back to the Runtime startup model when its own
+// credential target is unavailable.
+func TestE0_SubagentRejectsUnavailableExplicitCredential(t *testing.T) {
 	var gatewayAuth string
 	gateway := httptest.NewServer(stubChatHandler(t, &gatewayAuth, 200, ""))
 	defer gateway.Close()
@@ -197,26 +196,22 @@ agent:
 	subagent := runtime.NewSubAgentWithCredential(
 		cfg, mc, parent, chain, root, tools.NewRegistry(), "", nil, nil, nil,
 	)
-	if subagent.MC.Name != "gateway" {
-		t.Fatalf("subagent model = %q, want gateway fallback", subagent.MC.Name)
+	if subagent.InitErr == nil {
+		t.Fatal("explicit subagent model with an unavailable credential must fail")
 	}
-	conclusion, err := subagent.Run(context.Background(), tools.ExecutionContext{WorkspaceRoot: root}, "investigate")
-	if err != nil {
-		t.Fatalf("subagent Run: %v", err)
+	if _, err := subagent.Run(context.Background(), tools.ExecutionContext{WorkspaceRoot: root}, "investigate"); err == nil {
+		t.Fatal("subagent Run must return the strict resolution error")
 	}
-	if conclusion != "ok" {
-		t.Errorf("subagent conclusion = %q, want ok", conclusion)
-	}
-	if gatewayAuth != "Bearer ios-gateway-token" {
-		t.Errorf("gateway Authorization = %q, want injected iOS token", gatewayAuth)
+	if gatewayAuth != "" {
+		t.Errorf("Gateway was called during forbidden fallback, Authorization = %q", gatewayAuth)
 	}
 	if deepseekCalls != 0 {
-		t.Errorf("DeepSeek calls = %d, want 0 when its credential is unavailable", deepseekCalls)
+		t.Errorf("DeepSeek calls = %d, want preflight credential failure", deepseekCalls)
 	}
 }
 
-// TestE0_SubagentUsesInjectedDedicatedCredential verifies that the fallback does
-// not disable intentional model separation when the host supplies both secrets.
+// TestE0_SubagentUsesInjectedDedicatedCredential verifies intentional model
+// separation when the host supplies the explicit subagent credential.
 func TestE0_SubagentUsesInjectedDedicatedCredential(t *testing.T) {
 	var deepseekAuth string
 	deepseek := httptest.NewServer(stubChatHandler(t, &deepseekAuth, 200, ""))
@@ -260,7 +255,10 @@ agent:
 		t.Fatalf("BuildProvider parent: %v", err)
 	}
 
-	subProvider, subMC := runtime.ResolveSubAgentModelWithCredential(context.Background(), cfg, mc, parent, chain)
+	subProvider, subMC, err := runtime.ResolveSubAgentModelWithCredential(context.Background(), cfg, mc, parent, chain)
+	if err != nil {
+		t.Fatalf("ResolveSubAgentModelWithCredential: %v", err)
+	}
 	if subMC.Name != "deepseek" {
 		t.Fatalf("subagent model = %q, want dedicated deepseek", subMC.Name)
 	}

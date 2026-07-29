@@ -991,7 +991,7 @@ func TestMuxAssetPreviewFallsBackToMetadata(t *testing.T) {
 		URI:      "mcp://fs/read_file/call_1/001",
 		Preview:  "[non-text content: image (image/png, 5 bytes) omitted]",
 		MIMEType: "image/png",
-		Metadata: map[string]string{
+		Metadata: map[string]any{
 			"source":   "mcp",
 			"mcp_type": "image",
 		},
@@ -1105,7 +1105,7 @@ func TestMuxAssetBlobRejectsMetadataOnlyAsset(t *testing.T) {
 		Kind:     "image",
 		URI:      "mcp://fs/read_file/call_1/001",
 		MIMEType: "image/png",
-		Metadata: map[string]string{"source": "mcp"},
+		Metadata: map[string]any{"source": "mcp"},
 	}
 	events := &fakeEventStore{recs: map[string][]session.EventRecord{id: {
 		storedEvent(agent.Event{Kind: agent.EventToolFinished, SessionID: id, TurnID: "t1", Assets: []assets.Ref{ref}}),

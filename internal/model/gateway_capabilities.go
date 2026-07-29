@@ -66,7 +66,11 @@ func (p *OpenAICompatibleProvider) ImageInputCapability(ctx context.Context) (bo
 		gatewayCapabilityCache.Lock()
 		delete(gatewayCapabilityCache.entries, key)
 		gatewayCapabilityCache.Unlock()
-		return false, &APIError{StatusCode: resp.StatusCode, Code: "auth_expired", Message: "gateway capability authentication failed"}
+		return false, p.withCredentialContext(&APIError{
+			StatusCode: resp.StatusCode,
+			Code:       "auth_expired",
+			Message:    "gateway capability authentication failed",
+		})
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return false, &APIError{StatusCode: resp.StatusCode, Message: "gateway capability request failed"}

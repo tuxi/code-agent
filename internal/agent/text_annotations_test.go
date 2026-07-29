@@ -112,7 +112,7 @@ func TestAnnotateMediaURI(t *testing.T) {
 		Kind:     "image",
 		URI:      uri,
 		MIMEType: "image/png",
-		Metadata: map[string]string{
+		Metadata: map[string]any{
 			"materialized": "true",
 		},
 	}})

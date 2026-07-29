@@ -133,7 +133,7 @@ func cases() map[string]wireCase {
 				Range:                 &assets.Range{StartLine: 49, StartColumn: 1},
 				Preview:               `public var streamingText: String = ""`,
 				MIMEType:              "text/x-swift",
-				Metadata:              map[string]string{"language": "swift"},
+				Metadata:              map[string]any{"language": "swift"},
 				SourceTurnID:          "turn_7",
 				SourceCallID:          "call_grep",
 			}},

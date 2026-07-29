@@ -26,6 +26,9 @@ type Tool struct {
 // nil if no provider is configured (the tool is simply not registered, and the
 // model won't see it).
 func NewTool(cfg app.WebConfig, resolver credential.Resolver) *Tool {
+	if cfg.Search.Provider == "" || cfg.Search.Provider == "disabled" {
+		return nil
+	}
 	t := &Tool{
 		TopK: cfg.Search.TopK,
 	}
@@ -56,10 +59,12 @@ func NewTool(cfg app.WebConfig, resolver credential.Resolver) *Tool {
 		}
 	case "searxng":
 		t.Primary = NewSearXNG(cfg.Search.SearXNGInstances(), timeout)
-	default: // "tavily" or empty — Tavily is the default provider
+	case "tavily":
 		if key := cfg.Search.TavilyAPIKey(); key != "" {
 			t.Primary = NewTavily(key, timeout)
 		}
+	default:
+		return nil
 	}
 	// Managed search owns provider selection and billing at Gateway. Falling back
 	// to a Runtime provider would bypass its financial ledger.
@@ -80,6 +85,9 @@ func NewTool(cfg app.WebConfig, resolver credential.Resolver) *Tool {
 		t.Fallback = NewSearXNG(cfg.Search.SearXNGInstances(), timeout)
 	}
 
+	if t.Primary == nil && t.Fallback == nil {
+		return nil
+	}
 	return t
 }
 

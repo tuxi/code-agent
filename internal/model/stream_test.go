@@ -8,7 +8,15 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"code-agent/internal/credential"
 )
+
+type modelRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f modelRoundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
 
 func TestCompleteStreamParsesTextToolCallsAndUsage(t *testing.T) {
 	sse := strings.Join([]string{
@@ -58,6 +66,47 @@ func TestCompleteStreamParsesTextToolCallsAndUsage(t *testing.T) {
 	}
 	if resp.Usage.PromptTokens != 10 || resp.Usage.CompletionTokens != 3 || resp.Usage.CachedPromptTokens != 6 {
 		t.Fatalf("usage from final chunk = %+v", resp.Usage)
+	}
+}
+
+func TestOpenAICompatibleAuthErrorsIncludeTargetAndRedactBody(t *testing.T) {
+	target := credential.Target{Namespace: "llm", Name: "company-production"}
+	resolver := credential.StaticResolver{
+		target: {Type: credential.Bearer, Secret: "super-secret-key"},
+	}
+	for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			provider := NewOpenAICompatibleProvider("https://provider.test/v1", resolver, target)
+			provider.HTTPClient = &http.Client{Transport: modelRoundTripFunc(func(*http.Request) (*http.Response, error) {
+				return &http.Response{
+					StatusCode: status,
+					Header:     make(http.Header),
+					Body: io.NopCloser(strings.NewReader(
+						`{"error":{"type":"upstream","message":"echo super-secret-key"}}`,
+					)),
+				}, nil
+			})}
+
+			_, err := provider.Complete(context.Background(), Request{
+				Model: "model",
+				Messages: []Message{{
+					Role: RoleUser, Content: "hello",
+				}},
+			})
+			var apiErr *APIError
+			if !errors.As(err, &apiErr) {
+				t.Fatalf("error = %T %v, want APIError", err, err)
+			}
+			if apiErr.CredentialTarget != "llm/company-production" {
+				t.Fatalf("credential target = %q", apiErr.CredentialTarget)
+			}
+			if apiErr.Code != "auth_expired" || apiErr.Type != "authentication_error" {
+				t.Fatalf("classification = %q/%q", apiErr.Code, apiErr.Type)
+			}
+			if strings.Contains(err.Error(), "super-secret-key") || apiErr.Body != "" {
+				t.Fatalf("authentication error leaked provider body: %v", err)
+			}
+		})
 	}
 }
 

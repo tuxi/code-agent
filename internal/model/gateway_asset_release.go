@@ -40,7 +40,7 @@ func (p *OpenAICompatibleProvider) ReleaseConversationAssetRefs(ctx context.Cont
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return &APIError{StatusCode: resp.StatusCode, Message: "gateway asset-ref release failed"}
+		return p.withCredentialContext(&APIError{StatusCode: resp.StatusCode, Message: "gateway asset-ref release failed"})
 	}
 	var envelope struct {
 		Code int    `json:"code"`

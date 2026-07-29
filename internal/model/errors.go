@@ -41,6 +41,10 @@ func SafeUserAssetErrorMessage(code string) string {
 type APIError struct {
 	StatusCode int
 	Type       string
+	// CredentialTarget identifies the connection-scoped credential involved in
+	// an authentication failure. It is safe metadata such as
+	// "llm/company-production"; it never contains the resolved secret.
+	CredentialTarget string
 	// Code is the provider's stable, machine-readable error classification.
 	// Gateway uses quota_exceeded for a user's exhausted allowance; it is not
 	// equivalent to a transient upstream HTTP 429.
@@ -50,12 +54,16 @@ type APIError struct {
 }
 
 func (e *APIError) Error() string {
+	target := ""
+	if e.CredentialTarget != "" {
+		target = fmt.Sprintf(" credential_target=%q", e.CredentialTarget)
+	}
 	if e.Message != "" {
-		return fmt.Sprintf("model api error: status=%d type=%s message=%s", e.StatusCode, e.Type, e.Message)
+		return fmt.Sprintf("model api error: status=%d%s type=%s message=%s", e.StatusCode, target, e.Type, e.Message)
 	}
 	body := e.Body
 	if len(body) > 500 {
 		body = body[:500] + "…"
 	}
-	return fmt.Sprintf("model api error: status=%d body=%s", e.StatusCode, body)
+	return fmt.Sprintf("model api error: status=%d%s body=%s", e.StatusCode, target, body)
 }

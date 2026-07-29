@@ -1,9 +1,12 @@
 package embed
 
 import (
+	"context"
+	"errors"
 	"testing"
 
 	"code-agent/internal/app"
+	"code-agent/internal/runtime"
 )
 
 func TestInjectSecrets_WebSearchKeys(t *testing.T) {
@@ -42,6 +45,60 @@ func TestInjectSecrets_WebSearchKeys(t *testing.T) {
 	}
 	if got := cfg.Web.Search.BraveAPIKey(); got != "brave-keychain" {
 		t.Errorf("BraveAPIKey() = %q, want brave-keychain", got)
+	}
+}
+
+func TestStartServerWithZeroModelsSupportsReadOnlyWorkspace(t *testing.T) {
+	workspace := t.TempDir()
+	h, err := StartServer(context.Background(), Options{
+		WorkspaceDir: workspace,
+		DataDir:      t.TempDir(),
+		ConfigYAML: `{
+			"default_model": "",
+			"models": {},
+			"credentials": {},
+			"web": {"fetch": {"timeout_seconds": 30}}
+		}`,
+		Sandboxed: true,
+	})
+	if err != nil {
+		t.Fatalf("StartServer zero models: %v", err)
+	}
+	defer h.Stop()
+
+	if h.rt == nil || h.rt.Builder == nil {
+		t.Fatal("zero-model Runtime did not assemble")
+	}
+	if _, ok := h.rt.Builder.ToolReg.Get("web_search"); ok {
+		t.Fatal("zero-model Runtime registered unconfigured web_search")
+	}
+	if _, ok := h.rt.Builder.ToolReg.Get("web_fetch"); !ok {
+		t.Fatal("zero-model Runtime must retain web_fetch")
+	}
+
+	sess, err := h.rt.Repo.Create(context.Background(), workspace, "")
+	if err != nil {
+		t.Fatalf("create conversation: %v", err)
+	}
+	if _, err := h.rt.Repo.Load(context.Background(), sess.ID); err != nil {
+		t.Fatalf("load conversation: %v", err)
+	}
+	if listed, err := h.rt.Repo.List(context.Background()); err != nil || len(listed) != 1 {
+		t.Fatalf("list conversations = %d, %v", len(listed), err)
+	}
+
+	_, err = h.rt.Executor.ExecuteWithRequestID(
+		context.Background(), sess.ID, "request-zero-model", "hello", "",
+	)
+	var notConfigured runtime.ModelNotConfiguredError
+	if !errors.As(err, &notConfigured) {
+		t.Fatalf("send error = %T %v, want ModelNotConfiguredError", err, err)
+	}
+	if notConfigured.AgentInputErrorCode() != "model_not_configured" {
+		t.Fatalf("error code = %q", notConfigured.AgentInputErrorCode())
+	}
+	if err := h.Reconfigure("{}", ""); err != nil {
+		t.Fatalf("zero-model Reconfigure: %v", err)
 	}
 }
 

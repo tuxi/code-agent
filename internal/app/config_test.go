@@ -194,19 +194,52 @@ web:
 }
 
 func TestWebSearchKeyDefaults(t *testing.T) {
-	// Empty config → web search gets defaults but no keys (no env, no injection).
+	// Empty search config remains disabled; web_fetch is configured separately.
 	cfg, err := LoadConfigBytes(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Web.Search.Provider != "tavily" {
-		t.Errorf("provider = %q, want tavily (default)", cfg.Web.Search.Provider)
+	if cfg.Web.Search.Provider != "" {
+		t.Errorf("provider = %q, want disabled empty search config", cfg.Web.Search.Provider)
 	}
 	if cfg.Web.Search.TopK != 5 {
 		t.Errorf("top_k = %d, want 5", cfg.Web.Search.TopK)
 	}
 	if cfg.Web.Search.TavilyAPIKey() != "" {
 		t.Errorf("TavilyAPIKey = %q, want empty (no env, no injection)", cfg.Web.Search.TavilyAPIKey())
+	}
+}
+
+func TestExplicitEmptyModelsPreservesZeroProviderMode(t *testing.T) {
+	cfg, err := LoadConfigBytes([]byte(`
+default_model: ""
+models: {}
+credentials: {}
+web:
+  fetch:
+    timeout_seconds: 30
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Models == nil || len(cfg.Models) != 0 {
+		t.Fatalf("models = %#v, want explicit empty map", cfg.Models)
+	}
+	if cfg.DefaultModel != "" {
+		t.Fatalf("default_model = %q, want empty", cfg.DefaultModel)
+	}
+	if _, err := cfg.SelectModel(""); err == nil {
+		t.Fatal("SelectModel must fail when no model is configured")
+	}
+}
+
+func TestEmptyModelsRejectsNonEmptyDefault(t *testing.T) {
+	_, err := LoadConfigBytes([]byte(`
+default_model: ghost
+models: {}
+`))
+	if err == nil {
+		t.Fatal("non-empty default_model with models: {} must fail")
 	}
 }
 

@@ -12,7 +12,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"time"
 )
 
@@ -58,6 +57,7 @@ type SubAgent struct {
 	Provider    model.Provider
 	MC          app.ModelConfig
 	Cfg         app.Config
+	InitErr     error
 	ReadOnly    *tools.Registry
 	SkillsIndex string
 	Store       session.Store // observability: persists the sub-session transcript
@@ -84,18 +84,29 @@ func NewSubAgent(cfg app.Config, mc app.ModelConfig, parent model.Provider, root
 // chain into a separately configured subagent model. This matters on iOS, where
 // credentials arrive through secretsJSON rather than process environment vars.
 func NewSubAgentWithCredential(cfg app.Config, mc app.ModelConfig, parent model.Provider, cred credential.Resolver, root string, full *tools.Registry, skillsIndex string, store session.Store, progress agent.Emitter, forwarder *JobEventSink) *SubAgent {
-	provider, subMC := ResolveSubAgentModelWithCredential(context.Background(), cfg, mc, parent, cred)
+	provider, subMC, resolveErr := ResolveSubAgentModelWithCredential(context.Background(), cfg, mc, parent, cred)
 	return &SubAgent{
 		Root:        root,
 		Provider:    provider,
 		MC:          subMC,
 		Cfg:         cfg,
+		InitErr:     resolveErr,
 		ReadOnly:    tools.Subset(full, ReadOnlyToolNames...),
 		SkillsIndex: skillsIndex,
 		Store:       store,
 		Progress:    progress,
 		Forwarder:   forwarder,
 	}
+}
+
+// Rebind returns a turn-scoped copy of the subagent template. The copy preserves
+// observability sinks but resolves its model and provider from the current
+// turn's model, provider, and effective credential chain.
+func (s *SubAgent) Rebind(cfg app.Config, mc app.ModelConfig, parent model.Provider, cred credential.Resolver, root string, full *tools.Registry, skillsIndex string) *SubAgent {
+	return NewSubAgentWithCredential(
+		cfg, mc, parent, cred, root, full, skillsIndex,
+		s.Store, s.Progress, s.Forwarder,
+	)
 }
 
 // Run executes one isolated, read-only turn and returns only its conclusion.
@@ -105,6 +116,9 @@ func NewSubAgentWithCredential(cfg app.Config, mc app.ModelConfig, parent model.
 // over (via Forwarder), carrying the child session id so a client can attach to
 // the sub-stream. ec identifies the calling turn (owner) and the workspace.
 func (s *SubAgent) Run(ctx context.Context, ec tools.ExecutionContext, taskPrompt string) (string, error) {
+	if s.InitErr != nil {
+		return "", s.InitErr
+	}
 	workspaceRoot := ec.WorkspaceRoot
 	sess, err := session.NewBuilder(workspaceRoot).
 		WithBudget(s.MC.ContextWindow, s.Cfg.CompactThreshold(s.MC)).
@@ -204,45 +218,43 @@ func (s *SubAgent) Run(ctx context.Context, ec tools.ExecutionContext, taskPromp
 }
 
 // ResolveSubAgentModel returns the provider + config the subagent should use.
-// agent.subagent_model names a configured model; unset, self-referential, or
-// unusable falls back to the parent's provider and model (logged) so a subagent
-// always runs. NOTE: a distinct subagent model gets a FRESH provider that is not
-// wired to the request-telemetry Observer, so its token usage is not yet recorded
-// in the cost report — acceptable until 8.1 lands; inheriting the parent (the
-// default) is fully recorded.
-func ResolveSubAgentModel(cfg app.Config, mc app.ModelConfig, parent model.Provider) (model.Provider, app.ModelConfig) {
+// An unset agent.subagent_model inherits the current turn. An explicitly named
+// model is strict: an unknown alias, unavailable credential, or unsupported
+// provider returns an error and never falls back to the runtime startup model.
+func ResolveSubAgentModel(cfg app.Config, mc app.ModelConfig, parent model.Provider) (model.Provider, app.ModelConfig, error) {
 	return ResolveSubAgentModelWithCredential(context.Background(), cfg, mc, parent, nil)
 }
 
 // ResolveSubAgentModelWithCredential resolves a dedicated subagent model using
-// the same injected credential chain as the parent runtime. If the requested
-// credential is unavailable, it falls back before the first API call instead of
-// constructing a provider that can only fail later with a misleading 401.
-func ResolveSubAgentModelWithCredential(ctx context.Context, cfg app.Config, mc app.ModelConfig, parent model.Provider, cred credential.Resolver) (model.Provider, app.ModelConfig) {
+// the same effective credential chain as the parent runtime.
+func ResolveSubAgentModelWithCredential(ctx context.Context, cfg app.Config, mc app.ModelConfig, parent model.Provider, cred credential.Resolver) (model.Provider, app.ModelConfig, error) {
 	name := cfg.Agent.SubagentModel
-	if name == "" || name == mc.Name {
-		return parent, mc
+	if name == "" {
+		return parent, mc, nil
 	}
 	subMC, err := cfg.SelectModel(name)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "[subagent] model %q unusable (%v); using %s\n", name, err, mc.Name)
-		return parent, mc
+		return nil, app.ModelConfig{}, fmt.Errorf("resolve subagent model %q: %w", name, err)
 	}
 	if cred != nil && !subMC.Credential.IsZero() {
 		resolved, resolveErr := cred.Resolve(ctx, subMC.Credential.Target())
-		if resolveErr != nil || resolved.IsZero() {
-			if resolveErr != nil {
-				fmt.Fprintf(os.Stderr, "[subagent] credential for %q unavailable (%v); using %s\n", name, resolveErr, mc.Name)
-			} else {
-				fmt.Fprintf(os.Stderr, "[subagent] credential for %q unavailable; using %s\n", name, mc.Name)
-			}
-			return parent, mc
+		if resolveErr != nil {
+			return nil, subMC, fmt.Errorf(
+				"resolve subagent credential target %q: %w",
+				subMC.Credential.Target().String(), resolveErr,
+			)
+		}
+		if resolved.IsZero() {
+			return nil, subMC, fmt.Errorf(
+				"subagent credential target %q is unavailable",
+				subMC.Credential.Target().String(),
+			)
 		}
 	}
 	subProvider, err := BuildProvider(subMC, cfg.Provider, cred)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "[subagent] cannot build provider for %q (%v); using %s\n", name, err, mc.Name)
-		return parent, mc
+		return nil, subMC, fmt.Errorf("build subagent provider for %q: %w", name, err)
 	}
-	return subProvider, subMC
+	inheritProviderObserver(parent, subProvider)
+	return subProvider, subMC, nil
 }

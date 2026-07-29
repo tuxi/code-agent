@@ -2,6 +2,7 @@ package projectgraph
 
 import (
 	"context"
+	"os"
 	"testing"
 	"time"
 )
@@ -19,6 +20,9 @@ func TestSwiftIntegrationFindSymbol(t *testing.T) {
 		t.Skip("sourcekitten not installed — skipping integration test")
 	}
 	root := "/tmp/swift-test-project/Sources"
+	if _, err := os.Stat(root); err != nil {
+		t.Skipf("Swift integration fixture unavailable: %v", err)
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
@@ -79,6 +83,9 @@ func TestSwiftIntegrationFindReferences(t *testing.T) {
 		t.Skip("sourcekitten not installed — skipping integration test")
 	}
 	root := "/tmp/swift-test-project/Sources"
+	if _, err := os.Stat(root); err != nil {
+		t.Skipf("Swift integration fixture unavailable: %v", err)
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()

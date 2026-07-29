@@ -4,8 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"code-agent/internal/agent"
@@ -14,9 +14,11 @@ import (
 	"code-agent/internal/conversation"
 	"code-agent/internal/credential"
 	"code-agent/internal/model"
+	"code-agent/internal/session"
 	"code-agent/internal/skills"
 	"code-agent/internal/tools"
 	"code-agent/internal/tools/skill"
+	"code-agent/internal/tools/task"
 	"code-agent/internal/tools/websearch"
 )
 
@@ -95,15 +97,70 @@ func (b *ServeRunBuilder) Reconfigure(mc app.ModelConfig, provider model.Provide
 
 func (b *ServeRunBuilder) ResolveModel(wireModel string) (string, error) {
 	b.mu.RLock()
-	defer b.mu.RUnlock()
-	if wireModel == "" {
-		return b.mc.Model, nil
+	defaultMC, cfg := b.mc, b.Cfg
+	b.mu.RUnlock()
+	selected, err := resolveTurnModel(cfg, defaultMC, wireModel)
+	if err != nil {
+		return "", err
 	}
-	if selected, err := b.Cfg.SelectModel(wireModel); err == nil {
-		return selected.Model, nil
+	return selected.Model, nil
+}
+
+// ModelNotConfiguredError is returned before turn acceptance when an Embedded
+// Runtime was intentionally started with models: {}.
+type ModelNotConfiguredError struct{}
+
+func (ModelNotConfiguredError) Error() string { return "no model provider is configured" }
+func (ModelNotConfiguredError) AgentInputErrorCode() string {
+	return "model_not_configured"
+}
+func (ModelNotConfiguredError) LifecycleErrorCode() string {
+	return "model_not_configured"
+}
+func (ModelNotConfiguredError) SafeMessage() string {
+	return "Connect a model provider before sending a message."
+}
+
+// resolveTurnModel maps the client model field to a complete ModelConfig. The
+// provider.* namespace is reserved for AgentKit Runtime Aliases and is always
+// strict. A legacy bare wire-model string is accepted only while the runtime's
+// default endpoint is the Talkify Gateway.
+func resolveTurnModel(cfg app.Config, defaultMC app.ModelConfig, requested string) (app.ModelConfig, error) {
+	if cfg.Models != nil && len(cfg.Models) == 0 {
+		return app.ModelConfig{}, ModelNotConfiguredError{}
 	}
-	// Gateway accepts a direct wire model name that is not a local profile.
-	return wireModel, nil
+	if requested == "" {
+		return defaultMC, nil
+	}
+	if selected, err := cfg.SelectModel(requested); err == nil {
+		return selected, nil
+	} else if strings.HasPrefix(requested, "provider.") {
+		return app.ModelConfig{}, fmt.Errorf("unknown runtime alias %q: %w", requested, err)
+	}
+	if !isGatewayModelEndpoint(defaultMC.BaseURL) {
+		return app.ModelConfig{}, fmt.Errorf(
+			"unknown model %q: direct providers require a configured Runtime Alias",
+			requested,
+		)
+	}
+	legacy := defaultMC
+	legacy.Model = requested
+	return legacy, nil
+}
+
+// effectiveCredentialResolver gives a connection-scoped session credential
+// priority without hiding AgentKit-injected Direct Provider credentials.
+func effectiveCredentialResolver(session, base credential.Resolver) credential.Resolver {
+	switch {
+	case session == nil:
+		return base
+	case base == nil:
+		return session
+	default:
+		return &credential.ChainResolver{
+			Resolvers: []credential.Resolver{session, base},
+		}
+	}
 }
 
 // ImageInputCapability probes the frozen Runtime–Gateway contract using the
@@ -164,43 +221,29 @@ func (b *ServeRunBuilder) ReleaseConversationAssetRefs(ctx context.Context, cred
 // workspace, merges client-registered tools, and wires plan tools + client waiter.
 func (b *ServeRunBuilder) Build(ctx conversation.RuntimeContext) conversation.TurnRunner {
 	b.mu.RLock()
-	mc, baseProvider, baseCredential := b.mc, b.provider, b.credential
+	defaultMC, baseProvider, baseCredential := b.mc, b.provider, b.credential
 	cfg := b.Cfg
 	b.mu.RUnlock()
 
-	// Per-turn model selection: if the client specified a model name, first
-	// try to match a config profile. When no profile matches, treat it as a
-	// direct wire model string (for Gateway — the Gateway chooses the provider).
-	if ctx.Model != "" {
-		if altMC, err := cfg.SelectModel(ctx.Model); err == nil {
-			mc = altMC
-		} else {
-			// Not a config profile — forward as-is to the provider.
-			mc.Model = ctx.Model
-		}
+	mc, modelErr := resolveTurnModel(cfg, defaultMC, ctx.Model)
+	if modelErr != nil {
+		return failedTurnRunner{err: modelErr}
 	}
 	if ctx.ResolvedModel != "" {
 		mc.Model = ctx.ResolvedModel
 	}
 
-	// If the session has a per-session credential (server mode — JWT from
-	// Authorization header), build a provider that uses it. The session
-	// credential takes priority over the base credential chain.
+	// Rebuild whenever the turn selected a model or supplied a session
+	// credential. The effective chain is session → injected/configured/env.
+	effectiveCredential := effectiveCredentialResolver(ctx.Credential, baseCredential)
 	provider := baseProvider
-	if ctx.Credential != nil && !mc.Credential.IsZero() {
-		p, err := BuildProvider(mc, b.Cfg.Provider, ctx.Credential)
-		if err == nil {
-			provider = p
-		} else {
-			fmt.Fprintf(os.Stderr, "[auth] builder: failed to build per-session provider: %v\n", err)
+	if ctx.Model != "" || ctx.Credential != nil || mc.Name != defaultMC.Name {
+		p, err := BuildProvider(mc, cfg.Provider, effectiveCredential)
+		if err != nil {
+			return failedTurnRunner{err: fmt.Errorf("build provider for model %q: %w", mc.Name, err)}
 		}
-	} else if ctx.Model != "" || mc.Name != b.mc.Name {
-		// Model changed but no session credential — rebuild provider with
-		// the alternative model config.
-		p, err := BuildProvider(mc, b.Cfg.Provider, nil)
-		if err == nil {
-			provider = p
-		}
+		inheritProviderObserver(baseProvider, p)
+		provider = p
 	}
 
 	// Resolve skills AND tools for the session's workspace. The workspace instance
@@ -226,11 +269,9 @@ func (b *ServeRunBuilder) Build(ctx conversation.RuntimeContext) conversation.Tu
 	// replaced in every turn-local clone: wiring the shared base reference here
 	// races concurrent sessions and can route A's plan operation into B's runner.
 	turnTools := toolReg.Clone()
-	toolCredential := baseCredential
-	if ctx.Credential != nil {
-		toolCredential = ctx.Credential
+	if searchTool := websearch.NewTool(cfg.Web, effectiveCredential); searchTool != nil {
+		turnTools.Replace(searchTool)
 	}
-	turnTools.Replace(websearch.NewTool(cfg.Web, toolCredential))
 	planRef := &agent.RunnerRef{}
 	turnTools.Replace(agent.NewEnterPlanModeTool(planRef))
 	turnTools.Replace(agent.NewProposePlanTool(planRef, filepath.Join(workspacePath, ".codeagent", "plans")))
@@ -246,6 +287,10 @@ func (b *ServeRunBuilder) Build(ctx conversation.RuntimeContext) conversation.Tu
 			filepath.Join(workspacePath, "skills"),
 		))
 	}
+	// task is also provider-backed. Rebind it after the workspace load_skill
+	// replacement so the subagent inherits this turn's model, resolver, and
+	// workspace-scoped read-only tools.
+	rebindTurnTask(turnTools, cfg, mc, provider, effectiveCredential, workspacePath, skillReg)
 
 	// Resolve the permission store for this workspace. Each workspace gets its
 	// own RuleStore so an "Always allow" grant stays scoped to that workspace's
@@ -292,4 +337,39 @@ func (b *ServeRunBuilder) Build(ctx conversation.RuntimeContext) conversation.Tu
 	runner.Checkpointer = ctx.Checkpointer // mid-turn crash-safety (v1.2 §2); nil in headless builds
 	runner.Stream = true                   // emit final-text and reasoning deltas for live client rendering
 	return runner
+}
+
+// failedTurnRunner preserves RunBuilder's historical no-error factory signature
+// while making a strict Alias failure visible to recovery/direct Build callers.
+// Normal agent_input requests fail earlier in ResolveModel, before acceptance.
+type failedTurnRunner struct{ err error }
+
+func (r failedTurnRunner) RunTurn(context.Context, *session.Session, string) (agent.TurnResult, error) {
+	return agent.TurnResult{}, r.err
+}
+
+func (r failedTurnRunner) ResumeTurn(context.Context, *session.Session) (agent.TurnResult, error) {
+	return agent.TurnResult{}, r.err
+}
+
+func rebindTurnTask(registry *tools.Registry, cfg app.Config, mc app.ModelConfig, provider model.Provider, cred credential.Resolver, root string, skillReg *skills.Registry) {
+	raw, ok := registry.Get("task")
+	if !ok {
+		return
+	}
+	taskTool, ok := raw.(*task.Tool)
+	if !ok {
+		return
+	}
+	template, ok := taskTool.Agent().(*SubAgent)
+	if !ok {
+		return
+	}
+	skillsIndex := ""
+	if skillReg != nil {
+		skillsIndex = skillReg.PromptIndex()
+	}
+	registry.Replace(task.NewTool(
+		template.Rebind(cfg, mc, provider, cred, root, registry, skillsIndex),
+	))
 }

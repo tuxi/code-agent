@@ -167,6 +167,7 @@ func TestLifecycleErrorCode(t *testing.T) {
 		{"gateway quota", &model.APIError{StatusCode: 429, Code: "quota_exceeded"}, "quota_exceeded"},
 		{"gateway quota type fallback", &model.APIError{StatusCode: 429, Type: "quota_exceeded"}, "quota_exceeded"},
 		{"gateway auth", &model.APIError{StatusCode: 401}, "auth_expired"},
+		{"provider forbidden", &model.APIError{StatusCode: 403}, "auth_expired"},
 		{"generic", errors.New("boom"), "request_failed"},
 	}
 	for _, tc := range cases {

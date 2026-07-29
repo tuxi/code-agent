@@ -110,7 +110,10 @@ func goalResume(ctx context.Context, cfg app.Config, mc app.ModelConfig, runner 
 // admitter was unavailable and we failed open). Admission is advisory UX, not the
 // safety boundary — the approver guards high-risk actions regardless.
 func admitObjective(ctx context.Context, cfg app.Config, mc app.ModelConfig, runner *agent.Runner, objective string) (caveat string, err error) {
-	provider, amc := runtime.ResolveSubAgentModel(cfg, mc, runner.Model)
+	provider, amc, resolveErr := runtime.ResolveSubAgentModel(cfg, mc, runner.Model)
+	if resolveErr != nil {
+		return fmt.Sprintf("准入判定不可用(%v),已从宽放行。", resolveErr), nil
+	}
 	res, aerr := (&goal.LLMAdmitter{Provider: provider, Model: amc.Model}).Admit(ctx, objective)
 	if aerr != nil {
 		return fmt.Sprintf("准入判定不可用(%v),已从宽放行。", aerr), nil
@@ -129,7 +132,10 @@ func admitObjective(ctx context.Context, cfg app.Config, mc app.ModelConfig, run
 // degraded reports that no separate model was configured (judge fell back to the
 // worker's model), which each driver surfaces its own way.
 func newGoalEngine(cfg app.Config, mc app.ModelConfig, runner *agent.Runner, sess *session.Session, store session.Store) (engine *goal.Engine, degraded bool, err error) {
-	checkerProvider, checkerMC := runtime.ResolveSubAgentModel(cfg, mc, runner.Model)
+	checkerProvider, checkerMC, resolveErr := runtime.ResolveSubAgentModel(cfg, mc, runner.Model)
+	if resolveErr != nil {
+		return nil, false, resolveErr
+	}
 	checker := &goal.LLMChecker{Provider: checkerProvider, Model: checkerMC.Model}
 	engine, err = goal.NewEngine(sess, store, runner, checker)
 	if engine != nil {

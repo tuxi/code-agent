@@ -284,17 +284,16 @@ type PermissionsConfig struct {
 	Deny  []string `yaml:"deny"`  // refuse without a prompt (wins over allow)
 }
 
-// WebConfig configures the built-in web_search and web_fetch tools. When empty,
-// the tools degrade gracefully: web_search returns an error advising the user to
-// configure a search provider, and web_fetch still fetches URLs but without
-// caching (since no cache TTL is configured).
+// WebConfig configures the built-in web_search and web_fetch tools. When search
+// is empty or disabled, web_search is not registered; web_fetch remains
+// available.
 type WebConfig struct {
 	Search WebSearchConfig `yaml:"search"`
 	Fetch  WebFetchConfig  `yaml:"fetch"`
 }
 
 type WebSearchConfig struct {
-	Provider              string        `yaml:"provider"`                // "tavily" (default), "gateway", "brave", or "searxng"
+	Provider              string        `yaml:"provider"`                // "tavily", "gateway", "brave", "searxng", or "disabled"
 	FallbackProvider      string        `yaml:"fallback_provider"`       // optional fallback
 	GatewayBaseURL        string        `yaml:"gateway_base_url"`        // Agent Gateway /api/v1/agent base URL
 	GatewayTimeoutSeconds int           `yaml:"gateway_timeout_seconds"` // whole managed search request, default 120
@@ -384,9 +383,10 @@ func LoadConfigBytes(data []byte) (Config, error) {
 		}
 	}
 
-	// Fallback: if no models are configured (e.g. an old config or no file),
-	// provide a built-in deepseek entry so the tool still works out of the box.
-	if len(cfg.Models) == 0 {
+	// Backward compatibility applies only when the models field is absent. An
+	// explicit models: {} is the host's zero-Provider read-only mode and must
+	// remain empty.
+	if cfg.Models == nil {
 		cfg.Models = map[string]ModelConfig{
 			"deepseek": {
 				Provider:  "openai",
@@ -397,7 +397,7 @@ func LoadConfigBytes(data []byte) (Config, error) {
 		}
 	}
 
-	if cfg.DefaultModel == "" {
+	if len(cfg.Models) > 0 && cfg.DefaultModel == "" {
 		if _, ok := cfg.Models["deepseek"]; ok {
 			cfg.DefaultModel = "deepseek"
 		} else {
@@ -465,13 +465,15 @@ func LoadConfigBytes(data []byte) (Config, error) {
 	if cfg.Currency == "" {
 		cfg.Currency = "$"
 	}
-	if _, ok := cfg.Models[cfg.DefaultModel]; !ok {
-		return Config{}, fmt.Errorf("default_model %q is not defined under models", cfg.DefaultModel)
+	if len(cfg.Models) == 0 && cfg.DefaultModel != "" {
+		return Config{}, fmt.Errorf("default_model %q cannot be set when models is empty", cfg.DefaultModel)
+	}
+	if len(cfg.Models) > 0 {
+		if _, ok := cfg.Models[cfg.DefaultModel]; !ok {
+			return Config{}, fmt.Errorf("default_model %q is not defined under models", cfg.DefaultModel)
+		}
 	}
 
-	if cfg.Web.Search.Provider == "" {
-		cfg.Web.Search.Provider = "tavily"
-	}
 	if cfg.Web.Search.Provider == "gateway" {
 		if cfg.Web.Search.Credential.IsZero() {
 			cfg.Web.Search.Credential = CredentialRef{Namespace: "gateway", Name: "default"}

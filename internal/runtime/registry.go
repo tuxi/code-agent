@@ -57,10 +57,11 @@ func RegisterBuiltinTools(registry *tools.Registry, cfg app.Config, cred credent
 		filesystem.NewEditFileTool(),
 		search.NewGrepTool(),
 		skill.NewLoadSkillTool(skillReg, cfg.GlobalSkillsDir, filepath.Join(root, "skills")),
-		websearch.NewTool(cfg.Web, cred),
-		webfetch.NewTool(cfg.Web),
-		todo.NewTool(),
 	}
+	if searchTool := websearch.NewTool(cfg.Web, cred); searchTool != nil {
+		toolList = append(toolList, searchTool)
+	}
+	toolList = append(toolList, webfetch.NewTool(cfg.Web), todo.NewTool())
 
 	// Pure-Go git tools that work without a subprocess (go-git / go-gitdiff). On a
 	// sandboxed host (iOS) these replace the exec-backed git tools below and add what
@@ -163,17 +164,19 @@ func BuildBaseRegistry(ctx context.Context, cfg app.Config, mc app.ModelConfig, 
 	// the PARENT. Because the subset is taken now, `task` can never be in it, so a
 	// subagent cannot spawn a subagent: recursion is capped at depth 1 by
 	// construction (see tools.Subset / NewSubAgent).
-	sub := NewSubAgentWithCredential(cfg, mc, provider, cred, root, registry, skillReg.PromptIndex(), store, progress, jobSink)
-	if taskTool := task.NewTool(sub); cfg.Agent.ToolAllowed(taskTool.Name()) {
-		if err := registry.Register(taskTool); err != nil {
-			return nil, nil, nil, nil, err
+	if provider != nil {
+		sub := NewSubAgentWithCredential(cfg, mc, provider, cred, root, registry, skillReg.PromptIndex(), store, progress, jobSink)
+		if taskTool := task.NewTool(sub); cfg.Agent.ToolAllowed(taskTool.Name()) {
+			if err := registry.Register(taskTool); err != nil {
+				return nil, nil, nil, nil, err
+			}
 		}
 	}
 
 	// Flux projects the current turn's code-agent tools at execution time and no
 	// longer owns a private shell registry, so the planner is available on both
 	// desktop and sandboxed/iOS profiles.
-	if cfg.Agent.ToolAllowed("plan_workflow") {
+	if provider != nil && cfg.Agent.ToolAllowed("plan_workflow") {
 		RegisterFluxTool(registry, provider, mc.Model)
 	}
 

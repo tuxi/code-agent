@@ -39,6 +39,11 @@ type Tool struct {
 // NewTool returns a task tool backed by the given subagent runner.
 func NewTool(agent SubAgent) *Tool { return &Tool{agent: agent} }
 
+// Agent returns the immutable subagent backing this tool. Serve-mode runtimes
+// use it as a template when cloning the tool registry for a turn, so the cloned
+// task tool can be rebound to that turn's provider and credential resolver.
+func (t *Tool) Agent() SubAgent { return t.agent }
+
 func (t *Tool) Name() string { return "task" }
 
 func (t *Tool) Description() string {

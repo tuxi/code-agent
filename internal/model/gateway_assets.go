@@ -187,6 +187,12 @@ func (p *OpenAICompatibleProvider) gatewayJSON(ctx context.Context, method, endp
 	if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
 		return fmt.Errorf("decode gateway asset response: %w", err)
 	}
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		return p.withCredentialContext(&APIError{
+			StatusCode: resp.StatusCode,
+			Message:    "gateway asset authentication failed",
+		})
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 || envelope.Code != 0 {
 		return fmt.Errorf("gateway asset request failed: %s", envelope.Message)
 	}

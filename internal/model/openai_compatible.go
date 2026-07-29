@@ -281,7 +281,7 @@ func (p *OpenAICompatibleProvider) CompleteStream(ctx context.Context, req Reque
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		raw, _ := io.ReadAll(resp.Body)
-		return Response{}, apiErrorFromBody(resp.StatusCode, raw)
+		return Response{}, p.withCredentialContext(apiErrorFromBody(resp.StatusCode, raw))
 	}
 
 	var content strings.Builder
@@ -451,7 +451,7 @@ func (p *OpenAICompatibleProvider) Complete(ctx context.Context, req Request) (R
 	// "decode response" failure. Parse the structured error best-effort for a
 	// better message.
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return Response{}, apiErrorFromBody(resp.StatusCode, raw)
+		return Response{}, p.withCredentialContext(apiErrorFromBody(resp.StatusCode, raw))
 	}
 
 	var decoded chatCompletionResponse
@@ -514,6 +514,22 @@ func apiErrorFromBody(statusCode int, raw []byte) *APIError {
 		apiErr.Message = decoded.Error.Message
 	}
 	return apiErr
+}
+
+// withCredentialContext makes 401/403 actionable without exposing provider
+// response bodies that may echo sensitive authentication material.
+func (p *OpenAICompatibleProvider) withCredentialContext(err *APIError) *APIError {
+	if err == nil || (err.StatusCode != http.StatusUnauthorized && err.StatusCode != http.StatusForbidden) {
+		return err
+	}
+	if p.CredentialTarget.Namespace != "" || p.CredentialTarget.Name != "" {
+		err.CredentialTarget = p.CredentialTarget.String()
+	}
+	err.Type = "authentication_error"
+	err.Code = "auth_expired"
+	err.Message = "provider authentication failed"
+	err.Body = ""
+	return err
 }
 
 func errorCode(value any) string {

@@ -36,7 +36,10 @@ func registerWithAllowlist(t *testing.T, allow []string) map[string]bool {
 		t.Fatalf("skills.Load: %v", err)
 	}
 	reg := tools.NewRegistry()
-	cfg := app.Config{Agent: app.AgentConfig{BuiltinTools: &allow}}
+	cfg := app.Config{
+		Agent: app.AgentConfig{BuiltinTools: &allow},
+		Web:   app.WebConfig{Search: app.WebSearchConfig{Provider: "searxng"}},
+	}
 	if err := RegisterBuiltinTools(reg, cfg, nil, skillReg, "", nil); err != nil {
 		t.Fatalf("RegisterBuiltinTools: %v", err)
 	}
@@ -45,6 +48,16 @@ func registerWithAllowlist(t *testing.T, allow []string) map[string]bool {
 		got[n] = true
 	}
 	return got
+}
+
+func TestRegisterBuiltinToolsOmitsUnconfiguredSearchButKeepsFetch(t *testing.T) {
+	got := registerForProfile(t, app.ProfileSandboxed)
+	if got["web_search"] {
+		t.Fatal("web_search must be absent when no search provider is configured")
+	}
+	if !got["web_fetch"] {
+		t.Fatal("web_fetch must remain available without web_search")
+	}
 }
 
 // TestRegisterBuiltinTools_Allowlist locks down a deployment (e.g. DreamAI sidecar):

@@ -57,3 +57,14 @@ func BuildProvider(mc app.ModelConfig, pc app.ProviderConfig, cred credential.Re
 		MaxBackoff: time.Duration(pc.MaxBackoffSeconds) * time.Second,
 	}, nil
 }
+
+// inheritProviderObserver keeps request telemetry attached when a turn or
+// subagent builds a Provider for a non-default Runtime Alias.
+func inheritProviderObserver(parent, child model.Provider) {
+	parentResilient, parentOK := parent.(*model.ResilientProvider)
+	childResilient, childOK := child.(*model.ResilientProvider)
+	if parentOK && childOK {
+		childResilient.Observer = parentResilient.Observer
+		childResilient.LogWriter = parentResilient.LogWriter
+	}
+}

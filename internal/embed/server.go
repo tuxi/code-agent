@@ -239,6 +239,16 @@ func (h *Handle) Reconfigure(secretsJSON, modelName string) error {
 	if credChain == nil {
 		credChain = cfg.CredentialResolver(nil)
 	}
+	if len(cfg.Models) == 0 {
+		if modelName != "" {
+			return runtime.ModelNotConfiguredError{}
+		}
+		h.rt.Builder.Reconfigure(app.ModelConfig{}, nil, credChain)
+		h.cfg = cfg
+		h.credential = credChain
+		h.modelName = ""
+		return nil
+	}
 	selectedModelName := modelName
 	if selectedModelName == "" {
 		selectedModelName = h.modelName
@@ -312,13 +322,19 @@ func StartServer(ctx context.Context, opt Options) (*Handle, error) {
 	injectedResolver := injectSecrets(&cfg, opt.Secrets)
 	credChain := cfg.CredentialResolver(injectedResolver)
 
-	mc, err := cfg.SelectModel(opt.ModelName)
-	if err != nil {
-		return nil, err
-	}
-	provider, err := runtime.BuildProvider(mc, cfg.Provider, credChain)
-	if err != nil {
-		return nil, err
+	var mc app.ModelConfig
+	var provider model.Provider
+	if len(cfg.Models) > 0 {
+		mc, err = cfg.SelectModel(opt.ModelName)
+		if err != nil {
+			return nil, err
+		}
+		provider, err = runtime.BuildProvider(mc, cfg.Provider, credChain)
+		if err != nil {
+			return nil, err
+		}
+	} else if opt.ModelName != "" {
+		return nil, runtime.ModelNotConfiguredError{}
 	}
 
 	// A cancellable context scoped to the server's lifetime; Stop cancels it so
@@ -385,9 +401,9 @@ func StartServer(ctx context.Context, opt Options) (*Handle, error) {
 // the embedded server (StartServer) and the `codeagent serve` CLI (runServe), so
 // both frontends expose identical runtime behavior.
 //
-// The provider must already be built (callers differ in how they resolve creds:
-// the CLI from env, the embedded host from injected secrets). On error, any
-// resources opened before the failure are released before returning.
+// The provider must already be built when models are configured (callers differ
+// in how they resolve credentials). It is nil for an intentional models: {}
+// Embedded Runtime. On error, resources opened before the failure are released.
 func Assemble(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider model.Provider, cred credential.Resolver, workspaceDir, cloneStateDir string) (http.Handler, *Runtime, []func(), error) {
 	if workspaceDir == "" {
 		workspaceDir, _ = os.Getwd()
@@ -452,7 +468,9 @@ func Assemble(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider 
 	executor.SetAssetRefReleaseService(rb)
 	maxConcurrentTurns := cfg.RuntimeMaxConcurrentTurns()
 	executor.SetTurnScheduler(conversation.NewTurnScheduler(maxConcurrentTurns))
-	executor.SetTitleGenerator(conversation.NewLLMTitleGenerator(provider, mc.Model))
+	if provider != nil {
+		executor.SetTitleGenerator(conversation.NewLLMTitleGenerator(provider, mc.Model))
+	}
 	managedWorktrees, worktreeReport, worktreeErr := runtime.ConfigureManagedWorktrees(ctx, telemetryStore, repo, executor, cfg.Profile != app.ProfileSandboxed)
 	if worktreeErr != nil {
 		fmt.Printf("codeagent embedded: managed worktrees disabled: %v\n", worktreeErr)
