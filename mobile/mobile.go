@@ -39,24 +39,27 @@ type Server struct {
 //   - secretsJSON:  a JSON object of API keys, keyed by a model's api_key_env name
 //     or its friendly name, e.g. {"DEEPSEEK_API_KEY":"sk-..."}. Pass "" for none.
 //     These come from the iOS Keychain and never touch the environment or disk.
+//   - serverAccessToken: a fresh 256-bit random Bearer token kept only in host
+//     memory for this Runtime process.
 //   - addr:         listen address; pass "" for an OS-assigned ephemeral port on
 //     127.0.0.1 (read it back via Server.Port).
 //   - sandboxed:    pass true on iOS to assemble the sandboxed toolset (no shell,
 //     git, gopls, MCP, or hooks). A non-sandboxed macOS host may pass false for
 //     the full desktop toolset.
-func Start(workspaceDir, dataDir, configYAML, modelName, secretsJSON, addr string, sandboxed bool) (*Server, error) {
+func Start(workspaceDir, dataDir, configYAML, modelName, secretsJSON, serverAccessToken, addr string, sandboxed bool) (*Server, error) {
 	secrets, err := parseSecrets(secretsJSON)
 	if err != nil {
 		return nil, err
 	}
 	h, err := embed.StartServer(context.Background(), embed.Options{
-		WorkspaceDir: workspaceDir,
-		DataDir:      dataDir,
-		ConfigYAML:   configYAML,
-		ModelName:    modelName,
-		Secrets:      secrets,
-		Addr:         addr,
-		Sandboxed:    sandboxed,
+		WorkspaceDir:      workspaceDir,
+		DataDir:           dataDir,
+		ConfigYAML:        configYAML,
+		ModelName:         modelName,
+		Secrets:           secrets,
+		ServerAccessToken: serverAccessToken,
+		Addr:              addr,
+		Sandboxed:         sandboxed,
 	})
 	if err != nil {
 		return nil, err

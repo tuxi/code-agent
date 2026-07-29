@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"code-agent/internal/app"
+	"code-agent/internal/buildinfo"
 	"code-agent/internal/conversation"
 	"code-agent/internal/credential"
 	"code-agent/internal/mcp"
@@ -106,6 +107,17 @@ type Options struct {
 	// MaxConcurrentTurns overrides runtime.max_concurrent_turns when positive.
 	// Zero keeps the config value, whose safe default is one.
 	MaxConcurrentTurns int
+
+	// ServerAccessToken authenticates every Runtime HTTP and Agent Wire request
+	// except the public health check. Embedded hosts generate a fresh 256-bit
+	// random token for each start and keep it only in memory.
+	ServerAccessToken string
+}
+
+type RuntimeServerOptions struct {
+	Profile     string
+	DisplayName string
+	Auth        server.ServerAuth
 }
 
 // Runtime is the set of live components Assemble builds that the lifecycle verbs
@@ -272,6 +284,9 @@ func (h *Handle) Reconfigure(secretsJSON, modelName string) error {
 // the loopback interface, returning once it is listening. The server runs until
 // Handle.Stop is called. The assembly mirrors cmd/codeagent.runServe.
 func StartServer(ctx context.Context, opt Options) (*Handle, error) {
+	if err := server.ValidateServerAccessToken(opt.ServerAccessToken); err != nil {
+		return nil, fmt.Errorf("embedded Runtime requires an in-memory Server Access Token: %w", err)
+	}
 	cfg, err := app.LoadConfigBytes([]byte(opt.ConfigYAML))
 	if err != nil {
 		return nil, err
@@ -361,7 +376,19 @@ func StartServer(ctx context.Context, opt Options) (*Handle, error) {
 	if dataDir != "" {
 		cloneStateDir = filepath.Join(dataDir, ".codeagent", "clone")
 	}
-	handler, rt, closers, err := Assemble(srvCtx, cfg, mc, provider, credChain, workspaceDir, cloneStateDir)
+	profile := server.RuntimeProfileFullDesktop
+	if opt.Sandboxed {
+		profile = server.RuntimeProfileSandboxed
+	}
+	handler, rt, closers, err := Assemble(
+		srvCtx, cfg, mc, provider, credChain, workspaceDir, cloneStateDir,
+		RuntimeServerOptions{
+			Profile: profile,
+			Auth: server.ServerAuth{
+				Enabled: true, Token: opt.ServerAccessToken, PublicHealthz: true,
+			},
+		},
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -404,7 +431,7 @@ func StartServer(ctx context.Context, opt Options) (*Handle, error) {
 // The provider must already be built when models are configured (callers differ
 // in how they resolve credentials). It is nil for an intentional models: {}
 // Embedded Runtime. On error, resources opened before the failure are released.
-func Assemble(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider model.Provider, cred credential.Resolver, workspaceDir, cloneStateDir string) (http.Handler, *Runtime, []func(), error) {
+func Assemble(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider model.Provider, cred credential.Resolver, workspaceDir, cloneStateDir string, serverOptions RuntimeServerOptions) (http.Handler, *Runtime, []func(), error) {
 	if workspaceDir == "" {
 		workspaceDir, _ = os.Getwd()
 	}
@@ -413,6 +440,12 @@ func Assemble(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider 
 		for i := len(closers) - 1; i >= 0; i-- {
 			closers[i]()
 		}
+	}
+	runtimeInfo, runtimeModels, err := server.BuildRuntimeContract(
+		cfg, workspaceDir, serverOptions.DisplayName, serverOptions.Profile,
+	)
+	if err != nil {
+		return nil, nil, nil, err
 	}
 
 	telemetryStore, err := runtime.OpenStore(workspaceDir)
@@ -500,30 +533,25 @@ func Assemble(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider 
 		capabilities = append(capabilities, "public_git_clone_v1")
 	}
 	handler := server.NewMux(repo, eventStore, executor, server.MuxOptions{
-		ServerName:        "codeagent/" + mc.Model,
+		ServerName:        buildinfo.ServerName(),
+		RuntimeInfo:       runtimeInfo,
+		RuntimeModels:     runtimeModels,
+		ServerAuth:        serverOptions.Auth,
 		Capabilities:      capabilities,
 		CloneService:      cloneService,
 		Granter:           rb.Rules(),
 		WorkspaceReloader: wsReg.ReloadWorkspace,
 		Prompts:           wsReg, // default workspace's MCP prompts; per-workspace needs a wire change
-		// Wire the WS auth layer into the TurnExecutor's per-session credential
-		// store. When a client connects with Authorization: Bearer <jwt>, the JWT
-		// flows: WS upgrade → CredentialStore → TurnExecutor → RuntimeContext →
-		// ServeRunBuilder.Build() → model provider → Gateway.
-		CredentialStore: executor.SetSessionCredential,
-		CapabilityResolver: func(ctx context.Context, cred credential.Resolver) []string {
+		CapabilityResolver: func(ctx context.Context) []string {
 			persistence, ok := repo.(conversation.UserAssetsPersistenceCapability)
 			if ok && persistence.SupportsUserAssetsPersistence() && rb.ImageInputCapability(ctx, cred) {
 				return []string{"image_input"}
 			}
 			return nil
 		},
-		SessionReady: func(ctx context.Context, sessionID string, connectionCred credential.Resolver) {
+		SessionReady: func(ctx context.Context, sessionID string) {
 			_, _ = executor.RecoverSessionTurnInputs(context.WithoutCancel(ctx), sessionID)
-			if connectionCred == nil {
-				connectionCred = cred
-			}
-			go executor.FlushAssetRefReleases(context.WithoutCancel(ctx), connectionCred)
+			go executor.FlushAssetRefReleases(context.WithoutCancel(ctx), cred)
 		},
 		RuntimeCapabilities: runtimeCapabilities,
 		ManagedWorktrees:    managedWorktrees,

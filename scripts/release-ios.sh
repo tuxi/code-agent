@@ -9,7 +9,8 @@
 #
 # Prerequisites:
 #   - gh CLI installed and authenticated (`gh auth login`)
-#   - xcframework already built via `scripts/build-ios.sh`
+#   - xcframework already built via
+#     `CODEAGENT_VERSION=<version> scripts/build-ios.sh`
 #
 # Steps:
 #   1. Check build/CodeAgentRuntime.xcframework exists
@@ -42,7 +43,7 @@ gh auth status >/dev/null 2>&1 || { echo "error: gh not authenticated (run: gh a
 
 if [ ! -d "${SRC_DIR}" ]; then
   echo "error: ${SRC_DIR} not found"
-  echo "       run scripts/build-ios.sh first"
+  echo "       run CODEAGENT_VERSION=${VERSION} scripts/build-ios.sh first"
   exit 1
 fi
 

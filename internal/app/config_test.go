@@ -233,6 +233,48 @@ web:
 	}
 }
 
+func TestRuntimeServerAndCatalogMetadataDecode(t *testing.T) {
+	cfg, err := LoadConfigBytes([]byte(`
+default_model: provider.ZGVlcHNlZWs.model.ZGVlcHNlZWstY2hhdA
+server:
+  display_name: Build Mac
+  authentication: bearer
+  access_token_env: TALKIFY_RUNTIME_TOKEN
+  public_healthz: false
+  tls_certificate: /etc/codeagent/server.crt
+  tls_private_key: /etc/codeagent/server.key
+models:
+  provider.ZGVlcHNlZWs.model.ZGVlcHNlZWstY2hhdA:
+    provider: openai
+    base_url: https://api.deepseek.com
+    model: deepseek-chat
+    catalog:
+      connection_id: deepseek
+      provider_id: deepseek
+      connection_display_name: DeepSeek
+      display_name: DeepSeek Chat
+      supports_tools: true
+      supports_reasoning: false
+      input_modalities: [text]
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Server.DisplayName != "Build Mac" || cfg.Server.Authentication != "bearer" ||
+		cfg.Server.AccessTokenEnv != "TALKIFY_RUNTIME_TOKEN" || cfg.Server.PublicHealthz ||
+		cfg.Server.TLSCertificate != "/etc/codeagent/server.crt" ||
+		cfg.Server.TLSPrivateKey != "/etc/codeagent/server.key" {
+		t.Fatalf("server config = %+v", cfg.Server)
+	}
+	model := cfg.Models[cfg.DefaultModel]
+	if model.Catalog.ConnectionID != "deepseek" || model.Catalog.ProviderID != "deepseek" ||
+		model.Catalog.ConnectionDisplayName != "DeepSeek" || model.Catalog.DisplayName != "DeepSeek Chat" ||
+		model.Catalog.SupportsTools == nil || !*model.Catalog.SupportsTools ||
+		len(model.Catalog.InputModalities) != 1 || model.Catalog.InputModalities[0] != "text" {
+		t.Fatalf("catalog metadata = %+v", model.Catalog)
+	}
+}
+
 func TestEmptyModelsRejectsNonEmptyDefault(t *testing.T) {
 	_, err := LoadConfigBytes([]byte(`
 default_model: ghost

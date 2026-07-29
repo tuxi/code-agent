@@ -50,9 +50,9 @@ type TurnExecutor struct {
 	sessionOpsMu sync.Mutex
 	sessionOps   map[string]*sessionOperation
 
-	// sessionCreds stores per-session credential resolvers, set by the handler
-	// layer at WS upgrade time from the Authorization header. Server mode only;
-	// embedded mode uses the injected StaticResolver instead.
+	// sessionCreds stores explicitly injected per-session Provider credentials.
+	// Server Access Token middleware never writes here; transport authentication
+	// and Provider authorization are deliberately separate.
 	sessionCreds   map[string]credential.Resolver
 	sessionCredsMu sync.RWMutex
 
@@ -400,10 +400,9 @@ func exclusiveOperationBlockedTurnStatus(status string) bool {
 	}
 }
 
-// SetSessionCredential stores a credential resolver for a session. It is called
-// by the handler layer at WS upgrade time after extracting the JWT from the
-// Authorization header. In embedded mode this is never called — credential
-// injection goes through secretsJSON instead.
+// SetSessionCredential stores an explicitly trusted per-session Provider
+// resolver. HTTP and WebSocket Authorization headers are Server Access Tokens
+// and must never be passed to this method.
 func (e *TurnExecutor) SetSessionCredential(sessionID string, cred credential.Resolver) {
 	e.sessionCredsMu.Lock()
 	e.sessionCreds[sessionID] = cred

@@ -1,5 +1,19 @@
 default_model: deepseek-pro
 
+# ── Runtime Server 访问控制 ───────────────────────────────────
+# Embedded Runtime 不读取这里的认证配置：AgentKit 每次启动都通过
+# CodeAgentRuntime 接口注入一个仅驻留内存的随机 Bearer Token。
+# 独立运行的 codeagent serve / codeagentd 从环境变量读取访问 Token。
+server:
+  display_name: "My CodeAgent Runtime"
+  authentication: bearer
+  access_token_env: CODEAGENT_SERVER_ACCESS_TOKEN
+  public_healthz: true
+  # 直接监听非 loopback 地址时必须同时配置 TLS。若由反向代理终止 TLS，
+  # 请让 CodeAgent 只监听 127.0.0.1，并在代理层暴露服务。
+  # tls_certificate: "/etc/codeagent/server.crt"
+  # tls_private_key: "/etc/codeagent/server.key"
+
 # ── Credential 来源 ────────────────────────────────────────────
 # 每个 credential 条目用 namespace + name 唯一标识。
 # model 通过 credential.namespace + credential.name 引用此处的条目。
@@ -58,6 +72,15 @@ models:
     input_price_per_million: 0.27
     output_price_per_million: 1.10
     cache_input_price_per_million: 0.027
+    # /v1/runtime/models 只发布下面的白名单展示元数据，不发布 URL 或凭证。
+    catalog:
+      connection_id: deepseek
+      provider_id: deepseek
+      connection_display_name: "DeepSeek"
+      display_name: "DeepSeek V4 Flash"
+      supports_tools: true
+      supports_reasoning: false
+      input_modalities: [text]
 
   deepseek-pro:
     provider: openai

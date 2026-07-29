@@ -2,11 +2,15 @@ package embed
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"net/http"
+	"strings"
 	"testing"
 
 	"code-agent/internal/app"
 	"code-agent/internal/runtime"
+	"code-agent/internal/server"
 )
 
 func TestInjectSecrets_WebSearchKeys(t *testing.T) {
@@ -50,6 +54,7 @@ func TestInjectSecrets_WebSearchKeys(t *testing.T) {
 
 func TestStartServerWithZeroModelsSupportsReadOnlyWorkspace(t *testing.T) {
 	workspace := t.TempDir()
+	const serverAccessToken = "0123456789abcdef0123456789abcdef"
 	h, err := StartServer(context.Background(), Options{
 		WorkspaceDir: workspace,
 		DataDir:      t.TempDir(),
@@ -59,7 +64,8 @@ func TestStartServerWithZeroModelsSupportsReadOnlyWorkspace(t *testing.T) {
 			"credentials": {},
 			"web": {"fetch": {"timeout_seconds": 30}}
 		}`,
-		Sandboxed: true,
+		Sandboxed:         true,
+		ServerAccessToken: serverAccessToken,
 	})
 	if err != nil {
 		t.Fatalf("StartServer zero models: %v", err)
@@ -74,6 +80,55 @@ func TestStartServerWithZeroModelsSupportsReadOnlyWorkspace(t *testing.T) {
 	}
 	if _, ok := h.rt.Builder.ToolReg.Get("web_fetch"); !ok {
 		t.Fatal("zero-model Runtime must retain web_fetch")
+	}
+	baseURL := strings.Replace(h.LoopbackURL(), "ws://", "http://", 1)
+	if response, err := http.Get(baseURL + "/healthz"); err != nil {
+		t.Fatalf("public health request: %v", err)
+	} else {
+		defer response.Body.Close()
+		if response.StatusCode != http.StatusOK {
+			t.Fatalf("public health status = %d", response.StatusCode)
+		}
+	}
+	if response, err := http.Get(baseURL + "/v1/runtime/info"); err != nil {
+		t.Fatalf("unauthenticated info request: %v", err)
+	} else {
+		defer response.Body.Close()
+		var envelope struct {
+			Code int `json:"code"`
+			Data struct {
+				Code string `json:"code"`
+			} `json:"data"`
+		}
+		if err := json.NewDecoder(response.Body).Decode(&envelope); err != nil {
+			t.Fatalf("decode auth response: %v", err)
+		}
+		if response.StatusCode != http.StatusUnauthorized || envelope.Code != server.CodeUnauthorized ||
+			envelope.Data.Code != "runtime_auth_required" {
+			t.Fatalf("auth response status=%d envelope=%+v", response.StatusCode, envelope)
+		}
+	}
+	request, err := http.NewRequest(http.MethodGet, baseURL+"/v1/runtime/info", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Authorization", "Bearer "+serverAccessToken)
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatalf("authenticated info request: %v", err)
+	}
+	defer response.Body.Close()
+	var infoEnvelope struct {
+		Code int                `json:"code"`
+		Data server.RuntimeInfo `json:"data"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&infoEnvelope); err != nil {
+		t.Fatalf("decode Runtime info: %v", err)
+	}
+	if response.StatusCode != http.StatusOK || infoEnvelope.Code != 0 ||
+		infoEnvelope.Data.ServerID == "" ||
+		infoEnvelope.Data.RuntimeProfile != server.RuntimeProfileSandboxed {
+		t.Fatalf("Runtime info status=%d envelope=%+v", response.StatusCode, infoEnvelope)
 	}
 
 	sess, err := h.rt.Repo.Create(context.Background(), workspace, "")
@@ -99,6 +154,18 @@ func TestStartServerWithZeroModelsSupportsReadOnlyWorkspace(t *testing.T) {
 	}
 	if err := h.Reconfigure("{}", ""); err != nil {
 		t.Fatalf("zero-model Reconfigure: %v", err)
+	}
+}
+
+func TestStartServerRequiresHostGeneratedAccessToken(t *testing.T) {
+	_, err := StartServer(context.Background(), Options{
+		WorkspaceDir: t.TempDir(),
+		DataDir:      t.TempDir(),
+		ConfigYAML:   `{"default_model":"","models":{}}`,
+		Sandboxed:    true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "in-memory Server Access Token") {
+		t.Fatalf("StartServer error = %v, want embedded access-token requirement", err)
 	}
 }
 

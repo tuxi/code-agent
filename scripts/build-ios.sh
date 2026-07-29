@@ -21,6 +21,7 @@ IOS_MIN="18.0"               # MinimumOSVersion written into every inner Info.pl
 MACOS_MIN="15.0"             # aligned with Talkify MACOSX_DEPLOYMENT_TARGET
 PKG="./mobile"               # Go package bound (symbol prefix is `Mobile`, its package name)
 OUT_DIR="${1:-build}"
+RUNTIME_VERSION="${CODEAGENT_VERSION:-dev}"
 # Skills shipped with the app. These SKILL.md files are user-level (global)
 # skills, copied into the Application Support directory on first launch so they
 # are available to every workspace. The user can add their own skills there later.
@@ -51,6 +52,7 @@ gomobile bind \
   -target=ios,iossimulator,macos \
   -iosversion="${IOS_MIN}" \
   -macosversion="${MACOS_MIN}" \
+  -ldflags="-X code-agent/internal/buildinfo.Version=${RUNTIME_VERSION}" \
   -o "${WORK}/${FRAMEWORK_NAME}.xcframework" \
   "${PKG}"
 

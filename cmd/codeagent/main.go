@@ -101,6 +101,28 @@ func run() error {
 		}
 	}
 
+	if len(args) > 0 && args[0] == "serve" {
+		var mc app.ModelConfig
+		var provider model.Provider
+		if len(cfg.Models) > 0 {
+			mc, err = cfg.SelectModel(modelName)
+			if err != nil {
+				return err
+			}
+			provider, err = runtime.BuildProvider(mc, cfg.Provider, nil)
+			if err != nil {
+				return err
+			}
+		} else if modelName != "" {
+			return runtime.ModelNotConfiguredError{}
+		}
+		addr := "127.0.0.1:8797"
+		if len(args) >= 2 {
+			addr = args[1]
+		}
+		return runServe(ctx, cfg, mc, provider, addr)
+	}
+
 	mc, err := cfg.SelectModel(modelName)
 	if err != nil {
 		return err
@@ -134,12 +156,6 @@ func run() error {
 			return fmt.Errorf("usage: codeagent resume <session-id>  (see 'codeagent sessions')")
 		}
 		return repl(ctx, cfg, mc, provider, args[1], autoMode)
-	case "serve":
-		addr := "127.0.0.1:8797"
-		if len(args) >= 2 {
-			addr = args[1]
-		}
-		return runServe(ctx, cfg, mc, provider, addr)
 	default:
 		printUsage()
 		return fmt.Errorf("unknown command: %s", command)

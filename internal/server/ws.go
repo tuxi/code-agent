@@ -3,16 +3,12 @@ package server
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
-	"os"
-	"strings"
 	"sync"
 	"time"
 
 	"code-agent/internal/agent"
 	"code-agent/internal/approve"
-	"code-agent/internal/credential"
 
 	"github.com/coder/websocket"
 )
@@ -92,18 +88,14 @@ type WSHandler struct {
 	// disables prompt invocation over the wire.
 	Prompts PromptService
 
-	// CredentialStore stores a per-session credential extracted from the
-	// Authorization header. Called at WS upgrade time. Nil = server mode
-	// without auth (uses base provider credential chain).
-	CredentialStore func(sessionID string, cred credential.Resolver)
+	// CapabilityResolver returns Runtime-managed capabilities for this new
+	// connection. Server Access Token authentication has already completed in
+	// middleware and is never exposed as a Provider credential.
+	CapabilityResolver func(ctx context.Context) []string
 
-	// CapabilityResolver returns credential-scoped capabilities for this new
-	// connection. It runs before hello; failures must return no capability.
-	CapabilityResolver func(ctx context.Context, cred credential.Resolver) []string
-
-	// SessionReady runs after this connection has restored its conversation
-	// credential. Durable work and credential-scoped outboxes may resume here.
-	SessionReady func(ctx context.Context, sessionID string, cred credential.Resolver)
+	// SessionReady runs after the connection is attached. Durable work and
+	// Runtime-managed outboxes may resume here.
+	SessionReady func(ctx context.Context, sessionID string)
 
 	// Session-scoped approvers that survive connection changes. Keyed by session ID.
 	mu          sync.Mutex
@@ -182,27 +174,9 @@ func (h *WSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	sessionID := r.PathValue("id")
 
-	// Extract the JWT from the Authorization header and store it for this
-	// session. The credential flows through TurnExecutor → RuntimeContext →
-	// ServeRunBuilder.Build() → the turn's model provider.
-	var connectionCred credential.Resolver
-	if h.CredentialStore != nil {
-		if token := bearerToken(r); token != "" {
-			target := credential.Target{Namespace: "gateway", Name: "default"}
-			resolver := credential.StaticResolver{
-				target: {Type: credential.Bearer, Secret: token},
-			}
-			connectionCred = resolver
-			h.CredentialStore(sessionID, resolver)
-		} else {
-			fmt.Fprintf(os.Stderr, "[auth] ws: no Authorization header for session %s\n", sessionID)
-		}
-	} else {
-		fmt.Fprintf(os.Stderr, "[auth] ws: CredentialStore is nil — per-session auth disabled\n")
-	}
 	capabilities := append([]string(nil), h.Capabilities...)
 	if h.CapabilityResolver != nil {
-		for _, capability := range h.CapabilityResolver(ctx, connectionCred) {
+		for _, capability := range h.CapabilityResolver(ctx) {
 			if !hasCapability(capabilities, capability) {
 				capabilities = append(capabilities, capability)
 			}
@@ -257,7 +231,7 @@ func (h *WSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	bridge := NewBridge(sink).WithCapabilities(capabilities)
 	runErr := bridge.RunReady(ctx, sess, h.serverName(), func() {
 		if h.SessionReady != nil {
-			h.SessionReady(ctx, sessionID, connectionCred)
+			h.SessionReady(ctx, sessionID)
 		}
 	})
 	if runErr == nil || ctx.Err() != nil {
@@ -421,20 +395,6 @@ func (h *WSHandler) RemoveApprover(sessionID string) {
 	if wok {
 		w.CancelAll()
 	}
-}
-
-// bearerToken extracts the Bearer token from an HTTP request's Authorization
-// header. Returns "" if the header is absent or malformed (no Bearer prefix).
-func bearerToken(r *http.Request) string {
-	auth := r.Header.Get("Authorization")
-	if auth == "" {
-		return ""
-	}
-	const prefix = "Bearer "
-	if !strings.HasPrefix(auth, prefix) {
-		return ""
-	}
-	return strings.TrimSpace(auth[len(prefix):])
 }
 
 func (h *WSHandler) serverName() string {

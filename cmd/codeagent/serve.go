@@ -10,6 +10,7 @@ import (
 	"code-agent/internal/embed"
 	"code-agent/internal/mcp"
 	"code-agent/internal/model"
+	"code-agent/internal/server"
 )
 
 // runServe starts the runtime server. The execution-model assembly (one global
@@ -20,6 +21,13 @@ import (
 // every conversation regardless of workspace.
 func runServe(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider model.Provider, addr string) error {
 	root, _ := os.Getwd()
+	auth, err := server.ResolveExternalServerAuth(cfg.Server)
+	if err != nil {
+		return err
+	}
+	if err := server.ValidateExternalDeployment(addr, cfg.Server, auth); err != nil {
+		return err
+	}
 
 	// Serve mode resolves MCP per conversation workspace (WorkspaceRegistry.
 	// EnableMCP inside Assemble). main() pre-resolved cfg.MCP from the process
@@ -31,7 +39,12 @@ func runServe(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider 
 
 	// The CLI serve path uses process lifecycle, not the in-app suspend/resume
 	// verbs, so it ignores the returned Runtime bundle.
-	handler, _, closers, err := embed.Assemble(ctx, cfg, mc, provider, cfg.CredentialResolver(nil), root, "")
+	handler, _, closers, err := embed.Assemble(
+		ctx, cfg, mc, provider, cfg.CredentialResolver(nil), root, "",
+		embed.RuntimeServerOptions{
+			Profile: server.RuntimeProfileHeadless, DisplayName: cfg.Server.DisplayName, Auth: auth,
+		},
+	)
 	if err != nil {
 		return err
 	}
@@ -47,7 +60,11 @@ func runServe(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider 
 		_ = srv.Close()
 	}()
 
-	fmt.Printf("codeagent serve — http://%s  (default workspace: %s, model: %s)\n", addr, root, mc.Model)
+	scheme := "http"
+	if cfg.Server.TLSCertificate != "" {
+		scheme = "https"
+	}
+	fmt.Printf("codeagent serve — %s://%s  (default workspace: %s, model: %s)\n", scheme, addr, root, mc.Model)
 	fmt.Println("  GET  /healthz")
 	fmt.Println("  GET  /v1/conversations")
 	fmt.Println("  POST   /v1/conversations            {\"workspace_path\":\"...\"}  -> {\"id\":\"...\"}")
@@ -58,7 +75,13 @@ func runServe(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider 
 	fmt.Println("  GET  /v1/conversations/{id}/events")
 	fmt.Println("  GET  /v2/conversations/{id}/stream   (WebSocket, same as v1)")
 
-	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+	serve := srv.ListenAndServe
+	if cfg.Server.TLSCertificate != "" {
+		serve = func() error {
+			return srv.ListenAndServeTLS(cfg.Server.TLSCertificate, cfg.Server.TLSPrivateKey)
+		}
+	}
+	if err := serve(); err != nil && err != http.ErrServerClosed {
 		return err
 	}
 	_, _ = fmt.Fprintln(os.Stderr, "codeagent serve: stopped")

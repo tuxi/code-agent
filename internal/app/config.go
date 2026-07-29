@@ -49,6 +49,7 @@ type Config struct {
 	Agent       AgentConfig                            `yaml:"agent"`
 	Provider    ProviderConfig                         `yaml:"provider"`
 	Runtime     RuntimeConfig                          `yaml:"runtime"`
+	Server      ServerConfig                           `yaml:"server"`
 
 	// Currency is the display symbol for cost reporting (the price fields are in
 	// this unit). Defaults to "$".
@@ -104,6 +105,18 @@ type Config struct {
 // normalized to one so older configs retain the safe FIFO behavior.
 type RuntimeConfig struct {
 	MaxConcurrentTurns int `yaml:"max_concurrent_turns"`
+}
+
+// ServerConfig configures an independently running Runtime Server. Embedded
+// hosts ignore authentication and TLS fields and inject an in-memory token
+// directly through embed.Options.
+type ServerConfig struct {
+	DisplayName    string `yaml:"display_name"`
+	Authentication string `yaml:"authentication"` // none | bearer
+	AccessTokenEnv string `yaml:"access_token_env"`
+	PublicHealthz  bool   `yaml:"public_healthz"`
+	TLSCertificate string `yaml:"tls_certificate"`
+	TLSPrivateKey  string `yaml:"tls_private_key"`
 }
 
 func (c Config) RuntimeMaxConcurrentTurns() int {
@@ -168,11 +181,24 @@ type ModelConfig struct {
 	// Credential explicitly references a credential entry in the credentials
 	// section. When set, credential resolution follows this reference instead
 	// of using the legacy api_key_env path.
-	Credential CredentialRef `yaml:"credential"`
+	Credential CredentialRef        `yaml:"credential"`
+	Catalog    ModelCatalogMetadata `yaml:"catalog"`
 
 	// Resolved at load time, not read from YAML.
 	Name   string `yaml:"-"` // the friendly name (the map key)
 	APIKey string `yaml:"-"` // resolved from APIKeyEnv
+}
+
+// ModelCatalogMetadata is optional, non-secret presentation metadata used by
+// /v1/runtime/models. It does not participate in provider routing.
+type ModelCatalogMetadata struct {
+	ConnectionID          string   `yaml:"connection_id"`
+	ProviderID            string   `yaml:"provider_id"`
+	ConnectionDisplayName string   `yaml:"connection_display_name"`
+	DisplayName           string   `yaml:"display_name"`
+	SupportsTools         *bool    `yaml:"supports_tools"`
+	SupportsReasoning     bool     `yaml:"supports_reasoning"`
+	InputModalities       []string `yaml:"input_modalities"`
 }
 
 // CredentialRef points to a credential entry in Config.Credentials.
@@ -374,7 +400,8 @@ func LoadConfig(path string) (Config, error) {
 // than from a file path, since the app sandbox has no fixed config.yaml.
 func LoadConfigBytes(data []byte) (Config, error) {
 	cfg := Config{
-		Agent: AgentConfig{MaxSteps: 8},
+		Agent:  AgentConfig{MaxSteps: 8},
+		Server: ServerConfig{PublicHealthz: true},
 	}
 
 	if len(data) > 0 {

@@ -98,9 +98,13 @@ codeagent --auto goal "fix the failing test in internal/agent/loop_test.go"
 ### Serve mode
 
 ```bash
+export CODEAGENT_SERVER_ACCESS_TOKEN="$(openssl rand -base64 32)"
 codeagent serve 127.0.0.1:8797
-# HTTP + agent-wire WebSocket protocol for client integrations
+# authenticated HTTP + Agent Wire WebSocket protocol for client integrations
 ```
+
+See [Runtime Server deployment and security](docs/runtime-server-deployment.md)
+before exposing a Local or Remote Server.
 
 ### Subagent trace
 

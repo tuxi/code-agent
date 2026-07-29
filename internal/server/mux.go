@@ -15,7 +15,6 @@ import (
 	"code-agent/internal/agent"
 	"code-agent/internal/assetref"
 	"code-agent/internal/conversation"
-	"code-agent/internal/credential"
 	"code-agent/internal/managedworktree"
 	"code-agent/internal/mcp"
 	"code-agent/internal/repos"
@@ -215,7 +214,10 @@ type MessageView struct {
 // MuxOptions configures the HTTP surface.
 type MuxOptions struct {
 	// ServerName is reported in the WebSocket hello handshake.
-	ServerName string
+	ServerName    string
+	RuntimeInfo   RuntimeInfo
+	RuntimeModels RuntimeModelCatalog
+	ServerAuth    ServerAuth
 	// Capabilities is the server capability list declared in the hello handshake.
 	// Nil means no capabilities advertised. The caller (cmd/codeagent) owns the
 	// list; the server layer is a dumb pipe — it never derives capabilities from
@@ -235,13 +237,9 @@ type MuxOptions struct {
 	WorkspaceReloader func(workspacePath string) error
 	// Prompts serves GET /v1/prompts and renders invoke_prompt. Nil disables MCP
 	// prompts on the wire (the endpoint returns an empty list; invoke is a no-op).
-	Prompts PromptService
-	// CredentialStore stores a per-session credential extracted from the
-	// Authorization header at WS upgrade time. Nil means credentials come from
-	// the base provider (embedded/CLI modes).
-	CredentialStore    func(sessionID string, cred credential.Resolver)
-	CapabilityResolver func(ctx context.Context, cred credential.Resolver) []string
-	SessionReady       func(ctx context.Context, sessionID string, cred credential.Resolver)
+	Prompts            PromptService
+	CapabilityResolver func(ctx context.Context) []string
+	SessionReady       func(ctx context.Context, sessionID string)
 	// RuntimeCapabilities describes execution guarantees, not merely supported
 	// endpoints. It intentionally defaults to all false until scheduler and
 	// workspace isolation are fully installed.
@@ -362,6 +360,9 @@ func laterTimestamp(current string, candidate time.Time) string {
 // NewMux builds the HTTP surface of `codeagent serve`:
 //
 //	GET  /healthz                            liveness
+//	GET  /v1/runtime/info                    Runtime identity and Agent Wire compatibility
+//	GET  /v1/runtime/models                  safe, server-scoped model catalog
+//	GET  /v1/runtime/capabilities            effective Runtime capabilities
 //	GET  /v1/conversations                   list (from Repository / SQLite)
 //	POST /v1/conversations                   create → {id} (writes SQLite, no Runtime)
 //	GET  /v1/conversations/{id}              detail (derived from events + repo)
@@ -417,6 +418,14 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 			projectsRoot = opts.CloneService.ProjectsRoot()
 		}
 		writeJSON(w, r, http.StatusOK, runtimeCapabilitiesResponse{Capabilities: runtimeCapabilities, ProjectsRoot: projectsRoot})
+	})
+
+	mux.HandleFunc("GET /v1/runtime/info", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, r, http.StatusOK, opts.RuntimeInfo)
+	})
+
+	mux.HandleFunc("GET /v1/runtime/models", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, r, http.StatusOK, opts.RuntimeModels)
 	})
 
 	mux.HandleFunc("GET /v1/activity", func(w http.ResponseWriter, r *http.Request) {
@@ -872,7 +881,6 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 		Accept:             opts.Accept,
 		Granter:            opts.Granter,
 		Prompts:            opts.Prompts,
-		CredentialStore:    opts.CredentialStore,
 		CapabilityResolver: opts.CapabilityResolver,
 		SessionReady:       opts.SessionReady,
 	}
@@ -1156,7 +1164,7 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 			workflowSnapshotHandler(repo, opts.WorkflowSnapshot))
 	}
 
-	return mux
+	return withServerAuth(mux, opts.ServerAuth)
 }
 
 func archiveTimestamp(at time.Time) string {

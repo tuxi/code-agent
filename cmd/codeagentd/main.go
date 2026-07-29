@@ -16,8 +16,9 @@ import (
 	"path/filepath"
 
 	"code-agent/internal/app"
+	"code-agent/internal/buildinfo"
 	"code-agent/internal/conversation"
-	"code-agent/internal/credential"
+	"code-agent/internal/model"
 	"code-agent/internal/repos"
 	"code-agent/internal/runtime"
 	"code-agent/internal/server"
@@ -58,6 +59,13 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	auth, err := server.ResolveExternalServerAuth(cfg.Server)
+	if err != nil {
+		return err
+	}
+	if err := server.ValidateExternalDeployment(addr, cfg.Server, auth); err != nil {
+		return err
+	}
 	// MCP servers come from Claude-compatible `.mcp.json` files resolved PER
 	// CONVERSATION WORKSPACE (layered local > project > user, matching Claude
 	// Code), not from the daemon's launch directory — see WorkspaceRegistry.
@@ -73,14 +81,19 @@ func run() error {
 		runtime.StoreFactory = cfg.StoreFactory
 	}
 
-	mc, err := cfg.SelectModel(modelName)
-	if err != nil {
-		return err
-	}
-
-	provider, err := runtime.BuildProvider(mc, cfg.Provider, nil)
-	if err != nil {
-		return err
+	var mc app.ModelConfig
+	var provider model.Provider
+	if len(cfg.Models) > 0 {
+		mc, err = cfg.SelectModel(modelName)
+		if err != nil {
+			return err
+		}
+		provider, err = runtime.BuildProvider(mc, cfg.Provider, nil)
+		if err != nil {
+			return err
+		}
+	} else if modelName != "" {
+		return runtime.ModelNotConfiguredError{}
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
@@ -154,7 +167,9 @@ func run() error {
 	executor.SetAssetRefReleaseService(rb)
 	maxConcurrentTurns := cfg.RuntimeMaxConcurrentTurns()
 	executor.SetTurnScheduler(conversation.NewTurnScheduler(maxConcurrentTurns))
-	executor.SetTitleGenerator(conversation.NewLLMTitleGenerator(provider, mc.Model))
+	if provider != nil {
+		executor.SetTitleGenerator(conversation.NewLLMTitleGenerator(provider, mc.Model))
+	}
 	_ = executor.ReconcileInterrupted(ctx)
 	managedWorktrees, worktreeReport, worktreeErr := runtime.ConfigureManagedWorktrees(ctx, telemetryStore, repo, executor, true)
 	if worktreeErr != nil {
@@ -174,24 +189,32 @@ func run() error {
 	if cloneService != nil {
 		capabilities = append(capabilities, "public_git_clone_v1")
 	}
+	runtimeInfo, runtimeModels, err := server.BuildRuntimeContract(
+		cfg, cwd, cfg.Server.DisplayName, server.RuntimeProfileHeadless,
+	)
+	if err != nil {
+		return err
+	}
 	handler := server.NewMux(repo, eventStore, executor, server.MuxOptions{
-		ServerName:        "codeagentd/" + mc.Model,
+		ServerName:        buildinfo.ServerName(),
+		RuntimeInfo:       runtimeInfo,
+		RuntimeModels:     runtimeModels,
+		ServerAuth:        auth,
 		Capabilities:      capabilities,
 		CloneService:      cloneService,
 		Granter:           rb.Rules(),
 		WorkspaceReloader: wsReg.ReloadWorkspace,
 		Prompts:           wsReg,
-		CredentialStore:   executor.SetSessionCredential,
-		CapabilityResolver: func(ctx context.Context, cred credential.Resolver) []string {
+		CapabilityResolver: func(ctx context.Context) []string {
 			persistence, ok := repo.(conversation.UserAssetsPersistenceCapability)
-			if ok && persistence.SupportsUserAssetsPersistence() && rb.ImageInputCapability(ctx, cred) {
+			if ok && persistence.SupportsUserAssetsPersistence() && rb.ImageInputCapability(ctx, cfg.CredentialResolver(nil)) {
 				return []string{"image_input"}
 			}
 			return nil
 		},
-		SessionReady: func(ctx context.Context, sessionID string, cred credential.Resolver) {
+		SessionReady: func(ctx context.Context, sessionID string) {
 			_, _ = executor.RecoverSessionTurnInputs(context.WithoutCancel(ctx), sessionID)
-			go executor.FlushAssetRefReleases(context.WithoutCancel(ctx), cred)
+			go executor.FlushAssetRefReleases(context.WithoutCancel(ctx), cfg.CredentialResolver(nil))
 		},
 		RuntimeCapabilities: runtimeCapabilities,
 		ManagedWorktrees:    managedWorktrees,
@@ -204,14 +227,24 @@ func run() error {
 		_ = srv.Close()
 	}()
 
-	fmt.Printf("codeagentd serve — http://%s  (model: %s, cwd: %s, projects: %s)\n", addr, mc.Model, cwd, projectsRoot)
+	scheme := "http"
+	if cfg.Server.TLSCertificate != "" {
+		scheme = "https"
+	}
+	fmt.Printf("codeagentd serve — %s://%s  (model: %s, cwd: %s, projects: %s)\n", scheme, addr, mc.Model, cwd, projectsRoot)
 	fmt.Println("  GET  /healthz")
 	fmt.Println("  GET  /v1/conversations")
 	fmt.Println("  POST  /v1/conversations            {\"workspace_path\":\"...\"}  -> {\"id\":\"...\"}")
 	fmt.Println("  PATCH /v1/conversations/{id}        {\"name\":\"...\"}")
 	fmt.Println("  GET   /v1/conversations/{id}/stream   (WebSocket)")
 
-	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+	serve := srv.ListenAndServe
+	if cfg.Server.TLSCertificate != "" {
+		serve = func() error {
+			return srv.ListenAndServeTLS(cfg.Server.TLSCertificate, cfg.Server.TLSPrivateKey)
+		}
+	}
+	if err := serve(); err != nil && err != http.ErrServerClosed {
 		return err
 	}
 	fmt.Fprintln(os.Stderr, "codeagentd: stopped")

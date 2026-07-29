@@ -6,12 +6,13 @@ import (
 	"encoding/json"
 
 	"code-agent/internal/agent"
+	"code-agent/internal/buildinfo"
 )
 
 // protocolVersion is the agent-wire major version. Negotiated once at the
 // connection handshake (Hello), never carried per-event. See
 // docs/protocols/agent-wire-v1.md.
-const protocolVersion = 1
+const protocolVersion = buildinfo.AgentWireMajor
 
 // Encode renders a core event into one agent-wire JSON frame. eventID and
 // parentSessionID are stamped here (transport identity) so toWire stays pure and

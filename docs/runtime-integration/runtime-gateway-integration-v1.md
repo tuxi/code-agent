@@ -493,14 +493,19 @@ AgentKit (Swift)                              Runtime (Go)
        ▼
   mobile.Start(
       workspaceDir,
+      dataDir,
       configYAML,        ← 包含 gateway credential 配置
+      modelName,
       secretsJSON: {
           "gateway/default": {
               "type": "bearer",
               "secret": "<access_token>",
               "expires_at": 1234567890
           }
-      }
+      },
+      serverAccessToken, ← AgentKit 每次启动生成、仅驻留内存的 256-bit Token
+      addr,
+      sandboxed
   )
        │
        │ gomobile
