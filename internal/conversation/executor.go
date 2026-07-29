@@ -727,7 +727,10 @@ func (e *TurnExecutor) driveTurn(
 	// in-flight cancellation, approvals, and client-tool state.
 	turnCtx, cancel, err := e.active.BeginTurn(sess.ID, parentCtx)
 	if err != nil {
-		return agent.TurnResult{}, err
+		// Acceptance already happened in claimRequest, so preserve the turn
+		// identity for transports deciding between turn_failed and a pre-accept
+		// agent_input_rejected response.
+		return agent.TurnResult{TurnID: turnID}, err
 	}
 	defer func() {
 		cancel()

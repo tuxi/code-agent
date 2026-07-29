@@ -129,32 +129,32 @@ func (r Router) Route(ctx context.Context, data []byte) {
 					assets := copyGatewayAssetRefs(m.Assets)
 					localAssets := copyLocalAssetRefs(m.LocalAssets)
 					go func() {
-						_, err := withAllAssets.SendMessageWithRequestIDAndAllAssets(turnCtx, m.RequestID, m.Text, modelName, assets, localAssets)
-						r.rejectError(m.RequestID, err)
+						result, err := withAllAssets.SendMessageWithRequestIDAndAllAssets(turnCtx, m.RequestID, m.Text, modelName, assets, localAssets)
+						r.rejectTurnError(m.RequestID, result, err)
 					}()
 					return
 				}
 				if withRequestAssets, ok := r.Commands.(RequestAssetMessageTarget); ok && m.RequestID != "" && len(m.Assets) > 0 {
 					assets := copyGatewayAssetRefs(m.Assets)
 					go func() {
-						_, err := withRequestAssets.SendMessageWithRequestIDAndAssets(turnCtx, m.RequestID, m.Text, modelName, assets)
-						r.rejectError(m.RequestID, err)
+						result, err := withRequestAssets.SendMessageWithRequestIDAndAssets(turnCtx, m.RequestID, m.Text, modelName, assets)
+						r.rejectTurnError(m.RequestID, result, err)
 					}()
 				} else if withRequest, ok := r.Commands.(RequestMessageTarget); ok && m.RequestID != "" && len(m.Assets) == 0 {
 					go func() {
-						_, err := withRequest.SendMessageWithRequestID(turnCtx, m.RequestID, m.Text, modelName)
-						r.rejectError(m.RequestID, err)
+						result, err := withRequest.SendMessageWithRequestID(turnCtx, m.RequestID, m.Text, modelName)
+						r.rejectTurnError(m.RequestID, result, err)
 					}()
 				} else if withAssets, ok := r.Commands.(AssetMessageTarget); ok && len(m.Assets) > 0 {
 					assets := copyGatewayAssetRefs(m.Assets)
 					go func() {
-						_, err := withAssets.SendMessageWithAssets(turnCtx, m.Text, modelName, assets)
-						r.rejectError(m.RequestID, err)
+						result, err := withAssets.SendMessageWithAssets(turnCtx, m.Text, modelName, assets)
+						r.rejectTurnError(m.RequestID, result, err)
 					}()
 				} else {
 					go func() {
-						_, err := r.Commands.SendMessage(turnCtx, m.Text, modelName)
-						r.rejectError(m.RequestID, err)
+						result, err := r.Commands.SendMessage(turnCtx, m.Text, modelName)
+						r.rejectTurnError(m.RequestID, result, err)
 					}()
 				}
 			}
@@ -222,8 +222,14 @@ func (r Router) reject(rejected AgentInputRejected) {
 	}
 }
 
-func (r Router) rejectError(requestID string, err error) {
+func (r Router) rejectTurnError(requestID string, result agent.TurnResult, err error) {
 	if err == nil {
+		return
+	}
+	// Once a turn has an identity, its failure is delivered through the durable
+	// turn lifecycle. agent_input_rejected is exclusively a pre-accept control
+	// response and must never race a turn_failed event for the same submission.
+	if result.TurnID != "" {
 		return
 	}
 	var coded interface {
@@ -232,5 +238,10 @@ func (r Router) rejectError(requestID string, err error) {
 	}
 	if errors.As(err, &coded) {
 		r.reject(*rejectInput(requestID, coded.AgentInputErrorCode(), coded.SafeMessage()))
+		return
 	}
+	// Every error before acceptance needs a terminal submission response. Keep
+	// internal details out of the wire message while ensuring clients never
+	// remain indefinitely in the dispatched state.
+	r.reject(*rejectInput(requestID, "request_failed", "The message could not be accepted. Please try again."))
 }

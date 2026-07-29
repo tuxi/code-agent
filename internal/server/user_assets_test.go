@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -19,6 +20,15 @@ type conflictCommands struct{ *fakeCommands }
 
 func (c conflictCommands) SendMessageWithRequestIDAndAssets(context.Context, string, string, string, []model.GatewayAssetRef) (agent.TurnResult, error) {
 	return agent.TurnResult{}, testInputError{}
+}
+
+type failingRequestCommands struct {
+	*fakeCommands
+	result agent.TurnResult
+}
+
+func (c failingRequestCommands) SendMessageWithRequestID(context.Context, string, string, string) (agent.TurnResult, error) {
+	return c.result, errors.New("internal provider configuration error")
 }
 
 type localAssetCommands struct {
@@ -100,6 +110,36 @@ func TestRouterReturnsNonPersistentInputRejections(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("request conflict was not returned")
+	}
+}
+
+func TestRouterTerminatesEveryPreAcceptFailureWithoutRejectingAcceptedTurns(t *testing.T) {
+	rejections := rejectionRecorder{ch: make(chan AgentInputRejected, 2)}
+	payload := []byte(`{"type":"agent_input","kind":"text","request_id":"pre-accept","text":"hello"}`)
+
+	router := Router{
+		Commands:   failingRequestCommands{fakeCommands: newFakeCommands()},
+		Rejections: rejections,
+	}
+	router.Route(context.Background(), payload)
+	select {
+	case rejected := <-rejections.ch:
+		if rejected.RequestID != "pre-accept" || rejected.Error.Code != "request_failed" {
+			t.Fatalf("pre-accept rejection = %+v", rejected)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("ordinary pre-accept failure was silently dropped")
+	}
+
+	router.Commands = failingRequestCommands{
+		fakeCommands: newFakeCommands(),
+		result:       agent.TurnResult{TurnID: "accepted-turn"},
+	}
+	router.Route(context.Background(), payload)
+	select {
+	case rejected := <-rejections.ch:
+		t.Fatalf("accepted turn must use lifecycle failure, got rejection %+v", rejected)
+	case <-time.After(50 * time.Millisecond):
 	}
 }
 

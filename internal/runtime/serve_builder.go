@@ -121,6 +121,34 @@ func (ModelNotConfiguredError) SafeMessage() string {
 	return "Connect a model provider before sending a message."
 }
 
+// ModelUnavailableError is returned before turn acceptance when a requested
+// Runtime Alias is not present in the configuration currently applied to the
+// Runtime. This can happen briefly while a host is publishing a new Provider
+// connection; it must be visible to clients instead of leaving the submission
+// waiting forever in the dispatched state.
+type ModelUnavailableError struct {
+	Requested string
+	Cause     error
+}
+
+func (e ModelUnavailableError) Error() string {
+	if e.Cause == nil {
+		return fmt.Sprintf("model %q is unavailable", e.Requested)
+	}
+	return fmt.Sprintf("model %q is unavailable: %v", e.Requested, e.Cause)
+}
+
+func (e ModelUnavailableError) Unwrap() error { return e.Cause }
+func (ModelUnavailableError) AgentInputErrorCode() string {
+	return "model_unavailable"
+}
+func (ModelUnavailableError) LifecycleErrorCode() string {
+	return "model_unavailable"
+}
+func (ModelUnavailableError) SafeMessage() string {
+	return "The selected model is not available. Wait for provider configuration to finish applying, then try again."
+}
+
 // resolveTurnModel maps the client model field to a complete ModelConfig. The
 // provider.* namespace is reserved for AgentKit Runtime Aliases and is always
 // strict. A legacy bare wire-model string is accepted only while the runtime's
@@ -135,13 +163,13 @@ func resolveTurnModel(cfg app.Config, defaultMC app.ModelConfig, requested strin
 	if selected, err := cfg.SelectModel(requested); err == nil {
 		return selected, nil
 	} else if strings.HasPrefix(requested, "provider.") {
-		return app.ModelConfig{}, fmt.Errorf("unknown runtime alias %q: %w", requested, err)
+		return app.ModelConfig{}, ModelUnavailableError{Requested: requested, Cause: err}
 	}
 	if !isGatewayModelEndpoint(defaultMC.BaseURL) {
-		return app.ModelConfig{}, fmt.Errorf(
-			"unknown model %q: direct providers require a configured Runtime Alias",
-			requested,
-		)
+		return app.ModelConfig{}, ModelUnavailableError{
+			Requested: requested,
+			Cause:     errors.New("direct providers require a configured Runtime Alias"),
+		}
 	}
 	legacy := defaultMC
 	legacy.Model = requested

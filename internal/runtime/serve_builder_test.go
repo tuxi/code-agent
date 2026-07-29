@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -124,6 +125,14 @@ func TestServeRunBuilderRuntimeAliasStrictness(t *testing.T) {
 	}
 	if _, err := builder.ResolveModel("provider.bWlzc2luZw.model.bW9kZWw"); err == nil {
 		t.Fatal("unknown provider.* Runtime Alias must fail")
+	} else {
+		var unavailable ModelUnavailableError
+		if !errors.As(err, &unavailable) {
+			t.Fatalf("unknown Runtime Alias error = %T, want ModelUnavailableError", err)
+		}
+		if unavailable.AgentInputErrorCode() != "model_unavailable" || unavailable.SafeMessage() == "" {
+			t.Fatalf("unknown Runtime Alias contract = code %q message %q", unavailable.AgentInputErrorCode(), unavailable.SafeMessage())
+		}
 	}
 	if _, err := builder.ResolveModel("legacy-wire-model"); err == nil {
 		t.Fatal("bare wire model must not fall back through a Direct Provider")
