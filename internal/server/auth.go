@@ -35,8 +35,10 @@ func ValidateServerAccessToken(token string) error {
 	return nil
 }
 
-// ResolveExternalServerAuth loads an external Runtime's access token from its
-// configured environment variable. Secrets never live in app.Config.
+// ResolveExternalServerAuth loads an external Runtime's access token. A
+// configured environment variable takes precedence over the local YAML value,
+// allowing production deployments to override a developer's config.yaml.
+// Embedded Runtime never calls this path; its host injects a temporary token.
 func ResolveExternalServerAuth(cfg app.ServerConfig) (ServerAuth, error) {
 	switch strings.ToLower(strings.TrimSpace(cfg.Authentication)) {
 	case "", "none":
@@ -46,9 +48,19 @@ func ResolveExternalServerAuth(cfg app.ServerConfig) (ServerAuth, error) {
 		if envName == "" {
 			envName = "CODEAGENT_SERVER_ACCESS_TOKEN"
 		}
-		token := os.Getenv(envName)
+		token := strings.TrimSpace(os.Getenv(envName))
+		source := envName
+		if token == "" {
+			token = strings.TrimSpace(cfg.AccessToken)
+			source = "server.access_token"
+		}
+		if token == "" {
+			return ServerAuth{}, fmt.Errorf(
+				"missing Server Access Token: set %s or server.access_token", envName,
+			)
+		}
 		if err := ValidateServerAccessToken(token); err != nil {
-			return ServerAuth{}, fmt.Errorf("invalid Server Access Token from %s: %w", envName, err)
+			return ServerAuth{}, fmt.Errorf("invalid Server Access Token from %s: %w", source, err)
 		}
 		return ServerAuth{Enabled: true, Token: token, PublicHealthz: cfg.PublicHealthz}, nil
 	default:

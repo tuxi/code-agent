@@ -22,11 +22,11 @@ Embedded Runtime 必须由宿主在每次启动时生成一个新的 256-bit 随
 
 ## 独立 Local Server
 
-生成至少 32 字节随机 Token，并只通过环境变量交给 Runtime：
+本地开发可以生成一次至少 32 字节的随机 Token，保存在已被 Git 忽略的
+`config.yaml` 中：
 
 ```bash
-export CODEAGENT_SERVER_ACCESS_TOKEN="$(openssl rand -base64 32)"
-codeagent serve 127.0.0.1:8797
+openssl rand -base64 32
 ```
 
 对应配置：
@@ -35,12 +35,19 @@ codeagent serve 127.0.0.1:8797
 server:
   display_name: "My Mac"
   authentication: bearer
+  access_token: "<上一步生成的固定 Token>"
   access_token_env: CODEAGENT_SERVER_ACCESS_TOKEN
   public_healthz: true
 ```
 
+`access_token_env` 对应的环境变量有值时覆盖 `access_token`。因此 GoLand
+等本地调试环境可以直接使用固定 YAML Token，生产部署仍可使用 Secret
+Manager 注入环境变量。
+
 Local Client 单独保存 Server Access Token。不要把它放进 Provider
 Credential Registry，也不要把 Provider API Key 当作 Server Token 使用。
+`config.yaml` 已被 `.gitignore` 排除；不要把真实 Token 写入
+`config.example.yaml` 或提交到版本库。
 
 ## Remote Server：直接 TLS
 
@@ -53,6 +60,7 @@ Credential Registry，也不要把 Provider API Key 当作 Server Token 使用�
 server:
   display_name: "Build Runtime"
   authentication: bearer
+  # Remote/production 推荐不配置 access_token，只使用 Secret Manager 注入。
   access_token_env: CODEAGENT_SERVER_ACCESS_TOKEN
   public_healthz: true
   tls_certificate: "/etc/codeagent/server.crt"

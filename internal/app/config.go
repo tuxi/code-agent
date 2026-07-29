@@ -113,6 +113,7 @@ type RuntimeConfig struct {
 type ServerConfig struct {
 	DisplayName    string `yaml:"display_name"`
 	Authentication string `yaml:"authentication"` // none | bearer
+	AccessToken    string `yaml:"access_token"`
 	AccessTokenEnv string `yaml:"access_token_env"`
 	PublicHealthz  bool   `yaml:"public_healthz"`
 	TLSCertificate string `yaml:"tls_certificate"`

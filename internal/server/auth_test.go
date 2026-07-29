@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"code-agent/internal/app"
@@ -91,5 +92,50 @@ func TestExternalDeploymentSecurity(t *testing.T) {
 	tlsConfig := app.ServerConfig{TLSCertificate: "server.crt", TLSPrivateKey: "server.key"}
 	if err := ValidateExternalDeployment("0.0.0.0:8797", tlsConfig, auth); err != nil {
 		t.Fatalf("authenticated TLS deployment rejected: %v", err)
+	}
+}
+
+func TestResolveExternalServerAuthUsesYAMLFallbackAndEnvironmentOverride(t *testing.T) {
+	const (
+		yamlToken = "yaml-token-0123456789abcdef0123456789"
+		envToken  = "environment-token-0123456789abcdef12"
+	)
+	t.Setenv("RUNTIME_TOKEN", "")
+	cfg := app.ServerConfig{
+		Authentication: "bearer",
+		AccessToken:    yamlToken,
+		AccessTokenEnv: "RUNTIME_TOKEN",
+	}
+	auth, err := ResolveExternalServerAuth(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if auth.Token != yamlToken {
+		t.Fatalf("YAML fallback token was not selected")
+	}
+
+	t.Setenv("RUNTIME_TOKEN", envToken)
+	auth, err = ResolveExternalServerAuth(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if auth.Token != envToken {
+		t.Fatalf("environment token did not override YAML")
+	}
+}
+
+func TestResolveExternalServerAuthRejectsMissingOrShortToken(t *testing.T) {
+	t.Setenv("CODEAGENT_SERVER_ACCESS_TOKEN", "")
+	for _, token := range []string{"", "too-short"} {
+		_, err := ResolveExternalServerAuth(app.ServerConfig{
+			Authentication: "bearer",
+			AccessToken:    token,
+		})
+		if err == nil {
+			t.Fatalf("token %q was accepted", token)
+		}
+		if strings.Contains(err.Error(), token) && token != "" {
+			t.Fatalf("error leaked token: %v", err)
+		}
 	}
 }

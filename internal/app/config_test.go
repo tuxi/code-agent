@@ -239,6 +239,7 @@ default_model: provider.ZGVlcHNlZWs.model.ZGVlcHNlZWstY2hhdA
 server:
   display_name: Build Mac
   authentication: bearer
+  access_token: 0123456789abcdef0123456789abcdef
   access_token_env: TALKIFY_RUNTIME_TOKEN
   public_healthz: false
   tls_certificate: /etc/codeagent/server.crt
@@ -261,6 +262,7 @@ models:
 		t.Fatal(err)
 	}
 	if cfg.Server.DisplayName != "Build Mac" || cfg.Server.Authentication != "bearer" ||
+		cfg.Server.AccessToken != "0123456789abcdef0123456789abcdef" ||
 		cfg.Server.AccessTokenEnv != "TALKIFY_RUNTIME_TOKEN" || cfg.Server.PublicHealthz ||
 		cfg.Server.TLSCertificate != "/etc/codeagent/server.crt" ||
 		cfg.Server.TLSPrivateKey != "/etc/codeagent/server.key" {

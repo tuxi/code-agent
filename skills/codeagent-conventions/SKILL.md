@@ -28,8 +28,6 @@ are not Go common sense — they are this project's spine.
   (`go test -run X`). Long commands go in the background (`"background": true`).
 - **Comments explain why, not what**, and match the surrounding density and
   voice. Don't add narration the rest of the file wouldn't.
-- **Commits**: end the message with the `Co-Authored-By: Claude ...` trailer
-  (see `git log`). Work on a branch/worktree, not `main`.
 
 ## Gotchas
 

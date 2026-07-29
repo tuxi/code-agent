@@ -1,6 +1,7 @@
 package session
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -251,5 +252,124 @@ func TestBuilderGlobalAndLocalDeduplication(t *testing.T) {
 	lIdx := strings.Index(sys, "local rules")
 	if gIdx < 0 || lIdx < 0 || gIdx > lIdx {
 		t.Error("global rules should appear before local rules")
+	}
+}
+
+func TestBuilderWorktreeShadow_NestedWorktree(t *testing.T) {
+	mainRepo := t.TempDir()
+
+	// Main repo's AGENTS.md.
+	if err := os.WriteFile(filepath.Join(mainRepo, "AGENTS.md"),
+		[]byte("main repo rules"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Main repo's .git directory.
+	mainGit := filepath.Join(mainRepo, ".git")
+	if err := os.MkdirAll(mainGit, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Worktree's gitdir (simulates .git/worktrees/feat).
+	worktreeGitDir := filepath.Join(mainGit, "worktrees", "feat")
+	if err := os.MkdirAll(worktreeGitDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// commondir points two levels up to mainGit.
+	commondirRel := filepath.Join("..", "..")
+	if err := os.WriteFile(filepath.Join(worktreeGitDir, "commondir"),
+		[]byte(commondirRel), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// The linked worktree, nested under mainRepo.
+	worktreeRoot := filepath.Join(mainRepo, "worktrees", "feat")
+	if err := os.MkdirAll(worktreeRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// .git is a file → linked worktree marker.
+	gitFile := fmt.Sprintf("gitdir: %s", worktreeGitDir)
+	if err := os.WriteFile(filepath.Join(worktreeRoot, ".git"),
+		[]byte(gitFile), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	sess, err := NewBuilder(worktreeRoot).Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sys := sess.Messages[0].Content
+	if strings.Contains(sys, "main repo rules") {
+		t.Errorf("should NOT load shadowed main repo AGENTS.md in nested worktree:\n%s", sys)
+	}
+}
+
+func TestBuilderWorktreeShadow_SiblingWorktree(t *testing.T) {
+	mainRepo := t.TempDir()
+
+	if err := os.WriteFile(filepath.Join(mainRepo, "AGENTS.md"),
+		[]byte("main rules"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	mainGit := filepath.Join(mainRepo, ".git")
+	if err := os.MkdirAll(mainGit, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Sibling worktree (not nested under mainRepo).
+	siblingWorktree := filepath.Join(t.TempDir(), "feat")
+	if err := os.MkdirAll(siblingWorktree, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	worktreeGitDir := filepath.Join(mainGit, "worktrees", "feat-sibling")
+	if err := os.MkdirAll(worktreeGitDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	commondirRel := filepath.Join("..", "..")
+	if err := os.WriteFile(filepath.Join(worktreeGitDir, "commondir"),
+		[]byte(commondirRel), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(siblingWorktree, ".git"),
+		[]byte(fmt.Sprintf("gitdir: %s", worktreeGitDir)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(siblingWorktree, "AGENTS.md"),
+		[]byte("sibling rules"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	sess, err := NewBuilder(siblingWorktree).Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sys := sess.Messages[0].Content
+	if !strings.Contains(sys, "sibling rules") {
+		t.Errorf("should load worktree's own AGENTS.md:\n%s", sys)
+	}
+	if strings.Contains(sys, "main rules") {
+		t.Errorf("sibling worktree should NOT find main repo's AGENTS.md (not an ancestor):\n%s", sys)
+	}
+}
+
+func TestBuilderWorktreeShadow_NormalRepo(t *testing.T) {
+	repo := t.TempDir()
+
+	if err := os.MkdirAll(filepath.Join(repo, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "AGENTS.md"),
+		[]byte("normal repo rules"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	sess, err := NewBuilder(repo).Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sys := sess.Messages[0].Content
+	if !strings.Contains(sys, "normal repo rules") {
+		t.Errorf("should load AGENTS.md in normal repo:\n%s", sys)
 	}
 }

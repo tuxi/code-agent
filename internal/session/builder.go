@@ -174,6 +174,9 @@ func NewID() string {
 // Deduplication ensures the same absolute path is never loaded twice. A missing
 // file at any level is silent — it just means there is no context there.
 // When NoContextFiles is true, returns an empty slice immediately.
+// Worktree shadow detection prevents double-loading in nested git worktrees:
+// when the workspace is a linked worktree under the main repo, the main repo's
+// AGENTS.md is skipped because it is already copied into the worktree.
 func (b *Builder) loadContextFiles() ([]contextFile, error) {
 	if b.NoContextFiles {
 		return nil, nil
@@ -194,10 +197,16 @@ func (b *Builder) loadContextFiles() ([]contextFile, error) {
 	// 2. Walk ancestor directories from WorkspaceRoot up to the filesystem root.
 	// collectAncestors returns [start, parent, grandparent, ..., /].
 	// Load closest ancestors first (iterate forward: start → parent → ...).
+	// When in a nested git worktree, skip the main repo's AGENTS.md to avoid
+	// double-loading: the worktree already has a copy of the same file.
+	shadowedPath := findShadowedContextFile(b.WorkspaceRoot)
 	ancestors := collectAncestors(b.WorkspaceRoot)
 	for _, dir := range ancestors {
 		cf, ok := loadContextFileFromDir(dir)
 		if !ok || seen[cf.Path] {
+			continue
+		}
+		if shadowedPath != "" && cf.Path == shadowedPath {
 			continue
 		}
 		files = append(files, cf)
@@ -240,4 +249,90 @@ func collectAncestors(start string) []string {
 		cur = parent
 	}
 	return dirs
+}
+
+// findShadowedContextFile detects when the workspace is a linked git worktree
+// nested under the main repo, and returns the main repo's context file path
+// that should be skipped during ancestor traversal.
+//
+// In a nested worktree scenario:
+//
+//	/path/to/main/          ← main repo, has AGENTS.md
+//	/path/to/main/.git      ← main repo's git directory
+//	/path/to/main/worktrees/feat/  ← linked worktree (cwd)
+//
+// The worktree's .git file points to the main .git, and both the worktree root
+// and the main repo root contain the same tracked AGENTS.md. Without shadow
+// detection, the ancestor walk would load it twice — once from the worktree
+// root and once from the main repo root.
+//
+// Returns the absolute path of the shadowed context file, or "" when not in a
+// nested worktree. Sibling worktrees (git worktree add ../feat) are not
+// shadowed because the main repo is not an ancestor.
+func findShadowedContextFile(cwd string) string {
+	gitPath := filepath.Join(cwd, ".git")
+	info, err := os.Stat(gitPath)
+	if err != nil || info.IsDir() {
+		// Not a linked worktree: .git is a directory (normal repo) or absent.
+		return ""
+	}
+
+	data, err := os.ReadFile(gitPath)
+	if err != nil {
+		return ""
+	}
+	content := strings.TrimSpace(string(data))
+	const prefix = "gitdir: "
+	if !strings.HasPrefix(content, prefix) {
+		return ""
+	}
+	gitDir := strings.TrimSpace(strings.TrimPrefix(content, prefix))
+
+	// Resolve the common git directory. The gitdir points to something like
+	// /path/to/main/.git/worktrees/feat. Read the commondir file to find
+	// the actual shared .git directory.
+	commonGitDir := resolveCommonGitDir(gitDir)
+
+	// The main repo root is the parent of the common git directory.
+	mainRepoRoot := filepath.Dir(commonGitDir)
+
+	// Only shadow when the worktree is nested UNDER the main repo (not a sibling).
+	cleanCwd := filepath.Clean(cwd)
+	if !strings.HasPrefix(cleanCwd, mainRepoRoot+string(filepath.Separator)) {
+		return ""
+	}
+
+	// Verify this is truly the main repo's .git directory, not a bare repo or
+	// submodule. mainRepoRoot/.git must equal commonGitDir.
+	if filepath.Join(mainRepoRoot, ".git") != commonGitDir {
+		return ""
+	}
+
+	// Return the main repo's context file path if it exists.
+	if cf, ok := loadContextFileFromDir(mainRepoRoot); ok {
+		return cf.Path
+	}
+	return ""
+}
+
+// resolveCommonGitDir resolves the real shared .git directory from a worktree's
+// gitdir. The gitdir (e.g. /main/.git/worktrees/feat) may contain a commondir
+// file whose content is the relative path to the real .git directory (e.g. "../.."
+// meaning /main/.git). When commondir is absent, the gitdir itself is the
+// common directory (only in the main worktree, not a linked one).
+func resolveCommonGitDir(gitDir string) string {
+	commondirPath := filepath.Join(gitDir, "commondir")
+	data, err := os.ReadFile(commondirPath)
+	if err != nil {
+		// No commondir file: the gitdir IS the common .git directory.
+		// But wait — if we're here, we already detected a linked worktree
+		// (.git is a file), so this is a linked worktree. The gitdir is
+		// something like /main/.git/worktrees/feat, which always has
+		// a commondir file. Fall back to the gitdir itself just in case.
+		return gitDir
+	}
+	// commondir contains a relative path like "../.." or "../../.." —
+	// resolve it relative to the gitdir.
+	rel := strings.TrimSpace(string(data))
+	return filepath.Clean(filepath.Join(gitDir, rel))
 }

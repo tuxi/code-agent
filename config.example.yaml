@@ -3,10 +3,15 @@ default_model: deepseek-pro
 # ── Runtime Server 访问控制 ───────────────────────────────────
 # Embedded Runtime 不读取这里的认证配置：AgentKit 每次启动都通过
 # CodeAgentRuntime 接口注入一个仅驻留内存的随机 Bearer Token。
-# 独立运行的 codeagent serve / codeagentd 从环境变量读取访问 Token。
+# 独立运行的 codeagent serve / codeagentd 可从本地 YAML 或环境变量读取
+# 固定 Access Token；环境变量有值时优先，便于生产部署覆盖本地配置。
 server:
   display_name: "My CodeAgent Runtime"
   authentication: bearer
+  # 本地开发：复制为 config.yaml 后，生成一次 Token 并填写在这里。
+  # config.yaml 已被 .gitignore 排除，请勿把真实 Token 提交到版本库。
+  # access_token: "<openssl rand -base64 32 的输出>"
+  # 生产/远程部署推荐环境变量；有值时覆盖 access_token。
   access_token_env: CODEAGENT_SERVER_ACCESS_TOKEN
   public_healthz: true
   # 直接监听非 loopback 地址时必须同时配置 TLS。若由反向代理终止 TLS，
