@@ -107,6 +107,8 @@ func run() error {
 			return runSkill(args[1:])
 		case "prompt":
 			return runPrompt(args[1:])
+		case "transcripts":
+			return runTranscripts(args[1:])
 		case "init":
 			return runInit(args[1:])
 		}

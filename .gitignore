@@ -67,3 +67,4 @@ internal/tools/project_graph/indexstore-helper/.swiftpm/
 
 .DS_Store
 /tmp
+/session-transcripts
