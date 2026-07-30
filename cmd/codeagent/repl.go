@@ -6,6 +6,7 @@ import (
 	"code-agent/internal/approve"
 	"code-agent/internal/conversation"
 	"code-agent/internal/model"
+	promptpkg "code-agent/internal/prompt"
 	"code-agent/internal/runtime"
 	"code-agent/internal/session"
 	"code-agent/internal/skills"
@@ -70,6 +71,9 @@ func repl(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider mode
 	}
 	defer store.Close()
 	runtime.AttachObserver(provider, store, ctx)
+
+	// Load prompt templates from conventional paths.
+	promptTemplates := loadPromptTemplatesForWorkspace(root, cfg)
 
 	registry, skillReg, mcpMgr, planRef, _, err := runtime.BuildRegistry(ctx, cfg, mc, provider, store, root, subagentProgress())
 	if err != nil {
@@ -175,6 +179,12 @@ func repl(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider mode
 	// normal input and MCP prompt invocation (/mcp__server__prompt), which produces
 	// the turn text from the server's prompt template rather than the typed line.
 	runTurn := func(text string) {
+		// Expand prompt templates before sending to the LLM. /<name> <args>
+		// becomes the expanded template body; non-template input passes through.
+		if expanded := promptpkg.ExpandTemplate(text, promptTemplates); expanded != text {
+			fmt.Printf("[expanded template /%s]\n", strings.SplitN(text, " ", 2)[0][1:])
+			text = expanded
+		}
 		turnCtx, turnCancel := signal.NotifyContext(ctx, os.Interrupt)
 		res, err := executor.ExecuteWithSession(turnCtx, sess, text, "")
 		turnCancel()
@@ -622,4 +632,17 @@ func parseMultiSelect(line string, q agent.AskUserQuestion) (agent.AskUserAnswer
 		}
 	}
 	return agent.AskUserAnswer{Selected: selected}, true
+}
+
+// loadPromptTemplatesForWorkspace loads templates from global and project
+// directories. Global comes first (lowest priority); project overrides by name.
+func loadPromptTemplatesForWorkspace(root string, cfg app.Config) []promptpkg.Template {
+	var dirs []string
+	if cfg.GlobalPromptsDir != "" {
+		dirs = append(dirs, cfg.GlobalPromptsDir)
+	} else if home, err := os.UserHomeDir(); err == nil {
+		dirs = append(dirs, filepath.Join(home, ".codeagent", "prompts"))
+	}
+	dirs = append(dirs, filepath.Join(root, ".codeagent", "prompts"))
+	return promptpkg.LoadTemplates(dirs...)
 }

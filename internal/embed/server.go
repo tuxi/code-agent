@@ -615,6 +615,7 @@ func StartServer(ctx context.Context, opt Options) (*Handle, error) {
 		// User-level skills — shared across all workspaces. On iOS this is where
 		// bundled + user-imported skills live (Application Support/skills/).
 		cfg.GlobalSkillsDir = filepath.Join(dataDir, "skills")
+		cfg.GlobalPromptsDir = filepath.Join(dataDir, "prompts")
 	}
 
 	injectedResolver := injectSecrets(&cfg, opt.Secrets)

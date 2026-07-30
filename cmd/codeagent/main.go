@@ -64,6 +64,12 @@ func run() error {
 			cfg.GlobalSkillsDir = filepath.Join(home, ".codeagent", "skills")
 		}
 	}
+	// Same pattern for prompt templates.
+	if cfg.GlobalPromptsDir == "" {
+		if home, err := os.UserHomeDir(); err == nil {
+			cfg.GlobalPromptsDir = filepath.Join(home, ".codeagent", "prompts")
+		}
+	}
 	// Wire the config-level factory (set by external consumers like DreamAI) into
 	// the package-level injection point so all entry points and internal helpers
 	// (WorkspaceRegistry, etc.) use it.
@@ -99,6 +105,8 @@ func run() error {
 			return runPlugin(args[1:])
 		case "skill":
 			return runSkill(args[1:])
+		case "prompt":
+			return runPrompt(args[1:])
 		case "init":
 			return runInit(args[1:])
 		}
@@ -781,6 +789,8 @@ func printUsage() {
   codeagent [--model NAME] resume <id>     resume a saved session
   codeagent [--model NAME] serve [addr]    run the runtime server (HTTP + agent-wire WebSocket; default 127.0.0.1:8797)
   codeagent skill init <name>              scaffold a new skill under ./skills/<name>/
+  codeagent prompt init <name>             scaffold a prompt template under .codeagent/prompts/
+  codeagent prompt list                    list loaded prompt templates
   codeagent plugin install <url> [name]    install skill plugins from a marketplace repo
   codeagent plugin list                    list installed plugins
   codeagent plugin remove <name>           remove an installed plugin

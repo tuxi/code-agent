@@ -93,6 +93,11 @@ type Config struct {
 	// StartServer from the dataDir parameter. Code-level only (yaml:"-").
 	GlobalSkillsDir string `yaml:"-"`
 
+	// GlobalPromptsDir is an optional directory of user-level prompt templates.
+	// Same pattern as GlobalSkillsDir: embedded hosts set it from dataDir; desktop
+	// defaults to ~/.codeagent/prompts/.
+	GlobalPromptsDir string `yaml:"-"`
+
 	// Profile selects the platform capability set the runtime assembles for. It is
 	// code-level only (set by the embedded host, not the YAML) so a desktop config
 	// file can never accidentally downgrade itself. Default (full) assumes a host
