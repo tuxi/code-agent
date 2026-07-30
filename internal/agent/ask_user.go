@@ -137,11 +137,11 @@ func (t *askUserTool) Execute(_ context.Context, _ tools.ExecutionContext, input
 	}
 
 	var in struct {
-		Question    string       `json:"question"`
-		Header      string       `json:"header"`
-		Options     []AskOption  `json:"options"`
-		MultiSelect bool         `json:"multiSelect"`
-		AllowCustom bool         `json:"allowCustom"`
+		Question    string      `json:"question"`
+		Header      string      `json:"header"`
+		Options     []AskOption `json:"options"`
+		MultiSelect bool        `json:"multiSelect"`
+		AllowCustom bool        `json:"allowCustom"`
 	}
 	if len(input) > 0 {
 		if err := json.Unmarshal(input, &in); err != nil {

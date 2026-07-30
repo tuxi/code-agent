@@ -25,12 +25,12 @@ import (
 )
 
 var fluxExcludedTools = map[string]bool{
-	"plan_workflow":   true,
-	"task":            true,
-	"enter_plan_mode": true,
-	"propose_plan":    true,
-	"ask_user":        true,
-	"todo":            true,
+	"plan_workflow":       true,
+	"task":                true,
+	"enter_plan_mode":     true,
+	"propose_plan":        true,
+	"ask_user":            true,
+	"todo":                true,
 	"workflow_status":     true,
 	"workflow_list":       true,
 	"workflow_definition": true,
@@ -240,8 +240,10 @@ func RegisterFluxTool(registry *tools.Registry, provider model.Provider, modelNa
 // their latest task status. Like `ls` for workflows.
 type workflowListTool struct{}
 
-func (t *workflowListTool) Name() string        { return "workflow_list" }
-func (t *workflowListTool) Description() string { return "List all plan_workflow runs in this workspace. Returns each workflow's ID, goal, latest task ID, status, progress, and error." }
+func (t *workflowListTool) Name() string { return "workflow_list" }
+func (t *workflowListTool) Description() string {
+	return "List all plan_workflow runs in this workspace. Returns each workflow's ID, goal, latest task ID, status, progress, and error."
+}
 func (t *workflowListTool) InputSchema() json.RawMessage {
 	return json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`)
 }
@@ -254,12 +256,12 @@ func (t *workflowListTool) Execute(ctx context.Context, ec tools.ExecutionContex
 	gdb := db.WithContext(ctx)
 
 	type row struct {
-		ID             int64  `gorm:"column:id"`
-		Status         string `gorm:"column:status"`
-		Progress       float64
-		ErrorMessage   *string `gorm:"column:error_message"`
-		InputJSON      []byte  `gorm:"column:input_json"`
-		CreatedAt      string  `gorm:"column:created_at"`
+		ID           int64  `gorm:"column:id"`
+		Status       string `gorm:"column:status"`
+		Progress     float64
+		ErrorMessage *string `gorm:"column:error_message"`
+		InputJSON    []byte  `gorm:"column:input_json"`
+		CreatedAt    string  `gorm:"column:created_at"`
 	}
 	var rows []row
 	if err := gdb.Table("tasks").
@@ -270,13 +272,13 @@ func (t *workflowListTool) Execute(ctx context.Context, ec tools.ExecutionContex
 	}
 
 	type item struct {
-		WorkflowID string `json:"workflow_id"`
-		Goal       string `json:"goal,omitempty"`
-		TaskID     int64  `json:"task_id"`
-		Status     string `json:"status"`
+		WorkflowID string  `json:"workflow_id"`
+		Goal       string  `json:"goal,omitempty"`
+		TaskID     int64   `json:"task_id"`
+		Status     string  `json:"status"`
 		Progress   float64 `json:"progress"`
-		Error      string `json:"error,omitempty"`
-		CreatedAt  string `json:"created_at,omitempty"`
+		Error      string  `json:"error,omitempty"`
+		CreatedAt  string  `json:"created_at,omitempty"`
 	}
 	var items []item
 	for _, r := range rows {
@@ -323,8 +325,10 @@ func (t *workflowListTool) Execute(ctx context.Context, ec tools.ExecutionContex
 // workflowDefTool returns the DAG topology (nodes + edges) for a workflow.
 type workflowDefTool struct{}
 
-func (t *workflowDefTool) Name() string        { return "workflow_definition" }
-func (t *workflowDefTool) Description() string { return "Get the DAG topology (nodes and edges) for a workflow. The client can render this as a graph." }
+func (t *workflowDefTool) Name() string { return "workflow_definition" }
+func (t *workflowDefTool) Description() string {
+	return "Get the DAG topology (nodes and edges) for a workflow. The client can render this as a graph."
+}
 func (t *workflowDefTool) InputSchema() json.RawMessage {
 	return json.RawMessage(`{"type":"object","properties":{"workflow_id":{"type":"string","description":"The workflow ID to get the DAG for"}},"required":["workflow_id"],"additionalProperties":false}`)
 }
@@ -429,8 +433,10 @@ func (t *workflowDefTool) Execute(ctx context.Context, ec tools.ExecutionContext
 // workflowEventsTool returns event history for a workflow task.
 type workflowEventsTool struct{}
 
-func (t *workflowEventsTool) Name() string        { return "workflow_events" }
-func (t *workflowEventsTool) Description() string { return "Get the event history for a workflow task. Returns node state changes, task transitions, and any errors. Use limit and after_id for pagination." }
+func (t *workflowEventsTool) Name() string { return "workflow_events" }
+func (t *workflowEventsTool) Description() string {
+	return "Get the event history for a workflow task. Returns node state changes, task transitions, and any errors. Use limit and after_id for pagination."
+}
 func (t *workflowEventsTool) InputSchema() json.RawMessage {
 	return json.RawMessage(`{"type":"object","properties":{"workflow_id":{"type":"string","description":"The workflow ID to get events for"},"limit":{"type":"integer","description":"Max events to return (default 20)"},"after_id":{"type":"integer","description":"Return only events with id > after_id. Use the last event's id from the previous page as the cursor."}},"required":["workflow_id"],"additionalProperties":false}`)
 }
@@ -550,8 +556,10 @@ func openWorkflowDB(workspaceRoot string) (*gorm.DB, error) {
 // current state.
 type workflowStatusTool struct{}
 
-func (t *workflowStatusTool) Name() string        { return "workflow_status" }
-func (t *workflowStatusTool) Description() string { return "Query the current state of a previously-submitted plan_workflow. Returns the task status, each node's state and error, and any output produced so far." }
+func (t *workflowStatusTool) Name() string { return "workflow_status" }
+func (t *workflowStatusTool) Description() string {
+	return "Query the current state of a previously-submitted plan_workflow. Returns the task status, each node's state and error, and any output produced so far."
+}
 func (t *workflowStatusTool) InputSchema() json.RawMessage {
 	return json.RawMessage(`{"type":"object","properties":{"workflow_id":{"type":"string","description":"The workflow ID returned by plan_workflow"}},"required":["workflow_id"],"additionalProperties":false}`)
 }

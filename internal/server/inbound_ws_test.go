@@ -34,8 +34,8 @@ func (s *approvalSession) SetApprover(a agent.Approver) {
 	s.mu.Unlock()
 }
 
-func (s *approvalSession) SetPlanApprover(agent.PlanApprover)          {}
-func (s *approvalSession) SetAskUserApprover(agent.AskUserApprover)    {}
+func (s *approvalSession) SetPlanApprover(agent.PlanApprover)         {}
+func (s *approvalSession) SetAskUserApprover(agent.AskUserApprover)   {}
 func (s *approvalSession) SetClientToolWaiter(agent.ClientToolWaiter) {}
 func (s *approvalSession) RegisterTools([]agent.ClientToolDef)        {}
 
@@ -142,8 +142,8 @@ type clientToolSession struct {
 func (s *clientToolSession) Subscribe() (<-chan agent.Event, func()) { return s.events, func() {} }
 func (s *clientToolSession) Cancel()                                 {}
 
-func (s *clientToolSession) SetApprover(agent.Approver)             {}
-func (s *clientToolSession) SetPlanApprover(agent.PlanApprover)     {}
+func (s *clientToolSession) SetApprover(agent.Approver)               {}
+func (s *clientToolSession) SetPlanApprover(agent.PlanApprover)       {}
 func (s *clientToolSession) SetAskUserApprover(agent.AskUserApprover) {}
 func (s *clientToolSession) SetClientToolWaiter(w agent.ClientToolWaiter) {
 	s.mu.Lock()

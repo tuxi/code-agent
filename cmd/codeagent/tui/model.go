@@ -57,16 +57,16 @@ type model struct {
 	picker    *sessionPicker // /resume overlay; nil when closed
 	modelPick *modelPicker   // /use overlay; nil when closed
 
-	pending       *approvalReq     // set while a side-effecting tool awaits y/n
-	planPending   *planApprovalReq // set while a plan awaits approval (a/r)
-	askUserPending *askUserReq     // set while ask_user awaits the user's answer
-	askUserSelected int            // highlighted option index (↑/↓)
-	askUserMulti   map[int]bool    // selected indices when multiSelect is on
-	approveIdx    int              // 0 = allow once, 1 = always allow, 2 = deny — ↑/↓ switches
-	showPreview   bool             // 'v' toggles the diff preview below the approval card
-	busy        bool             // a turn is running; submit is locked
-	thinking    bool             // a model call is in flight; show the spinner
-	lastErr     error
+	pending         *approvalReq     // set while a side-effecting tool awaits y/n
+	planPending     *planApprovalReq // set while a plan awaits approval (a/r)
+	askUserPending  *askUserReq      // set while ask_user awaits the user's answer
+	askUserSelected int              // highlighted option index (↑/↓)
+	askUserMulti    map[int]bool     // selected indices when multiSelect is on
+	approveIdx      int              // 0 = allow once, 1 = always allow, 2 = deny — ↑/↓ switches
+	showPreview     bool             // 'v' toggles the diff preview below the approval card
+	busy            bool             // a turn is running; submit is locked
+	thinking        bool             // a model call is in flight; show the spinner
+	lastErr         error
 
 	promptTokens int             // latest prompt size (from EventModelFinished) for the gauge
 	skills       map[string]bool // distinct skills loaded this session

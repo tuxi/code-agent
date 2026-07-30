@@ -14,6 +14,8 @@
 // config.yaml / env / the host keychain.
 package settings
 
+// TODO: optimize
+
 import (
 	"encoding/json"
 	"fmt"
@@ -153,9 +155,9 @@ func Load(root, home string, warn io.Writer) Settings {
 
 // ResolveVerify returns the effective finalize-verify command for the workspace:
 // the settings layer's verify block if any layer set one, else the config.yaml
-// legacy value (P4.3-R Move 2's agent.verify_command, layer 0). "" means disabled.
-// A command of "auto" is detected from the workspace (§8); anything absent leaves
-// verify OFF (P11 decision 3 — auto-detect is opt-in, not the default).
+// legacy value (P4.3-R Move 2's agent.verify_command, layer 0). "" means
+// auto-detect from workspace files (go.mod → go build, Cargo.toml → cargo build,
+// etc.). Explicit "off"/"false"/"none"/"disabled" disables verification.
 func ResolveVerify(root, home, legacy string) string {
 	return ResolveVerifyFrom(Load(root, home, os.Stderr), root, legacy)
 }

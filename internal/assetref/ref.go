@@ -29,9 +29,9 @@ type Ref struct {
 	WorkspaceRelativePath string `json:"workspace_relative_path,omitempty"`
 	AbsolutePath          string `json:"absolute_path,omitempty"`
 
-	Range    *Range            `json:"range,omitempty"`
-	Preview  string            `json:"preview,omitempty"`
-	MIMEType string            `json:"mime_type,omitempty"`
+	Range    *Range         `json:"range,omitempty"`
+	Preview  string         `json:"preview,omitempty"`
+	MIMEType string         `json:"mime_type,omitempty"`
 	Metadata map[string]any `json:"metadata,omitempty"`
 
 	SourceTurnID string `json:"source_turn_id,omitempty"`

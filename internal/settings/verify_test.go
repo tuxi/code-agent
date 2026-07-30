@@ -1,3 +1,4 @@
+// verify-test
 package settings
 
 import (
