@@ -15,11 +15,12 @@ require (
 	github.com/mattn/go-runewidth v0.0.19
 	github.com/modelcontextprotocol/go-sdk v1.6.1
 	github.com/pmezard/go-difflib v1.0.0
-	github.com/tuxi/flux v1.0.5
-	github.com/tuxi/flux-workflow v1.0.3
+	github.com/tuxi/flux v1.0.7
+	github.com/tuxi/flux-workflow v1.0.4
 	golang.org/x/net v0.56.0
 	golang.org/x/sys v0.46.0
 	gopkg.in/yaml.v3 v3.0.1
+	gorm.io/gorm v1.31.1
 	modernc.org/sqlite v1.52.0
 )
 
@@ -84,15 +85,9 @@ require (
 	gorm.io/datatypes v1.2.7 // indirect
 	gorm.io/driver/mysql v1.5.6 // indirect
 	gorm.io/driver/sqlite v1.6.0 // indirect
-	gorm.io/gorm v1.31.1 // indirect
 	modernc.org/libc v1.72.3 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
 )
 
 tool golang.org/x/mobile/cmd/gobind
-
-replace (
-	github.com/tuxi/flux => /Users/xiaoyuan/Documents/work/git/flux
-	github.com/tuxi/flux-workflow => /Users/xiaoyuan/Documents/work/git/flux-workflow
-)
