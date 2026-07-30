@@ -169,6 +169,20 @@ func TestStartServerRequiresHostGeneratedAccessToken(t *testing.T) {
 	}
 }
 
+func TestStartServerRejectsNonLoopbackPrivateListener(t *testing.T) {
+	_, err := StartServer(context.Background(), Options{
+		WorkspaceDir:      t.TempDir(),
+		DataDir:           t.TempDir(),
+		ConfigYAML:        `{"default_model":"","models":{}}`,
+		Addr:              "0.0.0.0:0",
+		Sandboxed:         true,
+		ServerAccessToken: "0123456789abcdef0123456789abcdef",
+	})
+	if err == nil || !strings.Contains(err.Error(), "must bind to loopback") {
+		t.Fatalf("StartServer error = %v, want loopback restriction", err)
+	}
+}
+
 func TestInjectSecrets_WebSearchNoEnvName(t *testing.T) {
 	// When tavily_api_key_env is empty, no injection should happen even if a
 	// matching secret key exists — there's no declared env name to match against.

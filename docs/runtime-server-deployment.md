@@ -20,6 +20,104 @@ Embedded Runtime 必须由宿主在每次启动时生成一个新的 256-bit 随
 动态 loopback 端口不是安全边界。即使 Runtime 只监听 `127.0.0.1`，也不能
 关闭 Embedded 认证。
 
+## Embedded Runtime 局域网共享
+
+Embedded Runtime 的私有 Listener 始终只允许绑定 loopback。Mac AgentKit
+可以通过 `CodeAgentRuntime.Server.startSharedListener` 启动第二个、默认关闭
+的 TLS Listener。两个 Listener 复用同一个 Runtime Handler、会话数据库、
+执行器和 `server_id`，但使用完全隔离的认证材料：
+
+```text
+Loopback Listener -> Embedded 临时 Token
+Shared Listener   -> 每台设备独立的 Device Credential
+```
+
+`startSharedListener` 接收的 JSON 全部是内存控制面参数：
+
+```json
+{
+  "addr": "0.0.0.0:0",
+  "certificate_pem": "-----BEGIN CERTIFICATE-----\n...",
+  "private_key_pem": "-----BEGIN PRIVATE KEY-----\n...",
+  "bootstrap_sha256": "<64-character lowercase hex>",
+  "bootstrap_expires_at": 1785373200,
+  "enrollment_timeout_seconds": 60,
+  "devices": [
+    {
+      "device_id": "dev_...",
+      "credential_sha256": "<64-character lowercase hex>"
+    }
+  ]
+}
+```
+
+TLS 私钥、bootstrap secret 和 Device Credential 不得写入 Runtime YAML 或
+日志。证书及私钥由 Mac AgentKit 在 Keychain 中管理；iPhone 必须对 HTTP 与
+Agent Wire WebSocket 使用同一份 SPKI pin。
+
+`sharedListenerStatus()` 返回：
+
+```json
+{
+  "state": "running",
+  "listen_address": "[::]:52134",
+  "listen_origin": "https://[::]:52134",
+  "port": 52134,
+  "started_at": "2026-07-30T10:00:00Z",
+  "last_transition_at": "2026-07-30T10:00:00Z",
+  "last_error": ""
+}
+```
+
+`state` 为 `stopped | starting | running | failed`。意外退出时状态切换为
+`failed` 并保留脱敏后的最近错误。`listen_address` / `listen_origin` 只是绑定
+诊断信息；wildcard `0.0.0.0` 或 `[::]` 不是客户端 Endpoint，禁止放入 Bonjour
+TXT 或二维码。AgentKit 应使用 Bonjour 服务名、Mac `.local` 主机名和 `port`
+生成客户端可连接地址。
+
+Shared HTTP Server 使用 10 秒 `ReadHeaderTimeout`、90 秒 `IdleTimeout` 和
+64 KiB Header 上限。配对请求体上限为 16 KiB，其他已认证请求体上限为
+1 MiB；不设置会破坏 WebSocket/流式响应的全局 `WriteTimeout`。撤销设备会
+拒绝后续 HTTP 请求，并关闭该设备已经建立的 Agent Wire WebSocket。
+
+配对请求：
+
+```http
+POST /v1/runtime/pair
+Content-Type: application/json
+
+{
+  "bootstrap_secret": "<256-bit one-time secret>",
+  "device_name": "Xiaoyuan’s iPhone",
+  "platform": "iOS"
+}
+```
+
+Runtime 创建待确认 enrollment 后会保持该 HTTP 请求，不会立即返回
+Credential。Mac AgentKit 通过以下嵌入接口完成持久化确认：
+
+```text
+pendingSharedEnrollments()
+acknowledgeSharedEnrollment(enrollmentID)
+rejectSharedEnrollment(enrollmentID)
+```
+
+`pendingSharedEnrollments()` 只返回 `enrollment_id`、code-agent 生成的
+`device_id`、Credential SHA-256 和展示 metadata，不返回明文 Credential。
+AgentKit 先把验证材料写入 Mac Keychain，再 acknowledge；只有收到确认后，
+配对 HTTP 响应才会把明文 Credential 返回一次给 iPhone。超时、拒绝或连接
+中断会撤销该 pending enrollment。
+
+Device Credential 使用以下可定位格式：
+
+```text
+ca_device.<device_id>.<base64url-256-bit-secret>
+```
+
+Runtime 先定位 `device_id`，再对完整 Credential 计算 SHA-256 并使用
+constant-time 比较。bootstrap 一次只能有一个 pending enrollment，成功后
+立即消费。设备撤销通过 `updateSharedDevices` 热更新，不要求重启 Runtime。
+
 ## 独立 Local Server
 
 本地开发可以生成一次至少 32 字节的随机 Token，保存在已被 Git 忽略的

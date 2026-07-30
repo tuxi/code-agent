@@ -12,7 +12,9 @@ package embed
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -133,12 +135,13 @@ type Runtime struct {
 // Handle is a running embedded server. The host must call Stop to release the
 // listener, the MCP subprocesses, and the SQLite stores.
 type Handle struct {
-	srv      *http.Server
-	lis      net.Listener
-	port     int
-	cancel   context.CancelFunc
-	closers  []func() // run in reverse on Stop, mirroring runServe's defers
-	serveErr chan error
+	srv              *http.Server
+	lis              net.Listener
+	port             int
+	loopbackEndpoint string
+	cancel           context.CancelFunc
+	closers          []func() // run in reverse on Stop, mirroring runServe's defers
+	serveErr         chan error
 
 	// Lifecycle state (v1.2). srvCtx is the server-scoped context resumed turns run
 	// under (so Stop cancels them); cfg + rt back Suspend/ResumeSession/Reconfigure.
@@ -149,6 +152,56 @@ type Handle struct {
 	modelName  string
 
 	reconfigureMu sync.Mutex
+
+	// The optional LAN listener shares the same Runtime handler and stores. Its
+	// TLS identity and device validation material are injected by the host and
+	// remain in memory only.
+	sharedMu       sync.Mutex
+	coreHandler    http.Handler
+	sharedSrv      *http.Server
+	sharedLis      net.Listener
+	sharedAuth     *server.SharedDeviceAuthenticator
+	sharedPort     int
+	sharedEndpoint string
+	sharedStatus   SharedListenerStatus
+}
+
+const (
+	SharedListenerStopped  = "stopped"
+	SharedListenerStarting = "starting"
+	SharedListenerRunning  = "running"
+	SharedListenerFailed   = "failed"
+
+	sharedReadHeaderTimeout = 10 * time.Second
+	sharedIdleTimeout       = 90 * time.Second
+	sharedMaxHeaderBytes    = 64 << 10
+)
+
+// SharedListenerStatus is a control-plane snapshot. ListenOrigin describes the
+// bound socket (and may contain 0.0.0.0/::); it is never a client-connectable
+// endpoint and must not be placed in Bonjour or pairing QR payloads.
+type SharedListenerStatus struct {
+	State            string `json:"state"`
+	ListenAddress    string `json:"listen_address,omitempty"`
+	ListenOrigin     string `json:"listen_origin,omitempty"`
+	Port             int    `json:"port"`
+	StartedAt        string `json:"started_at,omitempty"`
+	StoppedAt        string `json:"stopped_at,omitempty"`
+	LastTransitionAt string `json:"last_transition_at,omitempty"`
+	LastError        string `json:"last_error,omitempty"`
+}
+
+// SharedListenerOptions is the in-memory control-plane configuration supplied by
+// AgentKit. Certificate/private-key PEM and bootstrap validation material must
+// never be written to the Runtime config or logs.
+type SharedListenerOptions struct {
+	Addr               string
+	CertificatePEM     string
+	PrivateKeyPEM      string
+	BootstrapSHA256    string
+	BootstrapExpiresAt time.Time
+	Devices            []server.SharedDeviceRecord
+	EnrollmentTimeout  time.Duration
 }
 
 // Port returns the actual TCP port the server is listening on. With Addr empty
@@ -158,9 +211,10 @@ func (h *Handle) Port() int { return h.port }
 // Stop shuts the server down and releases every resource acquired by StartServer.
 // It is safe to call once; further calls are no-ops.
 func (h *Handle) Stop() error {
+	sharedErr := h.StopSharedListener()
 	if h.srv == nil {
 		fmt.Fprintf(os.Stderr, "[lifecycle] Handle.Stop(): already nil, no-op\n")
-		return nil
+		return sharedErr
 	}
 	fmt.Fprintf(os.Stderr, "[lifecycle] Handle.Stop(): closing server (port=%d)\n", h.port)
 	err := h.srv.Close()
@@ -173,7 +227,233 @@ func (h *Handle) Stop() error {
 	}
 	fmt.Fprintf(os.Stderr, "[lifecycle] Handle.Stop(): %d closers run, DB closed\n", len(h.closers))
 	h.srv = nil
+	return errors.Join(sharedErr, err)
+}
+
+// StartSharedListener starts a TLS-only LAN listener around the same core
+// Runtime handler used by the private loopback listener. It does not assemble a
+// second Runtime and therefore preserves server_id, conversations and live event
+// subscriptions across both clients.
+func (h *Handle) StartSharedListener(opt SharedListenerOptions) error {
+	h.sharedMu.Lock()
+	defer h.sharedMu.Unlock()
+	if h.sharedSrv != nil {
+		return fmt.Errorf("shared Runtime listener is already running")
+	}
+	h.sharedStatus = SharedListenerStatus{
+		State:            SharedListenerStarting,
+		LastTransitionAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if h.coreHandler == nil || h.srv == nil {
+		return h.recordSharedFailureLocked(fmt.Errorf("runtime not started"))
+	}
+	certificate, err := tls.X509KeyPair(
+		[]byte(opt.CertificatePEM),
+		[]byte(opt.PrivateKeyPEM),
+	)
+	if err != nil {
+		return h.recordSharedFailureLocked(
+			fmt.Errorf("invalid shared Runtime TLS identity: %w", err),
+		)
+	}
+	authenticator, err := server.NewSharedDeviceAuthenticator(
+		opt.Devices,
+		opt.BootstrapSHA256,
+		opt.BootstrapExpiresAt,
+		opt.EnrollmentTimeout,
+	)
+	if err != nil {
+		return h.recordSharedFailureLocked(err)
+	}
+	addr := opt.Addr
+	if addr == "" {
+		addr = "0.0.0.0:0"
+	}
+	rawListener, err := net.Listen("tcp", addr)
+	if err != nil {
+		return h.recordSharedFailureLocked(err)
+	}
+	tlsListener := tls.NewListener(rawListener, &tls.Config{
+		Certificates: []tls.Certificate{certificate},
+		MinVersion:   tls.VersionTLS12,
+	})
+	sharedServer := &http.Server{
+		Handler:           authenticator.Handler(h.coreHandler),
+		ReadHeaderTimeout: sharedReadHeaderTimeout,
+		IdleTimeout:       sharedIdleTimeout,
+		MaxHeaderBytes:    sharedMaxHeaderBytes,
+	}
+	tcpAddress, ok := rawListener.Addr().(*net.TCPAddr)
+	if !ok {
+		_ = rawListener.Close()
+		return h.recordSharedFailureLocked(
+			fmt.Errorf("shared Runtime listener returned unsupported address %T", rawListener.Addr()),
+		)
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	h.sharedSrv = sharedServer
+	h.sharedLis = rawListener
+	h.sharedAuth = authenticator
+	h.sharedPort = tcpAddress.Port
+	h.sharedEndpoint = "https://" + net.JoinHostPort(tcpAddress.IP.String(), fmt.Sprint(tcpAddress.Port))
+	h.sharedStatus = SharedListenerStatus{
+		State:            SharedListenerRunning,
+		ListenAddress:    rawListener.Addr().String(),
+		ListenOrigin:     h.sharedEndpoint,
+		Port:             h.sharedPort,
+		StartedAt:        now,
+		LastTransitionAt: now,
+	}
+
+	go func() {
+		err := sharedServer.Serve(tlsListener)
+		if err != nil && err != http.ErrServerClosed {
+			fmt.Fprintf(os.Stderr, "[shared-runtime] listener stopped: %v\n", err)
+			authenticator.CloseConnections()
+			h.sharedMu.Lock()
+			if h.sharedSrv == sharedServer {
+				now := time.Now().UTC().Format(time.RFC3339Nano)
+				h.sharedSrv = nil
+				h.sharedLis = nil
+				h.sharedAuth = nil
+				h.sharedPort = 0
+				h.sharedEndpoint = ""
+				h.sharedStatus = SharedListenerStatus{
+					State:            SharedListenerFailed,
+					StoppedAt:        now,
+					LastTransitionAt: now,
+					LastError:        safeSharedListenerError(err),
+				}
+			}
+			h.sharedMu.Unlock()
+		}
+	}()
+	fmt.Fprintf(os.Stderr, "[shared-runtime] listener started port=%d\n", h.sharedPort)
+	return nil
+}
+
+// StopSharedListener immediately closes the optional LAN surface without
+// stopping the private Embedded Runtime.
+func (h *Handle) StopSharedListener() error {
+	h.sharedMu.Lock()
+	defer h.sharedMu.Unlock()
+	if h.sharedSrv == nil {
+		if h.sharedStatus.State != SharedListenerStopped {
+			now := time.Now().UTC().Format(time.RFC3339Nano)
+			h.sharedStatus = SharedListenerStatus{
+				State: SharedListenerStopped, StoppedAt: now, LastTransitionAt: now,
+			}
+		}
+		return nil
+	}
+	h.sharedAuth.CloseConnections()
+	err := h.sharedSrv.Close()
+	h.sharedSrv = nil
+	h.sharedLis = nil
+	h.sharedAuth = nil
+	h.sharedPort = 0
+	h.sharedEndpoint = ""
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	h.sharedStatus = SharedListenerStatus{
+		State: SharedListenerStopped, StoppedAt: now, LastTransitionAt: now,
+	}
+	fmt.Fprintln(os.Stderr, "[shared-runtime] listener stopped")
 	return err
+}
+
+func (h *Handle) SharedPort() int {
+	h.sharedMu.Lock()
+	defer h.sharedMu.Unlock()
+	return h.sharedPort
+}
+
+func (h *Handle) SharedEndpoint() string {
+	h.sharedMu.Lock()
+	defer h.sharedMu.Unlock()
+	return h.sharedEndpoint
+}
+
+func (h *Handle) SharedListenerStatus() SharedListenerStatus {
+	h.sharedMu.Lock()
+	defer h.sharedMu.Unlock()
+	status := h.sharedStatus
+	if status.State == "" {
+		status.State = SharedListenerStopped
+	}
+	return status
+}
+
+func (h *Handle) recordSharedFailureLocked(err error) error {
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	h.sharedStatus = SharedListenerStatus{
+		State:            SharedListenerFailed,
+		StoppedAt:        now,
+		LastTransitionAt: now,
+		LastError:        safeSharedListenerError(err),
+	}
+	return err
+}
+
+func safeSharedListenerError(err error) string {
+	if err == nil {
+		return ""
+	}
+	message := strings.NewReplacer("\r", " ", "\n", " ").Replace(err.Error())
+	const maxErrorBytes = 512
+	if len(message) > maxErrorBytes {
+		message = message[:maxErrorBytes]
+	}
+	return message
+}
+
+func (h *Handle) PendingSharedEnrollments() []server.SharedEnrollment {
+	h.sharedMu.Lock()
+	authenticator := h.sharedAuth
+	h.sharedMu.Unlock()
+	if authenticator == nil {
+		return nil
+	}
+	return authenticator.PendingEnrollments()
+}
+
+func (h *Handle) AcknowledgeSharedEnrollment(enrollmentID string) error {
+	h.sharedMu.Lock()
+	authenticator := h.sharedAuth
+	h.sharedMu.Unlock()
+	if authenticator == nil {
+		return fmt.Errorf("shared Runtime listener is not running")
+	}
+	return authenticator.AcknowledgeEnrollment(enrollmentID)
+}
+
+func (h *Handle) RejectSharedEnrollment(enrollmentID string) error {
+	h.sharedMu.Lock()
+	authenticator := h.sharedAuth
+	h.sharedMu.Unlock()
+	if authenticator == nil {
+		return fmt.Errorf("shared Runtime listener is not running")
+	}
+	return authenticator.RejectEnrollment(enrollmentID)
+}
+
+func (h *Handle) UpdateSharedDevices(devices []server.SharedDeviceRecord) error {
+	h.sharedMu.Lock()
+	authenticator := h.sharedAuth
+	h.sharedMu.Unlock()
+	if authenticator == nil {
+		return fmt.Errorf("shared Runtime listener is not running")
+	}
+	return authenticator.UpdateDevices(devices)
+}
+
+func (h *Handle) RotateSharedBootstrap(hash string, expiresAt time.Time) error {
+	h.sharedMu.Lock()
+	authenticator := h.sharedAuth
+	h.sharedMu.Unlock()
+	if authenticator == nil {
+		return fmt.Errorf("shared Runtime listener is not running")
+	}
+	return authenticator.RotateBootstrap(hash, expiresAt)
 }
 
 // suspendTimeout bounds how long Suspend waits for in-flight turns to unwind. The
@@ -287,6 +567,9 @@ func StartServer(ctx context.Context, opt Options) (*Handle, error) {
 	if err := server.ValidateServerAccessToken(opt.ServerAccessToken); err != nil {
 		return nil, fmt.Errorf("embedded Runtime requires an in-memory Server Access Token: %w", err)
 	}
+	if err := validateEmbeddedLoopbackAddress(opt.Addr); err != nil {
+		return nil, err
+	}
 	cfg, err := app.LoadConfigBytes([]byte(opt.ConfigYAML))
 	if err != nil {
 		return nil, err
@@ -380,13 +663,10 @@ func StartServer(ctx context.Context, opt Options) (*Handle, error) {
 	if opt.Sandboxed {
 		profile = server.RuntimeProfileSandboxed
 	}
-	handler, rt, closers, err := Assemble(
+	coreHandler, rt, closers, err := Assemble(
 		srvCtx, cfg, mc, provider, credChain, workspaceDir, cloneStateDir,
 		RuntimeServerOptions{
 			Profile: profile,
-			Auth: server.ServerAuth{
-				Enabled: true, Token: opt.ServerAccessToken, PublicHealthz: true,
-			},
 		},
 	)
 	if err != nil {
@@ -394,6 +674,7 @@ func StartServer(ctx context.Context, opt Options) (*Handle, error) {
 	}
 	h.closers = closers
 	h.rt = rt
+	h.coreHandler = coreHandler
 
 	addr := opt.Addr
 	if addr == "" {
@@ -404,9 +685,14 @@ func StartServer(ctx context.Context, opt Options) (*Handle, error) {
 		return nil, err
 	}
 
-	h.srv = &http.Server{Handler: handler}
+	loopbackHandler := server.WithServerAuth(coreHandler, server.ServerAuth{
+		Enabled: true, Token: opt.ServerAccessToken, PublicHealthz: true,
+	})
+	h.srv = &http.Server{Handler: loopbackHandler}
 	h.lis = lis
-	h.port = lis.Addr().(*net.TCPAddr).Port
+	tcpAddress := lis.Addr().(*net.TCPAddr)
+	h.port = tcpAddress.Port
+	h.loopbackEndpoint = "ws://" + net.JoinHostPort(tcpAddress.IP.String(), fmt.Sprint(tcpAddress.Port))
 
 	go func() {
 		err := h.srv.Serve(lis)
@@ -419,6 +705,21 @@ func StartServer(ctx context.Context, opt Options) (*Handle, error) {
 	ok = true
 	fmt.Fprintf(os.Stderr, "[lifecycle] StartServer() OK: port=%d dataDir=%s storeBase=%s\n", h.port, dataDir, runtime.StoreBaseDir())
 	return h, nil
+}
+
+func validateEmbeddedLoopbackAddress(addr string) error {
+	if addr == "" {
+		return nil
+	}
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return fmt.Errorf("invalid embedded Runtime listen address %q: %w", addr, err)
+	}
+	ip := net.ParseIP(strings.Trim(host, "[]"))
+	if !strings.EqualFold(host, "localhost") && (ip == nil || !ip.IsLoopback()) {
+		return errors.New("embedded Runtime private listener must bind to loopback")
+	}
+	return nil
 }
 
 // Assemble wires the runtime's execution-model components (tool registry, MCP
@@ -696,5 +997,5 @@ func parseCredentialValue(raw string) (credential.Credential, error) {
 // LoopbackURL returns the ws scheme base URL the host should hand to its client,
 // e.g. for building the conversation stream endpoint.
 func (h *Handle) LoopbackURL() string {
-	return fmt.Sprintf("ws://127.0.0.1:%d", h.port)
+	return h.loopbackEndpoint
 }

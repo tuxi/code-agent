@@ -103,7 +103,10 @@ func isLoopbackListenHost(host string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
-func withServerAuth(next http.Handler, auth ServerAuth) http.Handler {
+// WithServerAuth applies the Runtime's single-token authentication policy to a
+// handler. Embedded hosts use it to put a private loopback authentication layer
+// around the same core handler that a shared listener exposes with device auth.
+func WithServerAuth(next http.Handler, auth ServerAuth) http.Handler {
 	if !auth.Enabled {
 		return next
 	}
@@ -124,6 +127,10 @@ func withServerAuth(next http.Handler, auth ServerAuth) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+func withServerAuth(next http.Handler, auth ServerAuth) http.Handler {
+	return WithServerAuth(next, auth)
 }
 
 func parseServerBearer(header string) (string, bool) {

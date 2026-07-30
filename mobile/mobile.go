@@ -15,8 +15,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"code-agent/internal/embed"
+	"code-agent/internal/server"
 )
 
 // Server is a running embedded codeagent runtime. gomobile binds it as a class on
@@ -85,6 +87,126 @@ func (s *Server) Endpoint() string {
 		return ""
 	}
 	return s.h.LoopbackURL()
+}
+
+type sharedListenerConfig struct {
+	Addr               string                      `json:"addr"`
+	CertificatePEM     string                      `json:"certificate_pem"`
+	PrivateKeyPEM      string                      `json:"private_key_pem"`
+	BootstrapSHA256    string                      `json:"bootstrap_sha256"`
+	BootstrapExpiresAt int64                       `json:"bootstrap_expires_at"`
+	Devices            []server.SharedDeviceRecord `json:"devices"`
+	EnrollmentTimeout  int64                       `json:"enrollment_timeout_seconds"`
+}
+
+// StartSharedListener enables the TLS-only LAN surface around this Embedded
+// Runtime. configJSON is an in-memory control-plane document supplied by
+// AgentKit; it must not be persisted by the Runtime.
+func (s *Server) StartSharedListener(configJSON string) error {
+	if s == nil || s.h == nil {
+		return fmt.Errorf("runtime not started")
+	}
+	var config sharedListenerConfig
+	if err := json.Unmarshal([]byte(configJSON), &config); err != nil {
+		return fmt.Errorf("invalid shared listener config: %w", err)
+	}
+	var bootstrapExpiry time.Time
+	if config.BootstrapExpiresAt > 0 {
+		bootstrapExpiry = time.Unix(config.BootstrapExpiresAt, 0)
+	}
+	return s.h.StartSharedListener(embed.SharedListenerOptions{
+		Addr:               config.Addr,
+		CertificatePEM:     config.CertificatePEM,
+		PrivateKeyPEM:      config.PrivateKeyPEM,
+		BootstrapSHA256:    config.BootstrapSHA256,
+		BootstrapExpiresAt: bootstrapExpiry,
+		Devices:            config.Devices,
+		EnrollmentTimeout:  time.Duration(config.EnrollmentTimeout) * time.Second,
+	})
+}
+
+func (s *Server) StopSharedListener() error {
+	if s == nil || s.h == nil {
+		return nil
+	}
+	return s.h.StopSharedListener()
+}
+
+func (s *Server) SharedPort() int {
+	if s == nil || s.h == nil {
+		return 0
+	}
+	return s.h.SharedPort()
+}
+
+func (s *Server) SharedEndpoint() string {
+	if s == nil || s.h == nil {
+		return ""
+	}
+	return s.h.SharedEndpoint()
+}
+
+// SharedListenerStatus returns the current state, bound-listener diagnostics and
+// most recent listener error as JSON. listen_origin is not an advertised client
+// endpoint when it contains a wildcard host.
+func (s *Server) SharedListenerStatus() (string, error) {
+	status := embed.SharedListenerStatus{State: embed.SharedListenerStopped}
+	if s != nil && s.h != nil {
+		status = s.h.SharedListenerStatus()
+	}
+	data, err := json.Marshal(status)
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
+// PendingSharedEnrollments returns non-secret enrollment validation material as
+// JSON. AgentKit persists it before acknowledging the enrollment.
+func (s *Server) PendingSharedEnrollments() (string, error) {
+	if s == nil || s.h == nil {
+		return "[]", nil
+	}
+	data, err := json.Marshal(s.h.PendingSharedEnrollments())
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
+func (s *Server) AcknowledgeSharedEnrollment(enrollmentID string) error {
+	if s == nil || s.h == nil {
+		return fmt.Errorf("runtime not started")
+	}
+	return s.h.AcknowledgeSharedEnrollment(enrollmentID)
+}
+
+func (s *Server) RejectSharedEnrollment(enrollmentID string) error {
+	if s == nil || s.h == nil {
+		return fmt.Errorf("runtime not started")
+	}
+	return s.h.RejectSharedEnrollment(enrollmentID)
+}
+
+func (s *Server) UpdateSharedDevices(devicesJSON string) error {
+	if s == nil || s.h == nil {
+		return fmt.Errorf("runtime not started")
+	}
+	var devices []server.SharedDeviceRecord
+	if err := json.Unmarshal([]byte(devicesJSON), &devices); err != nil {
+		return fmt.Errorf("invalid shared devices: %w", err)
+	}
+	return s.h.UpdateSharedDevices(devices)
+}
+
+func (s *Server) RotateSharedBootstrap(bootstrapSHA256 string, expiresAtUnix int64) error {
+	if s == nil || s.h == nil {
+		return fmt.Errorf("runtime not started")
+	}
+	return s.h.RotateSharedBootstrap(
+		bootstrapSHA256,
+		time.Unix(expiresAtUnix, 0),
+	)
 }
 
 // Suspend cancels in-flight turns and marks them paused, then returns within a
