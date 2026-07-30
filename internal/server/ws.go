@@ -259,8 +259,9 @@ func hasCapability(capabilities []string, want string) bool {
 	return false
 }
 
-// claimSessionControl atomically installs a new sink and advances the session's
-// ownership revision. The most recently connected WebSocket wins.
+// claimSessionControl atomically registers a new sink and advances the session's
+// ownership revision. Each connection gets its own sink in the approver's set;
+// approvals are broadcast to ALL active sinks, not just the latest.
 func (h *WSHandler) claimSessionControl(sessionID string, sink FrameSink) (*RemoteApprover, *RemoteToolResultWaiter, uint64) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -275,18 +276,19 @@ func (h *WSHandler) claimSessionControl(sessionID string, sink FrameSink) (*Remo
 	}
 	approver, ok := h.approvers[sessionID]
 	if !ok {
-		approver = NewRemoteApprover(sink, h.approvalTimeout(), h.Granter)
+		approver = NewRemoteApprover(h.approvalTimeout(), h.Granter)
 		h.approvers[sessionID] = approver
-	} else {
-		approver.UpdateSink(sink)
 	}
+	h.controlRevisions[sessionID]++
+	revision := h.controlRevisions[sessionID]
+	approver.AddSink(revision, sink)
+
 	waiter, ok := h.toolWaiters[sessionID]
 	if !ok {
 		waiter = NewRemoteToolResultWaiter()
 		h.toolWaiters[sessionID] = waiter
 	}
-	h.controlRevisions[sessionID]++
-	return approver, waiter, h.controlRevisions[sessionID]
+	return approver, waiter, revision
 }
 
 func (h *WSHandler) ownsSessionControl(sessionID string, revision uint64) bool {
@@ -296,12 +298,10 @@ func (h *WSHandler) ownsSessionControl(sessionID string, revision uint64) bool {
 }
 
 func (h *WSHandler) releaseSessionControl(sessionID string, revision uint64, approver *RemoteApprover) {
-	h.mu.Lock()
-	current := h.controlRevisions[sessionID] == revision
-	if current {
-		approver.ClearSink()
-	}
-	h.mu.Unlock()
+	// Remove this connection's sink regardless of whether it's the latest.
+	// Other connected devices' sinks remain in the set and continue to receive
+	// approval requests.
+	approver.RemoveSink(revision)
 }
 
 type revisionApprovalResolver struct {
@@ -311,22 +311,30 @@ type revisionApprovalResolver struct {
 	target    ApprovalResolver
 }
 
+// Accept approval/ask_user verdicts from any active WS connection, not just the
+// latest. RemoteApprover already guards against unknown/already-resolved IDs
+// (silently dropped) and closed channels (default case). The ownsSessionControl
+// gate was intended to prevent stale connections from injecting approvals, but:
+//   - The same stale connection can already send send_message / cancel_turn
+//     (which have NEVER had a revision check).
+//   - A reconnecting single-device user (iPhone network hiccup, app background)
+//     would have their approval silently dropped — same root cause as the
+//     tool_result bug.
+//   - In a multi-device setup (Mac + iPhone → same session), approving on the
+//     non-latest device would silently fail with no UI feedback.
+//
+// controlRevisions is still used by releaseSessionControl to prevent a stale
+// connection from clearing the current sink on disconnect.
 func (r revisionApprovalResolver) Resolve(id string, approved bool) {
-	if r.handler.ownsSessionControl(r.sessionID, r.revision) {
-		r.target.Resolve(id, approved)
-	}
+	r.target.Resolve(id, approved)
 }
 
 func (r revisionApprovalResolver) ResolveTool(id string, approved, always bool, scope approve.Scope) {
-	if r.handler.ownsSessionControl(r.sessionID, r.revision) {
-		r.target.ResolveTool(id, approved, always, scope)
-	}
+	r.target.ResolveTool(id, approved, always, scope)
 }
 
 func (r revisionApprovalResolver) ResolveAskUser(id string, answer agent.AskUserAnswer) {
-	if r.handler.ownsSessionControl(r.sessionID, r.revision) {
-		r.target.ResolveAskUser(id, answer)
-	}
+	r.target.ResolveAskUser(id, answer)
 }
 
 type revisionToolResultResolver struct {

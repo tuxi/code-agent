@@ -78,8 +78,10 @@ func TestWSHandlerLatestConnectionOwnsSessionControl(t *testing.T) {
 	newApproval := revisionApprovalResolver{handler: h, sessionID: "session", revision: secondRevision, target: approvalTarget}
 	oldApproval.Resolve("approval", true)
 	newApproval.ResolveTool("approval", true, false, approve.ScopeUser)
-	if approvalTarget.calls != 1 {
-		t.Fatalf("approval deliveries=%d want only current owner", approvalTarget.calls)
+	// Approvals (like tool results) are accepted from any active connection.
+	// RemoteApprover already guards against unknown/stale IDs.
+	if approvalTarget.calls != 2 {
+		t.Fatalf("approval deliveries=%d want both connections accepted", approvalTarget.calls)
 	}
 
 	toolTarget := &controlToolTarget{}
@@ -93,13 +95,13 @@ func TestWSHandlerLatestConnectionOwnsSessionControl(t *testing.T) {
 		t.Fatalf("tool deliveries=%d want both connections accepted", toolTarget.calls)
 	}
 
-	// A late disconnect from the old socket must not clear the replacement sink.
+	// A late disconnect from the old socket must not remove the second connection's sink.
 	h.releaseSessionControl("session", firstRevision, approver)
 	approver.mu.Lock()
-	gotSink := approver.sink
+	gotSink := approver.sinks[secondRevision]
 	approver.mu.Unlock()
 	if gotSink != secondSink {
-		t.Fatal("old connection cleared or replaced the current control sink")
+		t.Fatal("old connection removed the second connection's sink")
 	}
 	if h.ensureToolWaiter("session") != waiter {
 		t.Fatal("control claim replaced the session tool broker")
@@ -122,16 +124,19 @@ func TestWSHandlerAttentionRejectsStaleControlResults(t *testing.T) {
 	_, _, secondRevision := h.claimSessionControl("session", secondSink)
 	staleApproval := revisionApprovalResolver{handler: h, sessionID: "session", revision: firstRevision, target: approver}
 	currentApproval := revisionApprovalResolver{handler: h, sessionID: "session", revision: secondRevision, target: approver}
+	// Approvals are accepted from any active connection, so the stale resolver
+	// resolves the pending approval and attention drops to 0.
 	staleApproval.Resolve(approvalID, true)
-	if got := h.BrokerAttention()["session"].PendingApprovalCount; got != 1 {
-		t.Fatalf("stale verdict changed approval attention to %d", got)
+	if got := h.BrokerAttention()["session"].PendingApprovalCount; got != 0 {
+		t.Fatalf("stale verdict left approval attention=%d, want 0 (accepted from any connection)", got)
 	}
+	// Duplicate resolution from the current connection is a harmless no-op.
 	currentApproval.Resolve(approvalID, true)
 	if got := h.BrokerAttention()["session"].PendingApprovalCount; got != 0 {
-		t.Fatalf("current verdict left approval attention=%d", got)
+		t.Fatalf("duplicate verdict left approval attention=%d, want 0", got)
 	}
 	if got := <-verdict; got != agent.VerdictAllow {
-		t.Fatalf("verdict=%v", got)
+		t.Fatalf("verdict=%v, want allow", got)
 	}
 
 	toolResult := make(chan agent.ToolCallResult, 1)

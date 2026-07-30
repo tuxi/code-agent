@@ -35,25 +35,27 @@ type pendingReq struct {
 
 // RemoteApprover implements agent.Approver by asking a connected client. The
 // agent loop calls Approve synchronously and blocks on the verdict; over the wire
-// that becomes: send an approval_request frame, then wait for the matching
-// approval_response (delivered via Resolve). A deadline denies; a nil sink (no
-// client connected) blocks until a client reconnects and the request is re-sent.
+// that becomes: send an approval_request frame to EVERY connected device, then
+// wait for the matching approval_response (delivered via Resolve). A deadline
+// denies; an empty sinks set (no client connected) blocks until a client
+// reconnects and the request is re-sent via AddSink.
 //
-// This is the one place the protocol's blocking, bidirectional control round-trip
-// is reconciled with an async event stream: Approve runs on the turn goroutine and
-// parks on a per-request channel; the connection's read loop runs Resolve on
-// another goroutine to unpark it.
+// Multi-device broadcast (§P.F): approval and ask_user requests are fanned out
+// to ALL active WS connections, not just the latest. A user with both Mac and
+// iPhone connected sees the dialog on both devices and can approve from either.
+// Each connection's sink is keyed by its claimSessionControl revision, which is
+// monotonic per-session and unique per-connection.
 //
 // RemoteApprover is session-scoped: it survives WebSocket disconnects so a user
 // switching between conversations does not lose pending approvals. The owning
-// WSHandler calls UpdateSink on connect and ClearSink on disconnect; Close is
+// WSHandler calls AddSink on connect and RemoveSink on disconnect; Close is
 // reserved for session teardown (DELETE /v1/conversations/{id}).
 type RemoteApprover struct {
 	timeout time.Duration
 	granter PermissionGranter // nil disables "always allow" persistence
 
 	mu      sync.Mutex
-	sink    FrameSink // nil when no client connected; mutable via UpdateSink/ClearSink
+	sinks   map[uint64]FrameSink // active connections, keyed by connection revision
 	pending map[string]*pendingReq
 	closed  bool
 
@@ -72,9 +74,10 @@ var _ agent.Approver = (*RemoteApprover)(nil)
 // resolved or closed" (rely on Close at session teardown rather than a deadline).
 // granter (may be nil) persists a client's "always allow" grant into the shared
 // permission store.
-func NewRemoteApprover(sink FrameSink, timeout time.Duration, granter PermissionGranter) *RemoteApprover {
+func NewRemoteApprover(timeout time.Duration, granter PermissionGranter) *RemoteApprover {
 	return &RemoteApprover{
-		sink: sink, timeout: timeout, granter: granter,
+		timeout: timeout, granter: granter,
+		sinks:          make(map[uint64]FrameSink),
 		pending:        make(map[string]*pendingReq),
 		askUserPending: make(map[string]*askUserReq),
 		askUserTimeout: 5 * time.Minute,
@@ -109,7 +112,10 @@ func (a *RemoteApprover) Approve(toolName string, input json.RawMessage) agent.V
 		return agent.VerdictDeny
 	}
 	a.pending[id] = req
-	snk := a.sink // capture under lock
+	sinks := make([]FrameSink, 0, len(a.sinks))
+	for _, s := range a.sinks {
+		sinks = append(sinks, s)
+	}
 	a.mu.Unlock()
 
 	defer func() {
@@ -118,18 +124,16 @@ func (a *RemoteApprover) Approve(toolName string, input json.RawMessage) agent.V
 		a.mu.Unlock()
 	}()
 
-	// Send to current sink (if any). If sink is nil, the request stays pending
-	// and will be re-sent when a client connects via UpdateSink.
-	if snk != nil {
-		r := NewApprovalRequest(id, "", "", toolName, string(input), a.timeout.Milliseconds())
-		frame, err := json.Marshal(r)
-		if err != nil {
-			return agent.VerdictDeny
-		}
-		// A send failure means the client disconnected mid-send. Don't deny —
-		// the request stays registered and will be re-sent on the next UpdateSink.
+	// Broadcast to ALL connected devices. If no device is connected, the request
+	// stays pending and will be re-sent when a client connects via AddSink.
+	r := NewApprovalRequest(id, "", "", toolName, string(input), a.timeout.Milliseconds())
+	frame, err := json.Marshal(r)
+	if err != nil {
+		return agent.VerdictDeny
+	}
+	for _, snk := range sinks {
 		if err := snk.Send(frame); err != nil {
-			_, _ = fmt.Fprintf(os.Stderr, "[approver] %s send failed: %v\n", toolName, err)
+			_, _ = fmt.Fprintf(os.Stderr, "[approver] %s send to sink failed: %v\n", toolName, err)
 		}
 	}
 
@@ -182,7 +186,10 @@ func (a *RemoteApprover) ApproveExternalPath(absolutePath string, operation stri
 		return false
 	}
 	a.pending[id] = req
-	snk := a.sink // capture under lock
+	sinks := make([]FrameSink, 0, len(a.sinks))
+	for _, s := range a.sinks {
+		sinks = append(sinks, s)
+	}
 	a.mu.Unlock()
 
 	defer func() {
@@ -191,15 +198,14 @@ func (a *RemoteApprover) ApproveExternalPath(absolutePath string, operation stri
 		a.mu.Unlock()
 	}()
 
-	if snk != nil {
-		r := NewApprovalRequest(id, "", "", "external_path_access", string(input), a.timeout.Milliseconds())
-		frame, err := json.Marshal(r)
-		if err != nil {
-			return false
-		}
+	r := NewApprovalRequest(id, "", "", "external_path_access", string(input), a.timeout.Milliseconds())
+	frame, err := json.Marshal(r)
+	if err != nil {
+		return false
+	}
+	for _, snk := range sinks {
 		if err := snk.Send(frame); err != nil {
-			_, _ = fmt.Fprintf(os.Stderr, "[approve] external_path_access send failed: %v\n", err)
-			return false
+			_, _ = fmt.Fprintf(os.Stderr, "[approve] external_path_access send to sink failed: %v\n", err)
 		}
 	}
 
@@ -254,11 +260,14 @@ func (a *RemoteApprover) AskUser(q agent.AskUserQuestion) (agent.AskUserAnswer, 
 	a.askUserPending[id] = req
 	a.askUserMu.Unlock()
 
-	// Read sink and closed under their own lock — they are written under mu,
+	// Read sinks and closed under their own lock — they are written under mu,
 	// not askUserMu.
 	a.mu.Lock()
 	closed := a.closed
-	snk := a.sink
+	sinks := make([]FrameSink, 0, len(a.sinks))
+	for _, s := range a.sinks {
+		sinks = append(sinks, s)
+	}
 	a.mu.Unlock()
 
 	if closed {
@@ -274,29 +283,27 @@ func (a *RemoteApprover) AskUser(q agent.AskUserQuestion) (agent.AskUserAnswer, 
 		a.askUserMu.Unlock()
 	}()
 
-	if snk != nil {
-		deadlineMS := int64(0)
-		timeout := a.askUserTimeout
-		if timeout <= 0 {
-			timeout = 5 * time.Minute // default ask_user timeout
-		}
-		deadlineMS = timeout.Milliseconds()
-		r := AskUserRequest{
-			Type:       "ask_user_request",
-			ID:         id,
-			Question:   q,
-			DeadlineMS: deadlineMS,
-		}
-		frame, err := json.Marshal(r)
-		if err != nil {
-			return agent.AskUserAnswer{}, err
-		}
+	timeout := a.askUserTimeout
+	if timeout <= 0 {
+		timeout = 5 * time.Minute
+	}
+	r := AskUserRequest{
+		Type:       "ask_user_request",
+		ID:         id,
+		Question:   q,
+		DeadlineMS: timeout.Milliseconds(),
+	}
+	frame, err := json.Marshal(r)
+	if err != nil {
+		return agent.AskUserAnswer{}, err
+	}
+	for _, snk := range sinks {
 		if err := snk.Send(frame); err != nil {
-			_, _ = fmt.Fprintf(os.Stderr, "[approver] ask_user send failed: %v\n", err)
+			_, _ = fmt.Fprintf(os.Stderr, "[approver] ask_user send to sink failed: %v\n", err)
 		}
 	}
 
-	timeout := a.askUserTimeout
+	timeout = a.askUserTimeout
 	if timeout <= 0 {
 		timeout = 5 * time.Minute
 	}
@@ -397,7 +404,10 @@ func (a *RemoteApprover) ApprovePlan(plan agent.Plan) agent.PlanDecision {
 		return agent.PlanRejected
 	}
 	a.pending[id] = req
-	snk := a.sink // capture under lock
+	sinks := make([]FrameSink, 0, len(a.sinks))
+	for _, s := range a.sinks {
+		sinks = append(sinks, s)
+	}
 	a.mu.Unlock()
 
 	defer func() {
@@ -406,22 +416,21 @@ func (a *RemoteApprover) ApprovePlan(plan agent.Plan) agent.PlanDecision {
 		a.mu.Unlock()
 	}()
 
-	if snk != nil {
-		r := PlanApprovalRequest{
-			Type:       "plan_approval_request",
-			ID:         id,
-			PlanID:     plan.ID,
-			Title:      plan.Title,
-			PlanPath:   plan.WorkspaceRelativePath,
-			FilePath:   plan.FilePath,
-			Content:    plan.Content,
-			DeadlineMS: a.timeout.Milliseconds(),
-		}
-		frame, err := json.Marshal(r)
-		if err != nil {
-			return agent.PlanRejected
-		}
-		// Send failure is not a denial — the request stays pending.
+	r := PlanApprovalRequest{
+		Type:       "plan_approval_request",
+		ID:         id,
+		PlanID:     plan.ID,
+		Title:      plan.Title,
+		PlanPath:   plan.WorkspaceRelativePath,
+		FilePath:   plan.FilePath,
+		Content:    plan.Content,
+		DeadlineMS: a.timeout.Milliseconds(),
+	}
+	frame, err := json.Marshal(r)
+	if err != nil {
+		return agent.PlanRejected
+	}
+	for _, snk := range sinks {
 		_ = snk.Send(frame)
 	}
 
@@ -444,25 +453,21 @@ func (a *RemoteApprover) ApprovePlan(plan agent.Plan) agent.PlanDecision {
 
 var _ agent.PlanApprover = (*RemoteApprover)(nil)
 
-// UpdateSink sets a new (or replacement) FrameSink and re-sends every pending
-// request so a reconnected client sees them. Call on WebSocket connect.
-func (a *RemoteApprover) UpdateSink(sink FrameSink) {
+// AddSink registers a device's FrameSink and re-sends every pending request to it
+// so the newly connected client sees them immediately. Call on WebSocket connect.
+// revision is the monotonic connection revision from claimSessionControl.
+func (a *RemoteApprover) AddSink(revision uint64, sink FrameSink) {
 	a.mu.Lock()
-	a.sink = sink
+	a.sinks[revision] = sink
 	pending := make([]*pendingReq, 0, len(a.pending))
 	for id, req := range a.pending {
-		// Stash the id in the channel buffer slot so we can correlate (safe:
-		// pendingReq.ch has capacity 1). We use a separate list because id is
-		// the map key and we need both id and req for re-sending.
 		pending = append(pending, req)
-		_ = id // keep key alive
+		_ = id
 	}
 	a.mu.Unlock()
 
 	for _, req := range pending {
-		// Re-send under a fresh lock to get the sink reference and the id.
 		a.mu.Lock()
-		// Find the id for this request.
 		var reqID string
 		for id, r := range a.pending {
 			if r == req {
@@ -470,7 +475,7 @@ func (a *RemoteApprover) UpdateSink(sink FrameSink) {
 				break
 			}
 		}
-		snk := a.sink
+		snk := a.sinks[revision]
 		a.mu.Unlock()
 
 		if reqID == "" || snk == nil {
@@ -510,7 +515,7 @@ func (a *RemoteApprover) UpdateSink(sink FrameSink) {
 	a.askUserMu.Unlock()
 
 	a.mu.Lock()
-	snk := a.sink
+	snk := a.sinks[revision]
 	timeout := a.askUserTimeout
 	if timeout <= 0 {
 		timeout = 5 * time.Minute
@@ -547,10 +552,20 @@ func (a *RemoteApprover) UpdateSink(sink FrameSink) {
 
 // ClearSink detaches the current sink without denying pending requests. The
 // requests stay registered so they can be re-sent on the next UpdateSink. Call on
-// WebSocket disconnect.
+// RemoveSink detaches one device's FrameSink on disconnect. Pending requests stay
+// registered so other connected devices can still approve. Call on WebSocket
+// disconnect with the connection's revision.
+func (a *RemoteApprover) RemoveSink(revision uint64) {
+	a.mu.Lock()
+	delete(a.sinks, revision)
+	a.mu.Unlock()
+}
+
+// ClearSink removes every active sink — used as a compatibility shim by callers
+// that don't track per-connection revisions. Prefer RemoveSink when possible.
 func (a *RemoteApprover) ClearSink() {
 	a.mu.Lock()
-	a.sink = nil
+	a.sinks = make(map[uint64]FrameSink)
 	a.mu.Unlock()
 }
 

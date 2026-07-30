@@ -30,7 +30,8 @@ func waitApprovalID(t *testing.T, s *syncSink) string {
 
 func TestRemoteApproverResolveApproves(t *testing.T) {
 	sink := &syncSink{}
-	a := NewRemoteApprover(sink, time.Second, nil)
+	a := NewRemoteApprover(time.Second, nil)
+	a.AddSink(1, sink)
 
 	got := make(chan agent.Verdict, 1)
 	go func() { got <- a.Approve("run_command", json.RawMessage(`{"command":"x"}`)) }()
@@ -58,7 +59,8 @@ func TestRemoteApproverResolveApproves(t *testing.T) {
 
 func TestRemoteApproverResolveDenies(t *testing.T) {
 	sink := &syncSink{}
-	a := NewRemoteApprover(sink, time.Second, nil)
+	a := NewRemoteApprover(time.Second, nil)
+	a.AddSink(1, sink)
 
 	got := make(chan agent.Verdict, 1)
 	go func() { got <- a.Approve("run_command", nil) }()
@@ -87,7 +89,8 @@ func (g *fakeGranter) GrantTool(toolName string, scope approve.Scope) (string, e
 func TestRemoteApproverResolveToolAlwaysGrants(t *testing.T) {
 	sink := &syncSink{}
 	g := &fakeGranter{}
-	a := NewRemoteApprover(sink, time.Second, g)
+	a := NewRemoteApprover( time.Second, g)
+	a.AddSink(1, sink)
 
 	got := make(chan agent.Verdict, 1)
 	go func() { got <- a.Approve("mcp__github__list_issues", nil) }()
@@ -105,7 +108,8 @@ func TestRemoteApproverResolveToolAlwaysGrants(t *testing.T) {
 func TestRemoteApproverResolveToolOnceDoesNotGrant(t *testing.T) {
 	sink := &syncSink{}
 	g := &fakeGranter{}
-	a := NewRemoteApprover(sink, time.Second, g)
+	a := NewRemoteApprover( time.Second, g)
+	a.AddSink(1, sink)
 
 	got := make(chan agent.Verdict, 1)
 	go func() { got <- a.Approve("mcp__github__list_issues", nil) }()
@@ -121,7 +125,8 @@ func TestRemoteApproverResolveToolOnceDoesNotGrant(t *testing.T) {
 }
 
 func TestRemoteApproverTimeoutDenies(t *testing.T) {
-	a := NewRemoteApprover(&syncSink{}, 20*time.Millisecond, nil)
+	a := NewRemoteApprover(20*time.Millisecond, nil)
+	a.AddSink(1, &syncSink{})
 	if a.Approve("x", nil) != agent.VerdictDeny {
 		t.Error("Approve must deny when no response arrives before the deadline")
 	}
@@ -132,7 +137,8 @@ func TestRemoteApproverTimeoutDenies(t *testing.T) {
 // morning, and the request frame carries no deadline_ms.
 func TestRemoteApproverZeroTimeoutWaitsForVerdict(t *testing.T) {
 	sink := &syncSink{}
-	a := NewRemoteApprover(sink, 0, nil)
+	a := NewRemoteApprover( 0, nil)
+	a.AddSink(1, sink)
 
 	got := make(chan agent.Verdict, 1)
 	go func() { got <- a.Approve("run_command", nil) }()
@@ -165,7 +171,8 @@ func TestRemoteApproverZeroTimeoutWaitsForVerdict(t *testing.T) {
 
 func TestRemoteApproverCloseDeniesPending(t *testing.T) {
 	sink := &syncSink{}
-	a := NewRemoteApprover(sink, 0, nil) // no deadline; rely on Close
+	a := NewRemoteApprover( 0, nil) // no deadline; rely on Close
+	a.AddSink(1, sink)
 
 	got := make(chan agent.Verdict, 1)
 	go func() { got <- a.Approve("run_command", nil) }()
@@ -185,7 +192,8 @@ func TestRemoteApproverCloseDeniesPending(t *testing.T) {
 
 func TestRemoteApproverClosedRejectsImmediately(t *testing.T) {
 	sink := &syncSink{}
-	a := NewRemoteApprover(sink, time.Second, nil)
+	a := NewRemoteApprover( time.Second, nil)
+	a.AddSink(1, sink)
 	a.Close()
 
 	if a.Approve("x", nil) != agent.VerdictDeny {
@@ -199,7 +207,8 @@ func TestRemoteApproverClosedRejectsImmediately(t *testing.T) {
 func TestRemoteApproverDeniesOnSendError(t *testing.T) {
 	// With a broken sink the request stays registered (send error is ignored).
 	// The timeout should eventually deny.
-	a := NewRemoteApprover(&errSink{failAt: 1}, 50*time.Millisecond, nil)
+	a := NewRemoteApprover(50*time.Millisecond, nil)
+	a.AddSink(1, &errSink{failAt: 1})
 	start := time.Now()
 	if a.Approve("x", nil) != agent.VerdictDeny {
 		t.Error("Approve must deny when no response arrives before the deadline")
@@ -212,7 +221,7 @@ func TestRemoteApproverDeniesOnSendError(t *testing.T) {
 func TestRemoteApproverNilSinkDoesNotSend(t *testing.T) {
 	// A nil sink means no client is connected. Approve should register the
 	// request and block, not panic.
-	a := NewRemoteApprover(nil, 50*time.Millisecond, nil)
+	a := NewRemoteApprover(50*time.Millisecond, nil)
 	if a.Approve("x", nil) != agent.VerdictDeny {
 		t.Error("Approve must deny on timeout when no sink is available")
 	}
@@ -222,7 +231,8 @@ func TestRemoteApproverClearSinkDoesNotDeny(t *testing.T) {
 	// ClearSink must not resolve pending requests — they stay registered and
 	// can be re-sent when a new client connects.
 	sink := &syncSink{}
-	a := NewRemoteApprover(sink, 2*time.Second, nil)
+	a := NewRemoteApprover( 2*time.Second, nil)
+	a.AddSink(1, sink)
 
 	got := make(chan agent.Verdict, 1)
 	go func() { got <- a.Approve("run_command", nil) }()
@@ -240,7 +250,7 @@ func TestRemoteApproverClearSinkDoesNotDeny(t *testing.T) {
 
 	// Reconnect with a new sink — the pending request must be re-sent.
 	newSink := &syncSink{}
-	a.UpdateSink(newSink)
+	a.AddSink(2, newSink)
 	id := waitApprovalID(t, newSink)
 	a.Resolve(id, true)
 
@@ -256,7 +266,7 @@ func TestRemoteApproverClearSinkDoesNotDeny(t *testing.T) {
 
 func TestRemoteApproverUpdateSinkResends(t *testing.T) {
 	// After updating the sink, pending requests must be re-sent to the new sink.
-	a := NewRemoteApprover(nil, 2*time.Second, nil) // no sink initially
+	a := NewRemoteApprover(2*time.Second, nil) // no sink initially
 
 	got := make(chan agent.Verdict, 1)
 	go func() { got <- a.Approve("run_command", json.RawMessage(`{"cmd":"ls"}`)) }()
@@ -266,7 +276,7 @@ func TestRemoteApproverUpdateSinkResends(t *testing.T) {
 
 	// Now connect a new client.
 	newSink := &syncSink{}
-	a.UpdateSink(newSink)
+	a.AddSink(2, newSink)
 
 	// The pending request must have been re-sent.
 	id := waitApprovalID(t, newSink)
@@ -284,6 +294,7 @@ func TestRemoteApproverUpdateSinkResends(t *testing.T) {
 }
 
 func TestRemoteApproverUnknownResolveIsNoop(t *testing.T) {
-	a := NewRemoteApprover(&syncSink{}, time.Second, nil)
+	a := NewRemoteApprover(time.Second, nil)
+	a.AddSink(1, &syncSink{})
 	a.Resolve("appr_missing", true) // must not panic
 }
