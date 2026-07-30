@@ -773,6 +773,8 @@ func printUsage() {
   codeagent [--model NAME] ask "..."       one-off question (no tools)
   codeagent init                           create an AGENTS.md in the current project
   codeagent init --global                  create a global AGENTS.md in ~/.codeagent/
+  codeagent init --system                  dump the built-in system prompt to .codeagent/SYSTEM.md
+  codeagent init --system --subagent       dump the subagent prompt to .codeagent/SUBAGENT_SYSTEM.md
   codeagent sessions                       list saved sessions
   codeagent stats                          aggregate compaction + provider telemetry
   codeagent trace [N]                      show the last N requests, per attempt

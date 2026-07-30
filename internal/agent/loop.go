@@ -194,6 +194,20 @@ type Runner struct {
 	ReservedTurnID string
 	RequestID      string
 
+	// SystemPromptOverride, when non-empty, temporarily replaces the first
+	// message (system prompt) for the next model call only. After the call
+	// completes it is cleared so subsequent calls revert to the base prompt.
+	// Plan mode, sub-agents, and extension results use this to inject
+	// phase-specific instructions without rebuilding the session.
+	SystemPromptOverride string
+
+	// TransformContext, when non-nil, is called on a COPY of the message list
+	// right before every model request. The returned slice replaces the messages
+	// for this call only; the session's persisted messages are never affected.
+	// Extensions use this for last-mile modifications: injecting state, adding
+	// reminders, or adapting the prompt per turn.
+	TransformContext func(messages []model.Message) []model.Message
+
 	// emitMu serializes r.emit so concurrent tool workers (P8.8) can't race the
 	// downstream emitter.
 	emitMu sync.Mutex
@@ -1300,6 +1314,24 @@ func withCurrentDate(msgs []model.Message, now time.Time) []model.Message {
 	return out
 }
 
+// withGitInfo appends a fresh git status snapshot to the system message on every
+// model request. Unlike buildEnvInfo (static workspace/os/shell baked in at
+// session creation), git state is dynamic and is injected here alongside the date
+// so it never goes stale. Runs best-effort with a 5s timeout per git command.
+func withGitInfo(msgs []model.Message, workspaceRoot string) []model.Message {
+	if len(msgs) == 0 || msgs[0].Role != model.RoleSystem {
+		return msgs
+	}
+	info := session.GitInfo(workspaceRoot)
+	if info == "" {
+		return msgs
+	}
+	out := make([]model.Message, len(msgs))
+	copy(out, msgs)
+	out[0].Content = out[0].Content + "\n\n" + info
+	return out
+}
+
 const (
 	stepLimitMessage = "Agent stopped: reached the step limit before finishing."
 	stepLimitNudge   = "You've reached the step limit and cannot call more tools. Give your best final answer now, based on everything gathered so far."
@@ -1432,9 +1464,32 @@ func errString(err error) string {
 // reasoning in separate channels. The optional builders retain partial streams
 // when a provider fails before it can return its accumulated Response.
 func (r *Runner) complete(ctx context.Context, req model.Request, streamedText, streamedReasoning *strings.Builder) (model.Response, error) {
+	// Per-turn system prompt override: temporarily swap the system message for
+	// this call, then clear so subsequent calls revert to the base prompt.
+	// Plan mode, sub-agents, and extension results use this.
+	if r.SystemPromptOverride != "" && len(req.Messages) > 0 && req.Messages[0].Role == model.RoleSystem {
+		// Copy the slice so we don't mutate the caller's messages.
+		cp := make([]model.Message, len(req.Messages))
+		copy(cp, req.Messages)
+		cp[0] = model.Message{Role: model.RoleSystem, Content: r.SystemPromptOverride}
+		req.Messages = cp
+		r.SystemPromptOverride = ""
+	}
+
+	// TransformContext hook: extensions can modify the full message list before
+	// the request is sent. Applied after the override so hooks see the final state.
+	// The hook receives a copy — it must not mutate the input slice or its
+	// elements, but the returned slice replaces req.Messages for this call only.
+	if r.TransformContext != nil {
+		cp := make([]model.Message, len(req.Messages))
+		copy(cp, req.Messages)
+		req.Messages = r.TransformContext(cp)
+	}
+
 	// Every model call goes through here, so this is the one place the current
-	// date is injected — the main loop, the step-limit answer, and subagents all
-	// get it without each call site remembering to.
+	// date and git status are injected — the main loop, the step-limit answer,
+	// and subagents all get them without each call site remembering to.
+	req.Messages = withGitInfo(req.Messages, r.WorkspaceRoot)
 	req.Messages = withCurrentDate(withReferenceProtocol(req.Messages), time.Now())
 	req.SessionID = r.emitSessionID
 	req.TurnID = r.emitTurnID

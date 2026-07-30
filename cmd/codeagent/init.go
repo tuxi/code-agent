@@ -1,6 +1,7 @@
 package main
 
 import (
+	"code-agent/internal/prompt"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -8,13 +9,15 @@ import (
 )
 
 // runInit handles `codeagent init [flags]`.
+// Without --system: scaffolds AGENTS.md with project conventions.
+// With --system: dumps the built-in system prompt to SYSTEM.md so the user
+// can customize it. Add --subagent for the subagent prompt.
 func runInit(args []string) error {
-	var global bool
-	var dryRun bool
-	var force bool
+	var global, dryRun, force bool
 	var lang string
+	var system, subagent bool
 
-	// Parse flags from positional args.
+	// Parse flags.
 	remaining := make([]string, 0, len(args))
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
@@ -24,6 +27,10 @@ func runInit(args []string) error {
 			dryRun = true
 		case "--force", "-force":
 			force = true
+		case "--system", "-system":
+			system = true
+		case "--subagent", "-subagent":
+			subagent = true
 		case "--lang", "-lang":
 			if i+1 < len(args) {
 				lang = args[i+1]
@@ -39,31 +46,37 @@ func runInit(args []string) error {
 
 	root, _ := os.Getwd()
 	var targetPath string
-	if global {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return fmt.Errorf("cannot determine home directory: %w", err)
+	var content string
+
+	if system {
+		// --system: dump the built-in prompt for customization.
+		if subagent {
+			targetPath = systemPromptPath(root, "SUBAGENT_SYSTEM.md", global)
+		} else {
+			targetPath = systemPromptPath(root, "SYSTEM.md", global)
 		}
-		codeagentDir := filepath.Join(home, ".codeagent")
-		if err := os.MkdirAll(codeagentDir, 0o755); err != nil {
-			return fmt.Errorf("create %s: %w", codeagentDir, err)
+		// Protect against accidental overwrite of customized prompts.
+		if _, err := os.Stat(targetPath); err == nil && !force {
+			return fmt.Errorf("%s already exists. Use --force to overwrite, or --dry-run to preview.", targetPath)
 		}
-		targetPath = filepath.Join(codeagentDir, "AGENTS.md")
+		if subagent {
+			content = subagentSystemTemplate()
+		} else {
+			content = agentSystemTemplate()
+		}
 	} else {
-		targetPath = filepath.Join(root, "AGENTS.md")
+		// Default: scaffold AGENTS.md.
+		targetPath = agentsFilePath(root, global)
+		// Check if file already exists.
+		if _, err := os.Stat(targetPath); err == nil && !force {
+			return fmt.Errorf("%s already exists. Use --force to overwrite, or --dry-run to preview.", targetPath)
+		}
+		// Detect language if not explicitly provided.
+		if lang == "" && !global {
+			lang = detectLanguage(root)
+		}
+		content = agentsTemplate(lang, global)
 	}
-
-	// Check if file already exists.
-	if _, err := os.Stat(targetPath); err == nil && !force {
-		return fmt.Errorf("%s already exists. Use --force to overwrite, or --dry-run to preview.", targetPath)
-	}
-
-	// Detect language if not explicitly provided.
-	if lang == "" && !global {
-		lang = detectLanguage(root)
-	}
-
-	content := agentsTemplate(lang, global)
 
 	if dryRun {
 		fmt.Printf("Would write to: %s\n", targetPath)
@@ -72,8 +85,25 @@ func runInit(args []string) error {
 		return nil
 	}
 
+	// Ensure parent directory exists.
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
+		return fmt.Errorf("create directory: %w", err)
+	}
 	if err := os.WriteFile(targetPath, []byte(content), 0o644); err != nil {
 		return fmt.Errorf("write %s: %w", targetPath, err)
+	}
+
+	if system {
+		fmt.Printf("Created %s\n", targetPath)
+		fmt.Println()
+		if subagent {
+			fmt.Println("This file replaces the built-in subagent system prompt.")
+		} else {
+			fmt.Println("This file replaces the built-in system prompt.")
+			fmt.Println("The current built-in prompt was dumped as a starting point — edit it to customize.")
+		}
+		fmt.Println("Delete this file to revert to the built-in default.")
+		return nil
 	}
 
 	if global {
@@ -253,3 +283,33 @@ Cargo.toml, etc.). Fill in the conventions for your project below. -->
 - Commit message format: concise, technical, no emojis
 - Do not commit unless the user explicitly asks
 `
+
+// systemPromptPath returns the target path for SYSTEM.md or SUBAGENT_SYSTEM.md.
+func systemPromptPath(root, filename string, global bool) string {
+	if global {
+		home, _ := os.UserHomeDir()
+		return filepath.Join(home, ".codeagent", filename)
+	}
+	return filepath.Join(root, ".codeagent", filename)
+}
+
+// agentsFilePath returns the target path for AGENTS.md.
+func agentsFilePath(root string, global bool) string {
+	if global {
+		home, _ := os.UserHomeDir()
+		return filepath.Join(home, ".codeagent", "AGENTS.md")
+	}
+	return filepath.Join(root, "AGENTS.md")
+}
+
+// agentSystemTemplate returns the current built-in AgentSystemPrompt.
+// The file content is the raw prompt — no wrapper comments, no metadata.
+// Usage instructions are printed by runInit, not embedded in the file.
+func agentSystemTemplate() string {
+	return prompt.AgentSystemPrompt
+}
+
+// subagentSystemTemplate returns the current built-in SubAgentSystemPrompt.
+func subagentSystemTemplate() string {
+	return prompt.SubAgentSystemPrompt
+}

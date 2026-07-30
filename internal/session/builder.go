@@ -3,11 +3,14 @@ package session
 import (
 	"code-agent/internal/model"
 	"code-agent/internal/prompt"
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -54,7 +57,15 @@ type Builder struct {
 	// (prompt.AgentSystemPrompt). A read-only subagent (8.3) uses this to install
 	// its own short, strict instructions in place of the full interactive-agent
 	// prompt. Project memory and the skills index, if present, are still appended.
+	// When empty, auto-discovered from .codeagent/SYSTEM.md and ~/.codeagent/SYSTEM.md.
 	SystemPrompt string
+
+	// AppendSystemPrompt, when non-empty, is appended to the system prompt after
+	// the base prompt and context files, but before the skills index. It is never
+	// a replacement — even when SystemPrompt overrides the default identity,
+	// AppendSystemPrompt still follows. Set programmatically via WithAppendSystemPrompt;
+	// unlike SYSTEM.md there is no auto-discovery for this field.
+	AppendSystemPrompt string
 
 	// NoContextFiles disables AGENTS.md/CLAUDE.md discovery entirely. Set by the
 	// --no-context-files / -nc CLI flag.
@@ -103,6 +114,15 @@ func (b *Builder) WithSystemPrompt(p string) *Builder {
 	return b
 }
 
+// WithAppendSystemPrompt appends text to the system prompt after the base prompt
+// and context files, but before the skills index. Even when WithSystemPrompt is set,
+// the append text still follows. Use this for project-specific guidelines that
+// should never replace the agent's core identity and tool awareness.
+func (b *Builder) WithAppendSystemPrompt(p string) *Builder {
+	b.AppendSystemPrompt = p
+	return b
+}
+
 // WithNoContextFiles disables AGENTS.md/CLAUDE.md discovery. When true, no project
 // context files are loaded — not from the workspace, not from ancestors, not from
 // the global ~/.codeagent/ directory.
@@ -112,9 +132,18 @@ func (b *Builder) WithNoContextFiles(v bool) *Builder {
 }
 
 func (b *Builder) Build() (*Session, error) {
+	// Auto-discover SYSTEM.md / APPEND_SYSTEM.md when not explicitly set.
+	b.applyAutoDiscoveredPrompts()
+
 	systemContent := prompt.AgentSystemPrompt
 	if b.SystemPrompt != "" {
 		systemContent = b.SystemPrompt
+	}
+
+	// AppendSystemPrompt always follows the base prompt, even when SystemPrompt
+	// overrides it — it adds, never replaces.
+	if b.AppendSystemPrompt != "" {
+		systemContent += "\n\n" + b.AppendSystemPrompt
 	}
 
 	contextFiles, err := b.loadContextFiles()
@@ -134,6 +163,10 @@ func (b *Builder) Build() (*Session, error) {
 	if idx := strings.TrimSpace(b.SkillsIndex); idx != "" {
 		systemContent += "\n\n" + idx
 	}
+
+	// Environment info: workspace path, OS, shell. Git status is injected
+	// per-request by the agent loop so it never goes stale mid-session.
+	systemContent += b.buildEnvInfo()
 
 	// Deliberately NO current date here: the system message is persisted with the
 	// session, so a baked-in date goes stale the moment a session spans midnight
@@ -335,4 +368,123 @@ func resolveCommonGitDir(gitDir string) string {
 	// resolve it relative to the gitdir.
 	rel := strings.TrimSpace(string(data))
 	return filepath.Clean(filepath.Join(gitDir, rel))
+}
+
+// applyAutoDiscoveredPrompts discovers SYSTEM.md from conventional paths,
+// populating SystemPrompt only when it hasn't been explicitly set by the caller.
+//
+// Discovery order (first found wins):
+//
+//	.codeagent/SYSTEM.md (project-level)
+//	~/.codeagent/SYSTEM.md (global)
+//
+// Explicit WithSystemPrompt calls always take precedence over auto-discovery.
+// When no file is found, the built-in prompt.AgentSystemPrompt is used unchanged.
+func (b *Builder) applyAutoDiscoveredPrompts() {
+	if b.SystemPrompt == "" {
+		b.SystemPrompt = discoverSystemPromptFile(b.WorkspaceRoot)
+	}
+}
+
+// discoverSystemPromptFile looks for SYSTEM.md at conventional paths.
+// Returns the file content as a string, or "" when no file is found.
+func discoverSystemPromptFile(workspaceRoot string) string {
+	// Project-level first.
+	projectPath := filepath.Join(workspaceRoot, ".codeagent", "SYSTEM.md")
+	if data, err := os.ReadFile(projectPath); err == nil {
+		return strings.TrimSpace(string(data))
+	}
+	// Global-level fallback.
+	if home, err := os.UserHomeDir(); err == nil {
+		globalPath := filepath.Join(home, ".codeagent", "SYSTEM.md")
+		if data, err := os.ReadFile(globalPath); err == nil {
+			return strings.TrimSpace(string(data))
+		}
+	}
+	return ""
+}
+
+// SubAgentPrompt returns the system prompt for the subagent. It looks for
+// SUBAGENT_SYSTEM.md at conventional paths; when no file is found it falls
+// back to the built-in prompt.SubAgentSystemPrompt.
+func SubAgentPrompt(workspaceRoot string) string {
+	// Project-level first.
+	projectPath := filepath.Join(workspaceRoot, ".codeagent", "SUBAGENT_SYSTEM.md")
+	if data, err := os.ReadFile(projectPath); err == nil {
+		return strings.TrimSpace(string(data))
+	}
+	// Global-level fallback.
+	if home, err := os.UserHomeDir(); err == nil {
+		globalPath := filepath.Join(home, ".codeagent", "SUBAGENT_SYSTEM.md")
+		if data, err := os.ReadFile(globalPath); err == nil {
+			return strings.TrimSpace(string(data))
+		}
+	}
+	// Built-in default.
+	return prompt.SubAgentSystemPrompt
+}
+
+// buildEnvInfo returns a concise, static environment snapshot appended to the
+// system prompt: workspace path, OS, and shell. Git status is deliberately
+// excluded — it is injected per-request by the agent loop (withGitInfo) so it
+// never goes stale mid-session.
+func (b *Builder) buildEnvInfo() string {
+	absRoot, err := filepath.Abs(b.WorkspaceRoot)
+	if err != nil {
+		absRoot = b.WorkspaceRoot
+	}
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("\n\nCurrent workspace: %s", absRoot))
+	sb.WriteString(fmt.Sprintf("\nOS: %s", runtime.GOOS))
+	if shell := os.Getenv("SHELL"); shell != "" {
+		sb.WriteString(fmt.Sprintf(" | Shell: %s", filepath.Base(shell)))
+	}
+	return sb.String()
+}
+
+// GitInfo returns a snapshot of the git repository state at workspaceRoot.
+// It runs with a 5-second timeout per command so a hung git never blocks the
+// caller. Returns "" when the workspace is not a git repository or git is not
+// installed.
+func GitInfo(workspaceRoot string) string {
+	gitDir := filepath.Join(workspaceRoot, ".git")
+	if _, err := os.Stat(gitDir); err != nil {
+		return ""
+	}
+
+	var lines []string
+
+	if out, err := runGitCmd(workspaceRoot, "rev-parse", "--abbrev-ref", "HEAD"); err == nil && out != "" {
+		lines = append(lines, fmt.Sprintf("Git branch: %s", out))
+	}
+	if out, err := runGitCmd(workspaceRoot, "status", "--porcelain"); err == nil {
+		if out == "" {
+			lines = append(lines, "Git status: clean")
+		} else {
+			lines = append(lines, "Git status: modified")
+		}
+	}
+	if out, err := runGitCmd(workspaceRoot, "log", "--oneline", "-5"); err == nil && out != "" {
+		lines = append(lines, "Recent commits:")
+		for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+			lines = append(lines, "  "+line)
+		}
+	}
+
+	return strings.Join(lines, "\n")
+}
+
+// runGitCmd runs a git command in dir with a 5-second timeout. Errors (non-zero
+// exit, timeout, git not installed) return an empty string.
+func runGitCmd(dir string, args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
 }

@@ -6,7 +6,6 @@ import (
 	"code-agent/internal/credential"
 	"code-agent/internal/model"
 	"code-agent/internal/observation"
-	"code-agent/internal/prompt"
 	"code-agent/internal/session"
 	"code-agent/internal/tools"
 	"context"
@@ -122,7 +121,7 @@ func (s *SubAgent) Run(ctx context.Context, ec tools.ExecutionContext, taskPromp
 	workspaceRoot := ec.WorkspaceRoot
 	sess, err := session.NewBuilder(workspaceRoot).
 		WithBudget(s.MC.ContextWindow, s.Cfg.CompactThreshold(s.MC)).
-		WithSystemPrompt(prompt.SubAgentSystemPrompt).
+		WithSystemPrompt(session.SubAgentPrompt(workspaceRoot)).
 		WithSkillsIndex(s.SkillsIndex).
 		Build()
 	if err != nil {
