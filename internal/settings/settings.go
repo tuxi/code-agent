@@ -176,9 +176,12 @@ func ResolveVerifyFrom(s Settings, root, legacy string) string {
 // disable words and "" → off; "auto" → detected; anything else verbatim.
 func resolveVerifyCommand(cmd, root string) string {
 	switch strings.ToLower(strings.TrimSpace(cmd)) {
-	case "", "off", "false", "none", "disabled":
-		return ""
-	case "auto":
+	case "off", "false", "none", "disabled":
+		return "" // explicit opt-out
+	case "auto", "":
+		// Default to auto-detection when not configured — same behaviour as
+		// Claude Code. Falls through to DetectVerify which returns "" when
+		// nothing is recognised, so a Python-only repo is still silent.
 		return DetectVerify(root)
 	default:
 		return cmd
