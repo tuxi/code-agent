@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"testing"
 
-	"code-agent/internal/model"
-	"code-agent/internal/tools"
 )
 
 type fakeHook struct {
@@ -29,30 +27,23 @@ func (h *fakeHook) PostToolUse(_ context.Context, tool string, _ json.RawMessage
 	return nil
 }
 
-func runWithHook(t *testing.T, hook ToolHook) (*recordingTool, *fakeHook) {
-	t.Helper()
-	rt := &recordingTool{} // "danger" (side-effecting)
-	reg := tools.NewRegistry()
-	if err := reg.Register(rt); err != nil {
-		t.Fatal(err)
-	}
-	provider := &scriptedProvider{responses: []model.Response{
-		toolCallResp("danger", "{}"),
-		{Content: "ok", FinishReason: "stop"},
-	}}
-	runner := &Runner{Model: provider, Tools: reg, Approver: allowApprover{}, Hook: hook, MaxSteps: 5}
-	if _, err := runner.RunTurn(context.Background(), newSession(), "go"); err != nil {
-		t.Fatal(err)
-	}
-	return rt, hook.(*fakeHook)
-}
-
 func TestPreHookBlocksExecution(t *testing.T) {
-	rt, hook := runWithHook(t, &fakeHook{block: true})
+	hook := &fakeHook{block: true}
+	h := NewFauxHarness(t, []FauxStep{
+		FauxTool("danger", map[string]any{}),
+		FauxText("ok"),
+	})
+	tool := h.RegisterSideEffectingTool("danger", "a side-effecting tool", "did it")
+	h.Runner.Approver = allowApprover{}
+	h.Runner.Hook = hook
+
+	if _, err := h.RunTurn("go"); err != nil {
+		t.Fatal(err)
+	}
 	if !hook.preCalled {
 		t.Fatal("the pre-hook should be consulted before the tool")
 	}
-	if rt.ran {
+	if tool.Ran {
 		t.Fatal("a pre-hook block must prevent the tool from executing")
 	}
 	if hook.postCalled {
@@ -61,8 +52,19 @@ func TestPreHookBlocksExecution(t *testing.T) {
 }
 
 func TestPostHookRunsAfterSuccess(t *testing.T) {
-	rt, hook := runWithHook(t, &fakeHook{block: false})
-	if !rt.ran {
+	hook := &fakeHook{block: false}
+	h := NewFauxHarness(t, []FauxStep{
+		FauxTool("danger", map[string]any{}),
+		FauxText("ok"),
+	})
+	tool := h.RegisterSideEffectingTool("danger", "a side-effecting tool", "did it")
+	h.Runner.Approver = allowApprover{}
+	h.Runner.Hook = hook
+
+	if _, err := h.RunTurn("go"); err != nil {
+		t.Fatal(err)
+	}
+	if !tool.Ran {
 		t.Fatal("the tool should run when the pre-hook allows it")
 	}
 	if !hook.postCalled || hook.postTool != "danger" {

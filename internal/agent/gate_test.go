@@ -12,6 +12,8 @@ import (
 	"code-agent/internal/tools"
 )
 
+// ── Shared test helpers (used by multiple test files) ───────────────
+
 // scriptedProvider returns queued responses in order and records the messages
 // it last received, so tests can assert what context reached the model.
 type scriptedProvider struct {
@@ -20,47 +22,6 @@ type scriptedProvider struct {
 	lastMessages []model.Message
 	lastTools    []model.ToolDefinition
 	lastRequest  model.Request
-}
-
-func TestEmptyAssistantResponseFailsWithoutPersistingNoOp(t *testing.T) {
-	provider := &scriptedProvider{responses: []model.Response{{Content: "   ", FinishReason: "stop"}}}
-	sess := newSession()
-	runner := &Runner{Model: provider, Tools: tools.NewRegistry(), MaxSteps: 3}
-
-	_, err := runner.RunTurn(context.Background(), sess, "hello")
-	if !errors.Is(err, model.ErrEmptyAssistantResponse) {
-		t.Fatalf("RunTurn error = %v, want ErrEmptyAssistantResponse", err)
-	}
-	// The user turn remains for retry/audit, but no invalid empty assistant
-	// message is appended to poison the following provider request.
-	if len(sess.Messages) != 2 {
-		t.Fatalf("messages = %+v, want system + user only", sess.Messages)
-	}
-	if got := sess.Messages[1]; got.Role != model.RoleUser || got.Content != "hello" {
-		t.Fatalf("last message = %+v, want original user turn", got)
-	}
-}
-
-func TestLegacyEmptyAssistantNoOpIsRemovedBeforeNextRequest(t *testing.T) {
-	provider := &scriptedProvider{responses: []model.Response{{Content: "recovered", FinishReason: "stop"}}}
-	sess := newSession()
-	sess.Messages = append(sess.Messages,
-		model.Message{Role: model.RoleAssistant, Content: "", ToolCalls: nil},
-		model.Message{Role: model.RoleUser, Content: "previous request"},
-	)
-	runner := &Runner{Model: provider, Tools: tools.NewRegistry(), MaxSteps: 3}
-
-	if _, err := runner.RunTurn(context.Background(), sess, "next request"); err != nil {
-		t.Fatalf("RunTurn: %v", err)
-	}
-	if len(provider.lastMessages) == 0 || provider.lastMessages[0].Role != model.RoleSystem {
-		t.Fatalf("request messages = %+v", provider.lastMessages)
-	}
-	for _, message := range provider.lastMessages {
-		if message.IsEmptyAssistantNoOp() {
-			t.Fatalf("legacy no-op leaked into provider request: %+v", message)
-		}
-	}
 }
 
 func (p *scriptedProvider) Complete(_ context.Context, req model.Request) (model.Response, error) {
@@ -99,46 +60,62 @@ func newSession() *session.Session {
 	}
 }
 
-func runGated(t *testing.T, approver Approver) (*recordingTool, TurnResult) {
-	t.Helper()
+// ── Tests ───────────────────────────────────────────────────────────
 
-	rt := &recordingTool{}
-	reg := tools.NewRegistry()
-	if err := reg.Register(rt); err != nil {
-		t.Fatalf("register danger: %v", err)
+func TestEmptyAssistantResponseFailsWithoutPersistingNoOp(t *testing.T) {
+	h := NewFauxHarness(t, []FauxStep{FauxText("   ")})
+
+	_, err := h.RunTurn("hello")
+	if !errors.Is(err, model.ErrEmptyAssistantResponse) {
+		t.Fatalf("RunTurn error = %v, want ErrEmptyAssistantResponse", err)
 	}
-
-	provider := &scriptedProvider{responses: []model.Response{
-		{ // turn 1: call the side-effecting tool
-			ToolCalls: []model.ToolCall{{
-				ID:       "call_1",
-				Type:     "function",
-				Function: model.FunctionCall{Name: "danger", Arguments: "{}"},
-			}},
-			FinishReason: "tool_calls",
-		},
-		{Content: "done", FinishReason: "stop"}, // final answer
-	}}
-
-	runner := &Runner{Model: provider, Tools: reg, Approver: approver, MaxSteps: 5}
-
-	res, err := runner.RunTurn(context.Background(), newSession(), "do the dangerous thing")
-	if err != nil {
-		t.Fatalf("run failed: %v", err)
+	if len(h.Session.Messages) != 2 {
+		t.Fatalf("messages = %+v, want system + user only", h.Session.Messages)
 	}
-	return rt, res
+	if got := h.Session.Messages[1]; got.Role != model.RoleUser || got.Content != "hello" {
+		t.Fatalf("last message = %+v, want original user turn", got)
+	}
+}
+
+func TestLegacyEmptyAssistantNoOpIsRemovedBeforeNextRequest(t *testing.T) {
+	h := NewFauxHarness(t, []FauxStep{FauxText("recovered")})
+	h.Session.Messages = append(h.Session.Messages,
+		model.Message{Role: model.RoleAssistant, Content: "", ToolCalls: nil},
+		model.Message{Role: model.RoleUser, Content: "previous request"},
+	)
+
+	if _, err := h.RunTurn("next request"); err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+	req := h.LastRequest()
+	if len(req.Messages) == 0 || req.Messages[0].Role != model.RoleSystem {
+		t.Fatalf("request messages = %+v", req.Messages)
+	}
+	for _, message := range req.Messages {
+		if message.IsEmptyAssistantNoOp() {
+			t.Fatalf("legacy no-op leaked into provider request: %+v", message)
+		}
+	}
 }
 
 func TestGateDeniesSideEffectingTool(t *testing.T) {
-	rt, res := runGated(t, denyApprover{})
+	h := NewFauxHarness(t, []FauxStep{
+		FauxTool("danger", map[string]any{}),
+		FauxText("done"),
+	})
+	tool := h.RegisterSideEffectingTool("danger", "a side-effecting tool", "did it")
+	h.Runner.Approver = denyApprover{}
 
-	if rt.ran {
+	res, err := h.RunTurn("do the dangerous thing")
+	if err != nil {
+		t.Fatalf("run failed: %v", err)
+	}
+	if tool.Ran {
 		t.Fatal("tool ran despite the approver denying it")
 	}
 	if res.Final != "done" {
 		t.Errorf("final = %q, want %q", res.Final, "done")
 	}
-
 	var sawDecline bool
 	for _, s := range res.Steps {
 		if strings.Contains(s.Observation, "not approved") {
@@ -151,15 +128,33 @@ func TestGateDeniesSideEffectingTool(t *testing.T) {
 }
 
 func TestGateAllowsSideEffectingTool(t *testing.T) {
-	rt, _ := runGated(t, allowApprover{})
-	if !rt.ran {
+	h := NewFauxHarness(t, []FauxStep{
+		FauxTool("danger", map[string]any{}),
+		FauxText("done"),
+	})
+	tool := h.RegisterSideEffectingTool("danger", "a side-effecting tool", "did it")
+	h.Runner.Approver = allowApprover{}
+
+	if _, err := h.RunTurn("do the dangerous thing"); err != nil {
+		t.Fatalf("run failed: %v", err)
+	}
+	if !tool.Ran {
 		t.Fatal("tool did not run despite the approver allowing it")
 	}
 }
 
 func TestGateNilApproverDeniesByDefault(t *testing.T) {
-	rt, res := runGated(t, nil)
-	if rt.ran {
+	h := NewFauxHarness(t, []FauxStep{
+		FauxTool("danger", map[string]any{}),
+		FauxText("done"),
+	})
+	tool := h.RegisterSideEffectingTool("danger", "a side-effecting tool", "did it")
+
+	res, err := h.RunTurn("do the dangerous thing")
+	if err != nil {
+		t.Fatalf("run failed: %v", err)
+	}
+	if tool.Ran {
 		t.Fatal("nil approver must fail safe and deny side-effecting tools")
 	}
 	if res.Final != "done" {
@@ -167,26 +162,21 @@ func TestGateNilApproverDeniesByDefault(t *testing.T) {
 	}
 }
 
-// TestSessionContinuityAcrossTurns is the core P2.2 invariant: a second turn
-// must see the first turn's messages, because the Session persists history.
 func TestSessionContinuityAcrossTurns(t *testing.T) {
-	reg := tools.NewRegistry()
-	provider := &scriptedProvider{responses: []model.Response{
-		{Content: "noted", FinishReason: "stop"},
-		{Content: "you said hello", FinishReason: "stop"},
-	}}
-	runner := &Runner{Model: provider, Tools: reg, MaxSteps: 3}
-	sess := newSession()
+	h := NewFauxHarness(t, []FauxStep{FauxText("noted")})
 
-	if _, err := runner.RunTurn(context.Background(), sess, "hello"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := runner.RunTurn(context.Background(), sess, "what did I say?"); err != nil {
+	if _, err := h.RunTurn("hello"); err != nil {
 		t.Fatal(err)
 	}
 
+	h.Provider.AppendResponses([]FauxStep{FauxText("you said hello")})
+	if _, err := h.RunTurn("what did I say?"); err != nil {
+		t.Fatal(err)
+	}
+
+	req := h.LastRequest()
 	var sawFirstUser bool
-	for _, m := range provider.lastMessages {
+	for _, m := range req.Messages {
 		if m.Role == model.RoleUser && m.Content == "hello" {
 			sawFirstUser = true
 		}
@@ -194,9 +184,7 @@ func TestSessionContinuityAcrossTurns(t *testing.T) {
 	if !sawFirstUser {
 		t.Error("second turn did not see the first turn's message; session is not accumulating history")
 	}
-
-	// system + (user + assistant) + (user + assistant) = 5
-	if len(sess.Messages) != 5 {
-		t.Errorf("session holds %d messages, want 5", len(sess.Messages))
+	if len(h.Session.Messages) != 5 {
+		t.Errorf("session holds %d messages, want 5", len(h.Session.Messages))
 	}
 }

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"testing"
 
-	"code-agent/internal/model"
 	"code-agent/internal/session"
 	"code-agent/internal/tools"
 )
@@ -27,24 +26,19 @@ func (okTool) Execute(_ context.Context, _ tools.ExecutionContext, _ json.RawMes
 	return tools.ToolResult{Content: "ok"}, nil
 }
 
-// TestCheckpointerCalledPerToolIteration verifies the mid-turn checkpoint (v1.2 §2)
-// fires at each consistent loop boundary — after a completed tool batch — and NOT
-// on the final tool-free iteration, whose finish the caller's turn-boundary Save
-// already persists.
 func TestCheckpointerCalledPerToolIteration(t *testing.T) {
-	reg := tools.NewRegistry()
-	if err := reg.Register(okTool{}); err != nil {
+	h := NewFauxHarness(t, []FauxStep{
+		FauxTool("noop", map[string]any{}),
+		FauxTool("noop", map[string]any{}),
+		FauxText("all done"),
+	})
+	if err := h.Tools.Register(okTool{}); err != nil {
 		t.Fatalf("register noop: %v", err)
 	}
-	provider := &scriptedProvider{responses: []model.Response{
-		{ToolCalls: []model.ToolCall{{ID: "c1", Type: "function", Function: model.FunctionCall{Name: "noop", Arguments: "{}"}}}, FinishReason: "tool_calls"},
-		{ToolCalls: []model.ToolCall{{ID: "c2", Type: "function", Function: model.FunctionCall{Name: "noop", Arguments: "{}"}}}, FinishReason: "tool_calls"},
-		{Content: "all done", FinishReason: "stop"},
-	}}
 	cp := &countingCheckpointer{}
-	runner := &Runner{Model: provider, Tools: reg, MaxSteps: 5, Checkpointer: cp}
+	h.Runner.Checkpointer = cp
 
-	res, err := runner.RunTurn(context.Background(), newSession(), "do two things")
+	res, err := h.RunTurn("do two things")
 	if err != nil {
 		t.Fatalf("run failed: %v", err)
 	}
@@ -54,21 +48,22 @@ func TestCheckpointerCalledPerToolIteration(t *testing.T) {
 	if cp.n != 2 {
 		t.Errorf("checkpoint called %d times, want 2 (one per completed tool iteration)", cp.n)
 	}
+	// Verify the provider was called for both tool turns and the final answer.
+	if h.Provider.CallCount != 3 {
+		t.Errorf("CallCount = %d, want 3", h.Provider.CallCount)
+	}
 }
 
-// TestNilCheckpointerIsSafe confirms an unset Checkpointer (the CLI/TUI path) is a
-// no-op and does not affect the turn.
 func TestNilCheckpointerIsSafe(t *testing.T) {
-	reg := tools.NewRegistry()
-	if err := reg.Register(okTool{}); err != nil {
+	h := NewFauxHarness(t, []FauxStep{
+		FauxTool("noop", map[string]any{}),
+		FauxText("done"),
+	})
+	if err := h.Tools.Register(okTool{}); err != nil {
 		t.Fatal(err)
 	}
-	provider := &scriptedProvider{responses: []model.Response{
-		{ToolCalls: []model.ToolCall{{ID: "c1", Type: "function", Function: model.FunctionCall{Name: "noop", Arguments: "{}"}}}, FinishReason: "tool_calls"},
-		{Content: "done", FinishReason: "stop"},
-	}}
-	runner := &Runner{Model: provider, Tools: reg, MaxSteps: 5} // Checkpointer nil
-	if _, err := runner.RunTurn(context.Background(), newSession(), "go"); err != nil {
+	// Checkpointer is nil by default.
+	if _, err := h.RunTurn("go"); err != nil {
 		t.Fatalf("run with nil checkpointer failed: %v", err)
 	}
 }
