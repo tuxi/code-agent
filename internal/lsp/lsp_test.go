@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
@@ -154,6 +155,67 @@ func TestGoplsServerModeIntegration(t *testing.T) {
 	}
 	if !strings.Contains(hr.Content, "func WirePlanTools") {
 		t.Fatalf("hover content missing signature: %q", hr.Content)
+	}
+}
+
+// TestDiagnosticsWholeWorkspace is a regression test for the whole-workspace
+// diagnostics path. Diagnostics(ctx, "") used to run `gopls check` with no file
+// arguments, which only type-checks the root directory's package (empty at the
+// repo root) — so a broken file anywhere in the workspace was never reported.
+// The fix enumerates all workspace .go files and passes them to gopls check.
+// Skipped when gopls is not installed.
+func TestDiagnosticsWholeWorkspace(t *testing.T) {
+	if _, err := exec.LookPath("gopls"); err != nil {
+		t.Skip("gopls not installed")
+	}
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module scratch\n\ngo 1.21\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	broken := `package scratch
+
+func Broken() int {
+	x := 1
+	return
+}
+`
+	// Place the broken file in a SUBDIRECTORY: bare `gopls check` (no args)
+	// only type-checks the current directory's package, so pre-fix code
+	// (which passed no files) would never see it. Only file enumeration —
+	// the whole point of the fix — reaches subdirectory files.
+	if err := os.MkdirAll(filepath.Join(root, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "sub", "broken.go"), []byte(broken), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	c := &Client{command: "gopls", mode: modeCLI, root: root, ready: true}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// Per-file check must find the errors too — guards the parser.
+	diags, err := c.Diagnostics(ctx, "sub/broken.go")
+	if err != nil {
+		t.Fatalf("Diagnostics(file): %v", err)
+	}
+	if len(diags) == 0 {
+		t.Fatal("per-file Diagnostics found nothing in a broken file")
+	}
+
+	// Whole-workspace check must find the same errors via file enumeration.
+	diags, err = c.Diagnostics(ctx, "")
+	if err != nil {
+		t.Fatalf("Diagnostics(all): %v", err)
+	}
+	found := false
+	for _, d := range diags {
+		if strings.Contains(d.Message, "not enough return values") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("whole-workspace Diagnostics missed the broken file; got %d diags: %+v", len(diags), diags)
 	}
 }
 

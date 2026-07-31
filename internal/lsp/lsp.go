@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -45,6 +46,15 @@ type HoverResult struct {
 	File    string
 	Line    int
 	Col     int
+}
+
+// Diagnostic is a compiler error or warning reported by the language server.
+type Diagnostic struct {
+	File     string // workspace-relative path
+	Line     int    // 1-indexed
+	Col      int    // 1-indexed
+	Message  string
+	Severity string // "error" or "warning"
 }
 
 type clientMode int
@@ -238,6 +248,32 @@ func (c *Client) Hover(ctx context.Context, file string, line, col int) (*HoverR
 	return c.hoverServer(ctx, file, line, col)
 }
 
+// GoToDefinition returns the definition location of the symbol at file:line:col.
+func (c *Client) GoToDefinition(ctx context.Context, file string, line, col int) (*Symbol, error) {
+	if !c.ready {
+		return nil, fmt.Errorf("lsp: client not initialized")
+	}
+	if c.mode == modeCLI {
+		return c.goToDefCLI(ctx, file, line, col)
+	}
+	return c.goToDefServer(ctx, file, line, col)
+}
+
+// absPath joins root and a workspace-relative file, stripping any leading
+// slashes from file so filepath.Join doesn't treat it as absolute and drop root.
+func (c *Client) absPath(file string) string {
+	return filepath.Join(c.root, strings.TrimPrefix(file, "/"))
+}
+
+// Diagnostics returns compiler errors/warnings for a file or the whole workspace.
+// When file is empty, returns diagnostics for all files in the workspace.
+func (c *Client) Diagnostics(ctx context.Context, file string) ([]Diagnostic, error) {
+	if !c.ready {
+		return nil, fmt.Errorf("lsp: client not initialized")
+	}
+	return c.diagnosticsCLI(ctx, file)
+}
+
 // ── CLI mode (gopls) ─────────────────────────────────────────────────
 
 func (c *Client) run(ctx context.Context, subcommand string, args ...string) ([]byte, error) {
@@ -281,6 +317,105 @@ func (c *Client) hoverCLI(ctx context.Context, file string, line, col int) (*Hov
 	return &HoverResult{
 		Content: strings.TrimSpace(string(out)),
 		File:    file, Line: line, Col: col,
+	}, nil
+}
+
+func (c *Client) goToDefCLI(ctx context.Context, file string, line, col int) (*Symbol, error) {
+	pos := fmt.Sprintf("%s:%d:%d", filepath.Join(c.root, file), line, col)
+	out, err := c.run(ctx, "definition", pos)
+	if err != nil {
+		return nil, err
+	}
+	syms := parseTextSymbols(string(out), c.root)
+	if len(syms) == 0 {
+		return nil, nil
+	}
+	return &syms[0], nil
+}
+
+func (c *Client) diagnosticsCLI(ctx context.Context, file string) ([]Diagnostic, error) {
+	args := []string{"check"}
+	if file != "" {
+		args = append(args, filepath.Join(c.root, file))
+	} else {
+		// gopls check accepts files only — no directories or ./... patterns.
+		// Enumerate the workspace's Go files so "whole workspace" really means
+		// the whole workspace, not just the root directory's package.
+		files, err := c.workspaceFiles()
+		if err != nil {
+			return nil, err
+		}
+		if len(files) == 0 {
+			return nil, nil // no Go files in the workspace — nothing to check
+		}
+		args = append(args, files...)
+	}
+	out, err := c.run(ctx, args[0], args[1:]...)
+	if err != nil {
+		// check returns non-zero when there ARE diagnostics — that's success for us.
+		if len(out) == 0 {
+			return nil, err
+		}
+	}
+	return parseTextDiagnostics(string(out), c.root), nil
+}
+
+// workspaceFiles returns every .go file under root, skipping VCS and
+// third-party dependency directories.
+func (c *Client) workspaceFiles() ([]string, error) {
+	var files []string
+	err := filepath.WalkDir(c.root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			if path != c.root {
+				switch d.Name() {
+				case ".git", "vendor", "node_modules", ".build":
+					return filepath.SkipDir
+				}
+			}
+			return nil
+		}
+		if strings.HasSuffix(d.Name(), ".go") {
+			files = append(files, path)
+		}
+		return nil
+	})
+	return files, err
+}
+
+func (c *Client) goToDefServer(ctx context.Context, file string, line, col int) (*Symbol, error) {
+	uri := "file://" + c.absPath(file)
+	result, err := c.call(ctx, "textDocument/definition", map[string]any{
+		"textDocument": map[string]string{"uri": uri},
+		"position":     map[string]int{"line": line - 1, "character": col - 1},
+	})
+	if err != nil {
+		return nil, err
+	}
+	if result == nil || string(result) == "null" {
+		return nil, nil
+	}
+	// Result can be a single location or an array.
+	var locs []jsonLocation
+	if err := json.Unmarshal(result, &locs); err != nil {
+		var single jsonLocation
+		if err2 := json.Unmarshal(result, &single); err2 != nil {
+			return nil, fmt.Errorf("lsp: parse textDocument/definition: %w / %w", err, err2)
+		}
+		locs = []jsonLocation{single}
+	}
+	if len(locs) == 0 {
+		return nil, nil
+	}
+	loc := locs[0] // return the first definition
+	return &Symbol{
+		Name: "",
+		Kind: "",
+		File: filepathRel(c.root, uriToPath(loc.URI)),
+		Line: loc.Range.Start.Line + 1,
+		Col:  loc.Range.Start.Character + 1,
 	}, nil
 }
 
@@ -427,7 +562,7 @@ func (c *Client) findSymbolServer(ctx context.Context, query string) ([]Symbol, 
 }
 
 func (c *Client) findReferencesServer(ctx context.Context, file string, line, col int) ([]Reference, error) {
-	uri := "file://" + filepath.Join(c.root, file)
+	uri := "file://" + c.absPath(file)
 	result, err := c.call(ctx, "textDocument/references", map[string]any{
 		"textDocument": map[string]string{"uri": uri},
 		"position":     map[string]int{"line": line - 1, "character": col - 1},
@@ -456,7 +591,7 @@ func (c *Client) findReferencesServer(ctx context.Context, file string, line, co
 }
 
 func (c *Client) hoverServer(ctx context.Context, file string, line, col int) (*HoverResult, error) {
-	uri := "file://" + filepath.Join(c.root, file)
+	uri := "file://" + c.absPath(file)
 	result, err := c.call(ctx, "textDocument/hover", map[string]any{
 		"textDocument": map[string]string{"uri": uri},
 		"position":     map[string]int{"line": line - 1, "character": col - 1},
@@ -612,6 +747,62 @@ func parseTextLine(line string) (file string, lineNum, col int, name, kind strin
 }
 
 // parseTextPos parses "file:line:col-endcol" or "file:line:col"
+// parseTextDiagnostics parses gopls check output.
+// Each diagnostic is on one or more lines: "file:line:col: message".
+func parseTextDiagnostics(out string, root string) []Diagnostic {
+	var diags []Diagnostic
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		file, lineNum, col, msg := parseCheckLine(line)
+		if msg == "" {
+			continue
+		}
+		severity := "error"
+		if strings.HasPrefix(strings.ToLower(msg), "warning") {
+			severity = "warning"
+		}
+		diags = append(diags, Diagnostic{
+			File:     filepathRel(root, file),
+			Line:     lineNum,
+			Col:      col,
+			Message:  msg,
+			Severity: severity,
+		})
+	}
+	return diags
+}
+
+// parseCheckLine parses "file:line:col: message" from gopls check output.
+func parseCheckLine(line string) (file string, lineNum, col int, msg string) {
+	// Find the first two colons that separate file, line, col from message.
+	first := strings.IndexByte(line, ':')
+	if first < 0 {
+		return
+	}
+	second := strings.IndexByte(line[first+1:], ':')
+	if second < 0 {
+		return
+	}
+	second += first + 1
+
+	file = line[:first]
+	lineNum, _ = strconv.Atoi(line[first+1 : second])
+	rest := line[second+1:]
+
+	// The third colon separates col from message.
+	third := strings.IndexByte(rest, ':')
+	if third >= 0 {
+		col, _ = strconv.Atoi(rest[:third])
+		msg = strings.TrimSpace(rest[third+1:])
+	} else {
+		msg = rest
+	}
+	return
+}
+
 func parseTextPos(s string) (file string, line, col int) {
 	// Find the last ':' — the line:col-endcol part.
 	lastColon := strings.LastIndexByte(s, ':')

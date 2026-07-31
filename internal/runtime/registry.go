@@ -241,10 +241,13 @@ func BuildRegistry(ctx context.Context, cfg app.Config, mc app.ModelConfig, prov
 }
 
 // initLSPClient detects the project language and returns a Client.
-// Initialization runs in the background and never blocks startup: the client
-// is returned immediately and tools return "warming up" until Ready() is true.
-// Returns nil when no language is recognised.
+// Initialization runs in the background and never blocks startup.
+// Returns nil when no language is recognised or root is empty
+// (daemon mode — LSP needs a concrete workspace root for file paths).
 func initLSPClient(root string) *lsp.Client {
+	if root == "" {
+		return nil
+	}
 	client, err := lsp.DetectLanguage(root)
 	if err != nil {
 		return nil

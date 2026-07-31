@@ -128,6 +128,86 @@ func (t *hoverTool) Execute(ctx context.Context, _ ExecutionContext, raw json.Ra
 
 const hoverDesc = "Get type information and documentation for the symbol at file:line:col. Uses the language server."
 
+// ── go_to_definition ──────────────────────────────────────────────────
+
+type goToDefinitionTool struct{ client *lsp.Client }
+
+func (t *goToDefinitionTool) Name() string        { return "go_to_definition" }
+func (t *goToDefinitionTool) Description() string { return goToDefinitionDesc }
+func (t *goToDefinitionTool) InputSchema() json.RawMessage {
+	return Object(map[string]Property{
+		"file": {Type: "string", Description: "File path relative to workspace"},
+		"line": {Type: "integer", Description: "Line number (1-indexed)"},
+		"col":  {Type: "integer", Description: "Column number (1-indexed)"},
+	}).JSON()
+}
+
+func (t *goToDefinitionTool) Execute(ctx context.Context, _ ExecutionContext, raw json.RawMessage) (ToolResult, error) {
+	var in struct {
+		File string `json:"file"`
+		Line int    `json:"line"`
+		Col  int    `json:"col"`
+	}
+	if err := json.Unmarshal(raw, &in); err != nil {
+		return ToolResult{}, fmt.Errorf("go_to_definition: %w", err)
+	}
+	if t.client == nil {
+		return ToolResult{Content: "(LSP not available for this project)"}, nil
+	}
+	if !t.client.Ready() {
+		return ToolResult{Content: "(LSP server is still warming up — use grep or read_file for now)"}, nil
+	}
+	sym, err := t.client.GoToDefinition(ctx, in.File, in.Line, in.Col)
+	if err != nil {
+		return ToolResult{Content: fmt.Sprintf("go_to_definition error: %v", err)}, nil
+	}
+	if sym == nil {
+		return ToolResult{Content: "(no definition found)"}, nil
+	}
+	return ToolResult{Content: fmt.Sprintf("%s:%d:%d", sym.File, sym.Line, sym.Col)}, nil
+}
+
+const goToDefinitionDesc = "Jump to the definition of the symbol at file:line:col. More precise than find_symbol — returns exactly one location."
+
+// ── list_diagnostics ──────────────────────────────────────────────────
+
+type listDiagnosticsTool struct{ client *lsp.Client }
+
+func (t *listDiagnosticsTool) Name() string        { return "list_diagnostics" }
+func (t *listDiagnosticsTool) Description() string { return listDiagnosticsDesc }
+func (t *listDiagnosticsTool) InputSchema() json.RawMessage {
+	return Object(map[string]Property{
+		"file": {Type: "string", Description: "Optional: single file path. Omit to check all files in the workspace."},
+	}).JSON()
+}
+
+func (t *listDiagnosticsTool) Execute(ctx context.Context, _ ExecutionContext, raw json.RawMessage) (ToolResult, error) {
+	var in struct {
+		File string `json:"file"`
+	}
+	json.Unmarshal(raw, &in)
+	if t.client == nil {
+		return ToolResult{Content: "(LSP not available for this project)"}, nil
+	}
+	if !t.client.Ready() {
+		return ToolResult{Content: "(LSP server is still warming up — use go build for now)"}, nil
+	}
+	diags, err := t.client.Diagnostics(ctx, in.File)
+	if err != nil {
+		return ToolResult{Content: fmt.Sprintf("list_diagnostics error: %v", err)}, nil
+	}
+	if len(diags) == 0 {
+		return ToolResult{Content: "(no diagnostics)"}, nil
+	}
+	var b strings.Builder
+	for _, d := range diags {
+		fmt.Fprintf(&b, "%s:%d:%d: %s: %s\n", d.File, d.Line, d.Col, d.Severity, d.Message)
+	}
+	return ToolResult{Content: b.String()}, nil
+}
+
+const listDiagnosticsDesc = "List compiler errors and warnings for the given file or the whole workspace. Faster than running a build — uses the language server's live diagnostics."
+
 // ── Factory ───────────────────────────────────────────────────────────
 
 // NewLSPTools returns the LSP-backed tools for the given workspace.
@@ -138,6 +218,8 @@ func NewLSPTools(client *lsp.Client) []Tool {
 		&findSymbolTool{client: client},
 		&findReferencesTool{client: client},
 		&hoverTool{client: client},
+		&goToDefinitionTool{client: client},
+		&listDiagnosticsTool{client: client},
 	}
 }
 
