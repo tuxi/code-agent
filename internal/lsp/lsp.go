@@ -84,8 +84,8 @@ func DetectLanguage(root string) (*Client, error) {
 	}
 	switch {
 	case check("go.mod"):
-		// gopls supports CLI subcommands — use CLI mode.
-		return &Client{command: "gopls", mode: modeCLI}, nil
+		// gopls server mode gives full hover/definition/diagnostics support.
+		return &Client{command: "gopls", mode: modeServer}, nil
 	case check("Package.swift") || hasXcode():
 		// sourcekit-lsp only speaks JSON-RPC — use server mode.
 		return &Client{command: "sourcekit-lsp", mode: modeServer}, nil
@@ -193,9 +193,8 @@ func (c *Client) Close() error {
 	if c.mode == modeCLI || c.cmd == nil {
 		return nil
 	}
-	// Best-effort shutdown.
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	// Best-effort shutdown. call/notify lock internally, so Close must not
+	// hold c.mu while invoking them (sync.Mutex is not reentrant).
 	c.call(context.Background(), "shutdown", nil)
 	c.notify(context.Background(), "exit", nil)
 	// Give the process a moment, then kill.
@@ -310,14 +309,13 @@ func (c *Client) call(ctx context.Context, method string, params any) (json.RawM
 	if err != nil {
 		return nil, err
 	}
-	body = append(body, '\n')
-	if _, err := c.w.Write(body); err != nil {
+	if err := c.writeFrame(body); err != nil {
 		return nil, fmt.Errorf("lsp: write %s: %w", method, err)
 	}
 
-	// Read until we get a response with the matching id.
+	// Read framed messages until we get a response with the matching id.
 	for {
-		line, err := c.r.ReadBytes('\n')
+		frame, err := c.readFrame()
 		if err != nil {
 			// Check if the server crashed.
 			select {
@@ -332,7 +330,7 @@ func (c *Client) call(ctx context.Context, method string, params any) (json.RawM
 			Result json.RawMessage  `json:"result"`
 			Error  *json.RawMessage `json:"error"`
 		}
-		if err := json.Unmarshal(line, &resp); err != nil {
+		if err := json.Unmarshal(frame, &resp); err != nil {
 			continue
 		}
 		if resp.ID != id {
@@ -354,11 +352,45 @@ func (c *Client) notify(ctx context.Context, method string, params any) error {
 	if err != nil {
 		return err
 	}
-	body = append(body, '\n')
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	_, err = c.w.Write(body)
+	return c.writeFrame(body)
+}
+
+// writeFrame sends one JSON-RPC message using the standard LSP
+// Content-Length framing. Language servers (gopls included) reject
+// newline-delimited JSON, so the byte-count header is mandatory.
+func (c *Client) writeFrame(body []byte) error {
+	header := fmt.Sprintf("Content-Length: %d\r\n\r\n", len(body))
+	if _, err := c.w.Write([]byte(header)); err != nil {
+		return err
+	}
+	_, err := c.w.Write(body)
 	return err
+}
+
+// readFrame reads one Content-Length-framed message and returns its JSON body.
+// Headers other than Content-Length (e.g. Content-Type) are ignored.
+func (c *Client) readFrame() ([]byte, error) {
+	length := 0
+	for {
+		line, err := c.r.ReadString('\n')
+		if err != nil {
+			return nil, err
+		}
+		line = strings.TrimRight(line, "\r\n")
+		if line == "" {
+			break // end of headers
+		}
+		if rest, ok := strings.CutPrefix(line, "Content-Length:"); ok {
+			length, _ = strconv.Atoi(strings.TrimSpace(rest))
+		}
+	}
+	body := make([]byte, length)
+	if _, err := io.ReadFull(c.r, body); err != nil {
+		return nil, err
+	}
+	return body, nil
 }
 
 func (c *Client) findSymbolServer(ctx context.Context, query string) ([]Symbol, error) {

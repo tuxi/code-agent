@@ -22,7 +22,9 @@ func (t *findSymbolTool) InputSchema() json.RawMessage {
 }
 
 func (t *findSymbolTool) Execute(ctx context.Context, _ ExecutionContext, raw json.RawMessage) (ToolResult, error) {
-	var in struct{ Query string `json:"query"` }
+	var in struct {
+		Query string `json:"query"`
+	}
 	if err := json.Unmarshal(raw, &in); err != nil {
 		return ToolResult{}, fmt.Errorf("find_symbol: %w", err)
 	}

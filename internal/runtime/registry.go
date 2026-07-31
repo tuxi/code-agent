@@ -3,9 +3,9 @@ package runtime
 import (
 	"code-agent/internal/agent"
 	"code-agent/internal/app"
-	"code-agent/internal/lsp"
 	"code-agent/internal/credential"
 	"code-agent/internal/jobs"
+	"code-agent/internal/lsp"
 	"code-agent/internal/mcp"
 	"code-agent/internal/model"
 	"code-agent/internal/session"
@@ -239,7 +239,6 @@ func BuildRegistry(ctx context.Context, cfg app.Config, mc app.ModelConfig, prov
 
 	return registry, skillReg, mgr, planRef, jobSink, nil
 }
-
 
 // initLSPClient detects the project language and returns a Client.
 // Initialization runs in the background and never blocks startup: the client
