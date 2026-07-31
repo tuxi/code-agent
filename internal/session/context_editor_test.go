@@ -63,7 +63,7 @@ func TestContextEditorPreservesErrors(t *testing.T) {
 			{Role: model.RoleTool, Content: "error: connection refused", ToolCallID: "t1"},
 			{Role: model.RoleUser, Content: "second task"},
 			{Role: model.RoleAssistant, Content: "Turn 2"},
-			{Role: model.RoleTool, Content: "failure=test: assertion failed", ToolCallID: "t2"},
+			{Role: model.RoleTool, Content: "failure=compile: no such file", ToolCallID: "t2"},
 			{Role: model.RoleUser, Content: "third task"},
 			{Role: model.RoleAssistant, Content: "Turn 3"},
 			{Role: model.RoleTool, Content: "normal output", ToolCallID: "t3"},
@@ -82,7 +82,7 @@ func TestContextEditorPreservesErrors(t *testing.T) {
 		t.Errorf("error: result should be preserved: %q", sess.Messages[3].Content)
 	}
 	// Turn 2's failure= marker — preserved (isError "failure=").
-	if sess.Messages[6].Content != "failure=test: assertion failed" {
+	if sess.Messages[6].Content != "failure=compile: no such file" {
 		t.Errorf("failure= result should be preserved: %q", sess.Messages[6].Content)
 	}
 	// Turn 3's normal output — cleared.
