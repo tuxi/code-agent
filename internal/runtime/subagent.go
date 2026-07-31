@@ -26,7 +26,7 @@ const SubAgentMaxSteps = 20
 // external MCP tool never leaks into the unattended, approval-less subagent.
 // `task` is deliberately absent, which caps recursion at depth 1.
 var ReadOnlyToolNames = []string{
-	"read_file", "list_files", "grep", "project_graph", "git_diff", "load_skill", "web_search", "web_fetch",
+	"read_file", "list_files", "grep", "git_diff", "load_skill", "web_search", "web_fetch",
 }
 
 // PlanModeToolNames is the toolset a plan-mode turn advertises: the read-only set,

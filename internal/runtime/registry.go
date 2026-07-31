@@ -3,6 +3,7 @@ package runtime
 import (
 	"code-agent/internal/agent"
 	"code-agent/internal/app"
+	"code-agent/internal/lsp"
 	"code-agent/internal/credential"
 	"code-agent/internal/jobs"
 	"code-agent/internal/mcp"
@@ -12,7 +13,6 @@ import (
 	"code-agent/internal/tools"
 	"code-agent/internal/tools/filesystem"
 	"code-agent/internal/tools/git"
-	projectgraph "code-agent/internal/tools/project_graph"
 	"code-agent/internal/tools/projectcfg"
 	"code-agent/internal/tools/search"
 	"code-agent/internal/tools/shell"
@@ -58,6 +58,9 @@ func RegisterBuiltinTools(registry *tools.Registry, cfg app.Config, cred credent
 		search.NewGrepTool(),
 		skill.NewLoadSkillTool(skillReg, cfg.GlobalSkillsDir, filepath.Join(root, "skills")),
 	}
+	// LSP tools — best-effort, return "not available" when server is missing.
+	lspClient := initLSPClient(root)
+	toolList = append(toolList, tools.NewLSPTools(lspClient)...)
 	if searchTool := websearch.NewTool(cfg.Web, cred); searchTool != nil {
 		toolList = append(toolList, searchTool)
 	}
@@ -100,7 +103,6 @@ func RegisterBuiltinTools(registry *tools.Registry, cfg app.Config, cred credent
 		jobReg := runCmd.Jobs
 		jobReg.Sink = jobSink // before any Start (jobs.Registry.Sink contract)
 		toolList = append(toolList,
-			projectgraph.NewProjectGraphTool(),
 			projectcfg.NewSetVerifyCommandTool(), // configure verify; needs run_command to actually run
 			git.NewDiffTool(),
 			git.NewApplyPatchTool(),
@@ -236,4 +238,24 @@ func BuildRegistry(ctx context.Context, cfg app.Config, mc app.ModelConfig, prov
 	}
 
 	return registry, skillReg, mgr, planRef, jobSink, nil
+}
+
+
+// initLSPClient detects the project language and returns a Client.
+// Initialization runs in the background and never blocks startup: the client
+// is returned immediately and tools return "warming up" until Ready() is true.
+// Returns nil when no language is recognised.
+func initLSPClient(root string) *lsp.Client {
+	client, err := lsp.DetectLanguage(root)
+	if err != nil {
+		return nil
+	}
+	// Start initialization in the background — never block startup.
+	// Tools check client.Ready() and gracefully degrade until it returns true.
+	go func() {
+		if err := client.Initialize(context.Background(), root); err != nil {
+			fmt.Fprintf(os.Stderr, "[lsp] %s init failed: %v (LSP disabled for this session)\n", client.Language(), err)
+		}
+	}()
+	return client
 }
