@@ -673,10 +673,11 @@ func (e *TurnExecutor) driveTurn(
 		defer releaseGuard()
 	}
 
-	// 2. Wait for the process/session/workspace execution permits before claiming
-	// the active-turn slot. This makes a second turn in the same conversation a
-	// queued operation rather than an ErrBusy race, and prevents concurrent
-	// mutation of a shared checkout.
+	// 2. Wait for the process/session execution permits before claiming the
+	// active-turn slot. This makes a second turn in the same conversation a
+	// queued operation rather than an ErrBusy race. Workspace-level concurrency
+	// is not restricted — concurrent writes to the same checkout are left to
+	// git and the user to resolve.
 	release, err := e.scheduler.Acquire(parentCtx, TurnScheduleRequest{
 		SessionID:     sess.ID,
 		TurnID:        turnID,
@@ -690,7 +691,7 @@ func (e *TurnExecutor) driveTurn(
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
 			e.setTurnInputState(parentCtx, claimed, session.TurnInputCancelled)
-			pub.Emit(agent.Event{Kind: agent.EventTurnCancelled, SessionID: sess.ID, TurnID: turnID})
+			pub.Emit(agent.Event{Kind: agent.EventTurnCancelled, SessionID: sess.ID, TurnID: turnID, CancelledReason: "user_requested"})
 			if persistErr := pub.terminalPersistenceError(); persistErr != nil {
 				return agent.TurnResult{TurnID: turnID}, errors.Join(err, persistErr)
 			}
@@ -1046,6 +1047,9 @@ func (e *TurnExecutor) emitLifecycle(pub agent.Emitter, sess *session.Session, r
 	if kind == agent.EventTurnFailed {
 		event.Err = errString(runErr)
 		event.ErrorCode = lifecycleErrorCode(runErr)
+	}
+	if kind == agent.EventTurnCancelled {
+		event.CancelledReason = "user_requested"
 	}
 	pub.Emit(event)
 }

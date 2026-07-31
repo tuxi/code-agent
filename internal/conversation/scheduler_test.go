@@ -3,8 +3,6 @@ package conversation
 import (
 	"context"
 	"errors"
-	"os"
-	"path/filepath"
 	"testing"
 	"time"
 )
@@ -31,12 +29,15 @@ func TestTurnScheduler_SerializesSameSession(t *testing.T) {
 	releaseSecond()
 }
 
-func TestTurnScheduler_LeasesSharedWorkspace(t *testing.T) {
+func TestTurnScheduler_AllowsSameWorkspaceConcurrently(t *testing.T) {
+	// Workspace-level mutual exclusion was intentionally removed.
+	// Different sessions on the same workspace path can now execute concurrently.
 	s := NewTurnScheduler(2)
 	releaseA, err := s.Acquire(context.Background(), TurnScheduleRequest{SessionID: "a", WorkspacePath: "/work/shared"})
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer releaseA()
 
 	acquired := make(chan func(), 1)
 	go func() {
@@ -47,8 +48,7 @@ func TestTurnScheduler_LeasesSharedWorkspace(t *testing.T) {
 		}
 		acquired <- release
 	}()
-	assertNotReady(t, acquired)
-	releaseA()
+	// Should acquire immediately — no workspace lease blocking.
 	releaseB := assertReady(t, acquired)
 	releaseB()
 }
@@ -94,12 +94,16 @@ func TestTurnScheduler_AllowsIsolatedWorktreesFromSameBase(t *testing.T) {
 	releaseB()
 }
 
-func TestTurnScheduler_SerializesSamePathMisdeclaredAsIsolated(t *testing.T) {
+func TestTurnScheduler_AllowsSamePathIsolatedConcurrently(t *testing.T) {
+	// With workspaceLease removed, even two isolated-worktree sessions that
+	// share a path can run concurrently — the scheduler no longer enforces
+	// path-level mutual exclusion.
 	s := NewTurnScheduler(2)
 	releaseA, err := s.Acquire(context.Background(), TurnScheduleRequest{SessionID: "a", WorkspacePath: "/repo/worktrees/same", Mode: IsolatedWorktree})
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer releaseA()
 	acquired := make(chan func(), 1)
 	go func() {
 		release, err := s.Acquire(context.Background(), TurnScheduleRequest{SessionID: "b", WorkspacePath: "/repo/worktrees/same", Mode: IsolatedWorktree})
@@ -109,31 +113,8 @@ func TestTurnScheduler_SerializesSamePathMisdeclaredAsIsolated(t *testing.T) {
 		}
 		acquired <- release
 	}()
-	assertNotReady(t, acquired)
-	releaseA()
 	releaseB := assertReady(t, acquired)
 	releaseB()
-}
-
-func TestWorkspaceLeaseKeyCaseFoldsEquivalentPaths(t *testing.T) {
-	a := workspaceLeaseKey(TurnScheduleRequest{WorkspacePath: "/Repo/Worktree"})
-	b := workspaceLeaseKey(TurnScheduleRequest{WorkspacePath: "/repo/worktree"})
-	if a != b {
-		t.Fatalf("case variant lease keys differ: %q != %q", a, b)
-	}
-}
-
-func TestWorkspaceLeaseKeyResolvesSymlinks(t *testing.T) {
-	realPath := t.TempDir()
-	linkPath := filepath.Join(t.TempDir(), "workspace-link")
-	if err := os.Symlink(realPath, linkPath); err != nil {
-		t.Fatal(err)
-	}
-	realKey := workspaceLeaseKey(TurnScheduleRequest{WorkspacePath: realPath})
-	linkKey := workspaceLeaseKey(TurnScheduleRequest{WorkspacePath: linkPath, Mode: IsolatedWorktree})
-	if realKey != linkKey {
-		t.Fatalf("real key %q != symlink key %q", realKey, linkKey)
-	}
 }
 
 func TestTurnScheduler_CancelQueuedTurn(t *testing.T) {
@@ -206,12 +187,6 @@ func TestTurnScheduler_ReportsStableQueueReasons(t *testing.T) {
 			running: TurnScheduleRequest{SessionID: "a", WorkspacePath: "/work/a"},
 			queued:  TurnScheduleRequest{SessionID: "b", WorkspacePath: "/work/b"},
 			want:    QueueReasonGlobalCapacity,
-		},
-		{
-			name: "workspace lease", maxRunning: 2,
-			running: TurnScheduleRequest{SessionID: "a", WorkspacePath: "/work/shared"},
-			queued:  TurnScheduleRequest{SessionID: "b", WorkspacePath: "/work/shared"},
-			want:    QueueReasonWorkspaceLease,
 		},
 		{
 			name: "session serialization", maxRunning: 2,

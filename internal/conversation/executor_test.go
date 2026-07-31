@@ -573,15 +573,17 @@ func TestTurnExecutor_Execute_Concurrency(t *testing.T) {
 	active.FinishTurn("busy-session")
 }
 
-func TestTurnExecutor_QueuesSameWorkspaceAndCancelsQueuedTurn(t *testing.T) {
+func TestTurnExecutor_AllowsSameWorkspaceConcurrentTurns(t *testing.T) {
+	// Workspace-level mutual exclusion was intentionally removed.
+	// Two different sessions on the same workspace path now run concurrently.
 	repo := newFakeRepo()
 	first := &session.Session{ID: "one", WorkspacePath: "/work/shared", Metadata: map[string]any{}}
 	second := &session.Session{ID: "two", WorkspacePath: "/work/shared", Metadata: map[string]any{}}
 	repo.sessions[first.ID] = first
 	repo.sessions[second.ID] = second
 
-	release := make(chan struct{})
 	started := make(chan string, 2)
+	release := make(chan struct{})
 	exec := NewTurnExecutor(repo, &fakeEventStore{}, NewActiveTurnRegistry(), NewSubscriptionManager(), &schedulerBlockingRunBuilder{started: started, release: release})
 	exec.SetTurnScheduler(NewTurnScheduler(2))
 
@@ -593,41 +595,90 @@ func TestTurnExecutor_QueuesSameWorkspaceAndCancelsQueuedTurn(t *testing.T) {
 
 	secondDone := make(chan error, 1)
 	go func() { _, err := exec.Execute(context.Background(), second.ID, "second", ""); secondDone <- err }()
+
+	// Second turn must start immediately — no workspace lease queuing.
+	if got := assertReady(t, started); got != second.ID {
+		t.Fatalf("second started session = %q, want %q (should not be queued behind workspace lease)", got, second.ID)
+	}
+
+	close(release)
+	if err := assertReady(t, firstDone); err != nil {
+		t.Fatalf("first turn error = %v", err)
+	}
+	if err := assertReady(t, secondDone); err != nil {
+		t.Fatalf("second turn error = %v", err)
+	}
+}
+
+func TestTurnExecutor_QueuedCancelEmitsCancelledWithReason(t *testing.T) {
+	// When a queued turn is cancelled via context cancellation (e.g. the client
+	// sent cancel_turn), the executor must emit turn_cancelled with
+	// cancelled_reason: "user_requested".
+	repo := newFakeRepo()
+	repo.sessions["a"] = &session.Session{ID: "a", WorkspacePath: "/work/a", Metadata: map[string]any{}}
+	repo.sessions["b"] = &session.Session{ID: "b", WorkspacePath: "/work/b", Metadata: map[string]any{}}
+	events := &fakeEventStore{}
+
+	release := make(chan struct{})
+	started := make(chan string, 1)
+	exec := NewTurnExecutor(repo, events, NewActiveTurnRegistry(), NewSubscriptionManager(), &schedulerBlockingRunBuilder{started: started, release: release})
+	exec.SetTurnScheduler(NewTurnScheduler(1)) // single slot: B queues
+
+	// Turn A fills the only slot.
+	aDone := make(chan error, 1)
+	go func() { _, err := exec.Execute(context.Background(), "a", "A", ""); aDone <- err }()
+	if got := assertReady(t, started); got != "a" {
+		t.Fatalf("started = %q", got)
+	}
+
+	// Turn B queues. Use a cancellable context to simulate cancel_turn.
+	ctx, cancel := context.WithCancel(context.Background())
+	bDone := make(chan error, 1)
+	go func() { _, err := exec.Execute(ctx, "b", "B", ""); bDone <- err }()
+
+	// Wait for B to be queued.
 	deadline := time.Now().Add(time.Second)
 	for exec.scheduler.Snapshot().Queued != 1 {
 		if time.Now().After(deadline) {
-			t.Fatal("second turn was not queued behind shared workspace lease")
+			t.Fatal("turn B was not queued")
 		}
 		time.Sleep(time.Millisecond)
 	}
-	exec.Cancel(second.ID)
-	if err := assertReady(t, secondDone); !errors.Is(err, context.Canceled) {
+
+	// Cancel the queued turn.
+	cancel()
+	if err := assertReady(t, bDone); !errors.Is(err, context.Canceled) {
 		t.Fatalf("queued turn error = %v, want context.Canceled", err)
 	}
-	var secondEvents []agent.Event
-	for _, record := range exec.events.(*fakeEventStore).records {
-		if record.SessionID != second.ID {
+
+	// Assert B's events include turn_cancelled with reason.
+	var cancelled *agent.Event
+	for _, record := range events.records {
+		if record.SessionID != "b" {
 			continue
 		}
 		var event agent.Event
 		if err := json.Unmarshal(record.Payload, &event); err != nil {
 			t.Fatal(err)
 		}
-		secondEvents = append(secondEvents, event)
+		if event.Kind == agent.EventTurnCancelled {
+			cancelled = &event
+			break
+		}
 	}
-	if len(secondEvents) != 3 || secondEvents[0].Kind != agent.EventTurnAccepted || secondEvents[1].Kind != agent.EventTurnQueued || secondEvents[2].Kind != agent.EventTurnCancelled || secondEvents[0].TurnID == "" || secondEvents[0].TurnID != secondEvents[1].TurnID || secondEvents[1].TurnID != secondEvents[2].TurnID {
-		t.Fatalf("queued cancellation events = %#v", secondEvents)
+	if cancelled == nil {
+		t.Fatal("no turn_cancelled event found for session B")
 	}
-	if secondEvents[1].QueuePosition != 1 {
-		t.Fatalf("queue position = %d, want 1", secondEvents[1].QueuePosition)
+	if cancelled.CancelledReason != "user_requested" {
+		t.Fatalf("cancelled_reason = %q, want user_requested", cancelled.CancelledReason)
 	}
-	if secondEvents[1].QueueReason != string(QueueReasonWorkspaceLease) {
-		t.Fatalf("queue reason = %q, want %q", secondEvents[1].QueueReason, QueueReasonWorkspaceLease)
+	if cancelled.TurnID == "" {
+		t.Fatal("turn_cancelled turn_id is empty")
 	}
+
+	// Clean up A.
 	close(release)
-	if err := assertReady(t, firstDone); err != nil {
-		t.Fatalf("first turn error = %v", err)
-	}
+	assertReady(t, aDone)
 }
 
 func TestTurnExecutor_RunningCancelPersistsExactlyOneTerminal(t *testing.T) {

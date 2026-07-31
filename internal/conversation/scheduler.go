@@ -5,12 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"sort"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"code-agent/internal/workspace"
 )
 
 // WorkspaceExecutionMode describes the isolation a turn has while it is
@@ -62,10 +59,15 @@ const (
 	QueueReasonSessionSerialization TurnQueueReason = "session_serialization"
 )
 
-// TurnScheduler admits turns fairly across sessions. It enforces three rules:
-// one running turn per session, a process-wide concurrency limit, and an
-// exclusive lease for every normalized execution path. It owns no goroutines: callers wait
-// in Acquire, making cancellation and shutdown deterministic.
+// TurnScheduler admits turns fairly across sessions. It enforces two rules:
+// one running turn per session and a process-wide concurrency limit. It owns
+// no goroutines: callers wait in Acquire, making cancellation and shutdown
+// deterministic.
+//
+// Workspace-level mutual exclusion was intentionally removed: different
+// sessions on the same workspace path can now execute concurrently, matching
+// the behaviour of Claude Code and other mainstream agent products. File-level
+// conflicts are left to git and the user.
 type TurnScheduler struct {
 	mu sync.Mutex
 
@@ -76,7 +78,6 @@ type TurnScheduler struct {
 
 	pending         []*scheduledTurn
 	runningSessions map[string]bool
-	workspaceLeases map[string]bool
 	active          map[string]*scheduledTurn
 	turnSequence    atomic.Uint64
 }
@@ -99,7 +100,6 @@ func NewTurnScheduler(maxConcurrentTurns int) *TurnScheduler {
 	return &TurnScheduler{
 		maxRunning:      maxConcurrentTurns,
 		runningSessions: make(map[string]bool),
-		workspaceLeases: make(map[string]bool),
 		active:          make(map[string]*scheduledTurn),
 	}
 }
@@ -221,9 +221,6 @@ func (s *TurnScheduler) queueReasonLocked(w *scheduledTurn) TurnQueueReason {
 	if s.runningSessions[w.req.SessionID] || s.hasEarlierSessionEntryLocked(w) {
 		return QueueReasonSessionSerialization
 	}
-	if key := workspaceLeaseKey(w.req); key != "" && s.workspaceLeases[key] {
-		return QueueReasonWorkspaceLease
-	}
 	return QueueReasonGlobalCapacity
 }
 
@@ -262,9 +259,6 @@ func (s *TurnScheduler) releaseLocked(w *scheduledTurn) {
 	s.running--
 	delete(s.runningSessions, w.req.SessionID)
 	delete(s.active, w.req.SessionID)
-	if key := workspaceLeaseKey(w.req); key != "" {
-		delete(s.workspaceLeases, key)
-	}
 	s.dispatchLocked()
 }
 
@@ -280,9 +274,6 @@ func (s *TurnScheduler) dispatchLocked() {
 		s.running++
 		s.runningSessions[w.req.SessionID] = true
 		s.active[w.req.SessionID] = w
-		if key := workspaceLeaseKey(w.req); key != "" {
-			s.workspaceLeases[key] = true
-		}
 		s.lastStart = w.req.SessionID
 		close(w.ready)
 	}
@@ -312,8 +303,7 @@ func (s *TurnScheduler) runnableLocked(w *scheduledTurn) bool {
 	if s.runningSessions[w.req.SessionID] || s.hasEarlierSessionEntryLocked(w) {
 		return false
 	}
-	key := workspaceLeaseKey(w.req)
-	return key == "" || !s.workspaceLeases[key]
+	return true
 }
 
 func (s *TurnScheduler) hasEarlierSessionEntryLocked(target *scheduledTurn) bool {
@@ -337,18 +327,3 @@ func (s *TurnScheduler) removePendingLocked(target *scheduledTurn) {
 	}
 }
 
-func workspaceLeaseKey(req TurnScheduleRequest) string {
-	// Policy describes how a path was supplied; it never grants permission for
-	// two turns to use the same directory concurrently. Distinct worktree paths
-	// naturally produce distinct keys and can run in parallel.
-	path := req.WorkspacePath
-	if path == "" {
-		return "default"
-	}
-	if canonical, err := workspace.CanonicalPath(path); err == nil {
-		path = canonical
-	}
-	// Case-folding is conservative on case-sensitive volumes and closes the
-	// macOS case-variant lease bypass on the common default filesystem.
-	return strings.ToLower(path)
-}

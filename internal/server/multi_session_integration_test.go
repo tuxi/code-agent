@@ -186,7 +186,9 @@ func TestManagedWorktreeHTTPAndWebSocketRunSameRepositoryConcurrently(t *testing
 	builder.finish(bRef.ID)
 }
 
-func TestMultiSessionWebSocketQueuesAndCancelsSharedWorkspace(t *testing.T) {
+func TestMultiSessionWebSocketAllowsSameWorkspaceConcurrently(t *testing.T) {
+	// Workspace-level mutual exclusion was intentionally removed.
+	// Different sessions on the same workspace path now run concurrently.
 	repo := newFakeConversationRepo()
 	repo.sessions["a"] = &session.Session{ID: "a", WorkspacePath: "/workspace/shared", Metadata: map[string]any{}}
 	repo.sessions["b"] = &session.Session{ID: "b", WorkspacePath: "/workspace/shared", Metadata: map[string]any{}}
@@ -213,26 +215,25 @@ func TestMultiSessionWebSocketQueuesAndCancelsSharedWorkspace(t *testing.T) {
 		t.Fatal("first shared-workspace turn did not start")
 	}
 
+	// Second turn on same workspace must start immediately — no workspace lease.
 	wsWriteJSON(t, ctx, b, map[string]any{"type": "agent_input", "kind": "text", "request_id": "req-b", "text": "B"})
-	queued := readUntilKind(t, ctx, b, string(agent.EventTurnQueued))
-	if queued["turn_id"] == "" || queued["queue_position"].(float64) != 1 || queued["reason"] != string(conversation.QueueReasonWorkspaceLease) {
-		t.Fatalf("queued frame=%v", queued)
-	}
-	activity := fetchActivity(t, srv.URL)
-	var queuedActivity *SessionActivity
-	for i := range activity.Sessions {
-		if activity.Sessions[i].SessionID == "b" {
-			queuedActivity = &activity.Sessions[i]
-			break
+	select {
+	case id := <-builder.started:
+		if id != "b" {
+			t.Fatalf("started=%q, want b (should not be queued behind workspace lease)", id)
 		}
+	case <-ctx.Done():
+		t.Fatal("second shared-workspace turn was queued instead of starting concurrently")
 	}
-	if queuedActivity == nil || queuedActivity.State != "queued" || queuedActivity.QueueReason != string(conversation.QueueReasonWorkspaceLease) {
-		t.Fatalf("queued activity=%+v", queuedActivity)
-	}
+
+	// Cancel the running turn on b.
 	wsWriteJSON(t, ctx, b, map[string]any{"type": "cancel_turn"})
 	cancelled := readUntilKind(t, ctx, b, string(agent.EventTurnCancelled))
-	if cancelled["turn_id"] != queued["turn_id"] {
-		t.Fatalf("queued/cancelled ids differ: %v / %v", queued, cancelled)
+	if cancelled["turn_id"] == nil || cancelled["turn_id"] == "" {
+		t.Fatalf("turn_cancelled missing turn_id: %v", cancelled)
+	}
+	if cancelled["cancelled_reason"] != "user_requested" {
+		t.Fatalf("cancelled_reason = %v, want user_requested", cancelled["cancelled_reason"])
 	}
 
 	events.mu.Lock()
@@ -247,6 +248,7 @@ func TestMultiSessionWebSocketQueuesAndCancelsSharedWorkspace(t *testing.T) {
 		t.Fatalf("turn_cancelled count=%d", cancelledCount)
 	}
 	builder.finish("a")
+	builder.finish("b")
 }
 
 func TestArchivedConversationRejectsWebSocketTurnUntilRestored(t *testing.T) {

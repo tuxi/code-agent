@@ -137,7 +137,7 @@ type Event struct {
 	UserAssets    []model.GatewayAssetRef
 	LocalAssets   []model.LocalAssetRef
 	QueuePosition int    // EventTurnQueued: one-based scheduler position
-	QueueReason   string // EventTurnQueued: global_capacity | workspace_lease | session_serialization
+	QueueReason   string // EventTurnQueued: global_capacity | session_serialization
 
 	// Seq is the monotonic per-store sequence number assigned when the event is
 	// persisted (v1.2 §4). It is 0 on the core path and stamped by the transport
@@ -222,6 +222,13 @@ type Event struct {
 	// an open string set: transports expose it as error.code, while clients use
 	// unknown values as a generic failure.
 	ErrorCode string
+
+	// CancelledReason is set on turn_cancelled events. Currently always
+	// "user_requested" (the client sent cancel_turn or agent_input
+	// kind=command text=cancel). A future "client_disconnected" value
+	// will distinguish WebSocket-loss cancellation when that behaviour
+	// is implemented.
+	CancelledReason string
 }
 
 // Emitter receives loop events. Implementations render (REPL), stream (live UI),
