@@ -58,9 +58,12 @@ func RegisterBuiltinTools(registry *tools.Registry, cfg app.Config, cred credent
 		search.NewGrepTool(),
 		skill.NewLoadSkillTool(skillReg, cfg.GlobalSkillsDir, filepath.Join(root, "skills")),
 	}
-	// LSP tools — best-effort, return "not available" when server is missing.
+	// LSP tools — best-effort.
 	lspClient := initLSPClient(root)
 	toolList = append(toolList, tools.NewLSPTools(lspClient)...)
+
+	// Memory tools — per-workspace, lazily initialized via ExecutionContext.
+	toolList = append(toolList, tools.NewMemoryTools()...)
 	if searchTool := websearch.NewTool(cfg.Web, cred); searchTool != nil {
 		toolList = append(toolList, searchTool)
 	}
