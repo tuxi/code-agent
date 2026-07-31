@@ -88,6 +88,7 @@ func BuildRunner(cfg app.Config, mc app.ModelConfig, provider model.Provider, re
 		PlanTools:     tools.Subset(registry, PlanModeToolNames...),
 		Hook:          hook,
 		Compactor:     BuildCompactor(cfg, mc, provider),
+		ContextEditor: &session.ContextEditor{KeepTurns: 3},
 		// Tier-0 pruning shares the compactor's verbatim-tail budget (P12.c).
 		CompactKeepTokens: cfg.CompactKeepTokens(mc),
 		Emitter:           emitter,

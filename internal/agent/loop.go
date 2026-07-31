@@ -148,6 +148,10 @@ type Runner struct {
 
 	Compactor session.Compactor
 
+	// ContextEditor clears stale tool results and thinking blocks before
+	// compaction runs. Nil means skip this step.
+	ContextEditor *session.ContextEditor
+
 	// CompactKeepTokens mirrors the compactor's verbatim-tail budget for tier-0
 	// pruning (P12.c): messages outside this approximate-token protection window
 	// get their old tool outputs truncated and think-blocks stripped before an
@@ -1432,6 +1436,14 @@ func (r *Runner) maybeCompact(ctx context.Context, sess *session.Session) error 
 		return nil
 	}
 	before := sess.PromptTokens
+
+	// Context editing: clear stale tool results before the LLM summarizer
+	// runs. Free (no LLM call), reduces tokens the model must read.
+	if r.ContextEditor != nil {
+		if n := r.ContextEditor.Edit(sess); n > 0 {
+			r.emit(Event{Kind: "context_edited", Text: fmt.Sprintf("cleared %d stale tool results", n)})
+		}
+	}
 
 	// Tier-0 (P12.c): deterministic pruning first — zero LLM cost. When its
 	// estimated savings already put the prompt back under the threshold, skip
