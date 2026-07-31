@@ -36,13 +36,16 @@ func (e ContextEditor) Edit(sess *Session) int {
 	edited := 0
 	for i := 0; i < cutoff; i++ {
 		m := &msgs[i]
-		if m.Role == model.RoleTool && !isError(m.Content) {
-			m.Content = "[tool result cleared]"
+		if m.Role == model.RoleTool && !isError(m.Content) && m.Content != clearedMarker {
+			m.Content = clearedMarker
 			edited++
 		}
 	}
 	return edited
 }
+
+// clearedMarker replaces the content of pruned tool results.
+const clearedMarker = "[tool result cleared]"
 
 // findCutoff returns the index of the first message to KEEP. Messages before
 // this index are candidates for pruning.

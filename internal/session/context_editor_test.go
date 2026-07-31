@@ -52,43 +52,45 @@ func TestContextEditorClearsOldToolResults(t *testing.T) {
 }
 
 func TestContextEditorPreservesErrors(t *testing.T) {
-	// 4 assistant turns — enough to exceed the default KeepTurns=3 so old
-	// messages actually enter the editing window.
+	// 5 assistant turns, KeepTurns: 2 → the edit window covers turns 1-3
+	// (indices < 11), so error-marked results genuinely enter the window and
+	// exercise every isError branch, not just the keep-window logic.
 	sess := &Session{
 		Messages: []model.Message{
 			{Role: model.RoleSystem, Content: "You are a test agent."},
 			{Role: model.RoleUser, Content: "first task"},
 			{Role: model.RoleAssistant, Content: "Turn 1"},
-			{Role: model.RoleTool, Content: "normal output", ToolCallID: "t1"},
+			{Role: model.RoleTool, Content: "error: connection refused", ToolCallID: "t1"},
 			{Role: model.RoleUser, Content: "second task"},
 			{Role: model.RoleAssistant, Content: "Turn 2"},
-			{Role: model.RoleTool, Content: "command failed: exit status 1", ToolCallID: "t2"},
+			{Role: model.RoleTool, Content: "failure=test: assertion failed", ToolCallID: "t2"},
 			{Role: model.RoleUser, Content: "third task"},
 			{Role: model.RoleAssistant, Content: "Turn 3"},
-			{Role: model.RoleTool, Content: "failure=test: assertion failed", ToolCallID: "t3"},
+			{Role: model.RoleTool, Content: "normal output", ToolCallID: "t3"},
 			{Role: model.RoleUser, Content: "fourth task"},
 			{Role: model.RoleAssistant, Content: "Turn 4"},
-			{Role: model.RoleTool, Content: "recent ok", ToolCallID: "t4"},
+			{Role: model.RoleTool, Content: "recent result", ToolCallID: "t4"},
+			{Role: model.RoleAssistant, Content: "Turn 5"},
 		},
 	}
 
-	editor := ContextEditor{KeepTurns: 2} // keep last 2 turns, edit turns 1-2
+	editor := ContextEditor{KeepTurns: 2} // keep last 2 turns, edit turns 1-3
 	editor.Edit(sess)
 
-	// Turn 1's normal output — cleared.
-	if sess.Messages[3].Content != "[tool result cleared]" {
-		t.Errorf("normal output should be cleared: %q", sess.Messages[3].Content)
+	// Turn 1's error: — preserved (isError "error:").
+	if sess.Messages[3].Content != "error: connection refused" {
+		t.Errorf("error: result should be preserved: %q", sess.Messages[3].Content)
 	}
-	// Turn 2's error — preserved.
-	if sess.Messages[6].Content != "command failed: exit status 1" {
-		t.Errorf("error result (exit status) should be preserved: %q", sess.Messages[6].Content)
+	// Turn 2's failure= marker — preserved (isError "failure=").
+	if sess.Messages[6].Content != "failure=test: assertion failed" {
+		t.Errorf("failure= result should be preserved: %q", sess.Messages[6].Content)
 	}
-	// Turn 3's failure= marker — preserved.
-	if sess.Messages[9].Content != "failure=test: assertion failed" {
-		t.Errorf("failure= result should be preserved: %q", sess.Messages[9].Content)
+	// Turn 3's normal output — cleared.
+	if sess.Messages[9].Content != "[tool result cleared]" {
+		t.Errorf("normal output should be cleared: %q", sess.Messages[9].Content)
 	}
 	// Turn 4's recent result — preserved (inside keep window).
-	if sess.Messages[12].Content != "recent ok" {
+	if sess.Messages[12].Content != "recent result" {
 		t.Errorf("recent result should be preserved: %q", sess.Messages[12].Content)
 	}
 }
@@ -104,13 +106,31 @@ func TestContextEditorIdempotent(t *testing.T) {
 	}
 
 	editor := ContextEditor{KeepTurns: 0}
-	editor.Edit(sess)
-	first := sess.Messages[3].Content
-	editor.Edit(sess) // second pass — should be no-op
-	second := sess.Messages[3].Content
+	first := editor.Edit(sess) // KeepTurns=0 → default 3; 1 turn → nothing edited
+	if first != 0 {
+		t.Errorf("within keep window: want 0 edits, got %d", first)
+	}
+	if sess.Messages[3].Content != "result" {
+		t.Errorf("result was modified: %q", sess.Messages[3].Content)
+	}
 
-	if first != second {
-		t.Errorf("second pass changed content: %q → %q", first, second)
+	sess2 := &Session{
+		Messages: []model.Message{
+			{Role: model.RoleSystem, Content: "You are a test agent."},
+			{Role: model.RoleUser, Content: "first"},
+			{Role: model.RoleAssistant, Content: "Turn 1"},
+			{Role: model.RoleTool, Content: "old result", ToolCallID: "t1"},
+			{Role: model.RoleAssistant, Content: "Turn 2"},
+		},
+	}
+	e2 := ContextEditor{KeepTurns: 1}
+	n1 := e2.Edit(sess2)
+	n2 := e2.Edit(sess2) // second pass — must be a true no-op
+	if n1 != 1 || n2 != 0 {
+		t.Errorf("first pass = %d, second pass = %d; want 1 then 0", n1, n2)
+	}
+	if sess2.Messages[3].Content != "[tool result cleared]" {
+		t.Errorf("old tool result not cleared: %q", sess2.Messages[3].Content)
 	}
 }
 

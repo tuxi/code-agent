@@ -1441,7 +1441,7 @@ func (r *Runner) maybeCompact(ctx context.Context, sess *session.Session) error 
 	// runs. Free (no LLM call), reduces tokens the model must read.
 	if r.ContextEditor != nil {
 		if n := r.ContextEditor.Edit(sess); n > 0 {
-			r.emit(Event{Kind: "context_edited", Text: fmt.Sprintf("cleared %d stale tool results", n)})
+			r.emit(Event{Kind: EventContextEdited, Text: fmt.Sprintf("cleared %d stale tool results", n)})
 		}
 	}
 

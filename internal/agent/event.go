@@ -42,6 +42,9 @@ const (
 	// no LLM call. SavedTokens carries the approximate reclaimed size; the true
 	// size is measured by the next model call, like compaction.
 	EventContextPruned EventKind = "context_pruned"
+	// EventContextEdited: pre-compaction context editing cleared stale tool
+	// results (no LLM call). Text carries the count cleared.
+	EventContextEdited EventKind = "context_edited"
 	EventTurnFinished  EventKind = "turn_finished"
 
 	// Lifecycle (v1.2). Emitted around suspend/resume so a client can drive the
