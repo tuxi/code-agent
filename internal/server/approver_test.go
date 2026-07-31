@@ -89,7 +89,7 @@ func (g *fakeGranter) GrantTool(toolName string, scope approve.Scope) (string, e
 func TestRemoteApproverResolveToolAlwaysGrants(t *testing.T) {
 	sink := &syncSink{}
 	g := &fakeGranter{}
-	a := NewRemoteApprover( time.Second, g)
+	a := NewRemoteApprover(time.Second, g)
 	a.AddSink(1, sink)
 
 	got := make(chan agent.Verdict, 1)
@@ -108,7 +108,7 @@ func TestRemoteApproverResolveToolAlwaysGrants(t *testing.T) {
 func TestRemoteApproverResolveToolOnceDoesNotGrant(t *testing.T) {
 	sink := &syncSink{}
 	g := &fakeGranter{}
-	a := NewRemoteApprover( time.Second, g)
+	a := NewRemoteApprover(time.Second, g)
 	a.AddSink(1, sink)
 
 	got := make(chan agent.Verdict, 1)
@@ -137,7 +137,7 @@ func TestRemoteApproverTimeoutDenies(t *testing.T) {
 // morning, and the request frame carries no deadline_ms.
 func TestRemoteApproverZeroTimeoutWaitsForVerdict(t *testing.T) {
 	sink := &syncSink{}
-	a := NewRemoteApprover( 0, nil)
+	a := NewRemoteApprover(0, nil)
 	a.AddSink(1, sink)
 
 	got := make(chan agent.Verdict, 1)
@@ -171,7 +171,7 @@ func TestRemoteApproverZeroTimeoutWaitsForVerdict(t *testing.T) {
 
 func TestRemoteApproverCloseDeniesPending(t *testing.T) {
 	sink := &syncSink{}
-	a := NewRemoteApprover( 0, nil) // no deadline; rely on Close
+	a := NewRemoteApprover(0, nil) // no deadline; rely on Close
 	a.AddSink(1, sink)
 
 	got := make(chan agent.Verdict, 1)
@@ -192,7 +192,7 @@ func TestRemoteApproverCloseDeniesPending(t *testing.T) {
 
 func TestRemoteApproverClosedRejectsImmediately(t *testing.T) {
 	sink := &syncSink{}
-	a := NewRemoteApprover( time.Second, nil)
+	a := NewRemoteApprover(time.Second, nil)
 	a.AddSink(1, sink)
 	a.Close()
 
@@ -231,7 +231,7 @@ func TestRemoteApproverClearSinkDoesNotDeny(t *testing.T) {
 	// ClearSink must not resolve pending requests — they stay registered and
 	// can be re-sent when a new client connects.
 	sink := &syncSink{}
-	a := NewRemoteApprover( 2*time.Second, nil)
+	a := NewRemoteApprover(2*time.Second, nil)
 	a.AddSink(1, sink)
 
 	got := make(chan agent.Verdict, 1)

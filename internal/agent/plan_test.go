@@ -459,7 +459,7 @@ func TestExecutingPlanCannotFinishWithoutIndependentReview(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !result.HitStepLimit || !strings.Contains(result.Final, "independent review") {
+	if !result.HitStepLimit || !strings.Contains(result.Final, "change_review") {
 		t.Fatalf("unreviewed implementation unexpectedly finalized: %#v", result)
 	}
 }

@@ -14,6 +14,7 @@ import (
 	"code-agent/internal/assetref"
 	"code-agent/internal/model"
 	"code-agent/internal/reference"
+	"code-agent/internal/reflection"
 	"code-agent/internal/session"
 	"code-agent/internal/tools"
 )
@@ -437,9 +438,18 @@ func (r *Runner) updateHarnessGates(toolName string, input json.RawMessage, obse
 			r.planCriticPath = ""
 			r.planCriticDigest = ""
 		}
-		if r.PlanState == PlanStatusExecuting {
-			r.plannedMutation = true
-			r.independentReviewPassed = false
+		// Any side-effecting call is a mutation that must be reviewed before
+		// the turn is final — plan mode or not.
+		r.plannedMutation = true
+		r.independentReviewPassed = false
+		// Track whether this mutation touched verifiable code (not docs/data).
+		if !r.mutatedVerifiableCode && reflection.IsMutatingTool(toolName) {
+			for _, p := range reflection.MutatedPaths(toolName, string(input)) {
+				if reflection.IsVerifiableCode(p) {
+					r.mutatedVerifiableCode = true
+					break
+				}
+			}
 		}
 		return
 	}
@@ -469,9 +479,7 @@ func (r *Runner) updateHarnessGates(toolName string, input json.RawMessage, obse
 			r.planCriticDigest = planContentDigest(content)
 		}
 	case "change_review":
-		if r.PlanState == PlanStatusExecuting && r.plannedMutation {
-			r.independentReviewPassed = true
-		}
+		r.independentReviewPassed = true
 	}
 }
 

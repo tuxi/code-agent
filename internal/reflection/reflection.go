@@ -125,7 +125,11 @@ func SawFailure(steps []StepView) bool {
 	return false
 }
 
-// mutatedPaths returns the workspace files a mutating tool call touches.
+// MutatedPaths returns the workspace-relative file paths a mutating tool call touches.
+func MutatedPaths(tool, input string) []string {
+	return mutatedPaths(tool, input)
+}
+
 func mutatedPaths(tool, input string) []string {
 	switch tool {
 	case "edit_file", "create_file", "write_file":
@@ -196,8 +200,15 @@ func isTestFile(path string) bool {
 // everything counts as verifiable code EXCEPT known doc/data formats, so a change
 // in any real language still trips UnverifiedMutation while a pure-doc write does
 // not. The runtime must never tell the model to "run a verification" on a .md.
-func isVerifiableCode(path string) bool {
+// IsVerifiableCode reports whether a path is source code that a build/test could
+// meaningfully confirm — as opposed to documentation or data.
+func IsVerifiableCode(path string) bool {
 	return !isDocOrData(path)
+}
+
+// isVerifiableCode is the internal alias kept for backward compatibility.
+func isVerifiableCode(path string) bool {
+	return IsVerifiableCode(path)
 }
 
 // isDocOrData reports whether a path is a documentation or data file — the kinds
