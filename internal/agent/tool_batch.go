@@ -442,6 +442,9 @@ func (r *Runner) updateHarnessGates(toolName string, input json.RawMessage, obse
 		// the turn is final — plan mode or not.
 		r.plannedMutation = true
 		r.independentReviewPassed = false
+		// A new mutation invalidates any prior review, so re-arm the review
+		// gate (see the change_review case below).
+		r.changeReviewCount = 0
 		// Track whether this mutation touched verifiable code (not docs/data).
 		if !r.mutatedVerifiableCode && reflection.IsMutatingTool(toolName) {
 			for _, p := range reflection.MutatedPaths(toolName, string(input)) {
@@ -480,6 +483,11 @@ func (r *Runner) updateHarnessGates(toolName string, input json.RawMessage, obse
 		}
 	case "change_review":
 		r.independentReviewPassed = true
+		// Count only a PASSING review (this switch is unreachable for other
+		// verdicts): one passing review per mutation, re-armed on any new
+		// mutation. REQUEST_CHANGES leaves the count untouched, so the gate
+		// fires again and the fix gets re-reviewed.
+		r.changeReviewCount++
 	}
 }
 

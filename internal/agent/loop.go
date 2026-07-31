@@ -145,6 +145,7 @@ type Runner struct {
 	plannedMutation         bool
 	independentReviewPassed bool
 	mutatedVerifiableCode   bool // true when this turn touched verifiable code (not docs/data)
+	changeReviewCount       int  // passing change_review completions since the last mutation; re-armed by any new mutation
 
 	Compactor session.Compactor
 
@@ -800,6 +801,7 @@ func (r *Runner) drive(ctx context.Context, sess *session.Session) (TurnResult, 
 
 	// Reflection (P4.3) per-turn state: at most one self-check pass, and the
 	// ephemeral nudge to apply on the next request once it fires.
+	r.changeReviewCount = 0 // one passing review per mutation; re-armed on any new mutation
 	reflected := false
 	pendingReflection := ""
 	pendingHarness := ""
@@ -1038,12 +1040,12 @@ func (r *Runner) drive(ctx context.Context, sess *session.Session) (TurnResult, 
 					continue
 				}
 			}
-			// Change review: any code change must pass an independent
-			// review before the turn is final. When a Reflector is set, only
-			// verifiable code changes (not docs/data) trigger the gate.
-			// Without a Reflector, any side-effecting mutation triggers it.
-			if r.independentTaskAvailable() && r.plannedMutation && !r.independentReviewPassed &&
-				(r.mutatedVerifiableCode || r.Reflector == nil) {
+			// Change review: plan-mode changes get one independent review.
+			// Free-form turns rely on the Reflector (build verification) instead.
+			// The count increments only when a review completes, so
+			// the model ignoring the harness re-triggers on the next done.
+			if r.PlanState == PlanStatusExecuting && r.independentTaskAvailable() &&
+				r.plannedMutation && !r.independentReviewPassed && r.changeReviewCount < 1 {
 				pendingHarness = changeReviewPrompt
 				r.emit(Event{Kind: EventReflected, Text: pendingHarness})
 				continue
@@ -1115,7 +1117,7 @@ func (r *Runner) drive(ctx context.Context, sess *session.Session) (TurnResult, 
 		return turn, nil
 	}
 	if r.independentTaskAvailable() && r.plannedMutation && !r.independentReviewPassed &&
-		(r.mutatedVerifiableCode || r.Reflector == nil) {
+		(r.mutatedVerifiableCode || r.Reflector == nil) && r.changeReviewCount < 1 {
 		turn.Final = "Step limit reached with unreviewed code changes. Continue with a change_review task before finalizing."
 		turn.HitStepLimit = true
 		r.emit(Event{Kind: EventTurnFinished, Text: turn.Final})
@@ -1278,12 +1280,9 @@ const criticUnavailablePrompt = "[plan mode capability override] The task tool i
 	"so the independent plan_critic requirement is waived. Complete the other readiness fields and set " +
 	"critic_summary to explain that the isolated critic capability was unavailable."
 
-const changeReviewPrompt = "[review gate] Code was changed this turn, but no passing independent " +
-	"review follows the latest mutation. Delegate task with kind change_review and a self-contained prompt " +
-	"containing the original requirement or bug description, the changed files, and any test/build results. " +
-	"Require the reviewer to inspect git_diff and relevant files independently and return first-line " +
-	"VERDICT: PASS or VERDICT: REQUEST_CHANGES. If it requests changes, fix them and review again; " +
-	"do not give a final answer yet."
+const changeReviewPrompt = "[review] Plan execution changed the workspace. Delegate task with kind " +
+	"change_review containing the original requirement, changed files, and verification results. " +
+	"Require VERDICT: PASS or REQUEST_CHANGES as the first line."
 
 // withConvergenceNudge returns a copy of msgs with a transient reminder appended,
 // steering the model to answer now instead of over-investigating.
