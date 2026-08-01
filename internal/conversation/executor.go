@@ -77,6 +77,29 @@ type sessionOperation struct {
 	done      chan struct{}
 }
 
+// CrossSessionEnvelope is Agent-originated input accepted by the target
+// Runtime. Routing identity is persisted separately from the prompt text.
+type CrossSessionEnvelope struct {
+	Text            string
+	Model           string
+	SenderSessionID string
+	SenderTurnID    string
+	MessageID       string
+	CorrelationID   string
+	Intent          string
+}
+
+type TurnAdmission struct {
+	Delivery string
+	TurnID   string
+	Cursor   int64
+}
+
+type admissionResult struct {
+	admission TurnAdmission
+	err       error
+}
+
 // ErrConversationInUse is returned when a destructive conversation operation
 // races with an accepted, queued, running, waiting, resuming, or paused turn.
 var ErrConversationInUse = errors.New("conversation: conversation is in use")
@@ -453,7 +476,58 @@ func (e *TurnExecutor) ExecuteWithRequestIDAndAllAssets(ctx context.Context, ses
 	if !sess.ArchivedAt.IsZero() {
 		return agent.TurnResult{}, ErrConversationArchived
 	}
-	return e.executeWithSessionAssets(ctx, sess, requestID, input, modelName, assets, localAssets)
+	return e.executeWithSessionAssets(ctx, sess, requestID, input, modelName, assets, localAssets, nil, nil)
+}
+
+// AcceptCrossSessionMessage returns after durable acceptance and target-side
+// scheduler classification. Execution continues asynchronously in this Runtime.
+func (e *TurnExecutor) AcceptCrossSessionMessage(ctx, executionCtx context.Context, sessionID string, envelope CrossSessionEnvelope) (TurnAdmission, error) {
+	if strings.TrimSpace(envelope.Text) == "" {
+		return TurnAdmission{}, errors.New("conversation: cross-session text is required")
+	}
+	if envelope.MessageID == "" || envelope.SenderSessionID == "" || envelope.CorrelationID == "" {
+		return TurnAdmission{}, errors.New("conversation: incomplete cross-session provenance")
+	}
+	if envelope.Intent != "request" && envelope.Intent != "notification" {
+		return TurnAdmission{}, errors.New("conversation: cross-session intent must be request or notification")
+	}
+	if _, ok := e.repo.(TurnInputRepository); !ok {
+		return TurnAdmission{}, errors.New("conversation: durable turn inputs are required")
+	}
+	if executionCtx == nil {
+		executionCtx = context.Background()
+	}
+	results := make(chan admissionResult, 1)
+	var once sync.Once
+	notify := func(admission TurnAdmission, err error) {
+		once.Do(func() { results <- admissionResult{admission: admission, err: err} })
+	}
+	provenance := &session.CrossSessionProvenance{
+		SenderSessionID: envelope.SenderSessionID, SenderTurnID: envelope.SenderTurnID,
+		MessageID: envelope.MessageID, CorrelationID: envelope.CorrelationID, Intent: envelope.Intent,
+	}
+	go func() {
+		release, err := e.beginSessionTurn(sessionID)
+		if err != nil {
+			notify(TurnAdmission{}, err)
+			return
+		}
+		defer release()
+		sess, err := e.repo.Load(executionCtx, sessionID)
+		if err == nil && !sess.ArchivedAt.IsZero() {
+			err = ErrConversationArchived
+		}
+		if err == nil {
+			_, err = e.executeWithSessionAssets(executionCtx, sess, envelope.MessageID, envelope.Text, envelope.Model, nil, nil, provenance, notify)
+		}
+		notify(TurnAdmission{}, err)
+	}()
+	select {
+	case result := <-results:
+		return result.admission, result.err
+	case <-ctx.Done():
+		return TurnAdmission{}, ctx.Err()
+	}
 }
 
 // ExecuteWithSession runs a turn against an already-loaded session — the REPL
@@ -476,7 +550,7 @@ func (e *TurnExecutor) ExecuteWithSessionAssets(parentCtx context.Context, sess 
 	if archived {
 		return agent.TurnResult{}, ErrConversationArchived
 	}
-	return e.executeWithSessionAssets(parentCtx, sess, "", input, model, assets, nil)
+	return e.executeWithSessionAssets(parentCtx, sess, "", input, model, assets, nil, nil, nil)
 }
 
 func (e *TurnExecutor) conversationArchived(ctx context.Context, fallback *session.Session) (bool, error) {
@@ -494,8 +568,8 @@ func (e *TurnExecutor) conversationArchived(ctx context.Context, fallback *sessi
 	return !stored.ArchivedAt.IsZero(), nil
 }
 
-func (e *TurnExecutor) executeWithSessionAssets(parentCtx context.Context, sess *session.Session, requestID, input, modelName string, assets []model.GatewayAssetRef, localAssets []model.LocalAssetRef) (agent.TurnResult, error) {
-	res, runErr := e.driveTurn(parentCtx, sess, requestID, input, modelName, assets, localAssets, nil,
+func (e *TurnExecutor) executeWithSessionAssets(parentCtx context.Context, sess *session.Session, requestID, input, modelName string, assets []model.GatewayAssetRef, localAssets []model.LocalAssetRef, provenance *session.CrossSessionProvenance, admitted func(TurnAdmission, error)) (agent.TurnResult, error) {
+	res, runErr := e.driveTurn(parentCtx, sess, requestID, input, modelName, assets, localAssets, nil, provenance, admitted,
 		session.TurnStatusRunning,
 		func(ctx context.Context, runner TurnRunner, prepared bool) (agent.TurnResult, error) {
 			if prepared {
@@ -586,7 +660,7 @@ func (e *TurnExecutor) Resume(parentCtx context.Context, sessionID string) (agen
 		requestID, inputText, wireModel, assets = recovered.RequestID, recovered.Text, recovered.WireModel, recovered.Assets
 		localAssets = recovered.LocalAssets
 	}
-	return e.driveTurn(parentCtx, sess, requestID, inputText, wireModel, assets, localAssets, recovered, session.TurnStatusResuming,
+	return e.driveTurn(parentCtx, sess, requestID, inputText, wireModel, assets, localAssets, recovered, nil, nil, session.TurnStatusResuming,
 		func(ctx context.Context, runner TurnRunner, _ bool) (agent.TurnResult, error) {
 			return runner.ResumeTurn(ctx, sess)
 		},
@@ -608,6 +682,8 @@ func (e *TurnExecutor) driveTurn(
 	assets []model.GatewayAssetRef,
 	localAssets []model.LocalAssetRef,
 	preclaimed *session.TurnInput,
+	provenance *session.CrossSessionProvenance,
+	admitted func(TurnAdmission, error),
 	runningState string,
 	run func(ctx context.Context, runner TurnRunner, prepared bool) (agent.TurnResult, error),
 	recordStatus func(sess *session.Session, runErr error),
@@ -643,13 +719,16 @@ func (e *TurnExecutor) driveTurn(
 		turnID = claimed.TurnID
 		resolvedModel = claimed.ResolvedModel
 	} else {
-		claimed, duplicate, claimErr = e.claimRequest(parentCtx, sess.ID, requestID, turnID, inputText, wireModel, resolvedModel, assets, localAssets, pub)
+		claimed, duplicate, claimErr = e.claimRequest(parentCtx, sess.ID, requestID, turnID, inputText, wireModel, resolvedModel, assets, localAssets, provenance, pub)
 	}
 	if claimErr != nil {
 		return agent.TurnResult{}, claimErr
 	}
 	if duplicate {
 		existingTurnID := claimed.TurnID
+		if admitted != nil {
+			admitted(TurnAdmission{Delivery: admissionDelivery(claimed.State), TurnID: existingTurnID, Cursor: claimed.AcceptedSeq}, nil)
+		}
 		return agent.TurnResult{TurnID: existingTurnID, Deduplicated: true}, nil
 	}
 	if claimed.TurnID != "" {
@@ -658,6 +737,9 @@ func (e *TurnExecutor) driveTurn(
 	if e.executionGuard != nil {
 		releaseGuard, guardErr := e.executionGuard(parentCtx, sess.ID)
 		if guardErr != nil {
+			if admitted != nil {
+				admitted(TurnAdmission{Delivery: "started", TurnID: turnID, Cursor: claimed.AcceptedSeq}, nil)
+			}
 			e.setTurnInputState(parentCtx, claimed, session.TurnInputFailed)
 			sess.SetTurnStatus(session.TurnStatusFailed)
 			pub.Emit(agent.Event{
@@ -687,6 +769,9 @@ func (e *TurnExecutor) driveTurn(
 	}, func(position int, reason TurnQueueReason) {
 		e.setTurnInputState(parentCtx, claimed, session.TurnInputQueued)
 		pub.Emit(agent.Event{Kind: agent.EventTurnQueued, SessionID: sess.ID, TurnID: turnID, QueuePosition: position, QueueReason: string(reason)})
+		if admitted != nil {
+			admitted(TurnAdmission{Delivery: "queued", TurnID: turnID, Cursor: claimed.AcceptedSeq}, nil)
+		}
 	})
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
@@ -699,6 +784,9 @@ func (e *TurnExecutor) driveTurn(
 		return agent.TurnResult{TurnID: turnID}, err
 	}
 	defer release()
+	if admitted != nil {
+		admitted(TurnAdmission{Delivery: "started", TurnID: turnID, Cursor: claimed.AcceptedSeq}, nil)
+	}
 
 	prepared := false
 	turnRepo, durableInput := e.repo.(TurnInputRepository)
@@ -826,7 +914,7 @@ func (RequestConflictError) SafeMessage() string {
 	return "request_id was already used with a different payload"
 }
 
-func (e *TurnExecutor) claimRequest(ctx context.Context, sessionID, requestID, proposedTurnID, text, wireModel, resolvedModel string, assets []model.GatewayAssetRef, localAssets []model.LocalAssetRef, pub *sequencingEmitter) (session.TurnInput, bool, error) {
+func (e *TurnExecutor) claimRequest(ctx context.Context, sessionID, requestID, proposedTurnID, text, wireModel, resolvedModel string, assets []model.GatewayAssetRef, localAssets []model.LocalAssetRef, provenance *session.CrossSessionProvenance, pub *sequencingEmitter) (session.TurnInput, bool, error) {
 	if requestID == "" {
 		pub.Emit(agent.Event{Kind: agent.EventTurnAccepted, SessionID: sessionID, TurnID: proposedTurnID})
 		return session.TurnInput{SessionID: sessionID, TurnID: proposedTurnID}, false, nil
@@ -834,10 +922,11 @@ func (e *TurnExecutor) claimRequest(ctx context.Context, sessionID, requestID, p
 	if turnRepo, ok := e.repo.(TurnInputRepository); ok {
 		input := session.TurnInput{
 			SessionID: sessionID, RequestID: requestID, TurnID: proposedTurnID,
-			PayloadHash: turnInputPayloadHashWithLocalAssets(text, wireModel, assets, localAssets), Text: text,
+			PayloadHash: turnInputPayloadHashWithProvenance(text, wireModel, assets, localAssets, provenance), Text: text,
 			WireModel: wireModel, ResolvedModel: resolvedModel,
 			Assets: append([]model.GatewayAssetRef(nil), assets...), CreatedAt: time.Now().UTC(),
 			LocalAssets: append([]model.LocalAssetRef(nil), localAssets...),
+			Provenance:  provenance,
 		}
 		event := agent.Event{
 			Kind: agent.EventTurnAccepted, SessionID: sessionID, TurnID: proposedTurnID,
@@ -920,6 +1009,28 @@ func turnInputPayloadHashWithLocalAssets(text, wireModel string, assets []model.
 	}{Text: text, Model: wireModel, Assets: normalizedAssets, LocalAssets: normalizedLocalAssets}
 	encoded, _ := json.Marshal(payload)
 	return fmt.Sprintf("%x", sha256.Sum256(encoded))
+}
+
+func turnInputPayloadHashWithProvenance(text, wireModel string, assets []model.GatewayAssetRef, localAssets []model.LocalAssetRef, provenance *session.CrossSessionProvenance) string {
+	if provenance == nil {
+		return turnInputPayloadHashWithLocalAssets(text, wireModel, assets, localAssets)
+	}
+	payload := struct {
+		Text       string                          `json:"text"`
+		Model      string                          `json:"model"`
+		Assets     []model.GatewayAssetRef         `json:"assets"`
+		Local      []model.LocalAssetRef           `json:"local_assets"`
+		Provenance *session.CrossSessionProvenance `json:"provenance"`
+	}{text, wireModel, append([]model.GatewayAssetRef{}, assets...), append([]model.LocalAssetRef{}, localAssets...), provenance}
+	encoded, _ := json.Marshal(payload)
+	return fmt.Sprintf("%x", sha256.Sum256(encoded))
+}
+
+func admissionDelivery(state session.TurnInputState) string {
+	if state == session.TurnInputAccepted || state == session.TurnInputQueued {
+		return "queued"
+	}
+	return "started"
 }
 
 func sessionHasOriginTurn(sess *session.Session, turnID string) bool {
@@ -1231,7 +1342,7 @@ func (e *TurnExecutor) executeRecoveredTurn(ctx context.Context, input session.T
 	if err != nil {
 		return agent.TurnResult{}, err
 	}
-	return e.driveTurn(ctx, sess, input.RequestID, input.Text, input.WireModel, input.Assets, input.LocalAssets, &input,
+	return e.driveTurn(ctx, sess, input.RequestID, input.Text, input.WireModel, input.Assets, input.LocalAssets, &input, input.Provenance, nil,
 		session.TurnStatusRunning,
 		func(runCtx context.Context, runner TurnRunner, prepared bool) (agent.TurnResult, error) {
 			if !prepared {

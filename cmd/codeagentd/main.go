@@ -17,6 +17,7 @@ import (
 
 	"code-agent/internal/app"
 	"code-agent/internal/buildinfo"
+	"code-agent/internal/controlplane"
 	"code-agent/internal/conversation"
 	"code-agent/internal/model"
 	"code-agent/internal/repos"
@@ -195,6 +196,23 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	stateDir, err := runtime.StateDir()
+	if err != nil {
+		return err
+	}
+	owner, err := controlplane.NewManager(stateDir, runtimeInfo.ServerID, repo, executor, controlplane.Config{})
+	if err != nil {
+		return err
+	}
+	owner.SetTarget(controlplane.NewRuntimeTarget(executor, eventStore))
+	rb.SetSessionControl(owner)
+	if err := owner.Start(ctx); err != nil {
+		_ = owner.Close()
+		return err
+	}
+	defer owner.Close()
+	ownerIdentity := owner.Identity()
+	fmt.Fprintf(os.Stderr, "[control-plane] owner ready instance=%s endpoint=%s protocol=%d\n", ownerIdentity.InstanceID, ownerIdentity.Endpoint, ownerIdentity.ProtocolVersion)
 	handler := server.NewMux(repo, eventStore, executor, server.MuxOptions{
 		ServerName:        buildinfo.ServerName(),
 		RuntimeInfo:       runtimeInfo,
@@ -213,8 +231,16 @@ func run() error {
 			return nil
 		},
 		SessionReady: func(ctx context.Context, sessionID string) {
+			if err := owner.Heartbeat(context.WithoutCancel(ctx)); err != nil {
+				fmt.Fprintf(os.Stderr, "[control-plane] session ready reconcile: %v\n", err)
+			}
 			_, _ = executor.RecoverSessionTurnInputs(context.WithoutCancel(ctx), sessionID)
 			go executor.FlushAssetRefReleases(context.WithoutCancel(ctx), cfg.CredentialResolver(nil))
+		},
+		OwnershipChanged: func(ctx context.Context) {
+			if err := owner.Heartbeat(context.WithoutCancel(ctx)); err != nil {
+				fmt.Fprintf(os.Stderr, "[control-plane] ownership reconcile: %v\n", err)
+			}
 		},
 		RuntimeCapabilities: runtimeCapabilities,
 		ManagedWorktrees:    managedWorktrees,

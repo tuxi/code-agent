@@ -122,6 +122,10 @@ func turnInputKey(sessionID, requestID string) string { return sessionID + "\x00
 func cloneTurnInput(input TurnInput) TurnInput {
 	input.Assets = append([]model.GatewayAssetRef(nil), input.Assets...)
 	input.LocalAssets = append([]model.LocalAssetRef(nil), input.LocalAssets...)
+	if input.Provenance != nil {
+		copy := *input.Provenance
+		input.Provenance = &copy
+	}
 	return input
 }
 
@@ -140,6 +144,8 @@ func (m *MemoryStore) ReserveTurnInput(_ context.Context, input TurnInput, accep
 	m.turnInputs[key] = cloneTurnInput(input)
 	m.eventSeq++
 	accepted.Seq = m.eventSeq
+	input.AcceptedSeq = accepted.Seq
+	m.turnInputs[key] = cloneTurnInput(input)
 	m.events = append(m.events, accepted)
 	return cloneTurnInput(input), true, accepted.Seq, nil
 }

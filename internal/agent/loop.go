@@ -119,7 +119,8 @@ type Runner struct {
 	// SessionIndex provides cross-workspace session discovery for list_sessions
 	// and read_session tools. Nil means these tools are unavailable (index.db
 	// failed to open or this runtime does not support cross-session operations).
-	SessionIndex tools.SessionIndex
+	SessionIndex   tools.SessionIndex
+	SessionControl tools.SessionControl
 
 	// PlanState tracks the planning workflow phase. Exported so the TUI and REPL
 	// can toggle plan mode manually (Ctrl+P, /plan).
@@ -1580,6 +1581,7 @@ func (r *Runner) executeTool(ctx context.Context, tool tools.Tool, callID string
 		PathAccessApprover: r.PathAccessApprover,
 		Model:              r.ModelName,
 		SessionIndex:       r.SessionIndex,
+		SessionControl:     r.SessionControl,
 		OnStdout: func(chunk string) {
 			r.emit(Event{Kind: EventToolStdout, CallID: callID, Chunk: chunk})
 		},

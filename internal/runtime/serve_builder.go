@@ -49,6 +49,13 @@ type ServeRunBuilder struct {
 
 	wsRulesMu sync.Mutex
 	wsRules   map[string]*approve.RuleStore // workspacePath → scoped store
+	control   tools.SessionControl
+}
+
+func (b *ServeRunBuilder) SetSessionControl(control tools.SessionControl) {
+	b.mu.Lock()
+	b.control = control
+	b.mu.Unlock()
 }
 
 // NewServeRunBuilder constructs the builder with the initial model + provider.
@@ -249,7 +256,7 @@ func (b *ServeRunBuilder) ReleaseConversationAssetRefs(ctx context.Context, cred
 // workspace, merges client-registered tools, and wires plan tools + client waiter.
 func (b *ServeRunBuilder) Build(ctx conversation.RuntimeContext) conversation.TurnRunner {
 	b.mu.RLock()
-	defaultMC, baseProvider, baseCredential := b.mc, b.provider, b.credential
+	defaultMC, baseProvider, baseCredential, control := b.mc, b.provider, b.credential, b.control
 	cfg := b.Cfg
 	b.mu.RUnlock()
 
@@ -331,6 +338,7 @@ func (b *ServeRunBuilder) Build(ctx conversation.RuntimeContext) conversation.Tu
 	runner := BuildRunner(b.Cfg, mc, provider, turnTools, skillReg, ctx.Approver, ctx.Publisher, wsRules, workspacePath)
 	runner.ReservedTurnID = ctx.TurnID
 	runner.RequestID = ctx.RequestID
+	runner.SessionControl = control
 	if workspacePath != "" {
 		runner.WorkspaceRoot = workspacePath
 	}

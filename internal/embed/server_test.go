@@ -141,6 +141,15 @@ func TestStartServerWithZeroModelsSupportsReadOnlyWorkspace(t *testing.T) {
 	if listed, err := h.rt.Repo.List(context.Background()); err != nil || len(listed) != 1 {
 		t.Fatalf("list conversations = %d, %v", len(listed), err)
 	}
+	if h.rt.Owner == nil {
+		t.Fatal("Runtime Ownership manager was not assembled")
+	}
+	if err := h.rt.Owner.Heartbeat(context.Background()); err != nil {
+		t.Fatalf("owner Heartbeat: %v", err)
+	}
+	if resolution, err := h.rt.Owner.Resolve(context.Background(), sess.ID); err != nil || !resolution.Local {
+		t.Fatalf("owner Resolve = %+v, %v", resolution, err)
+	}
 
 	_, err = h.rt.Executor.ExecuteWithRequestID(
 		context.Background(), sess.ID, "request-zero-model", "hello", "",

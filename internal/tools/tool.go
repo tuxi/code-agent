@@ -4,6 +4,7 @@ import (
 	"code-agent/internal/assetref"
 	"context"
 	"encoding/json"
+	"time"
 )
 
 // ExecutionContext carries the runtime state for a single tool execution.
@@ -83,6 +84,54 @@ type ExecutionContext struct {
 	// It is the tool-layer interface to the global index.db. Nil means
 	// cross-session tools (list_sessions, read_session) are unavailable.
 	SessionIndex SessionIndex
+
+	// SessionControl routes cross-session work through the target Runtime owner.
+	// Nil means control primitives are unavailable in this host.
+	SessionControl SessionControl
+}
+
+type SessionControl interface {
+	Send(context.Context, SessionSendRequest) (SessionDelivery, error)
+	WaitAny(context.Context, []SessionWaitTarget, time.Duration) (SessionWaitResult, error)
+}
+
+type SessionSendRequest struct {
+	TargetSessionID string
+	Message         string
+	Model           string
+	SenderSessionID string
+	SenderTurnID    string
+	MessageID       string
+	CorrelationID   string
+	Intent          string
+}
+
+type SessionDelivery struct {
+	Accepted  bool   `json:"accepted"`
+	Delivery  string `json:"delivery"`
+	SessionID string `json:"session_id"`
+	TurnID    string `json:"turn_id"`
+	Cursor    int64  `json:"cursor"`
+}
+
+type SessionWaitTarget struct {
+	SessionID string `json:"id"`
+	TurnID    string `json:"turn_id"`
+	Cursor    int64  `json:"cursor"`
+}
+
+type SessionWaitCompletion struct {
+	SessionID string          `json:"id"`
+	TurnID    string          `json:"turn_id"`
+	Status    string          `json:"status"`
+	Cursor    int64           `json:"cursor"`
+	Event     json.RawMessage `json:"event,omitempty"`
+}
+
+type SessionWaitResult struct {
+	Completed []SessionWaitCompletion `json:"completed"`
+	Waiting   []SessionWaitTarget     `json:"waiting"`
+	TimedOut  bool                    `json:"timed_out"`
 }
 
 // SessionIndex is the cross-workspace session discovery interface consumed

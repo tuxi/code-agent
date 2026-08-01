@@ -6,11 +6,27 @@ import (
 	"encoding/json"
 	"fmt"
 	"testing"
+	"time"
 )
 
 type stubSessionIndex struct {
 	sessions []tools.SessionIndexEntry
 	detail   *tools.SessionIndexDetail
+}
+
+type stubSessionControl struct {
+	sent    tools.SessionSendRequest
+	targets []tools.SessionWaitTarget
+}
+
+func (s *stubSessionControl) Send(_ context.Context, request tools.SessionSendRequest) (tools.SessionDelivery, error) {
+	s.sent = request
+	return tools.SessionDelivery{Accepted: true, Delivery: "queued", SessionID: request.TargetSessionID, TurnID: "turn-target", Cursor: 7}, nil
+}
+
+func (s *stubSessionControl) WaitAny(_ context.Context, targets []tools.SessionWaitTarget, _ time.Duration) (tools.SessionWaitResult, error) {
+	s.targets = append([]tools.SessionWaitTarget(nil), targets...)
+	return tools.SessionWaitResult{Completed: []tools.SessionWaitCompletion{{SessionID: targets[0].SessionID, TurnID: targets[0].TurnID, Status: "completed", Cursor: 9}}}, nil
 }
 
 func (s stubSessionIndex) ListAll() ([]tools.SessionIndexEntry, error) {
@@ -143,5 +159,32 @@ func TestListSessionsClampsLimitToMaximum(t *testing.T) {
 	}
 	if len(got) != 200 {
 		t.Fatalf("len = %d, want 200", len(got))
+	}
+}
+
+func TestSendAndWaitSessionsPreserveTurnCursorScope(t *testing.T) {
+	control := &stubSessionControl{}
+	ec := tools.ExecutionContext{SessionID: "sender", TurnID: "sender-turn", SessionControl: control}
+	sent, err := (&SendToSessionTool{}).Execute(context.Background(), ec, json.RawMessage(`{"id":"target","message":"do work","correlation_id":"corr","intent":"notification"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var delivery tools.SessionDelivery
+	if err := json.Unmarshal(sent.Output, &delivery); err != nil {
+		t.Fatal(err)
+	}
+	if delivery.TurnID != "turn-target" || delivery.Cursor != 7 || control.sent.SenderSessionID != "sender" || control.sent.SenderTurnID != "sender-turn" || control.sent.MessageID == "" || control.sent.CorrelationID != "corr" || control.sent.Intent != "notification" {
+		t.Fatalf("delivery=%+v request=%+v", delivery, control.sent)
+	}
+	waited, err := (&WaitSessionsTool{}).Execute(context.Background(), ec, json.RawMessage(`{"targets":[{"id":"target","turn_id":"turn-target","cursor":7}],"timeout_ms":0}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result tools.SessionWaitResult
+	if err := json.Unmarshal(waited.Output, &result); err != nil {
+		t.Fatal(err)
+	}
+	if len(control.targets) != 1 || control.targets[0].Cursor != 7 || len(result.Completed) != 1 || result.Completed[0].Cursor != 9 {
+		t.Fatalf("targets=%+v result=%+v", control.targets, result)
 	}
 }

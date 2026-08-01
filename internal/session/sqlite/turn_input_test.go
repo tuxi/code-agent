@@ -23,14 +23,14 @@ func TestTurnInputReserveStartAndReload(t *testing.T) {
 		t.Fatal(err)
 	}
 	local := model.LocalAssetRef{ID: "local", RelativePath: "user-assets/local/a.pdf", Filename: "a.pdf", MIMEType: "application/pdf", Kind: "pdf", SizeBytes: 2, SHA256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", TransferPolicy: "local_only"}
-	input := session.TurnInput{SessionID: "s", RequestID: "r", TurnID: "t", PayloadHash: "hash", Text: "look", WireModel: "", ResolvedModel: "gateway-model", Assets: []model.GatewayAssetRef{{AssetID: 1, Kind: "image", MIMEType: "image/png", Filename: "a.png"}}, LocalAssets: []model.LocalAssetRef{local}}
+	input := session.TurnInput{SessionID: "s", RequestID: "r", TurnID: "t", PayloadHash: "hash", Text: "look", WireModel: "", ResolvedModel: "gateway-model", Assets: []model.GatewayAssetRef{{AssetID: 1, Kind: "image", MIMEType: "image/png", Filename: "a.png"}}, LocalAssets: []model.LocalAssetRef{local}, Provenance: &session.CrossSessionProvenance{SenderSessionID: "sender", SenderTurnID: "sender-turn", MessageID: "r", CorrelationID: "corr", Intent: "request"}}
 	event := session.EventRecord{SessionID: "s", TurnID: "t", Kind: "turn_accepted", At: time.Now().UTC(), Payload: json.RawMessage(`{"kind":"turn_accepted"}`)}
 	stored, created, seq, err := store.ReserveTurnInput(ctx, input, event)
 	if err != nil || !created || seq == 0 || stored.ResolvedModel != "gateway-model" {
 		t.Fatalf("reserve=%+v created=%v seq=%d err=%v", stored, created, seq, err)
 	}
 	duplicate, created, _, err := store.ReserveTurnInput(ctx, input, event)
-	if err != nil || created || duplicate.TurnID != "t" {
+	if err != nil || created || duplicate.TurnID != "t" || duplicate.AcceptedSeq != seq {
 		t.Fatalf("duplicate=%+v created=%v err=%v", duplicate, created, err)
 	}
 
@@ -46,7 +46,7 @@ func TestTurnInputReserveStartAndReload(t *testing.T) {
 		t.Fatalf("message=%+v", got)
 	}
 	gotInput, err := store.TurnInput(ctx, "s", "r")
-	if err != nil || gotInput.State != session.TurnInputRunning || len(gotInput.LocalAssets) != 1 || gotInput.LocalAssets[0].ID != "local" {
+	if err != nil || gotInput.State != session.TurnInputRunning || len(gotInput.LocalAssets) != 1 || gotInput.LocalAssets[0].ID != "local" || gotInput.AcceptedSeq != seq || gotInput.Provenance == nil || gotInput.Provenance.CorrelationID != "corr" {
 		t.Fatalf("input=%+v err=%v", gotInput, err)
 	}
 }

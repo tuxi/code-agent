@@ -21,7 +21,8 @@ func (s *Store) ReserveTurnInput(ctx context.Context, input session.TurnInput, a
 	}
 	defer tx.Rollback()
 	stored, err := scanTurnInput(tx.QueryRowContext(ctx, `
-		SELECT session_id, request_id, turn_id, payload_hash, text, wire_model, resolved_model, assets, local_assets, state, created_at, updated_at
+		SELECT session_id, request_id, turn_id, payload_hash, text, wire_model, resolved_model, assets, local_assets,
+		       sender_session_id, sender_turn_id, message_id, correlation_id, intent, accepted_seq, state, created_at, updated_at
 		FROM turn_inputs WHERE session_id=? AND request_id=?`, input.SessionID, input.RequestID))
 	if err == nil {
 		return stored, false, 0, tx.Commit()
@@ -44,10 +45,16 @@ func (s *Store) ReserveTurnInput(ctx context.Context, input session.TurnInput, a
 	input.CreatedAt, input.UpdatedAt = now, now
 	input.State = session.TurnInputAccepted
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO turn_inputs(session_id, request_id, turn_id, payload_hash, text, wire_model, resolved_model, assets, local_assets, state, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		INSERT INTO turn_inputs(session_id, request_id, turn_id, payload_hash, text, wire_model, resolved_model, assets, local_assets,
+			sender_session_id, sender_turn_id, message_id, correlation_id, intent, accepted_seq, state, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		input.SessionID, input.RequestID, input.TurnID, input.PayloadHash, input.Text, input.WireModel,
-		input.ResolvedModel, string(assets), string(localAssets), string(input.State), formatTime(now), formatTime(now)); err != nil {
+		input.ResolvedModel, string(assets), string(localAssets), provenanceField(input, func(p *session.CrossSessionProvenance) string { return p.SenderSessionID }),
+		provenanceField(input, func(p *session.CrossSessionProvenance) string { return p.SenderTurnID }),
+		provenanceField(input, func(p *session.CrossSessionProvenance) string { return p.MessageID }),
+		provenanceField(input, func(p *session.CrossSessionProvenance) string { return p.CorrelationID }),
+		provenanceField(input, func(p *session.CrossSessionProvenance) string { return p.Intent }), 0,
+		string(input.State), formatTime(now), formatTime(now)); err != nil {
 		return session.TurnInput{}, false, 0, err
 	}
 	result, err := tx.ExecContext(ctx, `INSERT INTO session_events (session_id, turn_id, kind, at, payload) VALUES (?, ?, ?, ?, ?)`,
@@ -59,6 +66,10 @@ func (s *Store) ReserveTurnInput(ctx context.Context, input session.TurnInput, a
 	if err != nil {
 		return session.TurnInput{}, false, 0, err
 	}
+	if _, err := tx.ExecContext(ctx, `UPDATE turn_inputs SET accepted_seq=? WHERE session_id=? AND request_id=?`, seq, input.SessionID, input.RequestID); err != nil {
+		return session.TurnInput{}, false, 0, err
+	}
+	input.AcceptedSeq = seq
 	if err := tx.Commit(); err != nil {
 		return session.TurnInput{}, false, 0, err
 	}
@@ -93,13 +104,15 @@ func (s *Store) SetTurnInputState(ctx context.Context, sessionID, requestID stri
 
 func (s *Store) TurnInput(ctx context.Context, sessionID, requestID string) (session.TurnInput, error) {
 	return scanTurnInput(s.db.QueryRowContext(ctx, `
-		SELECT session_id, request_id, turn_id, payload_hash, text, wire_model, resolved_model, assets, local_assets, state, created_at, updated_at
+		SELECT session_id, request_id, turn_id, payload_hash, text, wire_model, resolved_model, assets, local_assets,
+		       sender_session_id, sender_turn_id, message_id, correlation_id, intent, accepted_seq, state, created_at, updated_at
 		FROM turn_inputs WHERE session_id=? AND request_id=?`, sessionID, requestID))
 }
 
 func (s *Store) RecoverableTurnInputs(ctx context.Context) ([]session.TurnInput, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT session_id, request_id, turn_id, payload_hash, text, wire_model, resolved_model, assets, local_assets, state, created_at, updated_at
+		SELECT session_id, request_id, turn_id, payload_hash, text, wire_model, resolved_model, assets, local_assets,
+		       sender_session_id, sender_turn_id, message_id, correlation_id, intent, accepted_seq, state, created_at, updated_at
 		FROM turn_inputs WHERE state IN ('accepted','queued','running') ORDER BY created_at, session_id`)
 	if err != nil {
 		return nil, err
@@ -120,14 +133,18 @@ type rowScanner interface{ Scan(...any) error }
 
 func scanTurnInput(row rowScanner) (session.TurnInput, error) {
 	var input session.TurnInput
-	var assets, localAssets, state, createdAt, updatedAt string
+	var assets, localAssets, senderSessionID, senderTurnID, messageID, correlationID, intent, state, createdAt, updatedAt string
 	err := row.Scan(&input.SessionID, &input.RequestID, &input.TurnID, &input.PayloadHash, &input.Text,
-		&input.WireModel, &input.ResolvedModel, &assets, &localAssets, &state, &createdAt, &updatedAt)
+		&input.WireModel, &input.ResolvedModel, &assets, &localAssets, &senderSessionID, &senderTurnID,
+		&messageID, &correlationID, &intent, &input.AcceptedSeq, &state, &createdAt, &updatedAt)
 	if err != nil {
 		return session.TurnInput{}, err
 	}
 	input.State = session.TurnInputState(state)
 	input.CreatedAt, input.UpdatedAt = parseTime(createdAt), parseTime(updatedAt)
+	if senderSessionID != "" || messageID != "" || correlationID != "" || intent != "" {
+		input.Provenance = &session.CrossSessionProvenance{SenderSessionID: senderSessionID, SenderTurnID: senderTurnID, MessageID: messageID, CorrelationID: correlationID, Intent: intent}
+	}
 	if assets != "" {
 		if err := json.Unmarshal([]byte(assets), &input.Assets); err != nil {
 			return session.TurnInput{}, fmt.Errorf("unmarshal turn input assets: %w", err)
@@ -145,4 +162,11 @@ func scanTurnInput(row rowScanner) (session.TurnInput, error) {
 		input.LocalAssets = []model.LocalAssetRef{}
 	}
 	return input, nil
+}
+
+func provenanceField(input session.TurnInput, field func(*session.CrossSessionProvenance) string) string {
+	if input.Provenance == nil {
+		return ""
+	}
+	return field(input.Provenance)
 }

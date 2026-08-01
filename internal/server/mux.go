@@ -240,6 +240,10 @@ type MuxOptions struct {
 	Prompts            PromptService
 	CapabilityResolver func(ctx context.Context) []string
 	SessionReady       func(ctx context.Context, sessionID string)
+	// OwnershipChanged reconciles the process-local session owner leases after a
+	// successful create or delete. It is best-effort because the primary
+	// conversation mutation has already committed.
+	OwnershipChanged func(ctx context.Context)
 	// RuntimeCapabilities describes execution guarantees, not merely supported
 	// endpoints. It intentionally defaults to all false until scheduler and
 	// workspace isolation are fully installed.
@@ -670,6 +674,9 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 				writeManagedCreateError(w, r, err)
 				return
 			}
+			if opts.OwnershipChanged != nil {
+				opts.OwnershipChanged(r.Context())
+			}
 			writeJSON(w, r, http.StatusCreated, managedConversationRef(result))
 			return
 		}
@@ -701,6 +708,9 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
+		}
+		if opts.OwnershipChanged != nil {
+			opts.OwnershipChanged(r.Context())
 		}
 		writeJSON(w, r, http.StatusCreated, ConversationRef{
 			ID:            sess.ID,
@@ -1142,6 +1152,9 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 		// Tear down connection-owned brokers only after the guarded repository
 		// delete succeeds. A rejected delete must leave pending approvals intact.
 		ws.RemoveApprover(id)
+		if opts.OwnershipChanged != nil {
+			opts.OwnershipChanged(r.Context())
+		}
 		w.WriteHeader(http.StatusNoContent)
 	})
 

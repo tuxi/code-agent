@@ -196,6 +196,20 @@ func SetStoreBaseDir(dir string) {
 // StoreBaseDir returns the current session-store base directory (may be empty).
 func StoreBaseDir() string { return storeBaseDir }
 
+// StateDir returns the effective process-wide CodeAgent data directory. Desktop
+// runtimes use ~/.codeagent; embedded hosts use the configured StoreBaseDir.
+// Cross-process coordination data lives here but remains separate from index.db.
+func StateDir() (string, error) {
+	if storeBaseDir != "" {
+		return storeBaseDir, nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".codeagent"), nil
+}
+
 // MigrateStore copies the session database from oldRoot to newRoot when the new
 // store does not yet exist and the old one does. It is a one-shot migration for
 // the daemon telemetry store: after config.yaml.workspace was deleted (Phase 3),

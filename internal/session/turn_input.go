@@ -18,6 +18,17 @@ const (
 	TurnInputCancelled TurnInputState = "cancelled"
 )
 
+// CrossSessionProvenance is durable routing metadata for Agent-originated
+// input. It is deliberately kept out of the prompt text so the receiving
+// model cannot confuse transport identity with user instructions.
+type CrossSessionProvenance struct {
+	SenderSessionID string
+	SenderTurnID    string
+	MessageID       string
+	CorrelationID   string
+	Intent          string
+}
+
 // TurnInput is the durable v1.5 submission inbox. WireModel is payload identity;
 // ResolvedModel is frozen execution identity and deliberately excluded from the
 // payload hash.
@@ -31,6 +42,8 @@ type TurnInput struct {
 	ResolvedModel string
 	Assets        []model.GatewayAssetRef
 	LocalAssets   []model.LocalAssetRef
+	Provenance    *CrossSessionProvenance
+	AcceptedSeq   int64
 	State         TurnInputState
 	CreatedAt     time.Time
 	UpdatedAt     time.Time

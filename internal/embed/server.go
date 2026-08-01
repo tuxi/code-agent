@@ -26,6 +26,7 @@ import (
 
 	"code-agent/internal/app"
 	"code-agent/internal/buildinfo"
+	"code-agent/internal/controlplane"
 	"code-agent/internal/conversation"
 	"code-agent/internal/credential"
 	"code-agent/internal/mcp"
@@ -130,6 +131,7 @@ type Runtime struct {
 	Executor *conversation.TurnExecutor
 	Builder  *runtime.ServeRunBuilder
 	Repo     conversation.ConversationRepository
+	Owner    *controlplane.Manager
 }
 
 // Handle is a running embedded server. The host must call Stop to release the
@@ -806,11 +808,34 @@ func Assemble(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider 
 	if provider != nil {
 		executor.SetTitleGenerator(conversation.NewLLMTitleGenerator(provider, mc.Model))
 	}
+	stateDir, err := runtime.StateDir()
+	if err != nil {
+		release()
+		return nil, nil, nil, err
+	}
+	owner, err := controlplane.NewManager(stateDir, runtimeInfo.ServerID, repo, executor, controlplane.Config{})
+	if err != nil {
+		release()
+		return nil, nil, nil, err
+	}
+	owner.SetTarget(controlplane.NewRuntimeTarget(executor, eventStore))
+	rb.SetSessionControl(owner)
+	if err := owner.Start(ctx); err != nil {
+		_ = owner.Close()
+		release()
+		return nil, nil, nil, err
+	}
+	closers = append(closers, func() { _ = owner.Close() })
+	ownerIdentity := owner.Identity()
+	fmt.Fprintf(os.Stderr, "[control-plane] owner ready instance=%s endpoint=%s protocol=%d\n", ownerIdentity.InstanceID, ownerIdentity.Endpoint, ownerIdentity.ProtocolVersion)
 	managedWorktrees, worktreeReport, worktreeErr := runtime.ConfigureManagedWorktrees(ctx, telemetryStore, repo, executor, cfg.Profile != app.ProfileSandboxed)
 	if worktreeErr != nil {
 		fmt.Printf("codeagent embedded: managed worktrees disabled: %v\n", worktreeErr)
 	} else if managedWorktrees != nil && (len(worktreeReport.Issues) > 0 || len(worktreeReport.Orphans) > 0) {
 		fmt.Printf("codeagent embedded: managed worktree reconciliation: issues=%d orphans=%d missing=%d\n", len(worktreeReport.Issues), len(worktreeReport.Orphans), len(worktreeReport.Missing))
+	}
+	if err := owner.Heartbeat(ctx); err != nil {
+		fmt.Fprintf(os.Stderr, "[control-plane] post-worktree reconcile: %v\n", err)
 	}
 	// Job bracket events reach the owning conversation's live subscribers (P8.7
 	// §8.4-2) — persisted copies are already handled inside the sink.
@@ -852,14 +877,22 @@ func Assemble(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider 
 			return nil
 		},
 		SessionReady: func(ctx context.Context, sessionID string) {
+			if err := owner.Heartbeat(context.WithoutCancel(ctx)); err != nil {
+				fmt.Fprintf(os.Stderr, "[control-plane] session ready reconcile: %v\n", err)
+			}
 			_, _ = executor.RecoverSessionTurnInputs(context.WithoutCancel(ctx), sessionID)
 			go executor.FlushAssetRefReleases(context.WithoutCancel(ctx), cred)
+		},
+		OwnershipChanged: func(ctx context.Context) {
+			if err := owner.Heartbeat(context.WithoutCancel(ctx)); err != nil {
+				fmt.Fprintf(os.Stderr, "[control-plane] ownership reconcile: %v\n", err)
+			}
 		},
 		RuntimeCapabilities: runtimeCapabilities,
 		ManagedWorktrees:    managedWorktrees,
 		WorkflowSnapshot:    runtime.NewWorkflowSnapshotFunc(),
 	})
-	rt := &Runtime{Executor: executor, Builder: rb, Repo: repo}
+	rt := &Runtime{Executor: executor, Builder: rb, Repo: repo, Owner: owner}
 	return handler, rt, closers, nil
 }
 

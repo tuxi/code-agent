@@ -1,6 +1,6 @@
 # Phase 13 — Cross-Session Control Plane — PRD
 
-> Status: Phase A implementation. This spec defines the architecture and phased delivery plan
+> Status: Phase A complete; Phase B0 Runtime Ownership and Phase B1 control primitives implemented. This spec defines the architecture and phased delivery plan
 > for making code-agent a **multi-session orchestration control plane** — where
 > an Agent in one session can discover, read, send work to, and wait on sessions
 > in other workspaces.
@@ -482,10 +482,11 @@ Parameters:
   message  string, required — the prompt or notification to deliver
   model    string, optional — model override (must be available on target)
 
-Returns: {accepted: true/false,
+Returns: {accepted: true,
          delivery: "started" | "queued",
-         turn_id (if a new turn was started immediately),
-         target_status: "" | "running" | "paused" | "done" | "failed"}
+         session_id,
+         turn_id,
+         cursor}
 ```
 
 ### 5.4 `wait_sessions`
@@ -504,11 +505,12 @@ Description: Wait for any of the specified sessions to reach a terminal
              Pass timeout_ms=0 for an instant snapshot.
 
 Parameters:
-  targets    []string, required — up to 8 session IDs
+  targets    []{id, turn_id, cursor}, required — up to 8 admissions returned
+             by send_to_session
   timeout_ms int, optional — max wait (default 300000)
 
-Returns: {completed: [{id, status, summary}],
-         waiting: [{id, status}],
+Returns: {completed: [{id, turn_id, status, cursor, event}],
+         waiting: [{id, turn_id, cursor}],
          timed_out: bool}
 ```
 
@@ -535,8 +537,8 @@ acceptable because:
 |---|---|
 | `list_sessions` | `internal/tools/sessions/list_sessions.go` |
 | `read_session` | `internal/tools/sessions/read_session.go` |
-| `send_to_session` | `internal/tools/send_to_session.go` |
-| `wait_sessions` | `internal/tools/wait_sessions.go` |
+| `send_to_session` | `internal/tools/sessions/send_to_session.go` |
+| `wait_sessions` | `internal/tools/sessions/wait_sessions.go` |
 
 All share a common dependency: an `IndexStore` interface (see §6).
 
@@ -597,6 +599,27 @@ Required concepts:
 
 The runtime owner, not `index.db`, decides whether delivery starts or queues.
 No Phase B control tool is implemented before this owner route exists.
+
+#### B0 implementation contract
+
+- Ownership state lives in the effective CodeAgent state directory
+  (`~/.codeagent/control.db` on desktop), separate from the
+  rebuildable `index.db`. `runtime_instances` records the startup-scoped
+  instance identity, durable server identity, protocol version, loopback
+  endpoint, token, heartbeat, and expiry. `session_owners` records one expiring
+  owner per session.
+- Every Runtime starts a dedicated `127.0.0.1:0` HTTP sidecar. It is never bound
+  to the public/LAN listener and requires a startup-random 256-bit bearer token.
+- Heartbeats run every 5 seconds with a 15-second lease. An unexpired lease
+  cannot be stolen; graceful shutdown releases it immediately; an expired lease
+  can be atomically reclaimed after a crash.
+- Session create/delete and WebSocket readiness trigger immediate reconciliation
+  in addition to the periodic heartbeat.
+- Resolution uses a process-local direct call when the target instance is in the
+  same process. Otherwise it calls the authenticated loopback sidecar and
+  validates the returned instance/session identity.
+- B0 RPC exposes only identity and bounded owner-authoritative session state.
+  Turn admission and event waiting remain B1 work.
 
 ### Phase B1: Control Primitives (P2)
 
@@ -723,8 +746,9 @@ Deferred. Requires:
 | Per-workspace `sessions.db` | Exists — unchanged |
 | `defer_loading` tool mechanism | **Does not exist** — tools registered as visible; defer_loading deferred to follow-up |
 
-No new external dependencies. No schema migration of existing `sessions.db`
-files. No changes to the Agent Wire Protocol. However, Phase B introduces a
+No new external dependencies. Phase B1 uses an additive `turn_inputs` migration
+for provenance and the accepted-event cursor; existing rows receive safe empty
+defaults. No changes to the Agent Wire Protocol. However, Phase B introduces a
 new cross-workspace polling path in `wait_sessions` that must not create a
 second EventStore connection per poll — reuse the existing store handle.
 
@@ -746,6 +770,19 @@ second EventStore connection per poll — reuse the existing store handle.
 7. Existing single-workspace behavior remains unchanged.
 
 ### Phase B
+
+Phase B0 ownership acceptance:
+
+1. Each startup has a new instance ID while retaining the durable server ID.
+2. Owner RPC binds only to loopback and rejects missing or incorrect tokens.
+3. An active lease cannot be stolen; graceful shutdown releases immediately;
+   expired leases are reclaimable after a crash.
+4. Same-process resolution uses direct dispatch and cross-process resolution
+   verifies the authenticated RPC identity.
+5. Missing, expired, unreachable, or identity-mismatched owners fail explicitly
+   as `target_offline`; protocol mismatches fail closed.
+
+Phase B1 control acceptance:
 
 1. A Supervisor and target running in different processes route through the
    target runtime owner.

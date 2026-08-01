@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -98,6 +99,15 @@ func (b *fakeRunBuilder) Build(ctx RuntimeContext) TurnRunner {
 	return &stubRunner{}
 }
 
+type defaultOnlyRunBuilder struct{ fakeRunBuilder }
+
+func (b *defaultOnlyRunBuilder) ResolveModel(wireModel string) (string, error) {
+	if wireModel != "" {
+		return "", fmt.Errorf("unexpected wire model %q", wireModel)
+	}
+	return "resolved-target-default", nil
+}
+
 // stubRunner is a minimal turnRunner that records the call.
 type stubRunner struct {
 	lastInput string
@@ -111,6 +121,47 @@ func (s *stubRunner) RunTurn(ctx context.Context, sess *session.Session, input s
 func (s *stubRunner) ResumeTurn(ctx context.Context, sess *session.Session) (agent.TurnResult, error) {
 	s.lastInput = "" // resume appends no user input
 	return agent.TurnResult{}, nil
+}
+
+func TestAcceptCrossSessionMessagePersistsProvenanceAndReturnsCursor(t *testing.T) {
+	store := session.NewMemoryStore()
+	repo := NewSQLiteRepository(store, 128000, 90000, "target-model", "", nil)
+	sess, err := repo.Create(context.Background(), t.TempDir(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := &StoreEventAdapter{Store: store}
+	builder := &defaultOnlyRunBuilder{}
+	executor := NewTurnExecutor(repo, events, NewActiveTurnRegistry(), NewSubscriptionManager(), builder)
+	admission, err := executor.AcceptCrossSessionMessage(context.Background(), context.Background(), sess.ID, CrossSessionEnvelope{
+		Text: "review this", SenderSessionID: "sender", SenderTurnID: "sender-turn",
+		MessageID: "message-1", CorrelationID: "correlation-1", Intent: "request",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if admission.Delivery != "started" || admission.TurnID == "" || admission.Cursor <= 0 {
+		t.Fatalf("admission=%+v", admission)
+	}
+	turnRepo := repo.(TurnInputRepository)
+	deadline := time.Now().Add(time.Second)
+	var input session.TurnInput
+	for {
+		input, err = turnRepo.TurnInput(context.Background(), sess.ID, "message-1")
+		if err == nil && input.State == session.TurnInputCompleted {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("turn input did not complete: input=%+v err=%v", input, err)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if builder.lastCtx.Model != "" || builder.lastCtx.ResolvedModel != "resolved-target-default" {
+		t.Fatalf("target model routing used wire=%q resolved=%q", builder.lastCtx.Model, builder.lastCtx.ResolvedModel)
+	}
+	if input.AcceptedSeq != admission.Cursor || input.Provenance == nil || input.Provenance.SenderSessionID != "sender" || input.Provenance.SenderTurnID != "sender-turn" || input.Provenance.MessageID != "message-1" || input.Provenance.CorrelationID != "correlation-1" || input.Provenance.Intent != "request" {
+		t.Fatalf("input=%+v provenance=%+v", input, input.Provenance)
+	}
 }
 
 type executionGuardError struct{}
