@@ -93,6 +93,36 @@ type ExecutionContext struct {
 type SessionControl interface {
 	Send(context.Context, SessionSendRequest) (SessionDelivery, error)
 	WaitAny(context.Context, []SessionWaitTarget, time.Duration) (SessionWaitResult, error)
+	CreateSession(context.Context, SessionCreateRequest) (SessionSpawnResult, error)
+	ForkSession(context.Context, SessionForkRequest) (SessionSpawnResult, error)
+}
+
+type SessionCreateRequest struct {
+	ParentSessionID string
+	ParentTurnID    string
+	RequestID       string
+	WorkspacePath   string
+	Name            string
+	ExecutionPolicy string
+	WorktreeName    string
+	BaseRef         string
+}
+
+type SessionForkRequest struct {
+	ParentSessionID string
+	ParentTurnID    string
+	SourceSessionID string
+	RequestID       string
+	Name            string
+}
+
+type SessionSpawnResult struct {
+	ID              string `json:"id"`
+	ParentSessionID string `json:"parent_session_id"`
+	SourceSessionID string `json:"source_session_id,omitempty"`
+	WorkspacePath   string `json:"workspace_path"`
+	Kind            string `json:"kind"`
+	Status          string `json:"status"`
 }
 
 type SessionSendRequest struct {

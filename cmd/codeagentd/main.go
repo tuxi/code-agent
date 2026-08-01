@@ -204,7 +204,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	owner.SetTarget(controlplane.NewRuntimeTarget(executor, eventStore))
+	owner.SetTarget(controlplane.NewRuntimeTarget(executor, eventStore, repo, managedWorktrees))
 	rb.SetSessionControl(owner)
 	if err := owner.Start(ctx); err != nil {
 		_ = owner.Close()

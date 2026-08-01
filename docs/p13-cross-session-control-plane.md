@@ -1,6 +1,6 @@
 # Phase 13 — Cross-Session Control Plane — PRD
 
-> Status: Phase A complete; Phase B0 Runtime Ownership and Phase B1 control primitives implemented. This spec defines the architecture and phased delivery plan
+> Status: Phase A, Phase B0/B1, Phase C1 spawn/stable-fork, and Phase C2a managed-worktree creation implemented. This spec defines the architecture and phased delivery plan
 > for making code-agent a **multi-session orchestration control plane** — where
 > an Agent in one session can discover, read, send work to, and wait on sessions
 > in other workspaces.
@@ -32,6 +32,17 @@
 6. **Waits are turn/cursor scoped.** Waiting by session ID alone can match an old
    terminal event. Send returns a `turn_id` and event cursor; wait observes only
    events after that cursor.
+7. **Phase C1 forks only the latest durable checkpoint.** A fork receives a new
+   session identity and a freshly-built system prompt, then copies the source's
+   persisted summary and provider-valid text/tool history. Session-scoped assets
+   and managed-worktree ownership fail closed until Phase C2 defines transfer and
+   cleanup semantics.
+8. **Spawn edges are authoritative control-plane state.** They live in
+   `control.db`, not rebuildable `index.db`, because request idempotency and a
+   stable reserved child ID must survive retries and process restarts.
+9. **Managed creation reuses the existing worktree lifecycle.** The control
+   plane reserves the child ID, while `managedworktree.Manager` remains the
+   authority for Git provisioning, recovery, dirty-state safety, and removal.
 
 ## 1. Problem
 
@@ -310,10 +321,15 @@ Phase B0 — Runtime ownership
 Phase B1 — Control (can send and wait)
   send_to_session → owner route → target scheduler admission
   wait_sessions   → owner route → target event cursor → return when first completes
+
+Phase C1 — Spawn and stable fork
+  create_session  → caller owner → reserved child ID → new idle session
+  fork_session    → source owner → latest durable checkpoint → new idle session
 ```
 
-These four primitives form the **minimum closed loop** for Supervisor topology.
-`create_session` and `fork_session` are deferred to a later phase.
+The first four primitives form the **minimum closed loop** for Supervisor
+topology. Phase C1 adds durable topology growth without yet taking ownership of
+managed-worktree lifecycle.
 
 ### 3.3 Trust boundary
 
@@ -360,30 +376,47 @@ This is the Phase A schema. Provenance, role, git metadata, pinning, ownership,
 and spawn topology are intentionally deferred until their owning feature has a
 write path and lifecycle contract; speculative nullable columns are not added.
 
-### 4.2 Future `session_spawn_edges` table (Phase C)
+### 4.2 `control.db` — `session_spawn_edges` table (Phase C1)
 
-Tracks which session spawned which, for topology visualization and cleanup:
+Tracks creation/fork causality and makes retries idempotent across Runtime
+processes:
 
 ```sql
 CREATE TABLE IF NOT EXISTS session_spawn_edges (
+    request_id          TEXT NOT NULL UNIQUE,
+    payload_hash        TEXT NOT NULL,
     parent_session_id   TEXT NOT NULL,
     child_session_id    TEXT NOT NULL PRIMARY KEY,
-    status              TEXT NOT NULL DEFAULT 'open', -- open | closed
-    created_at          TEXT NOT NULL
+    source_session_id   TEXT NOT NULL DEFAULT '',
+    kind                TEXT NOT NULL, -- spawn | fork
+    status              TEXT NOT NULL DEFAULT 'provisioning',
+    created_at_ms       INTEGER NOT NULL,
+    updated_at_ms       INTEGER NOT NULL
 );
 ```
 
-This tracks which session spawned which. Inspired by Codex's
-`thread_spawn_edges` (`state_5.sqlite`). Table and column naming is
-code-agent's own — not a copy of Codex's schema.
+The parent is the session that invoked the tool. For a fork, `source_session_id`
+is the checkpoint source and can differ from the parent. Reservation inserts a
+stable child ID before provisioning; a retry with the same `request_id` and
+payload reuses it, while a changed payload fails closed. `provisioning` rows are
+recoverable by retry and become `open` only after the child is durable.
+Tool calls derive `request_id` from caller session/turn/call identity, so replay
+of the same durable tool call reaches the same reservation after a crash.
+
+Unlike the original Phase A sketch, this table is not stored in `index.db`:
+spawn idempotency is authoritative control-plane state and must not disappear
+during an index rebuild. A future UI may project these edges into the global
+index. Inspired by Codex's `thread_spawn_edges` (`state_5.sqlite`); table and
+column naming is code-agent's own.
 
 ### 4.3 `index.db` population
 
 - **On `SessionStore.Save()`**: upsert a row into `index.sessions`. Fields
   are extracted from `session.Session` and `session.Meta`. Best-effort:
   failure logs to stderr, does not fail the save.
-- **On `SessionStore.Delete()`**: delete the row from `index.sessions` and
-  any spawn edges referencing it.
+- **On `SessionStore.Delete()`**: delete the row from `index.sessions`. Phase C1
+  retains authoritative spawn edges as causal audit records; lifecycle closing
+  and cleanup are Phase C2.
 - **On startup**: if `index.db` is empty or missing, scan all
   `projects/*/sessions.db` under the `StoreBaseDir()` root (desktop:
   `~/.codeagent/projects/`) and rebuild the index. This is a one-pass
@@ -403,7 +436,7 @@ code-agent's own — not a copy of Codex's schema.
 | Rebuild from projects | `internal/runtime/index.go` — `RebuildIndex()` |
 | Write on Save/Delete | `internal/session/sqlite/store.go` — hook after primary write |
 | `ListAllSessions()` | new function, reads from `index.db` |
-| Spawn edge tracking | Phase C; not present in Phase A |
+| Spawn edge tracking | `internal/controlplane/owner.go`, `spawn.go` (`control.db`) |
 
 ## 5. Tool Definitions
 
@@ -514,12 +547,64 @@ Returns: {completed: [{id, turn_id, status, cursor, event}],
          timed_out: bool}
 ```
 
-### 5.5 Loading strategy
+### 5.5 `create_session`
 
-These four tools are **registered as visible tools** (same as `read_file`,
+```
+Name: create_session
+Description: Create a new persistent, idle child session owned by the caller's
+             Runtime. The child has a fresh system prompt for its requested
+             workspace. Use send_to_session to start work after creation.
+
+Parameters:
+  workspace_path   string, optional — absolute path; defaults to caller workspace
+  name             string, optional
+  execution_policy string, optional — shared_workspace (default) | read_only |
+                    isolated_worktree
+  worktree_name    string, optional — isolated-worktree branch/name hint
+  base_ref         string, optional — head (default) | fresh; isolated only
+
+Returns: {id, parent_session_id, workspace_path, kind: "spawn", status: "open"}
+```
+
+Creation is performed by the caller's owner and the new owner lease is published
+from that same process. For `isolated_worktree`, `workspace_path` identifies the
+source Git checkout; the returned `workspace_path` is the provisioned checkout.
+The control-plane reservation ID is passed into the managed-worktree manager so
+the spawn edge, worktree record, and session share one durable child identity.
+
+### 5.6 `fork_session`
+
+```
+Name: fork_session
+Description: Fork a session's latest durable checkpoint into a new persistent,
+             idle child. The source owner's Runtime creates the child in the
+             source workspace with a fresh system prompt, then copies the
+             persisted summary and provider-valid text/tool history.
+
+Parameters:
+  id    string, required — source session ID
+  name  string, optional — defaults to "<source name> (fork)"
+
+Returns: {id, parent_session_id, source_session_id, workspace_path,
+         kind: "fork", status: "open"}
+```
+
+The current tool call is not part of the fork unless it was already persisted
+as a balanced checkpoint. Gateway assets, local assets, reference-ledger state,
+and managed-worktree sources fail closed in Phase C1.
+
+Known compatibility issue: the model checkpoint and `read_session` contain the
+forked history, but AgentKit's initial conversation rendering is currently empty
+because its restore path is event-backed and Phase C1 does not duplicate source
+events. This is recorded and deliberately deferred; blindly copying thousands
+of diagnostic events is not the intended long-term fix.
+
+### 5.7 Loading strategy
+
+These six tools are **registered as visible tools** (same as `read_file`,
 `grep`, etc.). They appear in the system prompt for every session. This is
 acceptable because:
-- Only 4 tools — the system prompt overhead is small (~200 tokens)
+- Only 6 tools — the system prompt overhead remains bounded
 - The model uses them only when the user's intent involves cross-session
   orchestration; they sit unused in normal single-session work
 - A `defer_loading` mechanism (on-demand tool search, similar to Codex's
@@ -531,7 +616,7 @@ acceptable because:
   defer_loading is a separate feature (~200 lines + system prompt changes)
   and is deferred to a follow-up phase.
 
-### 5.6 Where tools live
+### 5.8 Where tools live
 
 | Tool | File |
 |---|---|
@@ -539,8 +624,11 @@ acceptable because:
 | `read_session` | `internal/tools/sessions/read_session.go` |
 | `send_to_session` | `internal/tools/sessions/send_to_session.go` |
 | `wait_sessions` | `internal/tools/sessions/wait_sessions.go` |
+| `create_session` | `internal/tools/sessions/create_session.go` |
+| `fork_session` | `internal/tools/sessions/fork_session.go` |
 
-All share a common dependency: an `IndexStore` interface (see §6).
+The observation tools depend on `IndexStore`; the four control tools depend on
+the Runtime's `SessionControl` owner router.
 
 ## 6. Implementation Plan
 
@@ -681,20 +769,123 @@ work across multiple project sessions and aggregate results.
 
 **Lines of code estimate**: ~350 (executor + cross-workspace polling) + ~300 (tools).
 
-### Phase C: Spawn & Fork (Future)
+### Phase C1: Spawn & Stable Fork (Implemented)
 
-Deferred. Requires:
-- `create_session` tool: Agent dynamically creates a new persistent session
-- `fork_session` tool: Agent forks an existing session (same workspace or worktree)
-- Spawn edge tracking in `session_spawn_edges` for topology visualization
-- Lifecycle management (auto-archive completed child sessions)
+- `create_session` dynamically creates a persistent, idle child using a stable
+  reserved ID. Phase C1 supports `shared_workspace` and `read_only`.
+- `fork_session` routes to the source owner and copies its latest durable
+  checkpoint into a new persistent, idle child in the same workspace.
+- `session_spawn_edges` in `control.db` records parent/source causality and
+  request idempotency. Control-plane protocol version 3 adds the authenticated
+  owner-side fork RPC.
+- Local-owner and authenticated loopback paths use the same target contract.
+- Unsupported asset-bearing histories and managed-worktree sources fail closed.
+- Source diagnostic events are not copied. Client rendering of a fork's baseline
+  checkpoint remains a known follow-up compatibility issue.
+
+### Phase C1 follow-up: Public Fork API
+
+- expose `POST /v1/conversations/{id}/forks` for first-class client use
+- route both the HTTP endpoint and `fork_session` through one application-level
+  fork service rather than making the tool the owning abstraction
+- add pagination or structural sharing for very large checkpoint histories
+
+### Phase C2a: Managed Worktree Creation (Implemented)
+
+- `create_session(execution_policy="isolated_worktree")` provisions through the
+  existing `managedworktree.Manager`
+- supports `base_ref=head|fresh` and an optional worktree name hint
+- the control-plane reserved child ID is used by the worktree/session record
+- retries retain the same request and child identity across Runtime restarts
+- unavailable managed-worktree capability fails explicitly; it never silently
+  falls back to a shared workspace
+
+### Phase C2b: Fork & Managed Lifecycle (Future)
+
+#### C2b.1 First-class fork service
+
+`fork_session` is a tool adapter, not the owner of fork semantics. Extract one
+application-level fork service and route both the tool and a future client API
+through it:
+
+```text
+POST /v1/conversations/{source_id}/forks
+{
+  "request_id": "client-stable-id",
+  "name": "optional display name",
+  "execution_policy": "shared_workspace | isolated_worktree",
+  "worktree_name": "optional; isolated only"
+}
+```
+
+For a client-originated fork, `parent_session_id` defaults to `source_id`. A tool
+fork keeps the calling session as parent and the requested session as source.
+Both paths reserve the same durable spawn edge and return the same result shape.
+
+#### C2b.2 Managed fork snapshot
+
+- `shared_workspace` keeps the existing C1 behavior.
+- `isolated_worktree` captures the source checkout's exact committed `HEAD` SHA,
+  then provisions a new managed worktree and branch at that commit. It does not
+  reinterpret `head` later and does not use `fresh`; reproducibility is more
+  important than following a moving ref.
+- The source must be a Git checkout and clean (no modified, staged, untracked,
+  or uncommitted files). A dirty source fails closed with a structured summary;
+  Phase C2b does not silently omit working-tree state.
+- Conversation history and Git state are two explicit snapshots: latest durable
+  conversation checkpoint plus the captured commit. The result reports
+  `base_commit` so the fork is auditable.
+- A managed source may be forked, but its worktree ownership metadata is never
+  copied. The child receives a new worktree record, branch, workspace identity,
+  and execution guard.
+- Gateway/local assets and reference-ledger state remain unsupported until an
+  ownership-preserving transfer contract exists.
+
+#### C2b.3 Edge and retention lifecycle
+
+Spawn edges remain causal audit records and are not deleted with `index.db` or
+worktree cleanup. Their lifecycle is intentionally small:
+
+```text
+provisioning -> open -> closed
+```
+
+- provisioning: child identity reserved; retry may resume
+- open: child is durable and addressable
+- closed: parent explicitly released the relationship or the child was deleted
+
+Archiving a conversation does not close its edge because archive is reversible.
+Removing a managed checkout also does not close the edge: the conversation and
+branch are preserved, and worktree state remains authoritative in its own table.
+A closed edge retains `closed_at_ms` and `close_reason`; it is never hard-deleted
+as part of normal lifecycle cleanup.
+
+#### C2b.4 Completion and auto-archive
+
+`turn_status=done` means one turn completed, not that a persistent session has no
+future work. Therefore C2b must not archive a child merely because any turn
+finished successfully.
+
+The safe first primitive is an explicit `release_session`/archive operation used
+by a parent after `wait_sessions` and result collection. A later convenience
+flag may bind auto-archive to one specific admitted `turn_id`; it must be opt-in,
+must wait until no queued turn remains, and must never remove a dirty worktree.
+Conversation archive and managed-worktree removal stay separate operations.
+
+#### C2b acceptance order
+
+1. Extract shared fork service and add the client HTTP endpoint.
+2. Add exact-commit managed fork with dirty-source fail-closed behavior.
+3. Add explicit parent release/archive and durable edge closing.
+4. Consider turn-bound opt-in auto-archive only after queued-turn recovery and
+   restart behavior have dedicated tests.
 
 ## 7. Non-Goals (explicitly deferred)
 
 | Item | Why deferred |
 |---|---|
 | Cross-machine session routing (SSH) | Requires host registry + remote store access. Index solves single-machine first. |
-| `create_session` / `fork_session` tools | Dynamic creation adds lifecycle complexity. Start with pre-existing sessions. |
+| Managed-worktree fork / auto-archive | Requires explicit fork ownership, completion, and cleanup contracts (Phase C2b). |
 | Session-to-session file transfer | Send structured data via prompt, not raw files. Git is the artifact bus. |
 | wait-all primitive | wait-any + caller loop is the correct semantic (Codex made the same choice). |
 | Per-session sandbox/approval in index | The index stores metadata only. Enforcement stays in the target session. |

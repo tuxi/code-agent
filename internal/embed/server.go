@@ -808,6 +808,12 @@ func Assemble(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider 
 	if provider != nil {
 		executor.SetTitleGenerator(conversation.NewLLMTitleGenerator(provider, mc.Model))
 	}
+	managedWorktrees, worktreeReport, worktreeErr := runtime.ConfigureManagedWorktrees(ctx, telemetryStore, repo, executor, cfg.Profile != app.ProfileSandboxed)
+	if worktreeErr != nil {
+		fmt.Printf("codeagent embedded: managed worktrees disabled: %v\n", worktreeErr)
+	} else if managedWorktrees != nil && (len(worktreeReport.Issues) > 0 || len(worktreeReport.Orphans) > 0) {
+		fmt.Printf("codeagent embedded: managed worktree reconciliation: issues=%d orphans=%d missing=%d\n", len(worktreeReport.Issues), len(worktreeReport.Orphans), len(worktreeReport.Missing))
+	}
 	stateDir, err := runtime.StateDir()
 	if err != nil {
 		release()
@@ -818,7 +824,7 @@ func Assemble(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider 
 		release()
 		return nil, nil, nil, err
 	}
-	owner.SetTarget(controlplane.NewRuntimeTarget(executor, eventStore))
+	owner.SetTarget(controlplane.NewRuntimeTarget(executor, eventStore, repo, managedWorktrees))
 	rb.SetSessionControl(owner)
 	if err := owner.Start(ctx); err != nil {
 		_ = owner.Close()
@@ -828,15 +834,6 @@ func Assemble(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider 
 	closers = append(closers, func() { _ = owner.Close() })
 	ownerIdentity := owner.Identity()
 	fmt.Fprintf(os.Stderr, "[control-plane] owner ready instance=%s endpoint=%s protocol=%d\n", ownerIdentity.InstanceID, ownerIdentity.Endpoint, ownerIdentity.ProtocolVersion)
-	managedWorktrees, worktreeReport, worktreeErr := runtime.ConfigureManagedWorktrees(ctx, telemetryStore, repo, executor, cfg.Profile != app.ProfileSandboxed)
-	if worktreeErr != nil {
-		fmt.Printf("codeagent embedded: managed worktrees disabled: %v\n", worktreeErr)
-	} else if managedWorktrees != nil && (len(worktreeReport.Issues) > 0 || len(worktreeReport.Orphans) > 0) {
-		fmt.Printf("codeagent embedded: managed worktree reconciliation: issues=%d orphans=%d missing=%d\n", len(worktreeReport.Issues), len(worktreeReport.Orphans), len(worktreeReport.Missing))
-	}
-	if err := owner.Heartbeat(ctx); err != nil {
-		fmt.Fprintf(os.Stderr, "[control-plane] post-worktree reconcile: %v\n", err)
-	}
 	// Job bracket events reach the owning conversation's live subscribers (P8.7
 	// §8.4-2) — persisted copies are already handled inside the sink.
 	if jobSink != nil {

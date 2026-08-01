@@ -209,6 +209,16 @@ func BuildBaseRegistry(ctx context.Context, cfg app.Config, mc app.ModelConfig, 
 			return nil, nil, nil, nil, err
 		}
 	}
+	if cfg.Agent.ToolAllowed("create_session") {
+		if err := registry.Register(&sessions.CreateSessionTool{}); err != nil {
+			return nil, nil, nil, nil, err
+		}
+	}
+	if cfg.Agent.ToolAllowed("fork_session") {
+		if err := registry.Register(&sessions.ForkSessionTool{}); err != nil {
+			return nil, nil, nil, nil, err
+		}
+	}
 
 	// Plan mode tools: enter_plan_mode and propose_plan. They use a RunnerRef for
 	// late binding — the Runner is constructed after the registry. The returned ref

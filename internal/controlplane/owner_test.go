@@ -49,7 +49,11 @@ type fakeActivity map[string]bool
 func (a fakeActivity) HasActivity(id string) bool { return a[id] }
 
 type fakeTarget struct {
-	request tools.SessionSendRequest
+	request       tools.SessionSendRequest
+	createRequest tools.SessionCreateRequest
+	createChild   string
+	forkRequest   tools.SessionForkRequest
+	forkChild     string
 }
 
 func (t *fakeTarget) Accept(_ context.Context, _ context.Context, sessionID string, request tools.SessionSendRequest) (tools.SessionDelivery, error) {
@@ -62,6 +66,18 @@ func (*fakeTarget) EventsSince(_ context.Context, sessionID, turnID string, curs
 		return &tools.SessionWaitCompletion{SessionID: sessionID, TurnID: turnID, Status: "completed", Cursor: 14}, 14, nil
 	}
 	return nil, cursor, nil
+}
+
+func (t *fakeTarget) CreateSession(_ context.Context, request tools.SessionCreateRequest, childID string) (tools.SessionSpawnResult, error) {
+	t.createRequest = request
+	t.createChild = childID
+	return tools.SessionSpawnResult{ID: childID, ParentSessionID: request.ParentSessionID, WorkspacePath: request.WorkspacePath, Kind: "spawn", Status: "open"}, nil
+}
+
+func (t *fakeTarget) ForkSession(_ context.Context, request tools.SessionForkRequest, childID string) (tools.SessionSpawnResult, error) {
+	t.forkRequest = request
+	t.forkChild = childID
+	return tools.SessionSpawnResult{ID: childID, ParentSessionID: request.ParentSessionID, SourceSessionID: request.SourceSessionID, WorkspacePath: "/fork", Kind: "fork", Status: "open"}, nil
 }
 
 func testRepo() *fakeRepo {
@@ -187,6 +203,95 @@ func TestManagerRoutesSendAndCursorWaitThroughOwnerRPC(t *testing.T) {
 	result, err := router.WaitAny(context.Background(), []tools.SessionWaitTarget{{SessionID: "session-1", TurnID: delivery.TurnID, Cursor: delivery.Cursor}}, 0)
 	if err != nil || len(result.Completed) != 1 || result.Completed[0].Cursor != 14 || result.TimedOut {
 		t.Fatalf("wait=%+v err=%v", result, err)
+	}
+}
+
+func TestManagerCreateSessionReservesStableSpawnEdge(t *testing.T) {
+	target := &fakeTarget{}
+	m, err := NewManager(t.TempDir(), "server", testRepo(), nil, Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.SetTarget(target)
+	if err := m.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer m.Close()
+
+	request := tools.SessionCreateRequest{RequestID: "create-1", ParentSessionID: "session-1", WorkspacePath: "/workspace/child", ExecutionPolicy: session.ExecutionPolicySharedWorkspace}
+	first, err := m.CreateSession(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := m.CreateSession(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.ID == "" || second.ID != first.ID || target.createChild != first.ID {
+		t.Fatalf("first=%+v second=%+v target_child=%q", first, second, target.createChild)
+	}
+	var status string
+	if err := m.db.QueryRow(`SELECT status FROM session_spawn_edges WHERE child_session_id=?`, first.ID).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != "open" {
+		t.Fatalf("edge status = %q", status)
+	}
+	changed := request
+	changed.Name = "different"
+	if _, err := m.CreateSession(context.Background(), changed); err == nil {
+		t.Fatal("reused request id with a changed payload succeeded")
+	}
+}
+
+func TestManagerRoutesForkThroughSourceOwnerRPC(t *testing.T) {
+	base := t.TempDir()
+	ownerTarget := &fakeTarget{}
+	owner, err := NewManager(base, "source-owner", testRepo(), nil, Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner.SetTarget(ownerTarget)
+	if err := owner.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer owner.Close()
+
+	parentRepo := &fakeRepo{sessions: map[string]*session.Session{
+		"parent": {ID: "parent", WorkspacePath: "/workspace/parent", Metadata: map[string]any{}},
+	}}
+	router, err := NewManager(base, "parent-owner", parentRepo, nil, Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := router.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer router.Close()
+
+	localOwners.Lock()
+	delete(localOwners.byInstance, owner.Identity().InstanceID)
+	localOwners.Unlock()
+	defer func() {
+		localOwners.Lock()
+		localOwners.byInstance[owner.Identity().InstanceID] = owner
+		localOwners.Unlock()
+	}()
+
+	request := tools.SessionForkRequest{RequestID: "fork-1", ParentSessionID: "parent", SourceSessionID: "session-1", Name: "remote fork"}
+	result, err := router.ForkSession(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ID == "" || result.SourceSessionID != "session-1" || ownerTarget.forkChild != result.ID || ownerTarget.forkRequest.Name != "remote fork" {
+		t.Fatalf("result=%+v target_request=%+v target_child=%q", result, ownerTarget.forkRequest, ownerTarget.forkChild)
+	}
+	var status, source string
+	if err := router.db.QueryRow(`SELECT status,source_session_id FROM session_spawn_edges WHERE child_session_id=?`, result.ID).Scan(&status, &source); err != nil {
+		t.Fatal(err)
+	}
+	if status != "open" || source != "session-1" {
+		t.Fatalf("edge status=%q source=%q", status, source)
 	}
 }
 

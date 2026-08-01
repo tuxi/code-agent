@@ -26,12 +26,22 @@ const (
 	MetaBaseWorkspaceID  = "base_workspace_id"
 	MetaManagedWorktree  = "managed_worktree"
 	MetaWorktreeWarnings = "worktree_warnings"
+	MetaSpawnRequest     = "spawn_request_id"
+	MetaSpawnKind        = "spawn_kind"
+	MetaSpawnParent      = "spawn_parent_session_id"
+	MetaForkSource       = "fork_source_session_id"
+	MetaSpawnReady       = "spawn_ready"
 )
 
 const (
 	ExecutionPolicySharedWorkspace  = "shared_workspace"
 	ExecutionPolicyIsolatedWorktree = "isolated_worktree"
 	ExecutionPolicyReadOnly         = "read_only"
+)
+
+const (
+	SpawnKindCreate = "spawn"
+	SpawnKindFork   = "fork"
 )
 
 // ExecutionPolicy returns the Runtime-enforced workspace mode. Older sessions

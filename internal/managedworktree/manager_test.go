@@ -76,7 +76,7 @@ func TestCreateManagedWorktreeIsOptInIdempotentAndClean(t *testing.T) {
 	repo := newMemoryRepo()
 	manager := New(store, repo)
 	req := CreateRequest{
-		ClientRequestID: "create_same", SourceWorkspacePath: root,
+		ClientRequestID: "create_same", ReservedSessionID: "reserved-child", SourceWorkspacePath: root,
 		SourceWorkspaceID: "main", BaseWorkspaceID: "project",
 		SuggestedName: "Multi Session Cache", BaseRef: worktree.BaseRefHead,
 	}
@@ -115,6 +115,9 @@ func TestCreateManagedWorktreeIsOptInIdempotentAndClean(t *testing.T) {
 	if first.Record.State != worktree.StateReady || !strings.HasPrefix(first.Record.Name, "multi-session-cache-") || first.Record.Branch != "codeagent/"+first.Record.Name {
 		t.Fatalf("record=%+v", first.Record)
 	}
+	if first.Session.ID != "reserved-child" || first.Record.SessionID != "reserved-child" {
+		t.Fatalf("reserved session id was not preserved: session=%q record=%q", first.Session.ID, first.Record.SessionID)
+	}
 	if len(first.Warnings) != 1 || first.Warnings[0].Code != "source_workspace_dirty" {
 		t.Fatalf("warnings=%+v", first.Warnings)
 	}
@@ -135,6 +138,11 @@ func TestCreateManagedWorktreeIsOptInIdempotentAndClean(t *testing.T) {
 	worktrees := git(t, root, "worktree", "list", "--porcelain")
 	if got := strings.Count(worktrees, "worktree "); got != 2 {
 		t.Fatalf("git worktree count=%d output=%s", got, worktrees)
+	}
+	mismatch := req
+	mismatch.ReservedSessionID = "other-child"
+	if _, err := New(store, repo).Create(context.Background(), mismatch); err == nil {
+		t.Fatal("idempotent retry accepted a different reserved session id")
 	}
 }
 

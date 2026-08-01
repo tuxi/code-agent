@@ -3,6 +3,7 @@ package sessions
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -80,4 +81,12 @@ func randomID() (string, error) {
 		return "", err
 	}
 	return "msg_" + hex.EncodeToString(buf), nil
+}
+
+func stableToolRequestID(prefix string, ec tools.ExecutionContext) (string, error) {
+	if ec.SessionID == "" || ec.TurnID == "" || ec.CallID == "" {
+		return randomID()
+	}
+	digest := sha256.Sum256([]byte(ec.SessionID + "\x00" + ec.TurnID + "\x00" + ec.CallID))
+	return prefix + "_" + hex.EncodeToString(digest[:16]), nil
 }

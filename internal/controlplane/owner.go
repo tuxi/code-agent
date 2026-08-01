@@ -29,7 +29,7 @@ import (
 )
 
 const (
-	ProtocolVersion        = 2
+	ProtocolVersion        = 3
 	defaultLeaseTTL        = 15 * time.Second
 	defaultHeartbeat       = 5 * time.Second
 	ownerIdentityPath      = "/control/v1/identity"
@@ -55,6 +55,8 @@ type ActivitySource interface {
 type Target interface {
 	Accept(context.Context, context.Context, string, tools.SessionSendRequest) (tools.SessionDelivery, error)
 	EventsSince(context.Context, string, string, int64) (*tools.SessionWaitCompletion, int64, error)
+	CreateSession(context.Context, tools.SessionCreateRequest, string) (tools.SessionSpawnResult, error)
+	ForkSession(context.Context, tools.SessionForkRequest, string) (tools.SessionSpawnResult, error)
 }
 
 // Config controls lease timing. Zero values use production defaults. Now exists
@@ -161,6 +163,19 @@ CREATE TABLE IF NOT EXISTS session_owners (
 CREATE INDEX IF NOT EXISTS idx_session_owners_instance ON session_owners(instance_id);
 CREATE INDEX IF NOT EXISTS idx_session_owners_expiry ON session_owners(expires_at_ms);
 CREATE INDEX IF NOT EXISTS idx_runtime_instances_expiry ON runtime_instances(expires_at_ms);
+CREATE TABLE IF NOT EXISTS session_spawn_edges (
+	request_id        TEXT NOT NULL UNIQUE,
+	payload_hash      TEXT NOT NULL,
+	parent_session_id TEXT NOT NULL,
+	child_session_id  TEXT NOT NULL PRIMARY KEY,
+	source_session_id TEXT NOT NULL DEFAULT '',
+	kind              TEXT NOT NULL,
+	status            TEXT NOT NULL DEFAULT 'provisioning',
+	created_at_ms     INTEGER NOT NULL,
+	updated_at_ms     INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_session_spawn_edges_parent ON session_spawn_edges(parent_session_id, created_at_ms);
+CREATE INDEX IF NOT EXISTS idx_session_spawn_edges_source ON session_spawn_edges(source_session_id, created_at_ms);
 `
 
 func NewManager(baseDir, serverID string, repo SessionRepository, activity ActivitySource, cfg Config) (*Manager, error) {
@@ -553,6 +568,24 @@ func (m *Manager) handler() http.Handler {
 			return
 		}
 		writeJSON(w, http.StatusOK, eventPollResponse{Completion: completion, Cursor: latest})
+	})
+	mux.HandleFunc("POST "+ownerSessionPathPrefix+"{id}/forks", func(w http.ResponseWriter, r *http.Request) {
+		if !m.authorized(r) {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		var rpc spawnRPCRequest
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&rpc); err != nil || rpc.ChildID == "" {
+			http.Error(w, "invalid request", http.StatusBadRequest)
+			return
+		}
+		rpc.Request.SourceSessionID = r.PathValue("id")
+		result, err := m.forkOwned(r.Context(), rpc.Request, rpc.ChildID)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
+		writeJSON(w, http.StatusCreated, result)
 	})
 	return mux
 }

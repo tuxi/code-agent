@@ -73,6 +73,7 @@ func (s DirtySummary) HasRisk() bool {
 
 type CreateRequest struct {
 	ClientRequestID     string
+	ReservedSessionID   string
 	SourceWorkspacePath string
 	SourceWorkspaceID   string
 	BaseWorkspaceID     string
@@ -663,7 +664,10 @@ func (m *Manager) createLocked(ctx context.Context, req CreateRequest) (CreateRe
 		return CreateResult{}, m.err(req, CodeBaseRefUnavailable, "requested base ref is unavailable", "", err)
 	}
 
-	sessionID := session.NewID()
+	sessionID := strings.TrimSpace(req.ReservedSessionID)
+	if sessionID == "" {
+		sessionID = session.NewID()
+	}
 	shortID := shortID(sessionID)
 	name := slug(req.SuggestedName) + "-" + shortID
 	branch := "codeagent/" + name
@@ -890,6 +894,9 @@ func warningsFromSession(sess *session.Session) []Warning {
 func validateDuplicateRequest(record worktree.Record, req CreateRequest, projectRoot string) error {
 	if record.BaseWorkspaceID != req.BaseWorkspaceID || record.SourceWorkspaceID != req.SourceWorkspaceID || record.SourceWorkspacePath != projectRoot || record.BaseRef != req.BaseRef {
 		return errors.New("idempotency key scope mismatch")
+	}
+	if req.ReservedSessionID != "" && record.SessionID != req.ReservedSessionID {
+		return errors.New("reserved session id mismatch")
 	}
 	return nil
 }

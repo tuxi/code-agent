@@ -15,8 +15,10 @@ type stubSessionIndex struct {
 }
 
 type stubSessionControl struct {
-	sent    tools.SessionSendRequest
-	targets []tools.SessionWaitTarget
+	sent          tools.SessionSendRequest
+	targets       []tools.SessionWaitTarget
+	createRequest tools.SessionCreateRequest
+	forkRequest   tools.SessionForkRequest
 }
 
 func (s *stubSessionControl) Send(_ context.Context, request tools.SessionSendRequest) (tools.SessionDelivery, error) {
@@ -27,6 +29,16 @@ func (s *stubSessionControl) Send(_ context.Context, request tools.SessionSendRe
 func (s *stubSessionControl) WaitAny(_ context.Context, targets []tools.SessionWaitTarget, _ time.Duration) (tools.SessionWaitResult, error) {
 	s.targets = append([]tools.SessionWaitTarget(nil), targets...)
 	return tools.SessionWaitResult{Completed: []tools.SessionWaitCompletion{{SessionID: targets[0].SessionID, TurnID: targets[0].TurnID, Status: "completed", Cursor: 9}}}, nil
+}
+
+func (s *stubSessionControl) CreateSession(_ context.Context, request tools.SessionCreateRequest) (tools.SessionSpawnResult, error) {
+	s.createRequest = request
+	return tools.SessionSpawnResult{ID: "child", ParentSessionID: request.ParentSessionID, WorkspacePath: request.WorkspacePath, Kind: "spawn", Status: "open"}, nil
+}
+
+func (s *stubSessionControl) ForkSession(_ context.Context, request tools.SessionForkRequest) (tools.SessionSpawnResult, error) {
+	s.forkRequest = request
+	return tools.SessionSpawnResult{ID: "fork", ParentSessionID: request.ParentSessionID, SourceSessionID: request.SourceSessionID, WorkspacePath: "/fork", Kind: "fork", Status: "open"}, nil
 }
 
 func (s stubSessionIndex) ListAll() ([]tools.SessionIndexEntry, error) {
@@ -186,5 +198,55 @@ func TestSendAndWaitSessionsPreserveTurnCursorScope(t *testing.T) {
 	}
 	if len(control.targets) != 1 || control.targets[0].Cursor != 7 || len(result.Completed) != 1 || result.Completed[0].Cursor != 9 {
 		t.Fatalf("targets=%+v result=%+v", control.targets, result)
+	}
+}
+
+func TestCreateAndForkSessionPassCallerScope(t *testing.T) {
+	control := &stubSessionControl{}
+	ec := tools.ExecutionContext{SessionID: "parent", TurnID: "turn", CallID: "call-create", WorkspaceRoot: "/workspace/default", SessionControl: control}
+
+	created, err := (&CreateSessionTool{}).Execute(context.Background(), ec, json.RawMessage(`{"name":"child","execution_policy":"read_only"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var createResult tools.SessionSpawnResult
+	if err := json.Unmarshal(created.Output, &createResult); err != nil {
+		t.Fatal(err)
+	}
+	if createResult.ID != "child" || control.createRequest.ParentSessionID != "parent" || control.createRequest.WorkspacePath != "/workspace/default" || control.createRequest.ExecutionPolicy != "read_only" || control.createRequest.RequestID == "" {
+		t.Fatalf("result=%+v request=%+v", createResult, control.createRequest)
+	}
+	createRequestID := control.createRequest.RequestID
+	if _, err := (&CreateSessionTool{}).Execute(context.Background(), ec, json.RawMessage(`{"name":"child","execution_policy":"read_only"}`)); err != nil || control.createRequest.RequestID != createRequestID {
+		t.Fatalf("create retry request_id=%q, want %q, err=%v", control.createRequest.RequestID, createRequestID, err)
+	}
+
+	ec.CallID = "call-fork"
+	forked, err := (&ForkSessionTool{}).Execute(context.Background(), ec, json.RawMessage(`{"id":"source","name":"branch"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var forkResult tools.SessionSpawnResult
+	if err := json.Unmarshal(forked.Output, &forkResult); err != nil {
+		t.Fatal(err)
+	}
+	if forkResult.ID != "fork" || control.forkRequest.ParentSessionID != "parent" || control.forkRequest.SourceSessionID != "source" || control.forkRequest.Name != "branch" || control.forkRequest.RequestID == "" {
+		t.Fatalf("result=%+v request=%+v", forkResult, control.forkRequest)
+	}
+}
+
+func TestCreateSessionPassesManagedWorktreeOptions(t *testing.T) {
+	control := &stubSessionControl{}
+	ec := tools.ExecutionContext{SessionID: "parent", TurnID: "turn", CallID: "call-worktree", WorkspaceRoot: "/workspace/source", SessionControl: control}
+	_, err := (&CreateSessionTool{}).Execute(context.Background(), ec, json.RawMessage(`{"name":"child","execution_policy":"isolated_worktree","worktree_name":"feature","base_ref":"fresh"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := control.createRequest
+	if request.ExecutionPolicy != "isolated_worktree" || request.WorkspacePath != "/workspace/source" || request.WorktreeName != "feature" || request.BaseRef != "fresh" {
+		t.Fatalf("request = %+v", request)
+	}
+	if _, err := (&CreateSessionTool{}).Execute(context.Background(), ec, json.RawMessage(`{"base_ref":"head"}`)); err == nil {
+		t.Fatal("non-isolated create accepted worktree options")
 	}
 }
