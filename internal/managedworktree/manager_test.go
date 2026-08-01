@@ -160,6 +160,81 @@ func TestCreateManagedWorktreeRejectsInvalidBaseRef(t *testing.T) {
 	}
 }
 
+func TestCreatePinnedForkRejectsDirtySourceAndReportsSummary(t *testing.T) {
+	root := initGitRepo(t)
+	if err := os.WriteFile(filepath.Join(root, "tracked.txt"), []byte("dirty\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "untracked.txt"), []byte("new\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	store := session.NewMemoryStore()
+	_, err := New(store, newMemoryRepo()).Create(context.Background(), CreateRequest{
+		ClientRequestID: "dirty-fork", ReservedSessionID: "dirty-child", SourceWorkspacePath: root,
+		SourceWorkspaceID: "source-session", BaseRef: worktree.BaseRefHead,
+		PinSourceHead: true, RequireClean: true, AllowLinkedSource: true,
+	})
+	var managedErr *Error
+	if !errors.As(err, &managedErr) || managedErr.Code != CodeDirty || managedErr.DirtySummary == nil {
+		t.Fatalf("error=%v", err)
+	}
+	if managedErr.DirtySummary.ModifiedFiles != 1 || managedErr.DirtySummary.UntrackedFiles != 1 {
+		t.Fatalf("summary=%+v", managedErr.DirtySummary)
+	}
+	if records, listErr := store.ListWorktrees(context.Background()); listErr != nil || len(records) != 0 {
+		t.Fatalf("records=%+v err=%v", records, listErr)
+	}
+}
+
+func TestCreatePinnedForkReusesExactCommitAndAcceptsManagedSource(t *testing.T) {
+	root := initGitRepo(t)
+	store := session.NewMemoryStore()
+	repo := newMemoryRepo()
+	manager := New(store, repo)
+	first, err := manager.Create(context.Background(), CreateRequest{
+		ClientRequestID: "source-worktree", ReservedSessionID: "source-child", SourceWorkspacePath: root,
+		SuggestedName: "source", BaseRef: worktree.BaseRefHead,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantCommit := strings.TrimSpace(git(t, first.Record.WorktreePath, "rev-parse", "HEAD"))
+	req := CreateRequest{
+		ClientRequestID: "managed-fork", ReservedSessionID: "fork-child",
+		SourceWorkspacePath: first.Record.WorktreePath, SourceWorkspaceID: "source-child",
+		SuggestedName: "managed snapshot", BaseRef: worktree.BaseRefHead,
+		PinSourceHead: true, RequireClean: true, AllowLinkedSource: true,
+	}
+	forked, err := manager.Create(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if forked.Record.BaseCommit != wantCommit {
+		t.Fatalf("base_commit=%q want=%q", forked.Record.BaseCommit, wantCommit)
+	}
+	canonicalRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filepath.Dir(filepath.Dir(forked.Record.WorktreePath)) != filepath.Join(canonicalRoot, ".codeagent") {
+		t.Fatalf("fork path is not rooted in primary checkout: %q", forked.Record.WorktreePath)
+	}
+	if got := strings.TrimSpace(git(t, forked.Record.WorktreePath, "rev-parse", "HEAD")); got != wantCommit {
+		t.Fatalf("fork HEAD=%q want=%q", got, wantCommit)
+	}
+
+	if err := os.WriteFile(filepath.Join(first.Record.WorktreePath, "later.txt"), []byte("later\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	retry, err := New(store, repo).Create(context.Background(), req)
+	if err != nil {
+		t.Fatalf("idempotent retry revalidated moving source: %v", err)
+	}
+	if retry.Record.SessionID != forked.Record.SessionID || retry.Record.BaseCommit != wantCommit {
+		t.Fatalf("retry=%+v first=%+v", retry.Record, forked.Record)
+	}
+}
+
 func initGitRepo(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()

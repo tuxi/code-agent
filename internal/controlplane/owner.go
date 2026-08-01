@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"code-agent/internal/session"
+	"code-agent/internal/sessionfork"
 	"code-agent/internal/tools"
 
 	_ "modernc.org/sqlite"
@@ -56,7 +57,7 @@ type Target interface {
 	Accept(context.Context, context.Context, string, tools.SessionSendRequest) (tools.SessionDelivery, error)
 	EventsSince(context.Context, string, string, int64) (*tools.SessionWaitCompletion, int64, error)
 	CreateSession(context.Context, tools.SessionCreateRequest, string) (tools.SessionSpawnResult, error)
-	ForkSession(context.Context, tools.SessionForkRequest, string) (tools.SessionSpawnResult, error)
+	ForkSession(context.Context, sessionfork.Request, string) (sessionfork.Result, error)
 }
 
 // Config controls lease timing. Zero values use production defaults. Now exists

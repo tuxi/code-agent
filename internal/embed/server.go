@@ -52,6 +52,7 @@ var defaultCapabilities = []string{
 	"session_resume",
 	"client_tool_execution",
 	"workflow_execution",
+	"conversation_fork_v1",
 }
 
 // Options configures an embedded server. Every field is supplied in-memory by the
@@ -887,6 +888,7 @@ func Assemble(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider 
 		},
 		RuntimeCapabilities: runtimeCapabilities,
 		ManagedWorktrees:    managedWorktrees,
+		SessionForks:        owner,
 		WorkflowSnapshot:    runtime.NewWorkflowSnapshotFunc(),
 	})
 	rt := &Runtime{Executor: executor, Builder: rb, Repo: repo, Owner: owner}

@@ -14,12 +14,13 @@ import (
 	"strings"
 
 	"code-agent/internal/session"
+	"code-agent/internal/sessionfork"
 	"code-agent/internal/tools"
 )
 
 type spawnRPCRequest struct {
-	Request tools.SessionForkRequest `json:"request"`
-	ChildID string                   `json:"child_id"`
+	Request sessionfork.Request `json:"request"`
+	ChildID string              `json:"child_id"`
 }
 
 type spawnReservation struct {
@@ -57,36 +58,45 @@ func (m *Manager) CreateSession(ctx context.Context, request tools.SessionCreate
 	return result, nil
 }
 
-func (m *Manager) ForkSession(ctx context.Context, request tools.SessionForkRequest) (tools.SessionSpawnResult, error) {
+func (m *Manager) ForkSession(ctx context.Context, request sessionfork.Request) (sessionfork.Result, error) {
 	if request.RequestID == "" || request.ParentSessionID == "" || request.SourceSessionID == "" {
-		return tools.SessionSpawnResult{}, errors.New("control plane: incomplete fork_session request")
+		return sessionfork.Result{}, errors.New("control plane: incomplete fork_session request")
+	}
+	if request.ExecutionPolicy == "" {
+		request.ExecutionPolicy = session.ExecutionPolicySharedWorkspace
+	}
+	if request.ExecutionPolicy != session.ExecutionPolicySharedWorkspace && request.ExecutionPolicy != session.ExecutionPolicyIsolatedWorktree {
+		return sessionfork.Result{}, fmt.Errorf("control plane: unsupported fork execution policy %q", request.ExecutionPolicy)
+	}
+	if request.ExecutionPolicy == session.ExecutionPolicySharedWorkspace && strings.TrimSpace(request.WorktreeName) != "" {
+		return sessionfork.Result{}, errors.New("control plane: worktree_name requires isolated_worktree")
 	}
 	parentOwned, err := m.owns(ctx, request.ParentSessionID)
 	if err != nil || !parentOwned {
-		return tools.SessionSpawnResult{}, offline(request.ParentSessionID, err)
+		return sessionfork.Result{}, offline(request.ParentSessionID, err)
 	}
 	reservation, err := m.reserveSpawn(ctx, request.RequestID, request.ParentSessionID, request.SourceSessionID, "fork", request)
 	if err != nil {
-		return tools.SessionSpawnResult{}, err
+		return sessionfork.Result{}, err
 	}
 	lease, err := m.resolveLease(ctx, request.SourceSessionID)
 	if err != nil {
-		return tools.SessionSpawnResult{}, err
+		return sessionfork.Result{}, err
 	}
 	localOwners.RLock()
 	owner := localOwners.byInstance[lease.InstanceID]
 	localOwners.RUnlock()
-	var result tools.SessionSpawnResult
+	var result sessionfork.Result
 	if owner != nil {
 		result, err = owner.forkOwned(ctx, request, reservation.ChildSessionID)
 	} else {
 		result, err = m.forkRemote(ctx, *lease, request, reservation.ChildSessionID)
 	}
 	if err != nil {
-		return tools.SessionSpawnResult{}, err
+		return sessionfork.Result{}, err
 	}
 	if err := m.completeSpawn(ctx, reservation.ChildSessionID); err != nil {
-		return tools.SessionSpawnResult{}, err
+		return sessionfork.Result{}, err
 	}
 	return result, nil
 }
@@ -105,57 +115,60 @@ func (m *Manager) createOwned(ctx context.Context, request tools.SessionCreateRe
 	return target.CreateSession(ctx, request, childID)
 }
 
-func (m *Manager) forkOwned(ctx context.Context, request tools.SessionForkRequest, childID string) (tools.SessionSpawnResult, error) {
+func (m *Manager) forkOwned(ctx context.Context, request sessionfork.Request, childID string) (sessionfork.Result, error) {
 	owned, err := m.owns(ctx, request.SourceSessionID)
 	if err != nil || !owned {
-		return tools.SessionSpawnResult{}, offline(request.SourceSessionID, err)
+		return sessionfork.Result{}, offline(request.SourceSessionID, err)
 	}
 	m.mu.Lock()
 	target := m.target
 	m.mu.Unlock()
 	if target == nil {
-		return tools.SessionSpawnResult{}, offline(request.SourceSessionID, errors.New("target session forker unavailable"))
+		return sessionfork.Result{}, offline(request.SourceSessionID, errors.New("target session forker unavailable"))
 	}
 	result, err := target.ForkSession(ctx, request, childID)
 	if err != nil {
-		return tools.SessionSpawnResult{}, err
+		return sessionfork.Result{}, err
 	}
 	if err := m.Heartbeat(context.WithoutCancel(ctx)); err != nil {
-		return tools.SessionSpawnResult{}, fmt.Errorf("control plane: forked child but owner reconciliation failed: %w", err)
+		return sessionfork.Result{}, fmt.Errorf("control plane: forked child but owner reconciliation failed: %w", err)
 	}
 	return result, nil
 }
 
-func (m *Manager) forkRemote(ctx context.Context, lease Lease, request tools.SessionForkRequest, childID string) (tools.SessionSpawnResult, error) {
+func (m *Manager) forkRemote(ctx context.Context, lease Lease, request sessionfork.Request, childID string) (sessionfork.Result, error) {
 	payload, err := json.Marshal(spawnRPCRequest{Request: request, ChildID: childID})
 	if err != nil {
-		return tools.SessionSpawnResult{}, err
+		return sessionfork.Result{}, err
 	}
 	endpoint := strings.TrimRight(lease.Endpoint, "/") + ownerSessionPathPrefix + url.PathEscape(request.SourceSessionID) + "/forks"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
 	if err != nil {
-		return tools.SessionSpawnResult{}, err
+		return sessionfork.Result{}, err
 	}
 	req.Header.Set("Authorization", "Bearer "+lease.AuthToken)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := m.client.Do(req)
 	if err != nil {
-		return tools.SessionSpawnResult{}, offline(request.SourceSessionID, err)
+		return sessionfork.Result{}, offline(request.SourceSessionID, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusCreated {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusUnauthorized {
-			return tools.SessionSpawnResult{}, offline(request.SourceSessionID, fmt.Errorf("owner RPC returned %s", resp.Status))
+			return sessionfork.Result{}, offline(request.SourceSessionID, fmt.Errorf("owner RPC returned %s", resp.Status))
 		}
-		return tools.SessionSpawnResult{}, fmt.Errorf("control plane: target %s rejected fork: %s", request.SourceSessionID, strings.TrimSpace(string(body)))
+		return sessionfork.Result{}, fmt.Errorf("control plane: target %s rejected fork: %s", request.SourceSessionID, strings.TrimSpace(string(body)))
 	}
-	var result tools.SessionSpawnResult
+	var result sessionfork.Result
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return tools.SessionSpawnResult{}, offline(request.SourceSessionID, err)
+		return sessionfork.Result{}, offline(request.SourceSessionID, err)
 	}
 	if result.ID != childID || result.ParentSessionID != request.ParentSessionID || result.SourceSessionID != request.SourceSessionID || result.Kind != "fork" {
-		return tools.SessionSpawnResult{}, offline(request.SourceSessionID, errors.New("owner RPC fork identity mismatch"))
+		return sessionfork.Result{}, offline(request.SourceSessionID, errors.New("owner RPC fork identity mismatch"))
+	}
+	if request.ExecutionPolicy == session.ExecutionPolicyIsolatedWorktree && result.BaseCommit == "" {
+		return sessionfork.Result{}, offline(request.SourceSessionID, errors.New("owner RPC managed fork omitted base commit"))
 	}
 	return result, nil
 }

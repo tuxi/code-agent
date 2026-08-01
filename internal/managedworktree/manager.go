@@ -79,6 +79,13 @@ type CreateRequest struct {
 	BaseWorkspaceID     string
 	SuggestedName       string
 	BaseRef             worktree.BaseRef
+	// PinSourceHead snapshots the source checkout's exact committed HEAD. When
+	// combined with RequireClean it is suitable for a reproducible fork.
+	PinSourceHead bool
+	RequireClean  bool
+	// AllowLinkedSource permits a managed/linked worktree as the snapshot
+	// source. The new checkout is still provisioned below the primary worktree.
+	AllowLinkedSource bool
 }
 
 type CreateResult struct {
@@ -643,24 +650,48 @@ func (m *Manager) createLocked(ctx context.Context, req CreateRequest) (CreateRe
 	if err != nil {
 		return CreateResult{}, m.err(req, CodeNotGitRepository, "source workspace is not available", "", err)
 	}
-	projectRoot, err := m.git.Run(ctx, source, "rev-parse", "--show-toplevel")
+	sourceRoot, err := m.git.Run(ctx, source, "rev-parse", "--show-toplevel")
 	if err != nil {
 		return CreateResult{}, m.err(req, CodeNotGitRepository, "source workspace is not a Git repository", "", err)
 	}
-	projectRoot, err = canonicalExistingDir(projectRoot)
+	sourceRoot, err = canonicalExistingDir(sourceRoot)
 	if err != nil {
 		return CreateResult{}, m.err(req, CodeNotGitRepository, "Git project root is not available", "", err)
 	}
-	gitDir, gitDirErr := gitDirPath(ctx, m.git, projectRoot)
-	commonDir, commonErr := gitCommonDir(ctx, m.git, projectRoot)
+	gitDir, gitDirErr := gitDirPath(ctx, m.git, sourceRoot)
+	commonDir, commonErr := gitCommonDir(ctx, m.git, sourceRoot)
 	if gitDirErr != nil || commonErr != nil {
 		return CreateResult{}, m.err(req, CodeNotGitRepository, "Git repository identity could not be resolved", "", errors.Join(gitDirErr, commonErr))
 	}
-	if !workspace.SamePath(gitDir, commonDir) {
+	linkedSource := !workspace.SamePath(gitDir, commonDir)
+	if linkedSource && !req.AllowLinkedSource {
 		return CreateResult{}, m.err(req, CodeNestedNotAllowed, "cannot create a managed worktree from another managed worktree", "", nil)
 	}
-	baseCommit, err := m.resolveBaseCommit(ctx, projectRoot, req.BaseRef)
+	projectRoot := sourceRoot
+	if linkedSource {
+		projectRoot, err = m.primaryWorktreeRoot(ctx, sourceRoot, commonDir)
+		if err != nil {
+			return CreateResult{}, m.err(req, CodeNotGitRepository, "primary Git worktree could not be resolved", "", err)
+		}
+	}
+
+	if existing, lookupErr := m.store.WorktreeByClientRequestID(ctx, req.ClientRequestID); lookupErr == nil {
+		return m.resumeCreate(ctx, req, projectRoot, existing)
+	} else if !errors.Is(lookupErr, worktree.ErrNotFound) {
+		return CreateResult{}, m.err(req, CodeProvisionFailed, "managed worktree reservation could not be loaded", "", lookupErr)
+	}
+
+	var baseCommit string
+	if req.PinSourceHead {
+		baseCommit, err = m.snapshotSourceHead(ctx, req, sourceRoot)
+	} else {
+		baseCommit, err = m.resolveBaseCommit(ctx, sourceRoot, req.BaseRef)
+	}
 	if err != nil {
+		var managedErr *Error
+		if errors.As(err, &managedErr) {
+			return CreateResult{}, managedErr
+		}
 		return CreateResult{}, m.err(req, CodeBaseRefUnavailable, "requested base ref is unavailable", "", err)
 	}
 
@@ -697,20 +728,7 @@ func (m *Manager) createLocked(ctx context.Context, req CreateRequest) (CreateRe
 		return CreateResult{}, m.err(req, CodeNameConflict, "managed worktree reservation conflicts with an existing object", "", err)
 	}
 	if !created {
-		if err := validateDuplicateRequest(record, req, projectRoot); err != nil {
-			return CreateResult{}, m.err(req, CodeNameConflict, "client_request_id belongs to a different create request", record.SessionID, err)
-		}
-		if err := m.reconcileRecord(ctx, &record); err != nil {
-			return CreateResult{}, err
-		}
-		if record.State != worktree.StateReady {
-			return CreateResult{}, m.err(req, CodeMissing, "managed worktree is not ready", record.SessionID, nil)
-		}
-		sess, loadErr := m.repo.Load(ctx, record.SessionID)
-		if loadErr != nil {
-			return CreateResult{}, m.err(req, CodeMissing, "managed worktree session is missing", record.SessionID, loadErr)
-		}
-		return CreateResult{Session: sess, Record: record, Warnings: warningsFromSession(sess)}, nil
+		return m.resumeCreate(ctx, req, projectRoot, record)
 	}
 
 	record.State = worktree.StateProvisioning
@@ -718,7 +736,7 @@ func (m *Manager) createLocked(ctx context.Context, req CreateRequest) (CreateRe
 	if err := m.store.UpdateWorktree(ctx, record); err != nil {
 		return CreateResult{}, m.err(req, CodeProvisionFailed, "could not persist provisioning state", record.SessionID, err)
 	}
-	warnings := m.sourceWarnings(ctx, projectRoot)
+	warnings := m.sourceWarnings(ctx, sourceRoot)
 	if err := m.provision(ctx, projectRoot, record); err != nil {
 		m.markFailed(ctx, &record, err)
 		return CreateResult{}, err
@@ -744,6 +762,78 @@ func (m *Manager) createLocked(ctx context.Context, req CreateRequest) (CreateRe
 		return CreateResult{}, m.err(req, CodeProvisionFailed, "could not commit ready worktree state", record.SessionID, err)
 	}
 	return CreateResult{Session: sess, Record: record, Warnings: warnings}, nil
+}
+
+func (m *Manager) resumeCreate(ctx context.Context, req CreateRequest, projectRoot string, record worktree.Record) (CreateResult, error) {
+	if err := validateDuplicateRequest(record, req, projectRoot); err != nil {
+		return CreateResult{}, m.err(req, CodeNameConflict, "client_request_id belongs to a different create request", record.SessionID, err)
+	}
+	if err := m.reconcileRecord(ctx, &record); err != nil {
+		return CreateResult{}, err
+	}
+	if record.State != worktree.StateReady {
+		return CreateResult{}, m.err(req, CodeMissing, "managed worktree is not ready", record.SessionID, nil)
+	}
+	sess, err := m.repo.Load(ctx, record.SessionID)
+	if err != nil {
+		return CreateResult{}, m.err(req, CodeMissing, "managed worktree session is missing", record.SessionID, err)
+	}
+	return CreateResult{Session: sess, Record: record, Warnings: warningsFromSession(sess)}, nil
+}
+
+func (m *Manager) snapshotSourceHead(ctx context.Context, req CreateRequest, sourceRoot string) (string, error) {
+	before, err := m.git.Run(ctx, sourceRoot, "rev-parse", "--verify", "HEAD^{commit}")
+	if err != nil {
+		return "", m.err(req, CodeBaseRefUnavailable, "source HEAD is unavailable", "", err)
+	}
+	status, err := m.git.Run(ctx, sourceRoot, "status", "--porcelain", "--untracked-files=normal")
+	if err != nil {
+		return "", m.err(req, CodeProvisionFailed, "source workspace status could not be inspected", "", err)
+	}
+	if req.RequireClean {
+		summary := summarizeStatus(status)
+		if summary.HasRisk() {
+			dirtyErr := m.err(req, CodeDirty, "fork source has modified, staged, or untracked files", "", nil)
+			dirtyErr.DirtySummary = &summary
+			return "", dirtyErr
+		}
+	}
+	after, err := m.git.Run(ctx, sourceRoot, "rev-parse", "--verify", "HEAD^{commit}")
+	if err != nil || before != after {
+		return "", m.err(req, CodeBaseRefUnavailable, "source HEAD changed while the fork snapshot was captured", "", err)
+	}
+	return before, nil
+}
+
+func summarizeStatus(status string) DirtySummary {
+	var summary DirtySummary
+	for _, line := range strings.Split(status, "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		if strings.HasPrefix(line, "??") {
+			summary.UntrackedFiles++
+		} else {
+			summary.ModifiedFiles++
+		}
+	}
+	return summary
+}
+
+func (m *Manager) primaryWorktreeRoot(ctx context.Context, sourceRoot, commonDir string) (string, error) {
+	entries, err := m.gitWorktrees(ctx, sourceRoot)
+	if err != nil || len(entries) == 0 {
+		return "", errors.Join(errors.New("Git did not report a primary worktree"), err)
+	}
+	root, err := canonicalExistingDir(entries[0].Path)
+	if err != nil {
+		return "", err
+	}
+	primaryCommon, err := gitCommonDir(ctx, m.git, root)
+	if err != nil || !workspace.SamePath(primaryCommon, commonDir) {
+		return "", errors.Join(errors.New("primary worktree belongs to a different repository"), err)
+	}
+	return root, nil
 }
 
 func (m *Manager) provision(ctx context.Context, projectRoot string, record worktree.Record) error {

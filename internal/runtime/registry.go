@@ -41,7 +41,7 @@ func WirePlanTools(registry *tools.Registry, plansDir string) *agent.RunnerRef {
 }
 
 // RegisterBuiltinTools registers all built-in and config-driven tools (filesystem,
-// git, shell, search, project_graph, skill loader, web search/fetch, todo) into
+// git, shell, search, LSP, skill loader, web search/fetch, todo) into
 // the registry. It does NOT register task or MCP tools — those are registered
 // after the subagent's read-only toolset is frozen.
 //

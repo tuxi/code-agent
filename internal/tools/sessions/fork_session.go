@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 
+	"code-agent/internal/session"
+	"code-agent/internal/sessionfork"
 	"code-agent/internal/tools"
 )
 
@@ -14,15 +16,17 @@ type ForkSessionTool struct{}
 func (*ForkSessionTool) Name() string { return "fork_session" }
 func (*ForkSessionTool) Description() string {
 	return "Fork a persistent session from its latest durable, provider-valid checkpoint. The request routes through the source session's owner and preserves text/tool history in the same workspace. " +
-		"Gateway/local assets and managed-worktree sources fail closed in Phase C1. The returned child is idle; use send_to_session to continue it."
+		"Use isolated_worktree for a clean, exact-commit Git snapshot with fresh managed ownership. Gateway/local assets fail closed. The returned child is idle; use send_to_session to continue it."
 }
 func (*ForkSessionTool) InputSchema() json.RawMessage {
-	return json.RawMessage(`{"type":"object","properties":{"id":{"type":"string","description":"Source session ID"},"name":{"type":"string"}},"required":["id"],"additionalProperties":false}`)
+	return json.RawMessage(`{"type":"object","properties":{"id":{"type":"string","description":"Source session ID"},"name":{"type":"string"},"execution_policy":{"type":"string","enum":["shared_workspace","isolated_worktree"]},"worktree_name":{"type":"string","description":"Optional managed worktree name hint; isolated_worktree only"}},"required":["id"],"additionalProperties":false}`)
 }
 
 type forkSessionInput struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
+	ID              string `json:"id"`
+	Name            string `json:"name"`
+	ExecutionPolicy string `json:"execution_policy"`
+	WorktreeName    string `json:"worktree_name"`
 }
 
 func (*ForkSessionTool) Execute(ctx context.Context, ec tools.ExecutionContext, raw json.RawMessage) (tools.ToolResult, error) {
@@ -33,6 +37,15 @@ func (*ForkSessionTool) Execute(ctx context.Context, ec tools.ExecutionContext, 
 	if strings.TrimSpace(in.ID) == "" {
 		return tools.ToolResult{}, fmt.Errorf("fork_session: id is required")
 	}
+	if in.ExecutionPolicy == "" {
+		in.ExecutionPolicy = session.ExecutionPolicySharedWorkspace
+	}
+	if in.ExecutionPolicy != session.ExecutionPolicySharedWorkspace && in.ExecutionPolicy != session.ExecutionPolicyIsolatedWorktree {
+		return tools.ToolResult{}, fmt.Errorf("fork_session: execution_policy must be shared_workspace or isolated_worktree")
+	}
+	if in.ExecutionPolicy == session.ExecutionPolicySharedWorkspace && strings.TrimSpace(in.WorktreeName) != "" {
+		return tools.ToolResult{}, fmt.Errorf("fork_session: worktree_name requires isolated_worktree")
+	}
 	if ec.SessionControl == nil {
 		return tools.ToolResult{}, fmt.Errorf("fork_session: control plane is not available")
 	}
@@ -40,9 +53,10 @@ func (*ForkSessionTool) Execute(ctx context.Context, ec tools.ExecutionContext, 
 	if err != nil {
 		return tools.ToolResult{}, fmt.Errorf("fork_session: request id: %w", err)
 	}
-	result, err := ec.SessionControl.ForkSession(ctx, tools.SessionForkRequest{
+	result, err := ec.SessionControl.ForkSession(ctx, sessionfork.Request{
 		ParentSessionID: ec.SessionID, ParentTurnID: ec.TurnID, SourceSessionID: in.ID,
-		RequestID: requestID, Name: strings.TrimSpace(in.Name),
+		RequestID: requestID, Name: strings.TrimSpace(in.Name), ExecutionPolicy: in.ExecutionPolicy,
+		WorktreeName: strings.TrimSpace(in.WorktreeName),
 	})
 	if err != nil {
 		return tools.ToolResult{}, fmt.Errorf("fork_session: %w", err)

@@ -14,6 +14,7 @@ import (
 	"code-agent/internal/model"
 	"code-agent/internal/session"
 	sessionsqlite "code-agent/internal/session/sqlite"
+	"code-agent/internal/sessionfork"
 	"code-agent/internal/tools"
 	"code-agent/internal/worktree"
 )
@@ -28,7 +29,7 @@ type fakeManagedCreator struct {
 func (c *fakeManagedCreator) Create(ctx context.Context, request managedworktree.CreateRequest) (managedworktree.CreateResult, error) {
 	c.request = request
 	if existing, err := c.repo.Load(ctx, request.ReservedSessionID); err == nil {
-		return managedworktree.CreateResult{Session: existing, Record: worktree.Record{SessionID: existing.ID, WorktreePath: existing.WorkspacePath, State: worktree.StateReady}}, nil
+		return managedworktree.CreateResult{Session: existing, Record: worktree.Record{SessionID: existing.ID, WorktreePath: existing.WorkspacePath, BaseCommit: "exact-commit", State: worktree.StateReady}}, nil
 	}
 	repo := c.repo.(conversation.ReservedConversationRepository)
 	sess, err := repo.CreateWithID(ctx, request.ReservedSessionID, "/managed/"+request.ReservedSessionID, "")
@@ -39,7 +40,7 @@ func (c *fakeManagedCreator) Create(ctx context.Context, request managedworktree
 	if err := c.repo.Save(ctx, sess); err != nil {
 		return managedworktree.CreateResult{}, err
 	}
-	return managedworktree.CreateResult{Session: sess, Record: worktree.Record{SessionID: sess.ID, WorktreePath: sess.WorkspacePath, State: worktree.StateReady}}, nil
+	return managedworktree.CreateResult{Session: sess, Record: worktree.Record{SessionID: sess.ID, WorktreePath: sess.WorkspacePath, BaseCommit: "exact-commit", State: worktree.StateReady}}, nil
 }
 
 func (s *targetEventStore) Append(context.Context, session.EventRecord) (int64, error) { return 0, nil }
@@ -84,7 +85,7 @@ func TestRuntimeTargetCreatesAndForksReservedSessionsIdempotently(t *testing.T) 
 	if err := repo.Save(ctx, source); err != nil {
 		t.Fatal(err)
 	}
-	forkRequest := tools.SessionForkRequest{RequestID: "fork-request", ParentSessionID: "parent", SourceSessionID: source.ID}
+	forkRequest := sessionfork.Request{RequestID: "fork-request", ParentSessionID: "parent", SourceSessionID: source.ID}
 	forked, err := target.ForkSession(ctx, forkRequest, "fork-child")
 	if err != nil {
 		t.Fatalf("ForkSession: %v", err)
@@ -118,7 +119,7 @@ func TestRuntimeTargetRejectsUnsupportedForkBeforeProvisioningChild(t *testing.T
 		t.Fatal(err)
 	}
 	target := NewRuntimeTarget(nil, nil, repo, nil)
-	_, err = target.ForkSession(context.Background(), tools.SessionForkRequest{RequestID: "fork-assets", ParentSessionID: "parent", SourceSessionID: source.ID}, "must-not-exist")
+	_, err = target.ForkSession(context.Background(), sessionfork.Request{RequestID: "fork-assets", ParentSessionID: "parent", SourceSessionID: source.ID}, "must-not-exist")
 	if !errors.Is(err, session.ErrForkAssetsUnsupported) {
 		t.Fatalf("ForkSession error = %v", err)
 	}
@@ -154,6 +155,47 @@ func TestRuntimeTargetCreatesManagedWorktreeWithReservedChildID(t *testing.T) {
 	}
 	if loaded.Name != "Managed Child" || loaded.ExecutionPolicy() != session.ExecutionPolicyIsolatedWorktree || loaded.Metadata[session.MetaSpawnReady] != true {
 		t.Fatalf("managed child = %+v", loaded)
+	}
+}
+
+func TestRuntimeTargetForksManagedSourceIntoFreshManagedOwnership(t *testing.T) {
+	store, err := sessionsqlite.New(filepath.Join(t.TempDir(), "sessions.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	repo := conversation.NewSQLiteRepository(store, 128000, 90000, "default-model", "", nil)
+	source, err := repo.Create(context.Background(), "/managed/source", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source.SetExecutionPolicy(session.ExecutionPolicyIsolatedWorktree)
+	source.Messages = append(source.Messages, model.Message{Role: model.RoleUser, Content: "managed durable input"})
+	if err := repo.Save(context.Background(), source); err != nil {
+		t.Fatal(err)
+	}
+	managed := &fakeManagedCreator{repo: repo}
+	target := NewRuntimeTarget(nil, nil, repo, managed)
+	request := sessionfork.Request{
+		RequestID: "managed-fork", ParentSessionID: "parent", SourceSessionID: source.ID,
+		Name: "Managed Fork", ExecutionPolicy: session.ExecutionPolicyIsolatedWorktree, WorktreeName: "snapshot",
+	}
+	result, err := target.ForkSession(context.Background(), request, "managed-fork-child")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.BaseCommit != "exact-commit" || result.WorkspacePath != "/managed/managed-fork-child" {
+		t.Fatalf("result=%+v", result)
+	}
+	if managed.request.SourceWorkspacePath != source.WorkspacePath || managed.request.SourceWorkspaceID != source.ID || !managed.request.PinSourceHead || !managed.request.RequireClean || !managed.request.AllowLinkedSource || managed.request.SuggestedName != "snapshot" {
+		t.Fatalf("managed request=%+v", managed.request)
+	}
+	child, err := repo.Load(context.Background(), result.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(child.Messages) != 2 || child.Messages[1].Content != "managed durable input" || child.Metadata[session.MetaForkSource] != source.ID || child.Metadata[session.MetaSpawnReady] != true {
+		t.Fatalf("child=%+v", child)
 	}
 }
 

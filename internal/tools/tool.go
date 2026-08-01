@@ -2,6 +2,7 @@ package tools
 
 import (
 	"code-agent/internal/assetref"
+	"code-agent/internal/sessionfork"
 	"context"
 	"encoding/json"
 	"time"
@@ -94,7 +95,7 @@ type SessionControl interface {
 	Send(context.Context, SessionSendRequest) (SessionDelivery, error)
 	WaitAny(context.Context, []SessionWaitTarget, time.Duration) (SessionWaitResult, error)
 	CreateSession(context.Context, SessionCreateRequest) (SessionSpawnResult, error)
-	ForkSession(context.Context, SessionForkRequest) (SessionSpawnResult, error)
+	sessionfork.Service
 }
 
 type SessionCreateRequest struct {
@@ -106,14 +107,6 @@ type SessionCreateRequest struct {
 	ExecutionPolicy string
 	WorktreeName    string
 	BaseRef         string
-}
-
-type SessionForkRequest struct {
-	ParentSessionID string
-	ParentTurnID    string
-	SourceSessionID string
-	RequestID       string
-	Name            string
 }
 
 type SessionSpawnResult struct {

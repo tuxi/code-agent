@@ -1,12 +1,15 @@
 package sessions
 
 import (
-	"code-agent/internal/tools"
 	"context"
 	"encoding/json"
 	"fmt"
 	"testing"
 	"time"
+
+	"code-agent/internal/session"
+	"code-agent/internal/sessionfork"
+	"code-agent/internal/tools"
 )
 
 type stubSessionIndex struct {
@@ -18,7 +21,7 @@ type stubSessionControl struct {
 	sent          tools.SessionSendRequest
 	targets       []tools.SessionWaitTarget
 	createRequest tools.SessionCreateRequest
-	forkRequest   tools.SessionForkRequest
+	forkRequest   sessionfork.Request
 }
 
 func (s *stubSessionControl) Send(_ context.Context, request tools.SessionSendRequest) (tools.SessionDelivery, error) {
@@ -36,9 +39,9 @@ func (s *stubSessionControl) CreateSession(_ context.Context, request tools.Sess
 	return tools.SessionSpawnResult{ID: "child", ParentSessionID: request.ParentSessionID, WorkspacePath: request.WorkspacePath, Kind: "spawn", Status: "open"}, nil
 }
 
-func (s *stubSessionControl) ForkSession(_ context.Context, request tools.SessionForkRequest) (tools.SessionSpawnResult, error) {
+func (s *stubSessionControl) ForkSession(_ context.Context, request sessionfork.Request) (sessionfork.Result, error) {
 	s.forkRequest = request
-	return tools.SessionSpawnResult{ID: "fork", ParentSessionID: request.ParentSessionID, SourceSessionID: request.SourceSessionID, WorkspacePath: "/fork", Kind: "fork", Status: "open"}, nil
+	return sessionfork.Result{ID: "fork", ParentSessionID: request.ParentSessionID, SourceSessionID: request.SourceSessionID, WorkspacePath: "/fork", Kind: "fork", Status: "open"}, nil
 }
 
 func (s stubSessionIndex) ListAll() ([]tools.SessionIndexEntry, error) {
@@ -226,12 +229,23 @@ func TestCreateAndForkSessionPassCallerScope(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var forkResult tools.SessionSpawnResult
+	var forkResult sessionfork.Result
 	if err := json.Unmarshal(forked.Output, &forkResult); err != nil {
 		t.Fatal(err)
 	}
-	if forkResult.ID != "fork" || control.forkRequest.ParentSessionID != "parent" || control.forkRequest.SourceSessionID != "source" || control.forkRequest.Name != "branch" || control.forkRequest.RequestID == "" {
+	if forkResult.ID != "fork" || control.forkRequest.ParentSessionID != "parent" || control.forkRequest.SourceSessionID != "source" || control.forkRequest.Name != "branch" || control.forkRequest.ExecutionPolicy != session.ExecutionPolicySharedWorkspace || control.forkRequest.RequestID == "" {
 		t.Fatalf("result=%+v request=%+v", forkResult, control.forkRequest)
+	}
+
+	ec.CallID = "call-managed-fork"
+	if _, err := (&ForkSessionTool{}).Execute(context.Background(), ec, json.RawMessage(`{"id":"source","execution_policy":"isolated_worktree","worktree_name":"snapshot"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if control.forkRequest.ExecutionPolicy != session.ExecutionPolicyIsolatedWorktree || control.forkRequest.WorktreeName != "snapshot" {
+		t.Fatalf("managed fork request=%+v", control.forkRequest)
+	}
+	if _, err := (&ForkSessionTool{}).Execute(context.Background(), ec, json.RawMessage(`{"id":"source","worktree_name":"invalid"}`)); err == nil {
+		t.Fatal("shared fork accepted worktree_name")
 	}
 }
 

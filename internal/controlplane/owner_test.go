@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"code-agent/internal/session"
+	"code-agent/internal/sessionfork"
 	"code-agent/internal/tools"
 )
 
@@ -52,7 +53,7 @@ type fakeTarget struct {
 	request       tools.SessionSendRequest
 	createRequest tools.SessionCreateRequest
 	createChild   string
-	forkRequest   tools.SessionForkRequest
+	forkRequest   sessionfork.Request
 	forkChild     string
 }
 
@@ -74,10 +75,14 @@ func (t *fakeTarget) CreateSession(_ context.Context, request tools.SessionCreat
 	return tools.SessionSpawnResult{ID: childID, ParentSessionID: request.ParentSessionID, WorkspacePath: request.WorkspacePath, Kind: "spawn", Status: "open"}, nil
 }
 
-func (t *fakeTarget) ForkSession(_ context.Context, request tools.SessionForkRequest, childID string) (tools.SessionSpawnResult, error) {
+func (t *fakeTarget) ForkSession(_ context.Context, request sessionfork.Request, childID string) (sessionfork.Result, error) {
 	t.forkRequest = request
 	t.forkChild = childID
-	return tools.SessionSpawnResult{ID: childID, ParentSessionID: request.ParentSessionID, SourceSessionID: request.SourceSessionID, WorkspacePath: "/fork", Kind: "fork", Status: "open"}, nil
+	baseCommit := ""
+	if request.ExecutionPolicy == session.ExecutionPolicyIsolatedWorktree {
+		baseCommit = "exact-remote-commit"
+	}
+	return sessionfork.Result{ID: childID, ParentSessionID: request.ParentSessionID, SourceSessionID: request.SourceSessionID, WorkspacePath: "/fork", Kind: "fork", Status: "open", BaseCommit: baseCommit}, nil
 }
 
 func testRepo() *fakeRepo {
@@ -278,12 +283,15 @@ func TestManagerRoutesForkThroughSourceOwnerRPC(t *testing.T) {
 		localOwners.Unlock()
 	}()
 
-	request := tools.SessionForkRequest{RequestID: "fork-1", ParentSessionID: "parent", SourceSessionID: "session-1", Name: "remote fork"}
+	request := sessionfork.Request{
+		RequestID: "fork-1", ParentSessionID: "parent", SourceSessionID: "session-1", Name: "remote fork",
+		ExecutionPolicy: session.ExecutionPolicyIsolatedWorktree, WorktreeName: "remote-snapshot",
+	}
 	result, err := router.ForkSession(context.Background(), request)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.ID == "" || result.SourceSessionID != "session-1" || ownerTarget.forkChild != result.ID || ownerTarget.forkRequest.Name != "remote fork" {
+	if result.ID == "" || result.SourceSessionID != "session-1" || result.BaseCommit != "exact-remote-commit" || ownerTarget.forkChild != result.ID || ownerTarget.forkRequest.Name != "remote fork" || ownerTarget.forkRequest.WorktreeName != "remote-snapshot" {
 		t.Fatalf("result=%+v target_request=%+v target_child=%q", result, ownerTarget.forkRequest, ownerTarget.forkChild)
 	}
 	var status, source string

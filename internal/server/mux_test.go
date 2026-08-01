@@ -16,8 +16,12 @@ import (
 
 	"code-agent/internal/agent"
 	"code-agent/internal/assetref"
+	"code-agent/internal/controlplane"
 	"code-agent/internal/conversation"
+	"code-agent/internal/managedworktree"
+	"code-agent/internal/model"
 	"code-agent/internal/session"
+	"code-agent/internal/sessionfork"
 )
 
 // ---- test adapters for ConversationRepository ----
@@ -1219,6 +1223,130 @@ func TestMuxGetMessagesDerivesFromEvents(t *testing.T) {
 	}
 	if msgs[1].Role != "assistant" || msgs[1].Content != "项目结构见 App.swift:5" {
 		t.Errorf("msg[1] = %+v", msgs[1])
+	}
+}
+
+func TestMuxForkEndpointUsesSharedServiceIdempotently(t *testing.T) {
+	repo := newFakeConversationRepo()
+	repo.sessions["source"] = &session.Session{
+		ID: "source", WorkspacePath: "/workspace/source", Metadata: map[string]any{},
+		Messages: []model.Message{{Role: model.RoleSystem, Content: "system"}, {Role: model.RoleUser, Content: "durable context"}},
+	}
+	events := &fakeEventStore{}
+	owner, err := controlplane.NewManager(t.TempDir(), "fork-http", repo, nil, controlplane.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner.SetTarget(controlplane.NewRuntimeTarget(nil, events, repo, nil))
+	if err := owner.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer owner.Close()
+	srv := httptest.NewServer(NewMux(repo, events, nil, MuxOptions{SessionForks: owner}))
+	defer srv.Close()
+	capabilitiesResp, err := http.Get(srv.URL + "/v1/runtime/capabilities")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var capabilities runtimeCapabilitiesResponse
+	decodeResponse(t, capabilitiesResp, &capabilities)
+	if !capabilities.Capabilities.ConversationFork {
+		t.Fatalf("fork capability not advertised: %+v", capabilities.Capabilities)
+	}
+
+	fork := func(body string) (*http.Response, sessionfork.Result) {
+		t.Helper()
+		resp, err := http.Post(srv.URL+"/v1/conversations/source/forks", "application/json", strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var result sessionfork.Result
+		if resp.StatusCode == http.StatusCreated {
+			decodeResponse(t, resp, &result)
+		} else {
+			_ = resp.Body.Close()
+		}
+		return resp, result
+	}
+	firstResp, first := fork(`{"request_id":"client-fork-1","name":"HTTP Fork"}`)
+	if firstResp.StatusCode != http.StatusCreated || first.ID == "" || first.ParentSessionID != "source" || first.SourceSessionID != "source" {
+		t.Fatalf("first status=%d result=%+v", firstResp.StatusCode, first)
+	}
+	secondResp, second := fork(`{"request_id":"client-fork-1","name":"HTTP Fork"}`)
+	if secondResp.StatusCode != http.StatusCreated || second.ID != first.ID {
+		t.Fatalf("retry status=%d first=%+v second=%+v", secondResp.StatusCode, first, second)
+	}
+	child, err := repo.Load(context.Background(), first.ID)
+	if err != nil || len(child.Messages) != 1 || child.Messages[0].Content != "durable context" {
+		t.Fatalf("child=%+v err=%v", child, err)
+	}
+	conflictResp, _ := fork(`{"request_id":"client-fork-1","name":"changed"}`)
+	if conflictResp.StatusCode != http.StatusConflict {
+		t.Fatalf("changed idempotent payload status=%d", conflictResp.StatusCode)
+	}
+	managedResp, _ := fork(`{"request_id":"client-fork-2","execution_policy":"isolated_worktree"}`)
+	if managedResp.StatusCode != http.StatusNotImplemented {
+		t.Fatalf("managed fork without provisioner status=%d", managedResp.StatusCode)
+	}
+}
+
+func TestMuxForkEndpointCreatesExactManagedSnapshotAndRejectsDirtySource(t *testing.T) {
+	root := initManagedHTTPRepo(t)
+	store := session.NewMemoryStore()
+	repo := newFakeConversationRepo()
+	source := &session.Session{
+		ID: "source", WorkspacePath: root, Metadata: map[string]any{},
+		Messages: []model.Message{{Role: model.RoleSystem, Content: "system"}, {Role: model.RoleUser, Content: "durable context"}},
+	}
+	repo.sessions[source.ID] = source
+	managed := managedworktree.New(store, repo)
+	events := &fakeEventStore{}
+	owner, err := controlplane.NewManager(t.TempDir(), "managed-fork-http", repo, nil, controlplane.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner.SetTarget(controlplane.NewRuntimeTarget(nil, events, repo, managed))
+	if err := owner.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer owner.Close()
+	srv := httptest.NewServer(NewMux(repo, events, nil, MuxOptions{SessionForks: owner, ManagedWorktrees: managed}))
+	defer srv.Close()
+
+	response := requestJSON(t, srv.URL+"/v1/conversations/source/forks", map[string]any{
+		"request_id": "managed-http-fork", "name": "Managed HTTP Fork",
+		"execution_policy": session.ExecutionPolicyIsolatedWorktree, "worktree_name": "snapshot",
+	})
+	if response.StatusCode != http.StatusCreated {
+		t.Fatalf("fork status=%d body=%s", response.StatusCode, readManagedHTTPBody(t, response))
+	}
+	var result sessionfork.Result
+	decodeResponse(t, response, &result)
+	wantCommit := strings.TrimSpace(runManagedHTTPGit(t, root, "rev-parse", "HEAD"))
+	canonicalRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ID == "" || result.BaseCommit != wantCommit || !strings.HasPrefix(result.WorkspacePath, filepath.Join(canonicalRoot, ".codeagent", "worktrees")+string(os.PathSeparator)) {
+		t.Fatalf("result=%+v want_commit=%q", result, wantCommit)
+	}
+	child, err := repo.Load(context.Background(), result.ID)
+	if err != nil || child.ExecutionPolicy() != session.ExecutionPolicyIsolatedWorktree || len(child.Messages) != 1 || child.Messages[0].Content != "durable context" {
+		t.Fatalf("child=%+v err=%v", child, err)
+	}
+
+	if err := os.WriteFile(filepath.Join(root, "tracked.txt"), []byte("dirty\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dirty := requestJSON(t, srv.URL+"/v1/conversations/source/forks", map[string]any{
+		"request_id": "managed-http-dirty", "execution_policy": session.ExecutionPolicyIsolatedWorktree,
+	})
+	if dirty.StatusCode != http.StatusConflict {
+		t.Fatalf("dirty status=%d body=%s", dirty.StatusCode, readManagedHTTPBody(t, dirty))
+	}
+	body := readManagedHTTPBody(t, dirty)
+	if !strings.Contains(body, managedworktree.CodeDirty) || !strings.Contains(body, `"modified_files":1`) {
+		t.Fatalf("dirty response=%s", body)
 	}
 }
 

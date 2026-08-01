@@ -11,6 +11,7 @@ import (
 	"code-agent/internal/conversation"
 	"code-agent/internal/managedworktree"
 	"code-agent/internal/session"
+	"code-agent/internal/sessionfork"
 	"code-agent/internal/tools"
 	"code-agent/internal/worktree"
 )
@@ -92,47 +93,99 @@ func (t *RuntimeTarget) createManagedWorktreeSession(ctx context.Context, reques
 	return spawnResult(result.Session, request.ParentSessionID, "", session.SpawnKindCreate), nil
 }
 
-func (t *RuntimeTarget) ForkSession(ctx context.Context, request tools.SessionForkRequest, childID string) (tools.SessionSpawnResult, error) {
+func (t *RuntimeTarget) ForkSession(ctx context.Context, request sessionfork.Request, childID string) (sessionfork.Result, error) {
+	if request.ExecutionPolicy == "" {
+		request.ExecutionPolicy = session.ExecutionPolicySharedWorkspace
+	}
+	if request.ExecutionPolicy == session.ExecutionPolicyIsolatedWorktree {
+		return t.forkManagedWorktreeSession(ctx, request, childID)
+	}
+	if request.ExecutionPolicy != session.ExecutionPolicySharedWorkspace {
+		return sessionfork.Result{}, fmt.Errorf("unsupported fork execution policy %q", request.ExecutionPolicy)
+	}
 	repo, ok := t.repo.(conversation.ReservedConversationRepository)
 	if !ok {
-		return tools.SessionSpawnResult{}, errors.New("target repository does not support reserved session creation")
+		return sessionfork.Result{}, errors.New("target repository does not support reserved session creation")
 	}
 	source, err := t.repo.Load(ctx, request.SourceSessionID)
 	if err != nil {
-		return tools.SessionSpawnResult{}, err
+		return sessionfork.Result{}, err
 	}
 	child, loadErr := t.repo.Load(ctx, childID)
 	if loadErr == nil {
 		existingRequest, _ := child.Metadata[session.MetaSpawnRequest].(string)
 		existingSource, _ := child.Metadata[session.MetaForkSource].(string)
 		if child.WorkspacePath != source.WorkspacePath || (existingRequest != "" && existingRequest != request.RequestID) || (existingSource != "" && existingSource != request.SourceSessionID) || (existingRequest == "" && !child.IsEmpty()) {
-			return tools.SessionSpawnResult{}, errors.New("reserved fork session conflicts with an existing session")
+			return sessionfork.Result{}, errors.New("reserved fork session conflicts with an existing session")
 		}
 		if ready, _ := child.Metadata[session.MetaSpawnReady].(bool); ready {
-			return spawnResult(child, request.ParentSessionID, request.SourceSessionID, session.SpawnKindFork), nil
+			return forkResult(child, request.ParentSessionID, request.SourceSessionID, ""), nil
 		}
 	}
 	if err := session.ValidateForkSource(source); err != nil {
-		return tools.SessionSpawnResult{}, err
+		return sessionfork.Result{}, err
 	}
 	if loadErr != nil {
 		child, err = repo.CreateWithID(ctx, childID, source.WorkspacePath, "")
 		if err != nil {
-			return tools.SessionSpawnResult{}, err
+			return sessionfork.Result{}, err
 		}
 		markSpawn(child, request.RequestID, request.ParentSessionID, request.SourceSessionID, session.SpawnKindFork, false)
 		if err := t.repo.Save(ctx, child); err != nil {
-			return tools.SessionSpawnResult{}, err
+			return sessionfork.Result{}, err
 		}
 	}
 	if err := session.ForkHistoryInto(child, source, request.Name, time.Now().UTC()); err != nil {
-		return tools.SessionSpawnResult{}, err
+		return sessionfork.Result{}, err
 	}
 	markSpawn(child, request.RequestID, request.ParentSessionID, request.SourceSessionID, session.SpawnKindFork, true)
 	if err := t.repo.Save(ctx, child); err != nil {
-		return tools.SessionSpawnResult{}, err
+		return sessionfork.Result{}, err
 	}
-	return spawnResult(child, request.ParentSessionID, request.SourceSessionID, session.SpawnKindFork), nil
+	return forkResult(child, request.ParentSessionID, request.SourceSessionID, ""), nil
+}
+
+func (t *RuntimeTarget) forkManagedWorktreeSession(ctx context.Context, request sessionfork.Request, childID string) (sessionfork.Result, error) {
+	if t.managedWorktrees == nil {
+		return sessionfork.Result{}, errors.New("managed worktree provisioning is not available on the target runtime")
+	}
+	source, err := t.repo.Load(ctx, request.SourceSessionID)
+	if err != nil {
+		return sessionfork.Result{}, err
+	}
+	if err := session.ValidateForkHistory(source); err != nil {
+		return sessionfork.Result{}, err
+	}
+	suggestedName := request.WorktreeName
+	if suggestedName == "" {
+		suggestedName = request.Name
+	}
+	baseWorkspaceID, _ := source.Metadata[session.MetaBaseWorkspaceID].(string)
+	result, err := t.managedWorktrees.Create(ctx, managedworktree.CreateRequest{
+		ClientRequestID: request.RequestID, ReservedSessionID: childID,
+		SourceWorkspacePath: source.WorkspacePath, SourceWorkspaceID: source.ID,
+		BaseWorkspaceID: baseWorkspaceID, SuggestedName: suggestedName,
+		BaseRef: worktree.BaseRefHead, PinSourceHead: true, RequireClean: true,
+		AllowLinkedSource: true,
+	})
+	if err != nil {
+		return sessionfork.Result{}, err
+	}
+	if result.Session == nil || result.Session.ID != childID {
+		return sessionfork.Result{}, errors.New("managed worktree provisioner returned a different fork session")
+	}
+	child := result.Session
+	if ready, _ := child.Metadata[session.MetaSpawnReady].(bool); ready {
+		return forkResult(child, request.ParentSessionID, request.SourceSessionID, result.Record.BaseCommit), nil
+	}
+	if err := session.ForkHistoryInto(child, source, request.Name, time.Now().UTC()); err != nil {
+		return sessionfork.Result{}, err
+	}
+	markSpawn(child, request.RequestID, request.ParentSessionID, request.SourceSessionID, session.SpawnKindFork, true)
+	if err := t.repo.Save(ctx, child); err != nil {
+		return sessionfork.Result{}, err
+	}
+	return forkResult(child, request.ParentSessionID, request.SourceSessionID, result.Record.BaseCommit), nil
 }
 
 func markSpawn(child *session.Session, requestID, parentID, sourceID, kind string, ready bool) {
@@ -150,6 +203,10 @@ func markSpawn(child *session.Session, requestID, parentID, sourceID, kind strin
 
 func spawnResult(child *session.Session, parentID, sourceID, kind string) tools.SessionSpawnResult {
 	return tools.SessionSpawnResult{ID: child.ID, ParentSessionID: parentID, SourceSessionID: sourceID, WorkspacePath: child.WorkspacePath, Kind: kind, Status: "open"}
+}
+
+func forkResult(child *session.Session, parentID, sourceID, baseCommit string) sessionfork.Result {
+	return sessionfork.Result{ID: child.ID, ParentSessionID: parentID, SourceSessionID: sourceID, WorkspacePath: child.WorkspacePath, Kind: session.SpawnKindFork, Status: "open", BaseCommit: baseCommit}
 }
 
 func (t *RuntimeTarget) Accept(ctx, executionCtx context.Context, sessionID string, request tools.SessionSendRequest) (tools.SessionDelivery, error) {

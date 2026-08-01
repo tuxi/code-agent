@@ -65,7 +65,6 @@ func TestForkHistoryIntoFailsClosedForSessionScopedState(t *testing.T) {
 		{name: "gateway cache", source: &Session{GatewayAssetCache: map[string]model.GatewayAssetRef{"x": {AssetID: 1}}}, want: ErrForkAssetsUnsupported},
 		{name: "reference ledger", source: &Session{ReferenceLedger: []reference.Entry{{}}}, want: ErrForkAssetsUnsupported},
 		{name: "message asset", source: &Session{Messages: []model.Message{{Assets: []model.GatewayAssetRef{{AssetID: 1}}}}}, want: ErrForkAssetsUnsupported},
-		{name: "managed worktree", source: sessionWithExecutionPolicy(ExecutionPolicyIsolatedWorktree), want: ErrForkManagedWorktreeUnsupported},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -74,6 +73,21 @@ func TestForkHistoryIntoFailsClosedForSessionScopedState(t *testing.T) {
 				t.Fatalf("error = %v, want %v", err, test.want)
 			}
 		})
+	}
+}
+
+func TestManagedWorktreeHistoryCanBeCopiedButNotShared(t *testing.T) {
+	source := sessionWithExecutionPolicy(ExecutionPolicyIsolatedWorktree)
+	source.Messages = []model.Message{{Role: model.RoleSystem}, {Role: model.RoleUser, Content: "managed history"}}
+	child := &Session{Messages: []model.Message{{Role: model.RoleSystem}}}
+	if err := ForkHistoryInto(child, source, "", time.Now()); err != nil {
+		t.Fatalf("ForkHistoryInto: %v", err)
+	}
+	if len(child.Messages) != 2 || child.Messages[1].Content != "managed history" {
+		t.Fatalf("history = %+v", child.Messages)
+	}
+	if err := ValidateForkSource(source); !errors.Is(err, ErrForkManagedWorktreeUnsupported) {
+		t.Fatalf("ValidateForkSource error = %v", err)
 	}
 }
 

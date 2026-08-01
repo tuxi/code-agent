@@ -38,6 +38,7 @@ var defaultCapabilities = []string{
 	"session_resume",
 	"client_tool_execution",
 	"workflow_execution",
+	"conversation_fork_v1",
 }
 
 func main() {
@@ -244,6 +245,7 @@ func run() error {
 		},
 		RuntimeCapabilities: runtimeCapabilities,
 		ManagedWorktrees:    managedWorktrees,
+		SessionForks:        owner,
 		WorkflowSnapshot:    runtime.NewWorkflowSnapshotFunc(),
 	})
 
@@ -261,6 +263,7 @@ func run() error {
 	fmt.Println("  GET  /healthz")
 	fmt.Println("  GET  /v1/conversations")
 	fmt.Println("  POST  /v1/conversations            {\"workspace_path\":\"...\"}  -> {\"id\":\"...\"}")
+	fmt.Println("  POST  /v1/conversations/{id}/forks {\"request_id\":\"...\"} -> {\"id\":\"...\"}")
 	fmt.Println("  PATCH /v1/conversations/{id}        {\"name\":\"...\"}")
 	fmt.Println("  GET   /v1/conversations/{id}/stream   (WebSocket)")
 

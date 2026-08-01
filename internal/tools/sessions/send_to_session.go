@@ -19,7 +19,9 @@ func (*SendToSessionTool) Name() string { return "send_to_session" }
 func (*SendToSessionTool) Description() string {
 	return "Send Agent-originated work to another live session through its owning Runtime. " +
 		"The target uses its own model, credentials, tools, approval policy, workspace, and scheduler. " +
-		"A busy target queues a new turn; this never steers the active turn. Returns a turn_id and cursor for wait_sessions."
+		"A busy target queues a new turn; this never steers the active turn. " +
+		"Intent records request vs notification provenance; both execute a target turn and may reply. " +
+		"Returns a turn_id and cursor; use wait_sessions when the terminal outcome matters."
 }
 func (*SendToSessionTool) InputSchema() json.RawMessage {
 	return json.RawMessage(`{"type":"object","properties":{"id":{"type":"string"},"message":{"type":"string"},"model":{"type":"string"},"intent":{"type":"string","enum":["request","notification"]},"correlation_id":{"type":"string"}},"required":["id","message"],"additionalProperties":false}`)

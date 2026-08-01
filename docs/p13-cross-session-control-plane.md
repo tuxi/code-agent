@@ -1,6 +1,6 @@
 # Phase 13 — Cross-Session Control Plane — PRD
 
-> Status: Phase A, Phase B0/B1, Phase C1 spawn/stable-fork, and Phase C2a managed-worktree creation implemented. This spec defines the architecture and phased delivery plan
+> Status: Phase A, Phase B0/B1, Phase C1, Phase C2a, and Phase C2b.1/C2b.2 fork API and managed snapshots implemented. This spec defines the architecture and phased delivery plan
 > for making code-agent a **multi-session orchestration control plane** — where
 > an Agent in one session can discover, read, send work to, and wait on sessions
 > in other workspaces.
@@ -783,12 +783,15 @@ work across multiple project sessions and aggregate results.
 - Source diagnostic events are not copied. Client rendering of a fork's baseline
   checkpoint remains a known follow-up compatibility issue.
 
-### Phase C1 follow-up: Public Fork API
+### Phase C2b.1: Public Fork API (Implemented)
 
-- expose `POST /v1/conversations/{id}/forks` for first-class client use
-- route both the HTTP endpoint and `fork_session` through one application-level
-  fork service rather than making the tool the owning abstraction
-- add pagination or structural sharing for very large checkpoint histories
+- `internal/sessionfork` owns the neutral Request/Result/Service contract
+- `fork_session` and `POST /v1/conversations/{id}/forks` use that same service
+- client `request_id` is mandatory and durable; a same-payload retry returns the
+  same child, while a changed payload fails with conflict
+- `conversation_fork_v1` is advertised through Runtime and WebSocket capability
+  surfaces
+- HTTP and tool `isolated_worktree` forks use the same exact-commit snapshot path
 
 ### Phase C2a: Managed Worktree Creation (Implemented)
 
@@ -800,9 +803,9 @@ work across multiple project sessions and aggregate results.
 - unavailable managed-worktree capability fails explicitly; it never silently
   falls back to a shared workspace
 
-### Phase C2b: Fork & Managed Lifecycle (Future)
+### Phase C2b: Fork & Managed Lifecycle (In Progress)
 
-#### C2b.1 First-class fork service
+#### C2b.1 First-class fork service (Implemented)
 
 `fork_session` is a tool adapter, not the owner of fork semantics. Extract one
 application-level fork service and route both the tool and a future client API
@@ -822,7 +825,7 @@ For a client-originated fork, `parent_session_id` defaults to `source_id`. A too
 fork keeps the calling session as parent and the requested session as source.
 Both paths reserve the same durable spawn edge and return the same result shape.
 
-#### C2b.2 Managed fork snapshot
+#### C2b.2 Managed fork snapshot (Implemented)
 
 - `shared_workspace` keeps the existing C1 behavior.
 - `isolated_worktree` captures the source checkout's exact committed `HEAD` SHA,
@@ -874,8 +877,8 @@ Conversation archive and managed-worktree removal stay separate operations.
 
 #### C2b acceptance order
 
-1. Extract shared fork service and add the client HTTP endpoint.
-2. Add exact-commit managed fork with dirty-source fail-closed behavior.
+1. **Complete** — extract shared fork service and add the client HTTP endpoint.
+2. **Complete** — add exact-commit managed fork with dirty-source fail-closed behavior.
 3. Add explicit parent release/archive and durable edge closing.
 4. Consider turn-bound opt-in auto-archive only after queued-turn recovery and
    restart behavior have dedicated tests.
@@ -885,7 +888,7 @@ Conversation archive and managed-worktree removal stay separate operations.
 | Item | Why deferred |
 |---|---|
 | Cross-machine session routing (SSH) | Requires host registry + remote store access. Index solves single-machine first. |
-| Managed-worktree fork / auto-archive | Requires explicit fork ownership, completion, and cleanup contracts (Phase C2b). |
+| Turn-bound auto-archive | Requires explicit completion, queue recovery, and cleanup contracts (Phase C2b.4). |
 | Session-to-session file transfer | Send structured data via prompt, not raw files. Git is the artifact bus. |
 | wait-all primitive | wait-any + caller loop is the correct semantic (Codex made the same choice). |
 | Per-session sandbox/approval in index | The index stores metadata only. Enforcement stays in the target session. |

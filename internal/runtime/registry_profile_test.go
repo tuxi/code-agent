@@ -95,7 +95,6 @@ func TestRegisterBuiltinTools_SandboxedExcludesSubprocessTools(t *testing.T) {
 	// the sandboxed (iOS) profile.
 	subprocessTools := []string{
 		"run_command", "job_status", "job_logs", "job_cancel", "job_wait",
-		"project_graph",
 	}
 	// Pure-Go tools — must be present under every profile. git_commit / git_diff /
 	// apply_patch are here because the sandboxed profile registers go-git-backed

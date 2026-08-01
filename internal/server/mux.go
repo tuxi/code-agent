@@ -20,6 +20,7 @@ import (
 	"code-agent/internal/repos"
 	runtime "code-agent/internal/runtime"
 	"code-agent/internal/session"
+	"code-agent/internal/sessionfork"
 	"code-agent/internal/worktree"
 
 	"github.com/coder/websocket"
@@ -64,6 +65,13 @@ type ManagedWorktreeCreateRequest struct {
 	Managed       bool   `json:"managed"`
 	SuggestedName string `json:"suggested_name,omitempty"`
 	BaseRef       string `json:"base_ref,omitempty"`
+}
+
+type ForkConversationRequest struct {
+	RequestID       string `json:"request_id"`
+	Name            string `json:"name,omitempty"`
+	ExecutionPolicy string `json:"execution_policy,omitempty"`
+	WorktreeName    string `json:"worktree_name,omitempty"`
 }
 
 type ManagedWorktreeDTO struct {
@@ -251,6 +259,9 @@ type MuxOptions struct {
 	// ManagedWorktrees provisions explicitly requested Runtime-owned checkouts.
 	// Nil keeps managed creation fail-closed.
 	ManagedWorktrees *managedworktree.Manager
+	// SessionForks is the application service shared by the public fork endpoint
+	// and the fork_session tool. Nil keeps client-originated fork disabled.
+	SessionForks sessionfork.Service
 	// WorkflowSnapshot resolves a workflow snapshot from its durable .db file.
 	// Nil disables the GET /v1/conversations/{id}/workflow/{workflow_id}/snapshot
 	// endpoint (returns 404).
@@ -269,6 +280,7 @@ type RuntimeCapabilities struct {
 	WorkspaceExecutionPolicy bool `json:"workspace_execution_policy_v1"`
 	ManagedWorktree          bool `json:"managed_worktree_v1"`
 	ConversationArchive      bool `json:"conversation_archive_v1"`
+	ConversationFork         bool `json:"conversation_fork_v1"`
 	PublicGitClone           bool `json:"public_git_clone_v1"`
 	MaxConcurrentTurns       int  `json:"max_concurrent_turns"`
 	MaxConnectedSessions     int  `json:"max_connected_sessions"`
@@ -369,6 +381,7 @@ func laterTimestamp(current string, candidate time.Time) string {
 //	GET  /v1/runtime/capabilities            effective Runtime capabilities
 //	GET  /v1/conversations                   list (from Repository / SQLite)
 //	POST /v1/conversations                   create → {id} (writes SQLite, no Runtime)
+//	POST /v1/conversations/{id}/forks        fork through Runtime ownership service
 //	GET  /v1/conversations/{id}              detail (derived from events + repo)
 //	GET  /v1/conversations/{id}/messages     conversational backbone (derived)
 //	GET  /v1/conversations/{id}/events       recorded events, re-encoded to wire v1
@@ -392,6 +405,7 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 	}
 	runtimeCapabilities := opts.RuntimeCapabilities
 	runtimeCapabilities.PublicGitClone = opts.CloneService != nil
+	runtimeCapabilities.ConversationFork = opts.SessionForks != nil
 	archiveRepo, archiveSupported := repo.(conversation.ArchivableConversationRepository)
 	if capability, ok := repo.(conversation.ConversationArchiveCapability); ok {
 		archiveSupported = archiveSupported && capability.SupportsConversationArchive()
@@ -717,6 +731,63 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 			WorkspacePath: sess.WorkspacePath,
 			Workspace:     workspaceDTO(sess.WorkspacePath),
 		})
+	})
+
+	mux.HandleFunc("POST /v1/conversations/{id}/forks", func(w http.ResponseWriter, r *http.Request) {
+		if opts.SessionForks == nil {
+			http.Error(w, "conversation fork is not available", http.StatusNotImplemented)
+			return
+		}
+		sourceID := r.PathValue("id")
+		if _, err := repo.Load(r.Context(), sourceID); err != nil {
+			http.Error(w, "conversation not found", http.StatusNotFound)
+			return
+		}
+		var req ForkConversationRequest
+		r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "invalid JSON body", http.StatusBadRequest)
+			return
+		}
+		req.RequestID = strings.TrimSpace(req.RequestID)
+		if req.RequestID == "" {
+			http.Error(w, `"request_id" is required`, http.StatusBadRequest)
+			return
+		}
+		if req.ExecutionPolicy == "" {
+			req.ExecutionPolicy = session.ExecutionPolicySharedWorkspace
+		}
+		if req.ExecutionPolicy != session.ExecutionPolicySharedWorkspace {
+			if req.ExecutionPolicy != session.ExecutionPolicyIsolatedWorktree {
+				http.Error(w, `"execution_policy" must be shared_workspace or isolated_worktree`, http.StatusBadRequest)
+				return
+			}
+		}
+		if req.ExecutionPolicy == session.ExecutionPolicyIsolatedWorktree && opts.ManagedWorktrees == nil {
+			writeManagedWorktreeError(w, r, http.StatusNotImplemented, managedWorktreeErrorResponse{
+				Code: managedworktree.CodeNotRequested, Message: "managed worktree fork is not enabled", ClientRequestID: req.RequestID,
+			})
+			return
+		}
+		if req.ExecutionPolicy == session.ExecutionPolicySharedWorkspace && strings.TrimSpace(req.WorktreeName) != "" {
+			http.Error(w, `"worktree_name" requires isolated_worktree`, http.StatusBadRequest)
+			return
+		}
+		result, err := opts.SessionForks.ForkSession(r.Context(), sessionfork.Request{
+			ParentSessionID: sourceID, SourceSessionID: sourceID, RequestID: req.RequestID,
+			Name: strings.TrimSpace(req.Name), ExecutionPolicy: req.ExecutionPolicy,
+			WorktreeName: strings.TrimSpace(req.WorktreeName),
+		})
+		if err != nil {
+			var managedErr *managedworktree.Error
+			if errors.As(err, &managedErr) {
+				writeManagedCreateError(w, r, err)
+				return
+			}
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
+		writeJSON(w, r, http.StatusCreated, result)
 	})
 
 	mux.HandleFunc("POST /v1/conversations/{id}/worktree/remove", func(w http.ResponseWriter, r *http.Request) {
@@ -1259,12 +1330,15 @@ func writeManagedCreateError(w http.ResponseWriter, r *http.Request, err error) 
 		status = http.StatusBadRequest
 	case managedworktree.CodeNameConflict, managedworktree.CodePathConflict, managedworktree.CodeBranchConflict:
 		status = http.StatusConflict
+	case managedworktree.CodeDirty:
+		status = http.StatusConflict
 	case managedworktree.CodeNotGitRepository:
 		status = http.StatusBadRequest
 	}
 	writeManagedWorktreeError(w, r, status, managedWorktreeErrorResponse{
 		Code: managedErr.Code, Message: managedErr.Message,
 		ClientRequestID: managedErr.ClientRequestID, SessionID: managedErr.SessionID,
+		Summary: managedErr.DirtySummary,
 	})
 }
 

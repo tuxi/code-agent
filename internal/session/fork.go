@@ -20,7 +20,7 @@ func ForkHistoryInto(child, source *Session, name string, now time.Time) error {
 	if child == nil || source == nil {
 		return errors.New("session: fork requires source and child")
 	}
-	if err := ValidateForkSource(source); err != nil {
+	if err := ValidateForkHistory(source); err != nil {
 		return err
 	}
 	if now.IsZero() {
@@ -52,6 +52,16 @@ func ValidateForkSource(source *Session) error {
 	}
 	if source.ExecutionPolicy() == ExecutionPolicyIsolatedWorktree {
 		return ErrForkManagedWorktreeUnsupported
+	}
+	return ValidateForkHistory(source)
+}
+
+// ValidateForkHistory rejects session-scoped state whose ownership cannot yet
+// be transferred. Managed checkout metadata is intentionally not considered
+// history: isolated-worktree forks provision fresh ownership for the child.
+func ValidateForkHistory(source *Session) error {
+	if source == nil {
+		return errors.New("session: fork requires source")
 	}
 	if len(source.GatewayAssetCache) > 0 || len(source.ReferenceLedger) > 0 {
 		return ErrForkAssetsUnsupported
