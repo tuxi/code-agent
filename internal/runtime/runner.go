@@ -93,6 +93,7 @@ func BuildRunner(cfg app.Config, mc app.ModelConfig, provider model.Provider, re
 		CompactKeepTokens: cfg.CompactKeepTokens(mc),
 		Emitter:           emitter,
 		WorkspaceRoot:     root,
+		SessionIndex:      SessionIndex(),
 		// Client-tool lease (0 = loop's built-in 2-minute default). Raised by
 		// deployments whose client tools run long (e.g. DreamAI media generation).
 		ClientToolTimeout: time.Duration(cfg.Agent.ClientToolTimeoutSeconds) * time.Second,

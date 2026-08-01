@@ -3,6 +3,7 @@ package runtime
 import (
 	"code-agent/internal/session"
 	"code-agent/internal/session/sqlite"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -109,6 +110,37 @@ func openSQLiteStore(root string) (session.Store, error) {
 		fmt.Fprintf(os.Stderr, "[session-db] ❌ quarantine rename failed, returning error\n")
 		return nil, err
 	}
+
+	// Wire the cross-workspace session index so every Save/Delete updates the
+	// global index.db. The process-wide index is opened once and rebuilt once,
+	// synchronously, before callers can query a newly-created empty index.
+	if idx, idxErr := EnsureIndexReady(context.Background()); idx != nil {
+		store.OnSave = func(sess *session.Session, storePath string) {
+			persisted, err := store.Load(context.Background(), sess.ID)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "[index] refresh saved session %s: %v\n", sess.ID, err)
+				return
+			}
+			WriteSessionIndex(idx, persisted, storePath)
+		}
+		store.OnDelete = func(id string) {
+			DeleteSessionIndex(idx, id)
+		}
+		store.OnUpdate = func(id string) {
+			sess, err := store.Load(context.Background(), id)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "[index] refresh session %s: %v\n", id, err)
+				return
+			}
+			WriteSessionIndex(idx, sess, path)
+		}
+		if idxErr != nil {
+			fmt.Fprintf(os.Stderr, "[index] ⚠️ rebuild incomplete: %v\n", idxErr)
+		}
+	} else {
+		fmt.Fprintf(os.Stderr, "[index] ⚠️ index unavailable (list_sessions/read_session disabled): %v\n", idxErr)
+	}
+
 	fmt.Fprintf(os.Stderr, "[session-db] ✅ DB opened successfully\n")
 	return store, nil
 }
@@ -156,7 +188,10 @@ var storeBaseDir string
 // SetStoreBaseDir overrides the session-store base directory process-wide. Pass an
 // absolute, writable path; call it before any store is opened. Empty restores the
 // $HOME/.codeagent default.
-func SetStoreBaseDir(dir string) { storeBaseDir = dir }
+func SetStoreBaseDir(dir string) {
+	storeBaseDir = dir
+	resetIndex()
+}
 
 // StoreBaseDir returns the current session-store base directory (may be empty).
 func StoreBaseDir() string { return storeBaseDir }

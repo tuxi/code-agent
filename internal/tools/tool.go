@@ -78,6 +78,54 @@ type ExecutionContext struct {
 	// it, an empty model reaches the Gateway API, which rejects the request
 	// with "400 Model field required" for new sessions.
 	Model string
+
+	// SessionIndex provides cross-workspace session discovery and read access.
+	// It is the tool-layer interface to the global index.db. Nil means
+	// cross-session tools (list_sessions, read_session) are unavailable.
+	SessionIndex SessionIndex
+}
+
+// SessionIndex is the cross-workspace session discovery interface consumed
+// by list_sessions and read_session. Implementations are backed by index.db
+// plus the per-workspace session stores.
+type SessionIndex interface {
+	// ListAll returns every session recorded in the index, newest first.
+	ListAll() ([]SessionIndexEntry, error)
+	// Get returns the index entry for a single session, or nil if not found.
+	Get(id string) (*SessionIndexEntry, error)
+	// Read returns metadata and a last-turn summary for a session by loading
+	// it from its per-workspace store. Returns nil if not found.
+	Read(ctx context.Context, id string) (*SessionIndexDetail, error)
+}
+
+// SessionIndexEntry is one row from the cross-workspace session index.
+type SessionIndexEntry struct {
+	ID            string `json:"id"`
+	WorkspacePath string `json:"workspace_path"`
+	Name          string `json:"name"`
+	Model         string `json:"model"`
+	TurnStatus    string `json:"turn_status"`
+	MessageCount  int    `json:"message_count"`
+	PromptTokens  int    `json:"prompt_tokens"`
+	UpdatedAt     string `json:"updated_at"`
+	ArchivedAt    string `json:"archived_at,omitempty"`
+}
+
+// SessionIndexDetail is the full metadata + summary returned by Read.
+type SessionIndexDetail struct {
+	ID            string `json:"id"`
+	WorkspacePath string `json:"workspace_path"`
+	Name          string `json:"name"`
+	Model         string `json:"model"`
+	TurnStatus    string `json:"turn_status"`
+	MessageCount  int    `json:"message_count"`
+	PromptTokens  int    `json:"prompt_tokens"`
+	Summary       string `json:"summary"`
+	LastTurn      string `json:"last_turn"`
+	LastTurnID    string `json:"last_turn_id,omitempty"`
+	LastUserInput string `json:"last_user_input,omitempty"`
+	CreatedAt     string `json:"created_at"`
+	UpdatedAt     string `json:"updated_at"`
 }
 
 // NestedToolExecutor is the controlled re-entry point used by embedded

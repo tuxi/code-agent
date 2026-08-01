@@ -15,6 +15,7 @@ import (
 	"code-agent/internal/tools/git"
 	"code-agent/internal/tools/projectcfg"
 	"code-agent/internal/tools/search"
+	"code-agent/internal/tools/sessions"
 	"code-agent/internal/tools/shell"
 	"code-agent/internal/tools/skill"
 	"code-agent/internal/tools/task"
@@ -183,6 +184,20 @@ func BuildBaseRegistry(ctx context.Context, cfg app.Config, mc app.ModelConfig, 
 	// desktop and sandboxed/iOS profiles.
 	if provider != nil && cfg.Agent.ToolAllowed("plan_workflow") {
 		RegisterFluxTool(registry, provider, mc.Model)
+	}
+
+	// Cross-session control plane (Phase A): list_sessions and read_session.
+	// These tools are always registered — they degrade gracefully when index.db
+	// is unavailable (the tool returns an error explaining the situation).
+	if cfg.Agent.ToolAllowed("list_sessions") {
+		if err := registry.Register(&sessions.ListSessionsTool{}); err != nil {
+			return nil, nil, nil, nil, err
+		}
+	}
+	if cfg.Agent.ToolAllowed("read_session") {
+		if err := registry.Register(&sessions.ReadSessionTool{}); err != nil {
+			return nil, nil, nil, nil, err
+		}
 	}
 
 	// Plan mode tools: enter_plan_mode and propose_plan. They use a RunnerRef for

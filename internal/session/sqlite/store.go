@@ -36,6 +36,20 @@ var (
 type Store struct {
 	db   *sql.DB
 	path string
+
+	// OnSave is an optional callback invoked after a successful Save.
+	// The session and the exact path to this store file are passed.
+	// Implementations must be best-effort — a failure here must not
+	// fail the primary write. Used by the cross-workspace session index.
+	OnSave func(sess *session.Session, storePath string)
+
+	// OnDelete is an optional callback invoked after a successful Delete.
+	// The deleted session ID is passed. Best-effort, as above.
+	OnDelete func(sessionID string)
+
+	// OnUpdate is an optional callback invoked after a successful targeted
+	// metadata mutation (rename/archive/restore) that bypasses Save.
+	OnUpdate func(sessionID string)
 }
 
 // New opens (creating if needed) a SQLite session database at the given path.
@@ -45,6 +59,23 @@ func New(path string) (*Store, error) {
 		return nil, err
 	}
 	return s, nil
+}
+
+// NewReadOnly opens an existing session database without running migrations or
+// changing connection pragmas that persist in the file. Cross-workspace reads
+// use this constructor so discovery never becomes a second writer to a store
+// owned by another runtime process.
+func NewReadOnly(path string) (*Store, error) {
+	db, err := sql.Open("sqlite", path+"?mode=ro&_pragma=busy_timeout(5000)&_pragma=query_only(1)")
+	if err != nil {
+		return nil, fmt.Errorf("open sqlite read-only %q: %w", path, err)
+	}
+	db.SetMaxOpenConns(1)
+	if err := db.Ping(); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("open sqlite read-only %q: %w", path, err)
+	}
+	return &Store{db: db, path: path}, nil
 }
 
 const schema = `
@@ -264,6 +295,9 @@ func (s *Store) Save(ctx context.Context, sess *session.Session) error {
 		if rerr := s.reopen(); rerr == nil {
 			err = s.save(ctx, sess)
 		}
+	}
+	if err == nil && s.OnSave != nil {
+		s.OnSave(sess, s.path)
 	}
 	return err
 }
@@ -972,7 +1006,13 @@ func (s *Store) Delete(ctx context.Context, id string) error {
 			return err
 		}
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	if s.OnDelete != nil {
+		s.OnDelete(id)
+	}
+	return nil
 }
 
 func (s *Store) Archive(ctx context.Context, id string, at time.Time) (time.Time, error) {
@@ -992,7 +1032,13 @@ func (s *Store) Archive(ctx context.Context, id string, at time.Time) (time.Time
 		return time.Time{}, err
 	}
 	if current != "" {
-		return parseTime(current), tx.Commit()
+		if err := tx.Commit(); err != nil {
+			return time.Time{}, err
+		}
+		if s.OnUpdate != nil {
+			s.OnUpdate(id)
+		}
+		return parseTime(current), nil
 	}
 	archivedAt := at.UTC()
 	if _, err := tx.ExecContext(ctx, `UPDATE sessions SET archived_at=? WHERE id=?`, formatTime(archivedAt), id); err != nil {
@@ -1000,6 +1046,9 @@ func (s *Store) Archive(ctx context.Context, id string, at time.Time) (time.Time
 	}
 	if err := tx.Commit(); err != nil {
 		return time.Time{}, err
+	}
+	if s.OnUpdate != nil {
+		s.OnUpdate(id)
 	}
 	return archivedAt, nil
 }
@@ -1014,6 +1063,9 @@ func (s *Store) Restore(ctx context.Context, id string) error {
 	} else if affected == 0 {
 		return fmt.Errorf("session %q not found", id)
 	}
+	if s.OnUpdate != nil {
+		s.OnUpdate(id)
+	}
 	return nil
 }
 
@@ -1025,6 +1077,9 @@ func (s *Store) UpdateName(ctx context.Context, id string, name string) error {
 		if rerr := s.reopen(); rerr == nil {
 			err = s.updateName(ctx, id, name)
 		}
+	}
+	if err == nil && s.OnUpdate != nil {
+		s.OnUpdate(id)
 	}
 	return err
 }

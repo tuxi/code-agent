@@ -83,7 +83,7 @@ func run() error {
 	if len(args) > 0 {
 		switch args[0] {
 		case "sessions":
-			return listSessions(ctx, cfg)
+			return listSessions(ctx, cfg, args[1:])
 		case "stats":
 			return runStats(ctx, cfg)
 		case "trace":
@@ -176,7 +176,29 @@ func run() error {
 }
 
 // listSessions prints saved sessions, most recently updated first.
-func listSessions(ctx context.Context, cfg app.Config) error {
+func listSessions(ctx context.Context, cfg app.Config, args []string) error {
+	global := false
+	for _, arg := range args {
+		switch arg {
+		case "--global", "-global":
+			global = true
+		default:
+			return fmt.Errorf("usage: codeagent sessions [--global]")
+		}
+	}
+	if global {
+		db, err := runtime.EnsureIndexReady(ctx)
+		if err != nil && db == nil {
+			return err
+		}
+		metas, listErr := runtime.ListAllSessions(db)
+		if listErr != nil {
+			return listErr
+		}
+		printGlobalSessions(metas)
+		return err
+	}
+
 	root, _ := os.Getwd()
 	store, err := runtime.OpenStore(root)
 	if err != nil {
@@ -190,6 +212,30 @@ func listSessions(ctx context.Context, cfg app.Config) error {
 	}
 	printSessionMetas(metas)
 	return nil
+}
+
+func printGlobalSessions(metas []runtime.IndexSession) {
+	printed := 0
+	for _, m := range metas {
+		if m.ArchivedAt != "" {
+			continue
+		}
+		status := m.TurnStatus
+		if status == "" {
+			status = "idle"
+		}
+		line := fmt.Sprintf("%s  workspace=%s  model=%s  status=%s  msgs=%d  ctx=%d",
+			m.ID, m.WorkspacePath, m.Model, status, m.MessageCount, m.PromptTokens)
+		if m.Name != "" {
+			line += "  name=" + strconv.Quote(m.Name)
+		}
+		line += "  updated=" + m.UpdatedAt
+		fmt.Println(line)
+		printed++
+	}
+	if printed == 0 {
+		fmt.Println("no saved sessions")
+	}
 }
 
 // printSessionMetas renders a session listing, newest first. Sessions that have
@@ -785,7 +831,8 @@ func printUsage() {
   codeagent init --global                  create a global AGENTS.md in ~/.codeagent/
   codeagent init --system                  dump the built-in system prompt to .codeagent/SYSTEM.md
   codeagent init --system --subagent       dump the subagent prompt to .codeagent/SUBAGENT_SYSTEM.md
-  codeagent sessions                       list saved sessions
+  codeagent sessions                       list saved sessions in the current workspace
+  codeagent sessions --global              list saved sessions across all workspaces
   codeagent stats                          aggregate compaction + provider telemetry
   codeagent trace [N]                      show the last N requests, per attempt
   codeagent [--model NAME] resume <id>     resume a saved session

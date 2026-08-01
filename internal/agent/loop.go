@@ -116,6 +116,11 @@ type Runner struct {
 	// block. Set by the REPL, TUI, or server like PlanApprover.
 	AskUserApprover AskUserApprover
 
+	// SessionIndex provides cross-workspace session discovery for list_sessions
+	// and read_session tools. Nil means these tools are unavailable (index.db
+	// failed to open or this runtime does not support cross-session operations).
+	SessionIndex tools.SessionIndex
+
 	// PlanState tracks the planning workflow phase. Exported so the TUI and REPL
 	// can toggle plan mode manually (Ctrl+P, /plan).
 	PlanState PlanStatus
@@ -1574,6 +1579,7 @@ func (r *Runner) executeTool(ctx context.Context, tool tools.Tool, callID string
 		PlanMode:           r.PlanState == PlanStatusPlanning || r.PlanState == PlanStatusProposing,
 		PathAccessApprover: r.PathAccessApprover,
 		Model:              r.ModelName,
+		SessionIndex:       r.SessionIndex,
 		OnStdout: func(chunk string) {
 			r.emit(Event{Kind: EventToolStdout, CallID: callID, Chunk: chunk})
 		},
