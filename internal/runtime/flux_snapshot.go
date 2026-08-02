@@ -195,6 +195,7 @@ func queryEdges(db *gorm.DB, versionID int64) []WorkflowEdgeDTO {
 		return nil
 	}
 	var def struct {
+		Edges []WorkflowEdgeDTO `json:"edges"`
 		Nodes []struct {
 			Name      string   `json:"name"`
 			DependsOn []string `json:"depends_on"`
@@ -203,10 +204,13 @@ func queryEdges(db *gorm.DB, versionID int64) []WorkflowEdgeDTO {
 	if err := json.Unmarshal([]byte(defJSON), &def); err != nil {
 		return nil
 	}
+	if len(def.Edges) > 0 {
+		return def.Edges
+	}
 	var edges []WorkflowEdgeDTO
-	for _, n := range def.Nodes {
-		for _, dep := range n.DependsOn {
-			edges = append(edges, WorkflowEdgeDTO{From: dep, To: n.Name})
+	for _, node := range def.Nodes {
+		for _, dependency := range node.DependsOn {
+			edges = append(edges, WorkflowEdgeDTO{From: dependency, To: node.Name})
 		}
 	}
 	return edges

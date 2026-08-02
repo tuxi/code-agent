@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/tuxi/flux-workflow/definition"
 	"github.com/tuxi/flux-workflow/domain"
 	workflowruntime "github.com/tuxi/flux-workflow/runtime"
 	fluxtool "github.com/tuxi/flux-workflow/tool"
@@ -39,7 +40,8 @@ var fluxExcludedTools = map[string]bool{
 
 // runtimePool holds one started Runtime per workspace db. After the first
 // plan_workflow call starts workers, subsequent calls in the same workspace
-// reuse the Runtime so tasks queue up and execute in FIFO order.
+// reuse the Runtime. Multiple task workers are required for NodeMap children
+// to honor their parallelism instead of merely queueing fan-out tasks.
 var runtimePool sync.Map // key: dbPath (string), value: *workflowruntime.Runtime
 
 func getOrCreateRuntime(ctx context.Context, workspaceRoot string) (*workflowruntime.Runtime, error) {
@@ -55,7 +57,7 @@ func getOrCreateRuntime(ctx context.Context, workspaceRoot string) (*workflowrun
 	// AsyncWorker, AwaitPollWorker, and RecoveryScanner are server-side
 	// machinery — pointless full-table scans on a single-workflow device.
 	if err := rt.Start(context.Background(),
-		workflowruntime.WithTaskWorkers(1),
+		workflowruntime.WithTaskWorkers(4),
 		workflowruntime.WithAsyncWorkers(0),
 		workflowruntime.WithAwaitPollWorkers(0),
 		workflowruntime.WithRecoveryScanner(false),
@@ -83,6 +85,18 @@ type FluxWorkflowTool struct {
 	modelName string
 }
 
+type fluxWorkflowInput struct {
+	Goal        string                    `json:"goal"`
+	Action      string                    `json:"action"`
+	WorkflowID  string                    `json:"workflow_id"`
+	TaskID      int64                     `json:"task_id"`
+	ResumeFrom  string                    `json:"resume_from"`
+	Template    string                    `json:"template"`
+	Agents      []crossWorkspaceAgentSpec `json:"agents"`
+	Parallelism int                       `json:"parallelism"`
+	TimeoutMS   *int64                    `json:"timeout_ms"`
+}
+
 func NewFluxWorkflowTool(provider model.Provider, modelName string) *FluxWorkflowTool {
 	return &FluxWorkflowTool{provider: provider, modelName: modelName}
 }
@@ -98,21 +112,16 @@ func (t *FluxWorkflowTool) Description() string {
 		"or long-running operations that may need to resume after failure. " +
 		"Do NOT use this to explore or figure out an approach — " +
 		"if you need to research, read code, or decide what to do as you go, use enter_plan_mode instead. " +
-		"For simple single-step changes, skip this and act directly."
+		"For simple single-step changes, skip this and act directly. " +
+		"Use template=cross_workspace_collaboration_v1 with typed agents when a supervisor has already resolved cross-workspace worker sessions."
 }
 
 func (t *FluxWorkflowTool) InputSchema() json.RawMessage {
-	return json.RawMessage(`{"type":"object","properties":{"goal":{"type":"string","description":"A complete description of the multi-step task to execute. Describe every step, their dependencies, and what success looks like. Example: 'Initialize a React+TS project, add ESLint and Prettier configs, create a Button component with tests, then run the test suite.'"},"action":{"type":"string","enum":["new","retry"],"description":"new=create and execute; retry=recover a failed workflow from a specific node"},"workflow_id":{"type":"string","description":"Required for retry: the workflow ID to recover"},"task_id":{"type":"integer","description":"Required for retry: the task ID to retry"},"resume_from":{"type":"string","description":"Optional for retry: node name to resume from; empty auto-collects failed roots"}},"required":["goal"],"additionalProperties":false}`)
+	return json.RawMessage(`{"type":"object","properties":{"goal":{"type":"string","description":"A complete description of the known workflow and its success conditions."},"action":{"type":"string","enum":["new","retry"],"description":"new=create and execute; retry=recover a failed workflow from a specific node"},"workflow_id":{"type":"string","description":"Required for retry: the workflow ID to recover"},"task_id":{"type":"integer","description":"Required for retry: the task ID to retry"},"resume_from":{"type":"string","description":"Optional for retry: node name to resume from; empty auto-collects failed roots"},"template":{"type":"string","enum":["cross_workspace_collaboration_v1"],"description":"Optional deterministic workflow template. Omit to use the LLM DAG planner."},"agents":{"type":"array","minItems":1,"maxItems":8,"description":"Resolved worker assignments for the cross-workspace template.","items":{"type":"object","properties":{"role":{"type":"string"},"session_id":{"type":"string"},"workspace_path":{"type":"string"},"message":{"type":"string"},"correlation_id":{"type":"string"},"intent":{"type":"string","enum":["request","notification"]}},"required":["role","session_id","message","correlation_id"],"additionalProperties":false}},"parallelism":{"type":"integer","minimum":1,"maximum":8},"timeout_ms":{"type":"integer","minimum":0,"maximum":300000}},"required":["goal"],"additionalProperties":false}`)
 }
 
 func (t *FluxWorkflowTool) Execute(ctx context.Context, ec tools.ExecutionContext, input json.RawMessage) (tools.ToolResult, error) {
-	var args struct {
-		Goal       string `json:"goal"`
-		Action     string `json:"action"`
-		WorkflowID string `json:"workflow_id"`
-		TaskID     int64  `json:"task_id"`
-		ResumeFrom string `json:"resume_from"`
-	}
+	var args fluxWorkflowInput
 	if err := json.Unmarshal(input, &args); err != nil {
 		return tools.ToolResult{Content: "invalid input: " + err.Error()}, nil
 	}
@@ -126,19 +135,32 @@ func (t *FluxWorkflowTool) Execute(ctx context.Context, ec tools.ExecutionContex
 	if args.Goal == "" {
 		return tools.ToolResult{Content: "goal is required"}, nil
 	}
-	if t.provider == nil {
+	if args.Template != "" {
+		if err := validateCrossWorkspaceManifest(args.Template, args.Agents, args.Parallelism); err != nil {
+			return tools.ToolResult{Content: "flux workflow manifest failed: " + err.Error()}, nil
+		}
+	} else if t.provider == nil {
 		return tools.ToolResult{Content: "flux workflow failed: model provider is unavailable"}, nil
 	}
 	if ec.ToolRegistry == nil || ec.NestedExecutor == nil {
 		return tools.ToolResult{Content: "flux workflow failed: controlled tool execution is unavailable"}, nil
 	}
 
-	workflowID := fluxWorkflowID(ec, args.Goal)
+	workflowIdentity := args.Goal
+	if args.Template != "" {
+		manifestIdentity, _ := json.Marshal(struct {
+			Goal        string                    `json:"goal"`
+			Template    string                    `json:"template"`
+			Agents      []crossWorkspaceAgentSpec `json:"agents"`
+			Parallelism int                       `json:"parallelism"`
+		}{args.Goal, args.Template, args.Agents, args.Parallelism})
+		workflowIdentity = string(manifestIdentity)
+	}
+	workflowID := fluxWorkflowID(ec, workflowIdentity)
 	emitWorkflow(ec, "workflow_started", map[string]any{
 		"workflow_id": workflowID, "parent_call_id": ec.CallID, "stage": "planning", "goal": args.Goal,
 	})
 	usage := &fluxUsageCollector{}
-	provider := &fluxCompleterAdapter{provider: t.provider, ec: ec, usage: usage}
 	nestedUsage := &nestedUsageCollector{}
 	fluxReg := projectFluxTools(ctx, ec, nestedUsage)
 	if len(fluxReg.List()) == 0 {
@@ -146,16 +168,30 @@ func (t *FluxWorkflowTool) Execute(ctx context.Context, ec tools.ExecutionContex
 		return tools.ToolResult{Content: "flux workflow failed: no eligible tools are available"}, nil
 	}
 
-	dagPlanner := planner.NewDAGPlanner(provider, t.modelName, args.Goal, fluxReg)
-	// Planner LLM calls can easily exceed the HTTP request timeout (large system
-	// prompt + complex DAG generation). Use a detached context with a generous
-	// deadline while still respecting the tool's own cancellation (e.g. Ctrl-C).
-	planCtx, planCancel := context.WithTimeout(context.Background(), 3*time.Minute)
-	defer planCancel()
-	def, err := dagPlanner.GenerateWorkflow(planCtx, nil)
-	if err != nil {
-		emitWorkflowFailure(ec, workflowID, "planning", err.Error())
-		return tools.ToolResult{Content: "flux workflow planning failed: " + err.Error(), ModelUsage: usage.snapshot()}, nil
+	var def, childDef *definition.WorkflowDefinition
+	if args.Template != "" {
+		for _, requiredTool := range []string{"send_to_session", "wait_sessions", "read_session"} {
+			if _, ok := fluxReg.Get(requiredTool); !ok {
+				err := fmt.Errorf("template requires tool %q", requiredTool)
+				emitWorkflowFailure(ec, workflowID, "compiling", err.Error())
+				return tools.ToolResult{Content: "flux workflow template failed: " + err.Error()}, nil
+			}
+		}
+		def, childDef = crossWorkspaceWorkflowDefinitions(workflowID, args.Parallelism)
+	} else {
+		provider := &fluxCompleterAdapter{provider: t.provider, ec: ec, usage: usage}
+		dagPlanner := planner.NewDAGPlanner(provider, t.modelName, args.Goal, fluxReg)
+		// Planner LLM calls can easily exceed the HTTP request timeout (large system
+		// prompt + complex DAG generation). Use a detached context with a generous
+		// deadline while still respecting the tool's own cancellation (e.g. Ctrl-C).
+		planCtx, planCancel := context.WithTimeout(context.Background(), 3*time.Minute)
+		defer planCancel()
+		var err error
+		def, err = dagPlanner.GenerateWorkflow(planCtx, nil)
+		if err != nil {
+			emitWorkflowFailure(ec, workflowID, "planning", err.Error())
+			return tools.ToolResult{Content: "flux workflow planning failed: " + err.Error(), ModelUsage: usage.snapshot()}, nil
+		}
 	}
 	rt, err := getOrCreateRuntime(ctx, ec.WorkspaceRoot)
 	if err != nil {
@@ -167,7 +203,13 @@ func (t *FluxWorkflowTool) Execute(ctx context.Context, ec tools.ExecutionContex
 	for _, projected := range fluxReg.List() {
 		rt.ToolRegistry().Register(projected)
 	}
-	if err := rt.RegisterWorkflow(ctx, def); err != nil {
+	if childDef != nil {
+		if err := registerFluxWorkflow(ctx, rt, childDef); err != nil {
+			emitWorkflowFailure(ec, workflowID, "registering", err.Error())
+			return tools.ToolResult{Content: "flux child workflow registration failed: " + err.Error(), ModelUsage: usage.snapshot()}, nil
+		}
+	}
+	if err := registerFluxWorkflow(ctx, rt, def); err != nil {
 		emitWorkflowFailure(ec, workflowID, "registering", err.Error())
 		return tools.ToolResult{Content: "flux workflow registration failed: " + err.Error(), ModelUsage: usage.snapshot()}, nil
 	}
@@ -189,14 +231,25 @@ func (t *FluxWorkflowTool) Execute(ctx context.Context, ec tools.ExecutionContex
 
 	// Subscribe to events before Submit to avoid missing terminal events.
 	bridgeCtx, bridgeCancel := context.WithCancel(context.Background())
-	bridgeFluxEventsAsync(bridgeCtx, rt, ec, workflowID)
+	bindBridgeTask := bridgeFluxEventsAsync(bridgeCtx, rt, ec, workflowID)
 
-	taskID, err := rt.Submit(ctx, def.Name, map[string]any{"goal": args.Goal, "workflow_id": workflowID})
+	taskInput := map[string]any{"goal": args.Goal, "workflow_id": workflowID}
+	if args.Template != "" {
+		timeoutMS := int64(300000)
+		if args.TimeoutMS != nil {
+			timeoutMS = *args.TimeoutMS
+		}
+		taskInput["agents"] = args.Agents
+		taskInput["timeout_ms"] = timeoutMS
+		taskInput["template"] = args.Template
+	}
+	taskID, err := rt.Submit(ctx, def.Name, taskInput)
 	if err != nil {
 		bridgeCancel() // task never enqueued → goroutine would leak
 		emitWorkflowFailure(ec, workflowID, "executing", err.Error())
 		return tools.ToolResult{Content: "flux workflow submission failed: " + err.Error(), ModelUsage: usage.snapshot()}, nil
 	}
+	bindBridgeTask(taskID)
 	// Submit succeeded — goroutine self-cleans on terminal; don't cancel.
 	_ = bridgeCancel
 
@@ -216,6 +269,9 @@ func (t *FluxWorkflowTool) Execute(ctx context.Context, ec tools.ExecutionContex
 		"task_id":     taskID,
 		"status":      "queued",
 	}
+	if args.Template != "" {
+		payload["template"] = args.Template
+	}
 	out, _ := json.Marshal(payload)
 	return tools.ToolResult{
 		Content:      string(out),
@@ -223,6 +279,14 @@ func (t *FluxWorkflowTool) Execute(ctx context.Context, ec tools.ExecutionContex
 		ModelUsage:   usage.snapshot(),
 		NestedUsages: nestedUsage.snapshot(),
 	}, nil
+}
+
+func registerFluxWorkflow(ctx context.Context, rt *workflowruntime.Runtime, def *definition.WorkflowDefinition) error {
+	err := rt.RegisterWorkflow(ctx, def)
+	if err != nil && strings.Contains(err.Error(), "already registered") {
+		return nil
+	}
+	return err
 }
 
 func RegisterFluxTool(registry *tools.Registry, provider model.Provider, modelName string) {
@@ -385,27 +449,52 @@ func (t *workflowDefTool) Execute(ctx context.Context, ec tools.ExecutionContext
 		return tools.ToolResult{Content: fmt.Sprintf("workflow_definition: version not found: %v", err)}, nil
 	}
 
-	var def struct {
+	var storedDef struct {
 		Nodes []struct {
-			Name      string   `json:"name"`
-			Tool      string   `json:"tool"`
-			DependsOn []string `json:"depends_on"`
+			Name      string         `json:"name"`
+			Type      string         `json:"type"`
+			Tool      string         `json:"tool"`
+			DependsOn []string       `json:"depends_on"`
+			Config    map[string]any `json:"config"`
 		} `json:"nodes"`
 		Edges []struct {
 			From string `json:"from"`
 			To   string `json:"to"`
 		} `json:"edges,omitempty"`
 	}
-	json.Unmarshal([]byte(defJSON), &def)
-
-	// Build edges from depends_on if not present explicitly.
-	if len(def.Edges) == 0 {
-		for _, n := range def.Nodes {
-			for _, dep := range n.DependsOn {
-				def.Edges = append(def.Edges, struct {
+	if err := json.Unmarshal([]byte(defJSON), &storedDef); err != nil {
+		return tools.ToolResult{Content: fmt.Sprintf("workflow_definition: decode version: %v", err)}, nil
+	}
+	type nodeItem struct {
+		Name      string   `json:"name"`
+		Type      string   `json:"type"`
+		Tool      string   `json:"tool,omitempty"`
+		DependsOn []string `json:"depends_on,omitempty"`
+	}
+	nodes := make([]nodeItem, 0, len(storedDef.Nodes))
+	byName := make(map[string]int, len(storedDef.Nodes))
+	for _, node := range storedDef.Nodes {
+		toolName, _ := node.Config["tool"].(string)
+		if toolName == "" {
+			toolName = node.Tool
+		}
+		byName[node.Name] = len(nodes)
+		nodes = append(nodes, nodeItem{Name: node.Name, Type: node.Type, Tool: toolName, DependsOn: node.DependsOn})
+	}
+	if len(storedDef.Edges) == 0 {
+		for _, node := range nodes {
+			for _, dependency := range node.DependsOn {
+				storedDef.Edges = append(storedDef.Edges, struct {
 					From string `json:"from"`
 					To   string `json:"to"`
-				}{From: dep, To: n.Name})
+				}{From: dependency, To: node.Name})
+			}
+		}
+	}
+	for _, edge := range storedDef.Edges {
+		if index, ok := byName[edge.To]; ok {
+			if !containsString(nodes[index].DependsOn, edge.From) {
+				nodes[index].DependsOn = append(nodes[index].DependsOn, edge.From)
 			}
 		}
 	}
@@ -413,21 +502,34 @@ func (t *workflowDefTool) Execute(ctx context.Context, ec tools.ExecutionContext
 	result := map[string]any{
 		"workflow_id": args.WorkflowID,
 		"goal":        goal,
-		"nodes":       def.Nodes,
-		"edges":       def.Edges,
+		"nodes":       nodes,
+		"edges":       storedDef.Edges,
 	}
 	out, _ := json.Marshal(result)
 	var nodeDescs []string
-	for _, n := range def.Nodes {
+	for _, n := range nodes {
 		deps := ""
 		if len(n.DependsOn) > 0 {
 			deps = " ← " + strings.Join(n.DependsOn, ", ")
 		}
-		nodeDescs = append(nodeDescs, fmt.Sprintf("  %s (%s)%s", n.Name, n.Tool, deps))
+		kind := n.Type
+		if n.Tool != "" {
+			kind = n.Tool
+		}
+		nodeDescs = append(nodeDescs, fmt.Sprintf("  %s (%s)%s", n.Name, kind, deps))
 	}
 	content := fmt.Sprintf("workflow %s: %d nodes, %d edges\n%s",
-		args.WorkflowID, len(def.Nodes), len(def.Edges), strings.Join(nodeDescs, "\n"))
+		args.WorkflowID, len(nodes), len(storedDef.Edges), strings.Join(nodeDescs, "\n"))
 	return tools.ToolResult{Content: content, Output: out}, nil
+}
+
+func containsString(items []string, target string) bool {
+	for _, item := range items {
+		if item == target {
+			return true
+		}
+	}
+	return false
 }
 
 // workflowEventsTool returns event history for a workflow task.
@@ -609,18 +711,17 @@ func projectFluxTools(ctx context.Context, ec tools.ExecutionContext, usage *nes
 		if candidate == nil || fluxExcludedTools[candidate.Name()] {
 			continue
 		}
-		reg.Register(&codeAgentFluxTool{tool: candidate, ec: ec, parentCtx: ctx, usage: usage, attempts: map[string]int{}})
+		reg.Register(&codeAgentFluxTool{tool: candidate, ec: ec, usage: usage, attempts: map[string]int{}})
 	}
 	return reg
 }
 
 type codeAgentFluxTool struct {
-	tool      tools.Tool
-	ec        tools.ExecutionContext
-	parentCtx context.Context
-	usage     *nestedUsageCollector
-	mu        sync.Mutex
-	attempts  map[string]int
+	tool     tools.Tool
+	ec       tools.ExecutionContext
+	usage    *nestedUsageCollector
+	mu       sync.Mutex
+	attempts map[string]int
 }
 
 func (t *codeAgentFluxTool) Name() string                 { return t.tool.Name() }
@@ -660,7 +761,7 @@ func (t *codeAgentFluxTool) invoke(ctx context.Context, nodeName string, input m
 
 func (t *codeAgentFluxTool) Execute(execCtx context.Context, input map[string]any, _ fluxtool.ToolEmitter) (*fluxtool.Result, error) {
 	meta, _ := fluxtool.ExecutionMetaFromContext(execCtx)
-	result, err := t.invoke(t.parentCtx, meta.NodeName, input)
+	result, err := t.invoke(execCtx, meta.NodeName, input)
 	if err != nil {
 		return fluxtool.Fail(err), nil
 	}
@@ -817,7 +918,7 @@ func (c *nestedUsageCollector) snapshot() []*tools.ToolUsage {
 // bridgeFluxEventsAsync subscribes to the Engine event bus before Submit and
 // returns a channel that closes when the task reaches a terminal state. Events
 // are forwarded to the code-agent stream via emitWorkflow.
-func bridgeFluxEventsAsync(ctx context.Context, rt *workflowruntime.Runtime, ec tools.ExecutionContext, workflowID string) {
+func bridgeFluxEventsAsync(ctx context.Context, rt *workflowruntime.Runtime, ec tools.ExecutionContext, workflowID string) func(int64) {
 	types := []string{
 		domain.TaskEventStarted, domain.TaskEventSucceeded, domain.TaskEventFailed, domain.TaskEventSuspended,
 		"task_state_changed", "node_state_changed", "task_progress",
@@ -836,6 +937,7 @@ func bridgeFluxEventsAsync(ctx context.Context, rt *workflowruntime.Runtime, ec 
 
 	termCh, termCancel := rt.Subscribe(domain.TaskEventSucceeded)
 	failCh, failCancel := rt.Subscribe(domain.TaskEventFailed)
+	taskIDCh := make(chan int64, 1)
 
 	go func() {
 		defer func() {
@@ -845,9 +947,18 @@ func bridgeFluxEventsAsync(ctx context.Context, rt *workflowruntime.Runtime, ec 
 				s.cancel()
 			}
 		}()
+		var rootTaskID int64
+		select {
+		case <-ctx.Done():
+			return
+		case rootTaskID = <-taskIDCh:
+		}
 		for _, s := range subs {
 			go func(ch <-chan *domain.TaskEvent) {
 				for event := range ch {
+					if event.TaskID != rootTaskID && event.RootTaskID != rootTaskID {
+						continue
+					}
 					payload := flattenFluxTaskEvent(event, workflowID, ec.CallID)
 					kind := "workflow_" + event.Type
 					emitWorkflow(ec, kind, payload)
@@ -858,18 +969,30 @@ func bridgeFluxEventsAsync(ctx context.Context, rt *workflowruntime.Runtime, ec 
 		// the forwarder goroutines above emit workflow_task_suspended, and
 		// the worker will resume the task when the client returns its result.
 		var terminalEv *domain.TaskEvent
-		select {
-		case <-ctx.Done():
-			return
-		case ev := <-termCh:
-			terminalEv = ev
-		case ev := <-failCh:
-			terminalEv = ev
+		for terminalEv == nil {
+			select {
+			case <-ctx.Done():
+				return
+			case ev := <-termCh:
+				if ev != nil && ev.TaskID == rootTaskID {
+					terminalEv = ev
+				}
+			case ev := <-failCh:
+				if ev != nil && ev.TaskID == rootTaskID {
+					terminalEv = ev
+				}
+			}
 		}
 		if terminalEv != nil {
 			emitWorkflowTerminalWithTask(ctx, rt, ec, workflowID, terminalEv)
 		}
 	}()
+	return func(taskID int64) {
+		select {
+		case taskIDCh <- taskID:
+		case <-ctx.Done():
+		}
+	}
 }
 
 // bridgeFluxEvents subscribes to the Engine event bus and forwards events into
@@ -1011,13 +1134,7 @@ func emitWorkflowFailure(ec tools.ExecutionContext, workflowID, stage, message s
 func (t *FluxWorkflowTool) executeRetry(
 	ctx context.Context,
 	ec tools.ExecutionContext,
-	args struct {
-		Goal       string `json:"goal"`
-		Action     string `json:"action"`
-		WorkflowID string `json:"workflow_id"`
-		TaskID     int64  `json:"task_id"`
-		ResumeFrom string `json:"resume_from"`
-	},
+	args fluxWorkflowInput,
 ) (tools.ToolResult, error) {
 	if args.WorkflowID == "" || args.TaskID == 0 {
 		return tools.ToolResult{Content: "retry requires workflow_id and task_id"}, nil
