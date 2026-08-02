@@ -12,6 +12,37 @@ import (
 type WaitSessionsTool struct{}
 
 func (*WaitSessionsTool) Name() string { return "wait_sessions" }
+func (*WaitSessionsTool) OutputSchema() json.RawMessage {
+	return json.RawMessage(`{
+	"type": "object",
+	"properties": {
+		"completed": {
+			"type": "array",
+			"items": {
+				"type": "object",
+				"properties": {
+					"session_id": {"type": "string"},
+					"turn_id":    {"type": "string"},
+					"status":     {"type": "string", "description": "completed, failed, or cancelled"},
+					"cursor":     {"type": "integer"}
+				}
+			}
+		},
+		"waiting": {
+			"type": "array",
+			"items": {
+				"type": "object",
+				"properties": {
+					"session_id": {"type": "string"},
+					"turn_id":    {"type": "string"},
+					"cursor":     {"type": "integer"}
+				}
+			}
+		},
+		"timed_out": {"type": "boolean"}
+	}
+}`)
+}
 func (*WaitSessionsTool) Description() string {
 	return "Wait for the first target turn to finish, fail, or be cancelled. This is wait-any, not wait-all. " +
 		"Targets must use the session id, turn_id, and cursor returned by send_to_session, so older terminal events cannot satisfy the wait."

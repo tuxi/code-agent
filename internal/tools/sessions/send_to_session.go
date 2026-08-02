@@ -16,6 +16,18 @@ import (
 type SendToSessionTool struct{}
 
 func (*SendToSessionTool) Name() string { return "send_to_session" }
+func (*SendToSessionTool) OutputSchema() json.RawMessage {
+	return json.RawMessage(`{
+	"type": "object",
+	"properties": {
+		"accepted":    {"type": "boolean"},
+		"delivery":    {"type": "string", "description": "started or queued"},
+		"session_id":  {"type": "string", "description": "Target session ID"},
+		"turn_id":     {"type": "string", "description": "Admitted turn ID for wait_sessions cursor tracking"},
+		"cursor":      {"type": "integer", "description": "Admission event sequence for wait_sessions cursor tracking"}
+	}
+}`)
+}
 func (*SendToSessionTool) Description() string {
 	return "Send Agent-originated work to another live session through its owning Runtime. " +
 		"The target uses its own model, credentials, tools, approval policy, workspace, and scheduler. " +

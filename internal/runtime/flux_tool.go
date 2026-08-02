@@ -711,6 +711,9 @@ func (t *codeAgentFluxTool) InputSchema() fluxtool.DataSchema {
 	return fluxDataSchema(t.tool.InputSchema())
 }
 func (t *codeAgentFluxTool) OutputSchema() fluxtool.DataSchema {
+	if provider, ok := t.tool.(tools.OutputSchemaProvider); ok {
+		return fluxDataSchema(provider.OutputSchema())
+	}
 	return fluxtool.DataSchema{Fields: map[string]fluxtool.FieldSchema{
 		"content": {Type: "string", Desc: "工具的文本结果"},
 		"output":  {Type: "object", Desc: "工具的结构化结果"},

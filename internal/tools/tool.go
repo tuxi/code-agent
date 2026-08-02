@@ -338,3 +338,10 @@ type Tool interface {
 	InputSchema() json.RawMessage
 	Execute(ctx context.Context, ec ExecutionContext, input json.RawMessage) (ToolResult, error)
 }
+
+// OutputSchemaProvider is an optional interface for tools that expose a
+// structured output schema. Flux tool adapters use it to populate per-tool
+// OutputSchema instead of the generic {content, output, assets} fallback.
+type OutputSchemaProvider interface {
+	OutputSchema() json.RawMessage
+}

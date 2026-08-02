@@ -17,6 +17,24 @@ import (
 type ReadSessionTool struct{}
 
 func (t *ReadSessionTool) Name() string { return "read_session" }
+func (t *ReadSessionTool) OutputSchema() json.RawMessage {
+	return json.RawMessage(`{
+	"type": "object",
+	"properties": {
+		"id":              {"type": "string", "description": "Session ID"},
+		"workspace_path":  {"type": "string"},
+		"name":            {"type": "string"},
+		"model":           {"type": "string"},
+		"turn_status":     {"type": "string", "description": "running, paused, done, or failed"},
+		"message_count":   {"type": "integer"},
+		"prompt_tokens":   {"type": "integer"},
+		"summary":         {"type": "string", "description": "Compaction summary"},
+		"last_turn":       {"type": "string", "description": "Last assistant response (first 2000 chars)"},
+		"created_at":      {"type": "string"},
+		"updated_at":      {"type": "string"}
+	}
+}`)
+}
 
 func (t *ReadSessionTool) Description() string {
 	return "Read the current state and last turn summary of another session " +
