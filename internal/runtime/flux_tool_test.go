@@ -450,7 +450,7 @@ func TestFluxWorkflowToolExecutesCrossWorkspaceMapTemplate(t *testing.T) {
 	if err := json.Unmarshal(result.Output, &admission); err != nil {
 		t.Fatal(err)
 	}
-	if admission.WorkflowID == "" || admission.Template != crossWorkspaceCollaborationTemplate {
+	if admission.WorkflowID == "" || admission.Template != crossWorkspaceCollaborationV1 {
 		t.Fatalf("workflow admission=%s", result.Output)
 	}
 	select {
@@ -532,12 +532,12 @@ func TestValidateCrossWorkspaceManifestRejectsAmbiguousWorkers(t *testing.T) {
 		{Role: " frontend ", SessionID: "same", Message: "one", CorrelationID: "case/one"},
 		{Role: "backend", SessionID: "same", Message: "two", CorrelationID: "case/two"},
 	}
-	if err := validateCrossWorkspaceManifest(crossWorkspaceCollaborationTemplate, agents, 2); err == nil || !strings.Contains(err.Error(), "duplicate agent session_id") {
+	if err := validateCrossWorkspaceManifest(crossWorkspaceCollaborationV1, agents, 2); err == nil || !strings.Contains(err.Error(), "duplicate agent session_id") {
 		t.Fatalf("duplicate session validation error = %v", err)
 	}
 	agents[1].SessionID = "backend"
 	agents[1].CorrelationID = "case/one"
-	if err := validateCrossWorkspaceManifest(crossWorkspaceCollaborationTemplate, agents, 2); err == nil || !strings.Contains(err.Error(), "duplicate agent correlation_id") {
+	if err := validateCrossWorkspaceManifest(crossWorkspaceCollaborationV1, agents, 2); err == nil || !strings.Contains(err.Error(), "duplicate agent correlation_id") {
 		t.Fatalf("duplicate correlation validation error = %v", err)
 	}
 }
