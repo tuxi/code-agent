@@ -2,7 +2,7 @@
 name: cross-workspace-orchestrator
 description: Orchestrate one user request across multiple code-agent workspace sessions from a dedicated supervisor conversation. Use when a task spans repositories or frontend/backend roles and requires session discovery or creation, dependency-aware delegation, cross-session contract handoffs, cursor-scoped waiting, retries, and a final integrated summary.
 metadata:
-  version: "1"
+  version: "3"
 ---
 
 # Orchestrate work across workspace sessions
@@ -11,6 +11,14 @@ Act as the control-plane supervisor. Plan and coordinate; let each worker modify
 
 Read [references/manifest.md](references/manifest.md) when creating the manifest or worker assignment messages.
 
+## Select the execution path
+
+Use `plan_workflow` with `template="cross_workspace_collaboration_v1"` when the worker roles, assignments, and initial acceptance checks are known. Pass one typed `agents[]` item per resolved worker. The template uses a Flux Map node for true fan-out/fan-in and runs a child workflow per Agent: dispatch, cursor-scoped terminal wait, then session report read. Keep exploratory repository discovery outside the workflow; freeze the manifest only after it is concrete.
+
+Use direct `send_to_session` and `wait_sessions` orchestration only when the graph cannot yet be stated or while diagnosing the experimental Flux path. Record why the fallback was necessary.
+
+After admission, retain the returned `workflow_id` and use `workflow_status`, `workflow_definition`, and `workflow_events` for progress and evidence. Template success proves every mapped turn reached a terminal state and its session report was read. It does not independently verify commits, tests, contracts, or integrated behavior; the supervisor must validate those acceptance claims before advancing dependent work.
+
 ## Build the manifest
 
 1. Parse the request into deliverables, workspace ownership, dependencies, and acceptance checks.
@@ -18,6 +26,7 @@ Read [references/manifest.md](references/manifest.md) when creating the manifest
 3. Use a running session only when intentionally queueing work. Create a session when no suitable persistent worker exists.
 4. Record each worker's session ID, workspace, role, dependency state, current turn ID, cursor, correlation IDs, and result.
 5. Present the decomposition briefly before dispatch when it changes the user's requested scope or creates managed worktrees.
+6. When the graph is concrete, submit it through `plan_workflow` instead of manually driving its independent nodes.
 
 ## Dispatch
 

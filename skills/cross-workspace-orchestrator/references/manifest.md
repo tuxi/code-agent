@@ -55,6 +55,39 @@ After completion:
 - send <artifact> to <session_id> with correlation_id <id> when authorized
 ```
 
+## Flux Map submission
+
+Use this form after session discovery has resolved concrete worker IDs and assignments:
+
+```json
+{
+  "goal": "Implement the independent frontend shell and backend API. Each worker must run its stated checks and report evidence.",
+  "template": "cross_workspace_collaboration_v1",
+  "parallelism": 2,
+  "timeout_ms": 300000,
+  "agents": [
+    {
+      "role": "frontend",
+      "session_id": "<FRONTEND_ID>",
+      "workspace_path": "<FRONTEND_WORKSPACE>",
+      "message": "<complete frontend assignment>",
+      "correlation_id": "<TASK>/supervisor/frontend/initial/1",
+      "intent": "request"
+    },
+    {
+      "role": "backend",
+      "session_id": "<BACKEND_ID>",
+      "workspace_path": "<BACKEND_WORKSPACE>",
+      "message": "<complete backend assignment>",
+      "correlation_id": "<TASK>/supervisor/backend/initial/1",
+      "intent": "request"
+    }
+  ]
+}
+```
+
+The template validates unique session and correlation IDs, maps agents in parallel, waits on each exact admission cursor, reads each terminal report, and returns the child results in the workflow output. Submit a later template run for dependency stages such as contract consumption or integration; do not put a dependent assignment in the same initial Map batch. This first implementation uses blocking `wait_sessions` inside each child task; native Flux AwaitBinding is the next durability optimization.
+
 ## Contract handoff
 
 Require the producer to send a versioned, implementation-independent contract:
