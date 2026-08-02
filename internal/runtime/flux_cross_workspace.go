@@ -258,8 +258,8 @@ func v2Definitions(childName, parentName string, parallelism int) (*definition.W
 				InputMapping: map[string]string{
 					"id":             "input.agent.reviewer_session_id",
 					"message":        "input.agent.reviewer_message",
-					"intent":         "'request'",
-					"correlation_id": "input.agent.correlation_id + '/review'",
+					"intent":         "input.agent.intent",
+					"correlation_id": "input.agent.correlation_id",
 				},
 			},
 			{
