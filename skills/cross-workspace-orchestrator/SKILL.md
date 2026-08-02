@@ -2,7 +2,7 @@
 name: cross-workspace-orchestrator
 description: Orchestrate one user request across multiple code-agent workspace sessions from a dedicated supervisor conversation. Use when a task spans repositories or frontend/backend roles and requires session discovery or creation, dependency-aware delegation, cross-session contract handoffs, cursor-scoped waiting, retries, and a final integrated summary.
 metadata:
-  version: "3"
+  version: "4"
 ---
 
 # Orchestrate work across workspace sessions
@@ -13,11 +13,11 @@ Read [references/manifest.md](references/manifest.md) when creating the manifest
 
 ## Select the execution path
 
-Use `plan_workflow` with `template="cross_workspace_collaboration_v1"` when the worker roles, assignments, and initial acceptance checks are known. Pass one typed `agents[]` item per resolved worker. The template uses a Flux Map node for true fan-out/fan-in and runs a child workflow per Agent: dispatch, cursor-scoped terminal wait, then session report read. Keep exploratory repository discovery outside the workflow; freeze the manifest only after it is concrete.
+Use `plan_workflow` with `template="cross_workspace_collaboration_v1"` as the primary path. Pass one typed `agents[]` item per resolved worker. The template runs a Flux Map node for true fan-out/fan-in with a child workflow per agent: `dispatch` (send_to_session) → `await` (NodeAwait with fallback_poll=check_turn) → `read` (read_session) → fan-in. Child tasks suspend during the await phase — workers are only occupied during dispatch and read, not for the full turn duration.
 
-Use direct `send_to_session` and `wait_sessions` orchestration only when the graph cannot yet be stated or while diagnosing the experimental Flux path. Record why the fallback was necessary.
+Use direct `send_to_session` and `wait_sessions` orchestration only for dependency chains where a later stage depends on a prior stage's contract output, or when the agent graph cannot yet be stated as a single Map. Record why the fallback was necessary.
 
-After admission, retain the returned `workflow_id` and use `workflow_status`, `workflow_definition`, and `workflow_events` for progress and evidence. Template success proves every mapped turn reached a terminal state and its session report was read. It does not independently verify commits, tests, contracts, or integrated behavior; the supervisor must validate those acceptance claims before advancing dependent work.
+Read [references/manifest.md](references/manifest.md) for the typed Map submission form, lifecycle details, and constraints.
 
 ## Build the manifest
 
