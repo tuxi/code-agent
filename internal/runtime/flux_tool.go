@@ -743,7 +743,7 @@ func (t *codeAgentFluxTool) Execute(execCtx context.Context, input map[string]an
 	meta, _ := fluxtool.ExecutionMetaFromContext(execCtx)
 	result, err := t.invoke(execCtx, meta.NodeName, input)
 	if err != nil {
-		return fluxtool.Fail(err), nil
+		return nil, err
 	}
 	if result.Usage != nil {
 		t.usage.add(result.Usage)
