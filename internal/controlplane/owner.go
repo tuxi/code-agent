@@ -381,7 +381,11 @@ func (m *Manager) Heartbeat(ctx context.Context) error {
 				return fmt.Errorf("control plane: claim session %s: %w", meta.ID, err)
 			}
 		}
-		if _, err := tx.ExecContext(ctx, `DELETE FROM session_owners WHERE instance_id=? AND session_id NOT IN (SELECT session_id FROM owner_seen_sessions)`, identity.InstanceID); err != nil {
+		// Only release sessions whose lease has actually expired.
+		// External sessions (created by this instance but in other workspaces)
+		// won't appear in owner_seen_sessions but still hold a valid lease —
+		// deleting them prematurely creates an offline window.
+		if _, err := tx.ExecContext(ctx, `DELETE FROM session_owners WHERE instance_id=? AND session_id NOT IN (SELECT session_id FROM owner_seen_sessions) AND expires_at_ms <= ?`, identity.InstanceID, nowMS); err != nil {
 			return fmt.Errorf("control plane: release removed sessions: %w", err)
 		}
 	} else {
