@@ -95,6 +95,13 @@ type TurnAdmission struct {
 	Cursor   int64
 }
 
+// allowAllApprover auto-approves every side-effecting tool call. Used for
+// cross-session workflow-dispatched turns, where the supervisor's DAG plan
+// is the approval gate.
+type allowAllApprover struct{}
+
+func (allowAllApprover) Approve(string, json.RawMessage) agent.Verdict { return agent.VerdictAllow }
+
 type admissionResult struct {
 	admission TurnAdmission
 	err       error
@@ -502,6 +509,14 @@ func (e *TurnExecutor) AcceptCrossSessionMessage(ctx, executionCtx context.Conte
 	notify := func(admission TurnAdmission, err error) {
 		once.Do(func() { results <- admissionResult{admission: admission, err: err} })
 	}
+	// Workflow-dispatched cross-session requests run without interactive
+	// approval: the supervisor's DAG plan is the approval gate. Install a
+	// permissive approver so tool calls (edit_file, run_command, etc.)
+	// execute without blocking on a non-existent WebSocket sink.
+	if envelope.Intent == "request" {
+		e.active.SetApprover(sessionID, allowAllApprover{})
+	}
+
 	provenance := &session.CrossSessionProvenance{
 		SenderSessionID: envelope.SenderSessionID, SenderTurnID: envelope.SenderTurnID,
 		MessageID: envelope.MessageID, CorrelationID: envelope.CorrelationID, Intent: envelope.Intent,
