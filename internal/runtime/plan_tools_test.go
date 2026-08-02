@@ -9,6 +9,9 @@ func TestPlanModeIncludesIsolatedTaskButSubagentCannotRecurse(t *testing.T) {
 	if containsToolName(ReadOnlyToolNames, "task") {
 		t.Fatal("subagent toolset must not contain task recursively")
 	}
+	if !containsToolName(PlanModeToolNames, "edit_file") {
+		t.Fatal("plan mode must expose edit_file so critic feedback can revise the canonical plan")
+	}
 }
 
 func containsToolName(names []string, target string) bool {

@@ -138,6 +138,74 @@ func TestPlanModeCreatesMarkdownPlanWithoutInteractiveApproval(t *testing.T) {
 	}
 }
 
+func TestPlanModeEditsMarkdownPlanWithoutInteractiveApproval(t *testing.T) {
+	root := t.TempDir()
+	planPath := filepath.Join(root, ".codeagent", "plans", "add-auth.md")
+	if err := os.MkdirAll(filepath.Dir(planPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(planPath, []byte("# Add auth\n\n- draft\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	edit := filesystem.NewEditFileTool()
+	full := tools.NewRegistry()
+	if err := full.Register(edit); err != nil {
+		t.Fatal(err)
+	}
+	planTools := tools.Subset(full, "edit_file")
+	provider := &scriptedProvider{responses: []model.Response{
+		toolCallResp("edit_file", `{"path":".codeagent/plans/add-auth.md","old":"- draft","new":"- reviewed"}`),
+		{Content: "plan revised", FinishReason: "stop"},
+	}}
+	runner := &Runner{
+		Model: provider, Tools: full, PlanTools: planTools,
+		PlanState: PlanStatusPlanning, WorkspaceRoot: root, MaxSteps: 2,
+		Approver: nil,
+	}
+	if _, err := runner.RunTurn(context.Background(), newSession(), "revise it"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(planPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "# Add auth\n\n- reviewed\n" {
+		t.Fatalf("plan content = %q", got)
+	}
+}
+
+func TestPlanModeEditCannotMutateProjectFileEvenWhenApproverAllows(t *testing.T) {
+	root := t.TempDir()
+	projectPath := filepath.Join(root, "app.js")
+	if err := os.WriteFile(projectPath, []byte("old\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	edit := filesystem.NewEditFileTool()
+	full := tools.NewRegistry()
+	if err := full.Register(edit); err != nil {
+		t.Fatal(err)
+	}
+	provider := &scriptedProvider{responses: []model.Response{
+		toolCallResp("edit_file", `{"path":"app.js","old":"old","new":"changed"}`),
+		{Content: "stopped", FinishReason: "stop"},
+	}}
+	runner := &Runner{
+		Model: provider, Tools: full, PlanTools: tools.Subset(full, "edit_file"),
+		PlanState: PlanStatusPlanning, WorkspaceRoot: root, MaxSteps: 2,
+		Approver: allowApprover{},
+	}
+	if _, err := runner.RunTurn(context.Background(), newSession(), "try edit"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(projectPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "old\n" {
+		t.Fatalf("project file changed in plan mode: %q", got)
+	}
+}
+
 func TestPlanModeDoesNotAutoApproveOtherCreateFilePaths(t *testing.T) {
 	root := t.TempDir()
 	create := filesystem.NewCreateFileTool()

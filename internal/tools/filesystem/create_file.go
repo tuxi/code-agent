@@ -91,9 +91,9 @@ func (t *CreateFileTool) Execute(ctx context.Context, ec tools.ExecutionContext,
 	// In plan mode, only allow writes to the .codeagent/plans/ directory.
 	if ec.PlanMode {
 		plansDir := filepath.Join(rootAbs, ".codeagent", "plans")
-		if !workspace.IsSubPath(plansDir, targetAbs) {
+		if filepath.Ext(targetAbs) != ".md" || !workspace.IsSubPath(plansDir, targetAbs) {
 			return tools.ToolResult{}, fmt.Errorf(
-				"plan mode: can only write to .codeagent/plans/. Use edit_file after plan approval for project files.")
+				"plan mode: can only create markdown files under .codeagent/plans/. Use edit_file to revise an existing plan.")
 		}
 	}
 

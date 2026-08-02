@@ -103,6 +103,16 @@ func (t *EditFileTool) Execute(ctx context.Context, ec tools.ExecutionContext, i
 		// proceed
 	}
 
+	// Plan mode may revise its authoritative markdown plan, but it must not use
+	// edit_file to mutate project files before propose_plan approval.
+	if ec.PlanMode {
+		plansDir := filepath.Join(rootAbs, ".codeagent", "plans")
+		if filepath.Ext(targetAbs) != ".md" || !workspace.IsSubPath(plansDir, targetAbs) {
+			return tools.ToolResult{}, fmt.Errorf(
+				"plan mode: can only edit markdown files under .codeagent/plans/")
+		}
+	}
+
 	info, err := os.Stat(targetAbs)
 	if err != nil {
 		return tools.ToolResult{Content: fmt.Sprintf("Could not open %s: %v", in.Path, err)}, nil

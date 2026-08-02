@@ -96,12 +96,12 @@ func (r *Runner) approve(toolName string, input json.RawMessage) Verdict {
 }
 
 // planFileWriteAllowed implements plan mode's documented narrow mutation
-// exception. A planning turn may materialize its authoritative markdown plan,
-// even when it has no interactive tool approver (for example, a cross-session
-// worker). CreateFileTool independently revalidates workspace containment and
-// the plan-mode directory boundary before writing.
+// exception. A planning turn may create or revise its authoritative markdown
+// plan, even when it has no interactive tool approver (for example, a
+// cross-session worker). Filesystem tools independently revalidate workspace
+// containment and the plan-mode directory boundary before writing.
 func (r *Runner) planFileWriteAllowed(toolName string, input json.RawMessage) bool {
-	if r.PlanState != PlanStatusPlanning || toolName != "create_file" || r.WorkspaceRoot == "" {
+	if r.PlanState != PlanStatusPlanning || (toolName != "create_file" && toolName != "edit_file") || r.WorkspaceRoot == "" {
 		return false
 	}
 	var in struct {

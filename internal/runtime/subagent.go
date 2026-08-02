@@ -30,12 +30,12 @@ var ReadOnlyToolNames = []string{
 }
 
 // PlanModeToolNames is the toolset a plan-mode turn advertises: the read-only set,
-// task for isolated discovery/critique, plus todo_write, create_file (restricted
-// to .codeagent/plans/), and propose_plan.
+// task for isolated discovery/critique, plus todo_write, create_file/edit_file
+// (restricted to .codeagent/plans/), and propose_plan.
 // Like ReadOnlyToolNames it is an allow-list, so a write tool can never leak into a
 // planning turn. enter_plan_mode is also callable during plan mode (no-op).
 var PlanModeToolNames = append([]string{
-	"todo_write", "create_file", "propose_plan", "enter_plan_mode", "ask_user", "task",
+	"todo_write", "create_file", "edit_file", "propose_plan", "enter_plan_mode", "ask_user", "task",
 }, ReadOnlyToolNames...)
 
 // DenyAllApprover is a fail-closed Approver: it refuses every side-effecting call. The
