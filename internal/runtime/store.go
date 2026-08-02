@@ -156,10 +156,6 @@ func openSQLiteStore(root string) (session.Store, error) {
 // every previous session DB. Instead a fixed key keeps the DB at a single,
 // stable location under the host-supplied data directory. (A non-embedded desktop
 // has stable $HOME paths so the hash remains correct there.)
-func StorePath(root string) (string, error) {
-	return storePath(root)
-}
-
 func storePath(root string) (string, error) {
 	base := storeBaseDir
 	if base == "" {

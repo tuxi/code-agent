@@ -98,11 +98,13 @@ func (*CheckTurnTool) Execute(ctx context.Context, _ tools.ExecutionContext, inp
 		return tools.ToolResult{}, fmt.Errorf("check_turn: session %s not found", in.SessionID)
 	}
 
-	// Open the target workspace's event store READ-ONLY so we never contend
-	// with the writer process that owns this sessions.db.
-	storePath, err := StorePath(entry.WorkspacePath)
-	if err != nil {
-		return tools.ToolResult{}, fmt.Errorf("check_turn: resolve store path: %w", err)
+	// Use the index's store_path — it records the exact sessions.db file
+	// where this session was persisted (the owning runtime's store), not
+	// a path derived from WorkspacePath (which may resolve to a different
+	// DB if the session was routed through the supervisor's process).
+	storePath := entry.StorePath
+	if storePath == "" {
+		return tools.ToolResult{}, fmt.Errorf("check_turn: session %s has no store_path in index", in.SessionID)
 	}
 	store, err := sessionsqlite.NewReadOnly(storePath)
 	if err != nil {
