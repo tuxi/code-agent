@@ -728,7 +728,6 @@ func (t *codeAgentFluxTool) invoke(ctx context.Context, nodeName string, input m
 	if err != nil {
 		return tools.ToolResult{}, err
 	}
-	fmt.Fprintf(os.Stderr, "[flux-tool] node=%s tool=%s input=%s\n", nodeName, t.tool.Name(), string(raw))
 	if nodeName == "" {
 		nodeName = t.tool.Name()
 	}

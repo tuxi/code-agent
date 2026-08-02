@@ -512,9 +512,6 @@ func (m *Manager) describeOwned(ctx context.Context, sessionID string) (*Session
 func (m *Manager) owns(ctx context.Context, sessionID string) (bool, error) {
 	var count int
 	err := m.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM session_owners WHERE session_id=? AND instance_id=? AND expires_at_ms>?`, sessionID, m.identity.InstanceID, m.cfg.Now().UTC().UnixMilli()).Scan(&count)
-	if err == nil && count == 0 {
-		fmt.Fprintf(os.Stderr, "[control-plane] owns check failed: session=%s instance=%s\n", sessionID, m.identity.InstanceID)
-	}
 	return count == 1, err
 }
 

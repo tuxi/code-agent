@@ -55,9 +55,15 @@ After completion:
 - send <artifact> to <session_id> with correlation_id <id> when authorized
 ```
 
+## Session selection
+
+**Prefer existing sessions discovered via `list_sessions`.** Cross-session tools route through the control plane's ownership leases. An existing session already has a stable owner; a newly created session (`create_session`) may not yet be routable from the workflow's task workers — the session exists but the ownership claim can race with `send_to_session`.
+
+For v2 (Generator-Critic): both implementer and reviewer must be existing sessions. Use `list_sessions` filtered by workspace to find them. If only one session exists in the workspace, use its ID for both roles — sequential turns to the same session work correctly because the await binding waits for each turn to finish before dispatching the next.
+
 ## Flux Map submission
 
-Use `plan_workflow` with `template="cross_workspace_collaboration_v1"` after session discovery has resolved concrete worker IDs and assignments. The template creates a deterministic two-level DAG:
+Use `plan_workflow` with `template="cross_workspace_collaboration_v1"` (or v2) after session discovery has resolved concrete worker IDs and assignments. The template creates a deterministic two-level DAG:
 
 ```
 Parent (Map, parallel=N):
