@@ -11,6 +11,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 
 	fluxtool "github.com/tuxi/flux-workflow/tool"
 
@@ -73,6 +74,7 @@ func (checkTurnFluxAdapter) OutputSchema() fluxtool.DataSchema {
 
 func (checkTurnFluxAdapter) Execute(ctx context.Context, input map[string]any, _ fluxtool.ToolEmitter) (*fluxtool.Result, error) {
 	raw, _ := json.Marshal(input)
+	fmt.Fprintf(os.Stderr, "[check_turn] input=%s\n", string(raw))
 	result, err := (&CheckTurnTool{}).Execute(ctx, tools.ExecutionContext{}, raw)
 	if err != nil {
 		return fluxtool.Fail(err), nil

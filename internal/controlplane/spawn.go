@@ -52,6 +52,24 @@ func (m *Manager) CreateSession(ctx context.Context, request tools.SessionCreate
 	if err := m.completeSpawn(ctx, reservation.ChildSessionID); err != nil {
 		return tools.SessionSpawnResult{}, err
 	}
+	// Claim ownership of the newly created session so send_to_session
+	// can route to it immediately — Heartbeat only claims sessions
+	// visible through repo.List() (the current workspace), but a
+	// spawned session lives in a different workspace.
+	nowMS := m.cfg.Now().UTC().UnixMilli()
+	expiresMS := m.cfg.Now().Add(m.cfg.LeaseTTL).UnixMilli()
+	identity := m.Identity()
+	if _, err := m.db.ExecContext(ctx, `
+		INSERT INTO session_owners (session_id, instance_id, claimed_at_ms, heartbeat_at_ms, expires_at_ms)
+		VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT(session_id) DO UPDATE SET
+			instance_id=excluded.instance_id, heartbeat_at_ms=excluded.heartbeat_at_ms,
+			expires_at_ms=excluded.expires_at_ms
+		WHERE session_owners.instance_id=excluded.instance_id OR session_owners.expires_at_ms <= ?`,
+		result.ID, identity.InstanceID, nowMS, nowMS, expiresMS, nowMS,
+	); err != nil {
+		return tools.SessionSpawnResult{}, fmt.Errorf("control plane: claim spawned session: %w", err)
+	}
 	if err := m.Heartbeat(context.WithoutCancel(ctx)); err != nil {
 		return tools.SessionSpawnResult{}, fmt.Errorf("control plane: created child but owner reconciliation failed: %w", err)
 	}
@@ -97,6 +115,21 @@ func (m *Manager) ForkSession(ctx context.Context, request sessionfork.Request) 
 	}
 	if err := m.completeSpawn(ctx, reservation.ChildSessionID); err != nil {
 		return sessionfork.Result{}, err
+	}
+	// Claim ownership (same reason as CreateSession above).
+	nowMS := m.cfg.Now().UTC().UnixMilli()
+	expiresMS := m.cfg.Now().Add(m.cfg.LeaseTTL).UnixMilli()
+	identity := m.Identity()
+	if _, err := m.db.ExecContext(ctx, `
+		INSERT INTO session_owners (session_id, instance_id, claimed_at_ms, heartbeat_at_ms, expires_at_ms)
+		VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT(session_id) DO UPDATE SET
+			instance_id=excluded.instance_id, heartbeat_at_ms=excluded.heartbeat_at_ms,
+			expires_at_ms=excluded.expires_at_ms
+		WHERE session_owners.instance_id=excluded.instance_id OR session_owners.expires_at_ms <= ?`,
+		result.ID, identity.InstanceID, nowMS, nowMS, expiresMS, nowMS,
+	); err != nil {
+		return sessionfork.Result{}, fmt.Errorf("control plane: claim forked session: %w", err)
 	}
 	return result, nil
 }
