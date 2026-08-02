@@ -107,16 +107,9 @@ func (b *ServeRunBuilder) ResolveModel(wireModel string) (string, error) {
 	b.mu.RLock()
 	defaultMC, cfg := b.mc, b.Cfg
 	b.mu.RUnlock()
-	// An override that can't be resolved (e.g. a cross-session turn routed
-	// to a target with a different model catalog) is not a hard error: fall
-	// back to the server default.
-	if wireModel == "" {
-		return defaultMC.Model, nil
-	}
 	selected, err := resolveTurnModel(cfg, defaultMC, wireModel)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "[serve-builder] model override %q unavailable, using default %q: %v\n", wireModel, defaultMC.Model, err)
-		return defaultMC.Model, nil
+		return "", err
 	}
 	return selected.Model, nil
 }
@@ -181,11 +174,14 @@ func resolveTurnModel(cfg app.Config, defaultMC app.ModelConfig, requested strin
 		return app.ModelConfig{}, ModelUnavailableError{Requested: requested, Cause: err}
 	}
 	if !isGatewayModelEndpoint(defaultMC.BaseURL) {
-		return app.ModelConfig{}, ModelUnavailableError{
-			Requested: requested,
-			Cause:     errors.New("direct providers require a configured Runtime Alias"),
-		}
+		// Cross-session turns may pass a model override string (e.g.
+		// "deepseek-v4-flash") that the target runtime can't resolve as
+		// a named model config. Fall back to the default.
+		fmt.Fprintf(os.Stderr, "[serve-builder] model override %q unavailable for direct provider, using default %q\n", requested, defaultMC.Model)
+		return defaultMC, nil
 	}
+	// Legacy: bare string override that doesn't match any named model
+	// config but the provider is Gateway. Accept and use as-is.
 	legacy := defaultMC
 	legacy.Model = requested
 	return legacy, nil
