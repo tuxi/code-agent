@@ -1,6 +1,12 @@
 package agent
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"path/filepath"
+	"strings"
+
+	"code-agent/internal/workspace"
+)
 
 // Verdict is a three-state permission decision, replacing the bool return of the
 // old Approver interface. It gives each layer in the chain the power to signal
@@ -62,6 +68,15 @@ type AuditedApprover interface {
 // approver is an AuditedApprover and it auto-granted the call, the loop emits a
 // correlated EventAutoApproved so the grant is visible and durably logged.
 func (r *Runner) approve(toolName string, input json.RawMessage) Verdict {
+	if r.planFileWriteAllowed(toolName, input) {
+		r.emit(Event{
+			Kind:     EventAutoApproved,
+			ToolName: toolName,
+			ToolArgs: string(input),
+			Text:     "plan mode: workspace-local .codeagent/plans markdown write",
+		})
+		return VerdictAllow
+	}
 	if r.Approver == nil {
 		return VerdictDeny
 	}
@@ -78,4 +93,39 @@ func (r *Runner) approve(toolName string, input json.RawMessage) Verdict {
 		return verdict
 	}
 	return r.Approver.Approve(toolName, input)
+}
+
+// planFileWriteAllowed implements plan mode's documented narrow mutation
+// exception. A planning turn may materialize its authoritative markdown plan,
+// even when it has no interactive tool approver (for example, a cross-session
+// worker). CreateFileTool independently revalidates workspace containment and
+// the plan-mode directory boundary before writing.
+func (r *Runner) planFileWriteAllowed(toolName string, input json.RawMessage) bool {
+	if r.PlanState != PlanStatusPlanning || toolName != "create_file" || r.WorkspaceRoot == "" {
+		return false
+	}
+	var in struct {
+		Path string `json:"path"`
+	}
+	if json.Unmarshal(input, &in) != nil || strings.TrimSpace(in.Path) == "" || filepath.IsAbs(in.Path) {
+		return false
+	}
+	clean := filepath.Clean(in.Path)
+	if filepath.Ext(clean) != ".md" {
+		return false
+	}
+	root, err := filepath.Abs(r.WorkspaceRoot)
+	if err != nil {
+		return false
+	}
+	plansDir, err := workspace.CanonicalPath(filepath.Join(root, ".codeagent", "plans"))
+	if err != nil {
+		return false
+	}
+	target, err := workspace.CanonicalPath(filepath.Join(root, clean))
+	if err != nil || target == plansDir {
+		return false
+	}
+	return workspace.IsSubPath(plansDir, target) &&
+		workspace.ClassifyPath(root, target) == workspace.PathInsideWorkspace
 }

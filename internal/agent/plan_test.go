@@ -10,6 +10,7 @@ import (
 
 	"code-agent/internal/model"
 	"code-agent/internal/tools"
+	"code-agent/internal/tools/filesystem"
 )
 
 // readTool is a read-only fake (no SideEffects marker).
@@ -99,6 +100,65 @@ func TestPlanModeBlocksWriteToolExecution(t *testing.T) {
 	}
 	if rt.ran {
 		t.Fatal("plan mode must not execute a tool absent from PlanTools (even if the model calls it)")
+	}
+}
+
+func TestPlanModeCreatesMarkdownPlanWithoutInteractiveApproval(t *testing.T) {
+	root := t.TempDir()
+	create := filesystem.NewCreateFileTool()
+	full := tools.NewRegistry()
+	if err := full.Register(create); err != nil {
+		t.Fatal(err)
+	}
+	planTools := tools.Subset(full, "create_file")
+	provider := &scriptedProvider{responses: []model.Response{
+		toolCallResp("create_file", `{"path":".codeagent/plans/add-auth.md","content":"# Add auth\n"}`),
+		{Content: "plan written", FinishReason: "stop"},
+	}}
+	runner := &Runner{
+		Model:         provider,
+		Tools:         full,
+		PlanTools:     planTools,
+		PlanState:     PlanStatusPlanning,
+		WorkspaceRoot: root,
+		MaxSteps:      2,
+		// A cross-session worker can have no interactive approver. The plan-mode
+		// markdown exception must still materialize its authoritative plan.
+		Approver: nil,
+	}
+	if _, err := runner.RunTurn(context.Background(), newSession(), "plan it"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(filepath.Join(root, ".codeagent", "plans", "add-auth.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "# Add auth\n" {
+		t.Fatalf("plan content = %q", got)
+	}
+}
+
+func TestPlanModeDoesNotAutoApproveOtherCreateFilePaths(t *testing.T) {
+	root := t.TempDir()
+	create := filesystem.NewCreateFileTool()
+	full := tools.NewRegistry()
+	if err := full.Register(create); err != nil {
+		t.Fatal(err)
+	}
+	planTools := tools.Subset(full, "create_file")
+	provider := &scriptedProvider{responses: []model.Response{
+		toolCallResp("create_file", `{"path":"app.js","content":"changed\n"}`),
+		{Content: "stopped", FinishReason: "stop"},
+	}}
+	runner := &Runner{
+		Model: provider, Tools: full, PlanTools: planTools,
+		PlanState: PlanStatusPlanning, WorkspaceRoot: root, MaxSteps: 2,
+	}
+	if _, err := runner.RunTurn(context.Background(), newSession(), "plan it"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "app.js")); !os.IsNotExist(err) {
+		t.Fatalf("project file was written in plan mode: %v", err)
 	}
 }
 
