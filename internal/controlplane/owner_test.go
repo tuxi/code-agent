@@ -69,6 +69,10 @@ func (*fakeTarget) EventsSince(_ context.Context, sessionID, turnID string, curs
 	return nil, cursor, nil
 }
 
+func (t *fakeTarget) BlockForTurn(ctx context.Context, sessionID, turnID string, cursor int64, timeout time.Duration) (*tools.SessionWaitCompletion, int64, error) {
+	return t.EventsSince(ctx, sessionID, turnID, cursor)
+}
+
 func (t *fakeTarget) CreateSession(_ context.Context, request tools.SessionCreateRequest, childID string) (tools.SessionSpawnResult, error) {
 	t.createRequest = request
 	t.createChild = childID

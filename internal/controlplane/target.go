@@ -221,6 +221,59 @@ func (t *RuntimeTarget) Accept(ctx, executionCtx context.Context, sessionID stri
 	return tools.SessionDelivery{Accepted: true, Delivery: admission.Delivery, SessionID: sessionID, TurnID: admission.TurnID, Cursor: admission.Cursor}, nil
 }
 
+// BlockForTurn subscribes to the target session's live event stream and blocks
+// until the specified turn reaches a terminal state (completed/failed/cancelled)
+// or the timeout expires. For same-process targets this is zero-poll overhead;
+// the underlying SubscriptionManager fans out turn_finished events directly.
+// A zero or negative timeout means "instant snapshot" — only EventsSince is
+// checked, no subscription.
+func (t *RuntimeTarget) BlockForTurn(ctx context.Context, sessionID, turnID string, cursor int64, timeout time.Duration) (*tools.SessionWaitCompletion, int64, error) {
+	// Fast check: is the terminal event already persisted?
+	completion, latest, err := t.EventsSince(ctx, sessionID, turnID, cursor)
+	if err != nil || completion != nil || timeout <= 0 {
+		return completion, latest, err
+	}
+
+	// Subscribe to live events for this session.
+	ch, unsub := t.executor.Subscribe(sessionID)
+	defer unsub()
+
+	deadline := time.Now().Add(timeout)
+	for {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return nil, latest, nil
+		}
+		timer := time.NewTimer(remaining)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, latest, ctx.Err()
+		case <-timer.C:
+			return nil, latest, nil
+		case ev, ok := <-ch:
+			timer.Stop()
+			if !ok {
+				return nil, latest, nil
+			}
+			if ev.TurnID != turnID {
+				continue
+			}
+			switch ev.Kind {
+			case agent.EventTurnFinished, agent.EventTurnFailed, agent.EventTurnCancelled:
+				completion, latest, err := t.EventsSince(ctx, sessionID, turnID, cursor)
+				if err != nil || completion != nil {
+					return completion, latest, err
+				}
+			}
+		}
+	}
+}
+
+func (t *RuntimeTarget) Subscribe(sessionID string) (<-chan agent.Event, func()) {
+	return t.executor.Subscribe(sessionID)
+}
+
 func (t *RuntimeTarget) EventsSince(ctx context.Context, sessionID, turnID string, cursor int64) (*tools.SessionWaitCompletion, int64, error) {
 	records, err := t.events.ReplaySince(ctx, sessionID, cursor)
 	if err != nil {

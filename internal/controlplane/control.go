@@ -70,7 +70,44 @@ func (m *Manager) WaitAny(ctx context.Context, targets []tools.SessionWaitTarget
 		return tools.SessionWaitResult{}, errors.New("control plane: wait requires 1 to 8 targets")
 	}
 	working := append([]tools.SessionWaitTarget(nil), targets...)
+
+	// Try same-process event-driven blocking first for each target.
+	// A zero or negative timeout means "instant snapshot" — BlockForTurn
+	// will check EventsSince and return without blocking.
 	deadline := time.Now().Add(timeout)
+	for i := range working {
+		remaining := time.Until(deadline)
+		lease, err := m.resolveLease(ctx, working[i].SessionID)
+		if err != nil {
+			return tools.SessionWaitResult{}, err
+		}
+		localOwners.RLock()
+		owner := localOwners.byInstance[lease.InstanceID]
+		localOwners.RUnlock()
+		if owner == nil {
+			continue // cross-process: fall back to polling below
+		}
+		m.mu.Lock()
+		target := m.target
+		m.mu.Unlock()
+		if target == nil {
+			continue
+		}
+		completion, cursor, err := target.BlockForTurn(ctx, working[i].SessionID, working[i].TurnID, working[i].Cursor, remaining)
+		if err != nil {
+			return tools.SessionWaitResult{}, err
+		}
+		if cursor > working[i].Cursor {
+			working[i].Cursor = cursor
+		}
+		if completion != nil {
+			waiting := append([]tools.SessionWaitTarget(nil), working[:i]...)
+			waiting = append(waiting, working[i+1:]...)
+			return tools.SessionWaitResult{Completed: []tools.SessionWaitCompletion{*completion}, Waiting: waiting}, nil
+		}
+	}
+
+	// Cross-process fallback: polling loop.
 	for {
 		for i := range working {
 			completion, cursor, err := m.pollTarget(ctx, working[i])
@@ -86,19 +123,8 @@ func (m *Manager) WaitAny(ctx context.Context, targets []tools.SessionWaitTarget
 				return tools.SessionWaitResult{Completed: []tools.SessionWaitCompletion{*completion}, Waiting: waiting}, nil
 			}
 		}
-		if timeout <= 0 || !time.Now().Before(deadline) {
+		if !time.Now().Before(deadline) {
 			return tools.SessionWaitResult{Waiting: working, TimedOut: true}, nil
-		}
-		wait := pollInterval
-		if remaining := time.Until(deadline); remaining < wait {
-			wait = remaining
-		}
-		timer := time.NewTimer(wait)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			return tools.SessionWaitResult{}, ctx.Err()
-		case <-timer.C:
 		}
 	}
 }

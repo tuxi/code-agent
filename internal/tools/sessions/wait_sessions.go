@@ -17,7 +17,7 @@ func (*WaitSessionsTool) Description() string {
 		"Targets must use the session id, turn_id, and cursor returned by send_to_session, so older terminal events cannot satisfy the wait."
 }
 func (*WaitSessionsTool) InputSchema() json.RawMessage {
-	return json.RawMessage(`{"type":"object","properties":{"targets":{"type":"array","minItems":1,"maxItems":8,"items":{"type":"object","properties":{"id":{"type":"string"},"turn_id":{"type":"string"},"cursor":{"type":"integer","minimum":0}},"required":["id","turn_id","cursor"],"additionalProperties":false}},"timeout_ms":{"type":"integer","minimum":0,"maximum":300000}},"required":["targets"],"additionalProperties":false}`)
+	return json.RawMessage(`{"type":"object","properties":{"targets":{"type":"array","minItems":1,"maxItems":8,"items":{"type":"object","properties":{"id":{"type":"string"},"turn_id":{"type":"string"},"cursor":{"type":"integer","minimum":0}},"required":["id","turn_id","cursor"],"additionalProperties":false}},"timeout_ms":{"type":"integer","minimum":0,"maximum":3600000}},"required":["targets"],"additionalProperties":false}`)
 }
 
 type waitSessionsInput struct {

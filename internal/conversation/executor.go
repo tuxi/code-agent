@@ -1414,6 +1414,12 @@ func (e *TurnExecutor) HasActivity(sessionID string) bool {
 	return false
 }
 
+// Subscribe returns a live event channel for a session. Used by the control plane
+// for event-driven wait_sessions instead of polling.
+func (e *TurnExecutor) Subscribe(sessionID string) (<-chan agent.Event, func()) {
+	return e.subs.Subscribe(sessionID)
+}
+
 // repoCheckpointer persists the session mid-turn via the repository (v1.2 §2). It
 // detaches cancellation with WithoutCancel so a checkpoint fired as the turn is
 // being suspended still commits, and skips an empty session (nothing to persist
