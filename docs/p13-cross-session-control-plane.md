@@ -1,17 +1,39 @@
-# Phase 13 — Cross-Session Control Plane — PRD
+# Phase 13 — Graph Agent Runtime — PRD
 
-> Status: Phase A, Phase B0/B1, Phase C1, Phase C2a, and Phase C2b.1/C2b.2 fork API and managed snapshots implemented. This spec defines the architecture and phased delivery plan
-> for making code-agent a **multi-session orchestration control plane** — where
-> an Agent in one session can discover, read, send work to, and wait on sessions
-> in other workspaces.
+> **Status**: Implemented. The original spec targeted a chat-based "control plane"
+> (Supervisor session manually calling `send_to_session` / `wait_sessions` /
+> `read_session`). The delivered system exceeds that: it is a **deterministic
+> multi-agent execution engine** where a typed Manifest is compiled into a Flux
+> DAG with parallel Map fan-out, event-driven AwaitBinding, and structured
+> fan-in — the user writes a goal and an `agents[]` list, not a DAG.
+>
+> **What was built vs. what was planned**:
+>
+> | Layer | Planned (PRD §5–6) | Delivered |
+> |---|---|---|
+> | Cross-workspace indexing | `index.db` + `list_sessions` + `read_session` | ✅ `internal/runtime/index.go` |
+> | Send/wait primitives | `send_to_session` + `wait_sessions` tools | ✅ `internal/tools/sessions/` + `internal/controlplane/` |
+> | Workflow engine | Flux DAG with blocking `wait_sessions` | ✅ AwaitBinding (`external_task` + `check_turn` poll tool) — non-blocking, event-driven |
+> | Session ownership | N/A (not in original spec) | ✅ `controlplane.Manager` with expiring leases, bearer-token RPC, same-process fast path |
+> | Fork + worktree spawn | Deferred to later phase | ✅ `sessionfork.Service` + `managedworktree` integration |
+> | Cross-session auto-approve | N/A | ✅ `intent=request` installs permissive approver on worker sessions |
+> | Manifest → DAG compiler | N/A (LLM generated DAGs) | ✅ `cross_workspace_collaboration_v1` deterministic template — LLM writes `agents[]`, not NodeDefinitions |
+> | Orchestrator skill | N/A | ✅ `skills/cross-workspace-orchestrator/` v4 — production Map submission path |
+>
+> **Architecture shift**: The original PRD envisioned a *chat-based control plane*
+> where the Supervisor session drives orchestration turn-by-turn (inspired by
+> @riba2534's Codex analysis). The delivered system is a *Graph Agent Runtime*:
+> the user writes a Manifest, a Go DSL compiler produces a deterministic DAG,
+> and the Flux engine executes it with parallel Map fan-out, AwaitBinding
+> event-driven waits, and structured fan-in. The Supervisor's role shifted from
+> "manual router" to "manifest author + acceptance validator."
 >
 > Builds on: P8.3 (subagent delegation), P8.7 (job observability), P8.8
-> (parallel tool execution), the conversation/scheduler layer, and managed
-> worktrees.
+> (parallel tool execution), the conversation/scheduler layer, managed
+> worktrees, and `internal/controlplane/`.
 >
-> Reference: @riba2534《Codex 进阶指南：作为 Multi-Agent 编排控制平面》
-> (https://x.com/riba2534/status/2082916383248252976). Codex's `state_5.sqlite`
-> architecture validated the index approach independently.
+> Reference implementations: @riba2534《Codex 进阶指南》(control plane primitives),
+> DreamAI `goods_video_timeline_v1` and `await_user_choice_demo` (Map + AwaitBinding patterns).
 
 ## 0. Accepted architecture decisions
 
@@ -632,7 +654,10 @@ the Runtime's `SessionControl` owner router.
 
 ## 6. Implementation Plan
 
-### Phase A: Index + Observability (P2)
+> **All planned phases are complete.** The sections below are retained for historical
+> reference. See §1 header for the delivered-vs-planned table.
+
+### Phase A: Index + Observability ✅ (Delivered)
 
 **Goal**: `index.db` exists, `list_sessions` and `read_session` work. Humans
 can see all sessions; Agents can discover what exists.
@@ -671,7 +696,7 @@ session picker in a follow-up (see §7 Non-Goals).
 
 **Lines of code estimate**: ~400 (index infrastructure) + ~200 (tools).
 
-### Phase B0: Runtime Ownership and Routing (P2)
+### Phase B0: Runtime Ownership and Routing ✅ (Delivered)
 
 **Goal**: identify the live process that owns a session and route an authenticated
 local request to that process without borrowing the Supervisor's execution
@@ -709,7 +734,7 @@ No Phase B control tool is implemented before this owner route exists.
 - B0 RPC exposes only identity and bounded owner-authoritative session state.
   Turn admission and event waiting remain B1 work.
 
-### Phase B1: Control Primitives (P2)
+### Phase B1: Control Primitives ✅ (Delivered)
 
 **Goal**: An Agent can send work to another session and wait for results.
 
@@ -883,16 +908,23 @@ Conversation archive and managed-worktree removal stay separate operations.
 4. Consider turn-bound opt-in auto-archive only after queued-turn recovery and
    restart behavior have dedicated tests.
 
+### Next Steps (post-PRD)
+
+1. **Manifest Planner** — retire LLM DAG planner. The `plan_workflow` tool accepts only a typed Manifest (`agents[]` + optional `stages[]`). A Go compiler produces the deterministic DAG. LLM responsibility shifts from "generate NodeDefinitions" to "fill in agent assignments and acceptance criteria."
+
+2. **NodeLoop (Generator-Critic)** — `implement → review → fix → re-verify` loop with `max_iterations` and `VERDICT: PASS` exit. Uses Flux `NodeLoop` + `carry` for state transfer between iterations. Requires a lightweight PRD for carry schema and stop-condition enumeration.
+
+3. **Structured output schemas** — `send_to_session`, `wait_sessions`, `read_session` tools expose typed output schemas (`{session_id, turn_id, cursor, status}`) so Flux expressions and the planner can reason about data flow.
+
 ## 7. Non-Goals (explicitly deferred)
 
-| Item | Why deferred |
+| Item | Status |
 |---|---|
-| Cross-machine session routing (SSH) | Requires host registry + remote store access. Index solves single-machine first. |
-| Turn-bound auto-archive | Requires explicit completion, queue recovery, and cleanup contracts (Phase C2b.4). |
-| Session-to-session file transfer | Send structured data via prompt, not raw files. Git is the artifact bus. |
-| wait-all primitive | wait-any + caller loop is the correct semantic (Codex made the same choice). |
-| Per-session sandbox/approval in index | The index stores metadata only. Enforcement stays in the target session. |
-| Supervisor UI / TUI changes | The primitives are tools. The TUI session list can consume `list_sessions` as a follow-up. |
+| Cross-machine session routing (SSH) | Still deferred — requires host registry + remote store access |
+| Session-to-session file transfer | Git is the artifact bus |
+| wait-all primitive | wait-any + caller loop is the correct semantic, enforced by design |
+| Per-session sandbox/approval in index | Enforcement stays in the target session |
+| Supervisor UI / TUI changes | `list_sessions` API consumed by TUI picker as follow-up |
 
 ## 8. Key Design Constraints (from Codex analysis)
 
