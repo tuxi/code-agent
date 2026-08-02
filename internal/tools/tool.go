@@ -94,6 +94,7 @@ type ExecutionContext struct {
 type SessionControl interface {
 	Send(context.Context, SessionSendRequest) (SessionDelivery, error)
 	WaitAny(context.Context, []SessionWaitTarget, time.Duration) (SessionWaitResult, error)
+	PollTurn(context.Context, string, string, int64) (*SessionWaitCompletion, int64, error)
 	CreateSession(context.Context, SessionCreateRequest) (SessionSpawnResult, error)
 	sessionfork.Service
 }

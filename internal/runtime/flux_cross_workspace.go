@@ -103,13 +103,20 @@ func crossWorkspaceWorkflowDefinitions(workflowID string, parallelism int) (*def
 					"cursor":     "nodes.dispatch.output.cursor",
 				},
 				Config: map[string]any{
-					"await_type":      "external",
-					"source":          "code_agent_runtime",
+					"await_type":      "external_task",
+					"source":          "webhook_or_poll",
 					"timeout_seconds": 3600,
 					"correlation": map[string]any{
 						"session_id": "session_id",
 						"turn_id":    "turn_id",
 						"cursor":     "cursor",
+					},
+					"fallback_poll": map[string]any{
+						"enabled":      true,
+						"tool":         "check_turn",
+						"start_after":  10,
+						"interval":     15,
+						"max_attempts": 240,
 					},
 				},
 			},

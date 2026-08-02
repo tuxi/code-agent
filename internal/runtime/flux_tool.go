@@ -53,6 +53,11 @@ func getOrCreateRuntime(ctx context.Context, workspaceRoot string) (*workflowrun
 	if err != nil {
 		return nil, err
 	}
+	// Register check_turn in the flux runtime's main tool registry so the
+	// AwaitPollWorker can find it when resolving fallback_poll bindings.
+	// The DAG-scoped registry (projectFluxTools) is not available to poll workers.
+	rt.ToolRegistry().Register(checkTurnFluxAdapter{})
+
 	// Embedded/mobile mode: only the task worker is needed (consumes queue).
 	// AsyncWorker, AwaitPollWorker, and RecoveryScanner are server-side
 	// machinery — pointless full-table scans on a single-workflow device.

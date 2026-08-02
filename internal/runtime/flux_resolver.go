@@ -11,6 +11,7 @@ package runtime
 import (
 	"context"
 	"fmt"
+	"os"
 	"strconv"
 	"sync"
 
@@ -30,17 +31,22 @@ func SetFluxExternalResolver(mgr *controlplane.Manager) {
 		fluxResolverMu.Lock()
 		fluxResolver = nil
 		fluxResolverMu.Unlock()
+		fmt.Fprintf(os.Stderr, "[flux-resolver] resolver cleared\n")
 		return
 	}
 	fluxResolverMu.Lock()
 	fluxResolver = &externalResolver{mgr: mgr}
 	fluxResolverMu.Unlock()
+	fmt.Fprintf(os.Stderr, "[flux-resolver] resolver installed\n")
 }
 
 // fluxResolver returns the installed ExternalResolver for AwaitPollWorker.
 func getFluxExternalResolver() worker.ExternalResolver {
 	fluxResolverMu.RLock()
 	defer fluxResolverMu.RUnlock()
+	if fluxResolver == nil {
+		fmt.Fprintf(os.Stderr, "[flux-resolver] getFluxExternalResolver: nil (not installed yet?)\n")
+	}
 	return fluxResolver
 }
 
@@ -71,6 +77,7 @@ func (r *externalResolver) ResolveAwait(ctx context.Context, binding *domain.Awa
 	sessionID := stringFromCorrelation(binding.Correlation, "session_id")
 	turnID := stringFromCorrelation(binding.Correlation, "turn_id")
 	cursor := intFromCorrelation(binding.Correlation, "cursor")
+	fmt.Fprintf(os.Stderr, "[flux-resolver] binding=%d task=%d session=%s turn=%s cursor=%d\n", binding.ID, binding.TaskID, sessionID, turnID, cursor)
 	if sessionID == "" || turnID == "" {
 		return nil, fmt.Errorf("flux external resolver: missing session_id or turn_id in correlation")
 	}

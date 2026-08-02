@@ -181,6 +181,25 @@ func (m *Manager) acceptOwned(ctx context.Context, sessionID string, request too
 	return target.Accept(ctx, executionCtx, sessionID, request)
 }
 
+// PollTurn checks whether a specific turn has reached a terminal state
+// without blocking. It returns (completion, cursor, nil) if the turn
+// finished, (nil, cursor, nil) if still running. Used by the check_turn
+// Flux fallback_poll tool.
+func (m *Manager) PollTurn(ctx context.Context, sessionID, turnID string, cursor int64) (*tools.SessionWaitCompletion, int64, error) {
+	lease, err := m.resolveLease(ctx, sessionID)
+	if err != nil {
+		return nil, cursor, err
+	}
+	localOwners.RLock()
+	owner := localOwners.byInstance[lease.InstanceID]
+	localOwners.RUnlock()
+	if owner != nil {
+		return owner.eventsOwned(ctx, sessionID, turnID, cursor)
+	}
+	// Cross-process: use pollTarget for a single immediate check.
+	return m.pollTarget(ctx, tools.SessionWaitTarget{SessionID: sessionID, TurnID: turnID, Cursor: cursor})
+}
+
 func (m *Manager) eventsOwned(ctx context.Context, sessionID, turnID string, cursor int64) (*tools.SessionWaitCompletion, int64, error) {
 	owned, err := m.owns(ctx, sessionID)
 	if err != nil || !owned {

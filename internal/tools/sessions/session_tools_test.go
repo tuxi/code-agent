@@ -39,6 +39,10 @@ func (s *stubSessionControl) CreateSession(_ context.Context, request tools.Sess
 	return tools.SessionSpawnResult{ID: "child", ParentSessionID: request.ParentSessionID, WorkspacePath: request.WorkspacePath, Kind: "spawn", Status: "open"}, nil
 }
 
+func (s *stubSessionControl) PollTurn(_ context.Context, sessionID, turnID string, cursor int64) (*tools.SessionWaitCompletion, int64, error) {
+	return &tools.SessionWaitCompletion{SessionID: sessionID, TurnID: turnID, Status: "completed", Cursor: cursor + 1}, cursor + 1, nil
+}
+
 func (s *stubSessionControl) ForkSession(_ context.Context, request sessionfork.Request) (sessionfork.Result, error) {
 	s.forkRequest = request
 	return sessionfork.Result{ID: "fork", ParentSessionID: request.ParentSessionID, SourceSessionID: request.SourceSessionID, WorkspacePath: "/fork", Kind: "fork", Status: "open"}, nil

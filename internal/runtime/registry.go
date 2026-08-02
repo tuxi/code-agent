@@ -219,6 +219,11 @@ func BuildBaseRegistry(ctx context.Context, cfg app.Config, mc app.ModelConfig, 
 			return nil, nil, nil, nil, err
 		}
 	}
+	if cfg.Agent.ToolAllowed("check_turn") {
+		if err := registry.Register(&CheckTurnTool{}); err != nil {
+			return nil, nil, nil, nil, err
+		}
+	}
 
 	// Plan mode tools: enter_plan_mode and propose_plan. They use a RunnerRef for
 	// late binding — the Runner is constructed after the registry. The returned ref
