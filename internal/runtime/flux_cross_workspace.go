@@ -13,16 +13,16 @@ const (
 )
 
 type crossWorkspaceAgentSpec struct {
-	Role               string `json:"role"`
-	SessionID          string `json:"session_id"`
-	ReviewerSessionID  string `json:"reviewer_session_id,omitempty"`
-	WorkspacePath      string `json:"workspace_path,omitempty"`
-	Message            string `json:"message"`
-	ReviewerMessage    string `json:"reviewer_message,omitempty"`
-	Acceptance         string `json:"acceptance,omitempty"`
-	MaxIterations      int    `json:"max_iterations,omitempty"`
-	CorrelationID      string `json:"correlation_id"`
-	Intent             string `json:"intent,omitempty"`
+	Role              string `json:"role"`
+	SessionID         string `json:"session_id"`
+	ReviewerSessionID string `json:"reviewer_session_id,omitempty"`
+	WorkspacePath     string `json:"workspace_path,omitempty"`
+	Message           string `json:"message"`
+	ReviewerMessage   string `json:"reviewer_message,omitempty"`
+	Acceptance        string `json:"acceptance,omitempty"`
+	MaxIterations     int    `json:"max_iterations,omitempty"`
+	CorrelationID     string `json:"correlation_id"`
+	Intent            string `json:"intent,omitempty"`
 }
 
 func validateCrossWorkspaceManifest(template string, agents []crossWorkspaceAgentSpec, parallelism int) error {
@@ -207,15 +207,15 @@ func v2Definitions(childName, parentName string, parallelism int) (*definition.W
 		Output: definition.OutputDefinition{
 			ResultType: "session_agent_result",
 			Extras: map[string]string{
-				"role":            "input.agent.role",
-				"workspace_path":  "input.agent.workspace_path ?? ''",
-				"session_id":      "nodes.dispatch.output.session_id",
-				"turn_id":         "nodes.dispatch.output.turn_id",
-				"impl_status":     "nodes.wait_impl.output.status ?? 'waiting'",
-				"impl_summary":    "nodes.read_impl.output.summary ?? ''",
-				"impl_last_turn":  "nodes.read_impl.output.last_turn ?? ''",
-				"review_status":   "nodes.wait_review.output.status ?? 'waiting'",
-				"review_verdict":  "nodes.read_review.output.last_turn ?? ''",
+				"role":           "input.agent.role",
+				"workspace_path": "input.agent.workspace_path ?? ''",
+				"session_id":     "nodes.dispatch.output.session_id",
+				"turn_id":        "nodes.dispatch.output.turn_id",
+				"impl_status":    "nodes.wait_impl.output.status ?? 'waiting'",
+				"impl_summary":   "nodes.read_impl.output.summary ?? ''",
+				"impl_last_turn": "nodes.read_impl.output.last_turn ?? ''",
+				"review_status":  "nodes.wait_review.output.status ?? 'waiting'",
+				"review_verdict": "nodes.read_review.output.last_turn ?? ''",
 			},
 		},
 		Nodes: []definition.NodeDefinition{

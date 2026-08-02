@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"reflect"
+	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -267,4 +270,110 @@ func TestCreateSessionPassesManagedWorktreeOptions(t *testing.T) {
 	if _, err := (&CreateSessionTool{}).Execute(context.Background(), ec, json.RawMessage(`{"base_ref":"head"}`)); err == nil {
 		t.Fatal("non-isolated create accepted worktree options")
 	}
+}
+
+// TestSessionToolOutputSchemasMatchMarshaledStructs verifies each OutputSchema
+// is a faithful contract for the JSON the tool actually emits: every field the
+// marshaled struct can produce must be declared, and every declared field must
+// exist on the struct. A planner consuming these schemas depends on that
+// bijection, so drift here is a real contract bug.
+func TestSessionToolOutputSchemasMatchMarshaledStructs(t *testing.T) {
+	type nestedCase struct {
+		array string
+		item  any
+	}
+	cases := []struct {
+		name     string
+		tool     tools.OutputSchemaProvider
+		topLevel any
+		nested   []nestedCase
+	}{
+		{name: "send_to_session", tool: &SendToSessionTool{}, topLevel: tools.SessionDelivery{}},
+		{
+			name:     "wait_sessions",
+			tool:     &WaitSessionsTool{},
+			topLevel: tools.SessionWaitResult{},
+			nested: []nestedCase{
+				{"completed", tools.SessionWaitCompletion{}},
+				{"waiting", tools.SessionWaitTarget{}},
+			},
+		},
+		{name: "read_session", tool: &ReadSessionTool{}, topLevel: tools.SessionIndexDetail{}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var schema struct {
+				Properties map[string]json.RawMessage `json:"properties"`
+			}
+			if err := json.Unmarshal(tc.tool.OutputSchema(), &schema); err != nil {
+				t.Fatalf("OutputSchema is not valid JSON: %v", err)
+			}
+			if len(schema.Properties) == 0 {
+				t.Fatal("OutputSchema declares no properties")
+			}
+			checkSchemaFieldContract(t, "top-level", schema.Properties, jsonFieldNames(reflect.TypeOf(tc.topLevel)))
+			for _, nested := range tc.nested {
+				fieldRaw, ok := schema.Properties[nested.array]
+				if !ok {
+					t.Errorf("%s[]: array field is not declared in OutputSchema", nested.array)
+					continue
+				}
+				var field struct {
+					Items json.RawMessage `json:"items"`
+				}
+				if err := json.Unmarshal(fieldRaw, &field); err != nil {
+					t.Fatalf("%s[] field schema is not valid JSON: %v", nested.array, err)
+				}
+				var items struct {
+					Properties map[string]json.RawMessage `json:"properties"`
+				}
+				if err := json.Unmarshal(field.Items, &items); err != nil {
+					t.Fatalf("%s[] items schema is not valid JSON: %v", nested.array, err)
+				}
+				checkSchemaFieldContract(t, nested.array+"[]", items.Properties, jsonFieldNames(reflect.TypeOf(nested.item)))
+			}
+		})
+	}
+}
+
+// checkSchemaFieldContract asserts the schema and the marshaled struct agree on
+// the set of JSON field names: the schema must describe every field the struct
+// can emit, and every declared field must actually exist on the struct.
+func checkSchemaFieldContract(t *testing.T, label string, schemaProperties map[string]json.RawMessage, structFields map[string]struct{}) {
+	t.Helper()
+	for field := range structFields {
+		if _, ok := schemaProperties[field]; !ok {
+			t.Errorf("%s: struct emits %q but OutputSchema does not declare it (schema: %v)", label, field, sortedFieldNames(schemaProperties))
+		}
+	}
+	for field := range schemaProperties {
+		if _, ok := structFields[field]; !ok {
+			t.Errorf("%s: OutputSchema declares %q but the marshaled struct has no such JSON field", label, field)
+		}
+	}
+}
+
+// jsonFieldNames returns the JSON field names a struct marshals, honoring the
+// json tag and skipping fields tagged "-".
+func jsonFieldNames(t reflect.Type) map[string]struct{} {
+	names := map[string]struct{}{}
+	for i := 0; i < t.NumField(); i++ {
+		tag := t.Field(i).Tag.Get("json")
+		name, _, _ := strings.Cut(tag, ",")
+		if name == "" || name == "-" {
+			continue
+		}
+		names[name] = struct{}{}
+	}
+	return names
+}
+
+func sortedFieldNames(properties map[string]json.RawMessage) []string {
+	names := make([]string, 0, len(properties))
+	for name := range properties {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }

@@ -30,6 +30,8 @@ func (t *ReadSessionTool) OutputSchema() json.RawMessage {
 		"prompt_tokens":   {"type": "integer"},
 		"summary":         {"type": "string", "description": "Compaction summary"},
 		"last_turn":       {"type": "string", "description": "Last assistant response (first 2000 chars)"},
+		"last_turn_id":    {"type": "string"},
+		"last_user_input": {"type": "string"},
 		"created_at":      {"type": "string"},
 		"updated_at":      {"type": "string"}
 	}

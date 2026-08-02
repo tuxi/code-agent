@@ -24,8 +24,10 @@ import (
 // result when the turn reaches a terminal state (completing the await binding).
 type CheckTurnTool struct{}
 
-func (*CheckTurnTool) Name() string        { return "check_turn" }
-func (*CheckTurnTool) Description() string { return "Check whether a dispatched cross-session turn has completed." }
+func (*CheckTurnTool) Name() string { return "check_turn" }
+func (*CheckTurnTool) Description() string {
+	return "Check whether a dispatched cross-session turn has completed."
+}
 func (*CheckTurnTool) InputSchema() json.RawMessage {
 	return json.RawMessage(`{
 	"type": "object",
@@ -51,9 +53,11 @@ type checkTurnInput struct {
 // directly because check_turn reads the event store directly via IndexDB/OpenStore.
 type checkTurnFluxAdapter struct{}
 
-func (checkTurnFluxAdapter) Name() string                   { return "check_turn" }
-func (checkTurnFluxAdapter) Description() string            { return "Check whether a dispatched cross-session turn has completed." }
-func (checkTurnFluxAdapter) Mode() fluxtool.ExecutionMode   { return fluxtool.SyncExecution }
+func (checkTurnFluxAdapter) Name() string { return "check_turn" }
+func (checkTurnFluxAdapter) Description() string {
+	return "Check whether a dispatched cross-session turn has completed."
+}
+func (checkTurnFluxAdapter) Mode() fluxtool.ExecutionMode { return fluxtool.SyncExecution }
 
 func (checkTurnFluxAdapter) InputSchema() fluxtool.DataSchema {
 	return fluxDataSchema(json.RawMessage(`{

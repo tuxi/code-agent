@@ -326,4 +326,3 @@ func (s *TurnScheduler) removePendingLocked(target *scheduledTurn) {
 		}
 	}
 }
-

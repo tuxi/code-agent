@@ -619,3 +619,40 @@ func hasTransition(transitions []workflowTransition, from, to string) bool {
 	}
 	return false
 }
+
+// TestProjectFluxToolsSurfacesSessionToolOutputSchemas verifies the Flux adapter
+// surfaces each session tool's per-tool OutputSchema (not the generic
+// {content, output, assets} fallback), so DAG mappings such as
+// nodes.dispatch.output.session_id resolve against real contracts.
+func TestProjectFluxToolsSurfacesSessionToolOutputSchemas(t *testing.T) {
+	registry := tools.NewRegistry()
+	for _, tool := range []tools.Tool{
+		&sessions.SendToSessionTool{}, &sessions.WaitSessionsTool{}, &sessions.ReadSessionTool{},
+	} {
+		if err := registry.Register(tool); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ec := tools.ExecutionContext{ToolRegistry: registry, NestedExecutor: nestedExecutorStub{}}
+	projected := projectFluxTools(context.Background(), ec, &nestedUsageCollector{})
+
+	for _, name := range []string{"send_to_session", "wait_sessions", "read_session"} {
+		fluxTool, ok := projected.Get(name)
+		if !ok {
+			t.Fatalf("%s was not projected into the Flux registry", name)
+		}
+		if len(fluxTool.OutputSchema().Fields) == 0 {
+			t.Fatalf("%s: Flux OutputSchema is empty; per-tool schema was not surfaced", name)
+		}
+	}
+
+	// The send_to_session contract is what DAG mappings reference
+	// (e.g. nodes.dispatch.output.session_id), so it must be visible to Flux.
+	sendTool, _ := projected.Get("send_to_session")
+	fields := sendTool.OutputSchema().Fields
+	for _, field := range []string{"accepted", "delivery", "session_id", "turn_id", "cursor"} {
+		if _, ok := fields[field]; !ok {
+			t.Fatalf("send_to_session Flux OutputSchema missing %q (fields: %v)", field, fields)
+		}
+	}
+}

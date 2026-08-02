@@ -21,10 +21,11 @@ func (*WaitSessionsTool) OutputSchema() json.RawMessage {
 			"items": {
 				"type": "object",
 				"properties": {
-					"session_id": {"type": "string"},
-					"turn_id":    {"type": "string"},
-					"status":     {"type": "string", "description": "completed, failed, or cancelled"},
-					"cursor":     {"type": "integer"}
+					"id":     {"type": "string", "description": "Session ID"},
+					"turn_id": {"type": "string"},
+					"status":  {"type": "string", "description": "completed, failed, or cancelled"},
+					"cursor":  {"type": "integer"},
+					"event":   {"type": "string", "description": "Terminal event payload"}
 				}
 			}
 		},
@@ -33,9 +34,9 @@ func (*WaitSessionsTool) OutputSchema() json.RawMessage {
 			"items": {
 				"type": "object",
 				"properties": {
-					"session_id": {"type": "string"},
-					"turn_id":    {"type": "string"},
-					"cursor":     {"type": "integer"}
+					"id":      {"type": "string", "description": "Session ID"},
+					"turn_id": {"type": "string"},
+					"cursor":  {"type": "integer"}
 				}
 			}
 		},
