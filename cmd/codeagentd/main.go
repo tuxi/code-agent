@@ -207,6 +207,7 @@ func run() error {
 	}
 	owner.SetTarget(controlplane.NewRuntimeTarget(executor, eventStore, repo, managedWorktrees))
 	rb.SetSessionControl(owner)
+	runtime.SetFluxExternalResolver(owner)
 	if err := owner.Start(ctx); err != nil {
 		_ = owner.Close()
 		return err

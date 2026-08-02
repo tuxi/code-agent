@@ -827,6 +827,7 @@ func Assemble(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider 
 	}
 	owner.SetTarget(controlplane.NewRuntimeTarget(executor, eventStore, repo, managedWorktrees))
 	rb.SetSessionControl(owner)
+	runtime.SetFluxExternalResolver(owner)
 	if err := owner.Start(ctx); err != nil {
 		_ = owner.Close()
 		release()

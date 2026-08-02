@@ -59,8 +59,9 @@ func getOrCreateRuntime(ctx context.Context, workspaceRoot string) (*workflowrun
 	if err := rt.Start(context.Background(),
 		workflowruntime.WithTaskWorkers(4),
 		workflowruntime.WithAsyncWorkers(0),
-		workflowruntime.WithAwaitPollWorkers(0),
+		workflowruntime.WithAwaitPollWorkers(2),
 		workflowruntime.WithRecoveryScanner(false),
+		workflowruntime.WithExternalResolver(getFluxExternalResolver()),
 	); err != nil {
 		rt.Shutdown()
 		return nil, fmt.Errorf("start runtime: %w", err)

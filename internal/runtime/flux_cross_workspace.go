@@ -78,7 +78,7 @@ func crossWorkspaceWorkflowDefinitions(workflowID string, parallelism int) (*def
 				"session_id":     "nodes.dispatch.output.session_id",
 				"turn_id":        "nodes.dispatch.output.turn_id",
 				"cursor":         "nodes.dispatch.output.cursor",
-				"status":         "len(nodes.wait.output.completed ?? []) > 0 ? nodes.wait.output.completed[0].status : (nodes.wait.output.timed_out ? 'timed_out' : 'waiting')",
+				"status":         "nodes.wait.output.status ?? 'waiting'",
 				"summary":        "nodes.read.output.summary ?? ''",
 				"last_turn":      "nodes.read.output.last_turn ?? ''",
 			},
@@ -96,11 +96,17 @@ func crossWorkspaceWorkflowDefinitions(workflowID string, parallelism int) (*def
 				},
 			},
 			{
-				Name: "wait", Label: "Wait for Agent", Type: definition.NodeTool,
-				Config: map[string]any{"tool": "wait_sessions"},
-				InputMapping: map[string]string{
-					"targets":    `[{"id": nodes.dispatch.output.session_id, "turn_id": nodes.dispatch.output.turn_id, "cursor": nodes.dispatch.output.cursor}]`,
-					"timeout_ms": "input.timeout_ms",
+				Name: "wait", Label: "Await Agent Turn", Type: definition.NodeAwait,
+				Config: map[string]any{
+					"await_type":      "external",
+					"source":          "code_agent_runtime",
+					"timeout_seconds": 3600,
+					"correlation": map[string]any{
+						"session_id": "nodes.dispatch.output.session_id",
+						"turn_id":    "nodes.dispatch.output.turn_id",
+						"cursor":     "nodes.dispatch.output.cursor",
+					},
+					"provider_task_id": `nodes.dispatch.output.session_id + '/' + nodes.dispatch.output.turn_id`,
 				},
 			},
 			{
