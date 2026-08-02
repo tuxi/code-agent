@@ -370,6 +370,9 @@ type frontmatter struct {
 	Description string `yaml:"description"`
 	Version     string `yaml:"version"`
 	License     string `yaml:"license"`
+	Metadata    struct {
+		Version string `yaml:"version"`
+	} `yaml:"metadata"`
 }
 
 // parseSkill splits a SKILL.md into its YAML frontmatter and markdown body. The
@@ -406,11 +409,15 @@ func parseSkill(content string) (Skill, error) {
 		return Skill{}, fmt.Errorf("frontmatter missing required field 'description'")
 	}
 
+	version := strings.TrimSpace(fm.Version)
+	if version == "" {
+		version = strings.TrimSpace(fm.Metadata.Version)
+	}
 	return Skill{
 		Meta: Meta{
 			Name:        strings.TrimSpace(fm.Name),
 			Description: strings.TrimSpace(fm.Description),
-			Version:     strings.TrimSpace(fm.Version),
+			Version:     version,
 			License:     strings.TrimSpace(fm.License),
 		},
 		Body: strings.TrimSpace(strings.Join(lines[end+1:], "\n")),

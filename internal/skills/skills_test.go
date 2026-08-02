@@ -54,6 +54,16 @@ license: Proprietary. LICENSE.txt has complete terms
 Proprietary content.
 `
 
+const metadataVersionSkill = `---
+name: portable-version
+description: A portable skill that stores product-specific version data under metadata.
+metadata:
+  version: "3"
+---
+
+# Portable
+`
+
 func TestLoadAndIndex(t *testing.T) {
 	dir := t.TempDir()
 	writeSkill(t, dir, "verify-change", verifyChange)
@@ -93,6 +103,19 @@ func TestLoadAndIndex(t *testing.T) {
 	}
 	if !strings.HasSuffix(s.Dir, "verify-change") {
 		t.Errorf("Dir should point to the skill root, got: %s", s.Dir)
+	}
+}
+
+func TestLoadVersionFromPortableMetadata(t *testing.T) {
+	dir := t.TempDir()
+	writeSkill(t, dir, "portable-version", metadataVersionSkill)
+	r, err := Load("", dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	index := r.Index()
+	if len(index) != 1 || index[0].Version != "3" {
+		t.Fatalf("index=%+v", index)
 	}
 }
 

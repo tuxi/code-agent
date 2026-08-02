@@ -1,0 +1,4 @@
+interface:
+  display_name: "Cross-Workspace Case"
+  short_description: "Run repeatable multi-workspace collaboration cases"
+  default_prompt: "Use $cross-workspace-case to run a repeatable frontend-backend collaboration case."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Cross-Workspace Orchestrator"
+  short_description: "Delegate and coordinate work across project sessions"
+  default_prompt: "Use $cross-workspace-orchestrator to split this request across the appropriate workspace sessions and coordinate delivery."
