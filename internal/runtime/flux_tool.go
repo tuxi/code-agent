@@ -11,14 +11,11 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/tuxi/flux-workflow/definition"
 	"github.com/tuxi/flux-workflow/domain"
 	workflowruntime "github.com/tuxi/flux-workflow/runtime"
 	fluxtool "github.com/tuxi/flux-workflow/tool"
-	fluxmodel "github.com/tuxi/flux/model"
-	"github.com/tuxi/flux/planner"
 	"gorm.io/gorm"
 
 	"code-agent/internal/model"
@@ -123,7 +120,7 @@ func (t *FluxWorkflowTool) Description() string {
 }
 
 func (t *FluxWorkflowTool) InputSchema() json.RawMessage {
-	return json.RawMessage(`{"type":"object","properties":{"goal":{"type":"string","description":"A complete description of the known workflow and its success conditions."},"action":{"type":"string","enum":["new","retry"],"description":"new=create and execute; retry=recover a failed workflow from a specific node"},"workflow_id":{"type":"string","description":"Required for retry: the workflow ID to recover"},"task_id":{"type":"integer","description":"Required for retry: the task ID to retry"},"resume_from":{"type":"string","description":"Optional for retry: node name to resume from; empty auto-collects failed roots"},"template":{"type":"string","enum":["cross_workspace_collaboration_v1"],"description":"Optional deterministic workflow template. Omit to use the LLM DAG planner."},"agents":{"type":"array","minItems":1,"maxItems":8,"description":"Resolved worker assignments for the cross-workspace template.","items":{"type":"object","properties":{"role":{"type":"string"},"session_id":{"type":"string"},"workspace_path":{"type":"string"},"message":{"type":"string"},"correlation_id":{"type":"string"},"intent":{"type":"string","enum":["request","notification"]}},"required":["role","session_id","message","correlation_id"],"additionalProperties":false}},"parallelism":{"type":"integer","minimum":1,"maximum":8},"timeout_ms":{"type":"integer","minimum":0,"maximum":3600000}},"required":["goal"],"additionalProperties":false}`)
+	return json.RawMessage(`{"type":"object","properties":{"goal":{"type":"string","description":"A complete description of the known workflow and its success conditions."},"action":{"type":"string","enum":["new","retry"],"description":"new=create and execute; retry=recover a failed workflow from a specific node"},"workflow_id":{"type":"string","description":"Required for retry: the workflow ID to recover"},"task_id":{"type":"integer","description":"Required for retry: the task ID to retry"},"resume_from":{"type":"string","description":"Optional for retry: node name to resume from; empty auto-collects failed roots"},"template":{"type":"string","enum":["cross_workspace_collaboration_v1"],"description":"Deterministic workflow template. Required — the LLM DAG planner has been retired. Use cross_workspace_collaboration_v1 with typed agents[]."},"agents":{"type":"array","minItems":1,"maxItems":8,"description":"Resolved worker assignments. Required when template is set.","items":{"type":"object","properties":{"role":{"type":"string"},"session_id":{"type":"string"},"workspace_path":{"type":"string"},"message":{"type":"string"},"correlation_id":{"type":"string"},"intent":{"type":"string","enum":["request","notification"]}},"required":["role","session_id","message","correlation_id"],"additionalProperties":false}},"parallelism":{"type":"integer","minimum":1,"maximum":8},"timeout_ms":{"type":"integer","minimum":0,"maximum":3600000}},"required":["goal","template","agents"],"additionalProperties":false}`)
 }
 
 func (t *FluxWorkflowTool) Execute(ctx context.Context, ec tools.ExecutionContext, input json.RawMessage) (tools.ToolResult, error) {
@@ -141,27 +138,23 @@ func (t *FluxWorkflowTool) Execute(ctx context.Context, ec tools.ExecutionContex
 	if args.Goal == "" {
 		return tools.ToolResult{Content: "goal is required"}, nil
 	}
-	if args.Template != "" {
-		if err := validateCrossWorkspaceManifest(args.Template, args.Agents, args.Parallelism); err != nil {
-			return tools.ToolResult{Content: "flux workflow manifest failed: " + err.Error()}, nil
-		}
-	} else if t.provider == nil {
-		return tools.ToolResult{Content: "flux workflow failed: model provider is unavailable"}, nil
+	if args.Template == "" {
+		return tools.ToolResult{Content: "template is required. The LLM DAG planner has been retired. Use template=cross_workspace_collaboration_v1 with typed agents[] to define your workflow. See skills/cross-workspace-orchestrator/references/manifest.md for the submission form."}, nil
+	}
+	if err := validateCrossWorkspaceManifest(args.Template, args.Agents, args.Parallelism); err != nil {
+		return tools.ToolResult{Content: "flux workflow manifest failed: " + err.Error()}, nil
 	}
 	if ec.ToolRegistry == nil || ec.NestedExecutor == nil {
 		return tools.ToolResult{Content: "flux workflow failed: controlled tool execution is unavailable"}, nil
 	}
 
-	workflowIdentity := args.Goal
-	if args.Template != "" {
-		manifestIdentity, _ := json.Marshal(struct {
-			Goal        string                    `json:"goal"`
-			Template    string                    `json:"template"`
-			Agents      []crossWorkspaceAgentSpec `json:"agents"`
-			Parallelism int                       `json:"parallelism"`
-		}{args.Goal, args.Template, args.Agents, args.Parallelism})
-		workflowIdentity = string(manifestIdentity)
-	}
+	manifestIdentity, _ := json.Marshal(struct {
+		Goal        string                    `json:"goal"`
+		Template    string                    `json:"template"`
+		Agents      []crossWorkspaceAgentSpec `json:"agents"`
+		Parallelism int                       `json:"parallelism"`
+	}{args.Goal, args.Template, args.Agents, args.Parallelism})
+	workflowIdentity := string(manifestIdentity)
 	workflowID := fluxWorkflowID(ec, workflowIdentity)
 	emitWorkflow(ec, "workflow_started", map[string]any{
 		"workflow_id": workflowID, "parent_call_id": ec.CallID, "stage": "planning", "goal": args.Goal,
@@ -174,31 +167,14 @@ func (t *FluxWorkflowTool) Execute(ctx context.Context, ec tools.ExecutionContex
 		return tools.ToolResult{Content: "flux workflow failed: no eligible tools are available"}, nil
 	}
 
-	var def, childDef *definition.WorkflowDefinition
-	if args.Template != "" {
-		for _, requiredTool := range []string{"send_to_session", "wait_sessions", "read_session"} {
-			if _, ok := fluxReg.Get(requiredTool); !ok {
-				err := fmt.Errorf("template requires tool %q", requiredTool)
-				emitWorkflowFailure(ec, workflowID, "compiling", err.Error())
-				return tools.ToolResult{Content: "flux workflow template failed: " + err.Error()}, nil
-			}
-		}
-		def, childDef = crossWorkspaceWorkflowDefinitions(workflowID, args.Parallelism)
-	} else {
-		provider := &fluxCompleterAdapter{provider: t.provider, ec: ec, usage: usage}
-		dagPlanner := planner.NewDAGPlanner(provider, t.modelName, args.Goal, fluxReg)
-		// Planner LLM calls can easily exceed the HTTP request timeout (large system
-		// prompt + complex DAG generation). Use a detached context with a generous
-		// deadline while still respecting the tool's own cancellation (e.g. Ctrl-C).
-		planCtx, planCancel := context.WithTimeout(context.Background(), 3*time.Minute)
-		defer planCancel()
-		var err error
-		def, err = dagPlanner.GenerateWorkflow(planCtx, nil)
-		if err != nil {
-			emitWorkflowFailure(ec, workflowID, "planning", err.Error())
-			return tools.ToolResult{Content: "flux workflow planning failed: " + err.Error(), ModelUsage: usage.snapshot()}, nil
+	for _, requiredTool := range []string{"send_to_session", "wait_sessions", "read_session"} {
+		if _, ok := fluxReg.Get(requiredTool); !ok {
+			err := fmt.Errorf("template requires tool %q", requiredTool)
+			emitWorkflowFailure(ec, workflowID, "compiling", err.Error())
+			return tools.ToolResult{Content: "flux workflow template failed: " + err.Error()}, nil
 		}
 	}
+	def, childDef := crossWorkspaceWorkflowDefinitions(workflowID, args.Parallelism)
 	rt, err := getOrCreateRuntime(ctx, ec.WorkspaceRoot)
 	if err != nil {
 		emitWorkflowFailure(ec, workflowID, "initializing", err.Error())
@@ -209,11 +185,9 @@ func (t *FluxWorkflowTool) Execute(ctx context.Context, ec tools.ExecutionContex
 	for _, projected := range fluxReg.List() {
 		rt.ToolRegistry().Register(projected)
 	}
-	if childDef != nil {
-		if err := registerFluxWorkflow(ctx, rt, childDef); err != nil {
-			emitWorkflowFailure(ec, workflowID, "registering", err.Error())
-			return tools.ToolResult{Content: "flux child workflow registration failed: " + err.Error(), ModelUsage: usage.snapshot()}, nil
-		}
+	if err := registerFluxWorkflow(ctx, rt, childDef); err != nil {
+		emitWorkflowFailure(ec, workflowID, "registering", err.Error())
+		return tools.ToolResult{Content: "flux child workflow registration failed: " + err.Error(), ModelUsage: usage.snapshot()}, nil
 	}
 	if err := registerFluxWorkflow(ctx, rt, def); err != nil {
 		emitWorkflowFailure(ec, workflowID, "registering", err.Error())
@@ -823,59 +797,6 @@ func fluxDataSchema(raw json.RawMessage) fluxtool.DataSchema {
 		fields[name] = fluxtool.FieldSchema{Type: fieldType, Required: required[name], Desc: property.Description}
 	}
 	return fluxtool.DataSchema{Fields: fields}
-}
-
-type fluxCompleterAdapter struct {
-	provider model.Provider
-	ec       tools.ExecutionContext
-	usage    *fluxUsageCollector
-}
-
-func (a *fluxCompleterAdapter) Complete(ctx context.Context, req fluxmodel.Request) (fluxmodel.Response, error) {
-	converted := model.Request{
-		SessionID: a.ec.SessionID, TurnID: a.ec.TurnID, RequestID: a.ec.RequestID, ExecutionID: a.ec.ExecutionID,
-		Model: req.Model, Temperature: req.Temperature, ToolChoice: stringToolChoice(req.ToolChoice),
-	}
-	for _, message := range req.Messages {
-		converted.Messages = append(converted.Messages, model.Message{
-			Role: model.Role(message.Role), Content: message.Content, ToolCallID: message.ToolCallID,
-			ToolCalls: toCodeAgentToolCalls(message.ToolCalls),
-		})
-	}
-	for _, def := range req.Tools {
-		params, _ := json.Marshal(def.Function.Parameters)
-		converted.Tools = append(converted.Tools, model.ToolDefinition{Type: def.Type, Function: model.ToolFunction{
-			Name: def.Function.Name, Description: def.Function.Description, Parameters: params,
-		}})
-	}
-	response, err := a.provider.Complete(ctx, converted)
-	if err != nil {
-		return fluxmodel.Response{}, err
-	}
-	a.usage.add(response.Usage)
-	return fluxmodel.Response{
-		Content: response.Content, ToolCalls: toFluxToolCalls(response.ToolCalls), FinishReason: response.FinishReason,
-		Usage: fluxmodel.Usage{PromptTokens: response.Usage.PromptTokens, CompletionTokens: response.Usage.CompletionTokens,
-			TotalTokens: response.Usage.TotalTokens, CachedPromptTokens: response.Usage.CachedPromptTokens}, Raw: response.Raw,
-	}, nil
-}
-
-func stringToolChoice(choice any) string { value, _ := choice.(string); return value }
-
-func toCodeAgentToolCalls(calls []fluxmodel.ToolCall) []model.ToolCall {
-	out := make([]model.ToolCall, 0, len(calls))
-	for _, call := range calls {
-		out = append(out, model.ToolCall{ID: call.ID, Type: call.Type, Function: model.FunctionCall{Name: call.Function.Name, Arguments: call.Function.Arguments}})
-	}
-	return out
-}
-
-func toFluxToolCalls(calls []model.ToolCall) []fluxmodel.ToolCall {
-	out := make([]fluxmodel.ToolCall, 0, len(calls))
-	for _, call := range calls {
-		out = append(out, fluxmodel.ToolCall{ID: call.ID, Type: call.Type, Function: fluxmodel.FunctionCall{Name: call.Function.Name, Arguments: call.Function.Arguments}})
-	}
-	return out
 }
 
 type fluxUsageCollector struct {

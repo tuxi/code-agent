@@ -9,8 +9,6 @@ import (
 	"testing"
 	"time"
 
-	fluxmodel "github.com/tuxi/flux/model"
-
 	"code-agent/internal/model"
 	"code-agent/internal/tools"
 	"code-agent/internal/tools/sessions"
@@ -35,37 +33,6 @@ func (t projectedToolStub) InputSchema() json.RawMessage {
 }
 func (t projectedToolStub) Execute(context.Context, tools.ExecutionContext, json.RawMessage) (tools.ToolResult, error) {
 	return tools.ToolResult{Content: "ok"}, nil
-}
-
-func TestFluxCompleterAdapterUsesCodeAgentProviderAndCollectsBilling(t *testing.T) {
-	provider := &fluxProviderStub{result: model.Response{
-		ToolCalls:    []model.ToolCall{{ID: "c1", Type: "function", Function: model.FunctionCall{Name: "submit_plan", Arguments: `{}`}}},
-		FinishReason: "tool_calls",
-		Usage:        model.Usage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15, BillingUnits: 321, CachedPromptTokens: 4},
-	}}
-	collector := &fluxUsageCollector{}
-	adapter := &fluxCompleterAdapter{provider: provider, ec: tools.ExecutionContext{
-		SessionID: "session-1", TurnID: "turn-2", RequestID: "request-3", ExecutionID: "execution-3",
-	}, usage: collector}
-
-	response, err := adapter.Complete(context.Background(), fluxmodel.Request{
-		Model:      "planner-model",
-		Messages:   []fluxmodel.Message{{Role: "user", Content: "plan it"}},
-		ToolChoice: "auto",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if provider.request.SessionID != "session-1" || provider.request.TurnID != "turn-2" || provider.request.RequestID != "request-3" || provider.request.ExecutionID != "execution-3" {
-		t.Fatalf("correlation IDs were not forwarded: %#v", provider.request)
-	}
-	if response.ToolCalls[0].Function.Name != "submit_plan" {
-		t.Fatalf("tool calls were not converted: %#v", response.ToolCalls)
-	}
-	usage := collector.snapshot()
-	if usage.BillingUnits != 321 || usage.TotalTokens != 15 || usage.CachedPromptTokens != 4 {
-		t.Fatalf("usage was not collected: %#v", usage)
-	}
 }
 
 func TestProjectFluxToolsUsesTurnRegistryAndExcludesControlTools(t *testing.T) {
