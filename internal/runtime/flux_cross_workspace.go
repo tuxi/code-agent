@@ -97,16 +97,20 @@ func crossWorkspaceWorkflowDefinitions(workflowID string, parallelism int) (*def
 			},
 			{
 				Name: "wait", Label: "Await Agent Turn", Type: definition.NodeAwait,
+				InputMapping: map[string]string{
+					"session_id": "nodes.dispatch.output.session_id",
+					"turn_id":    "nodes.dispatch.output.turn_id",
+					"cursor":     "nodes.dispatch.output.cursor",
+				},
 				Config: map[string]any{
 					"await_type":      "external",
 					"source":          "code_agent_runtime",
 					"timeout_seconds": 3600,
 					"correlation": map[string]any{
-						"session_id": "nodes.dispatch.output.session_id",
-						"turn_id":    "nodes.dispatch.output.turn_id",
-						"cursor":     "nodes.dispatch.output.cursor",
+						"session_id": "session_id",
+						"turn_id":    "turn_id",
+						"cursor":     "cursor",
 					},
-					"provider_task_id": `nodes.dispatch.output.session_id + '/' + nodes.dispatch.output.turn_id`,
 				},
 			},
 			{
