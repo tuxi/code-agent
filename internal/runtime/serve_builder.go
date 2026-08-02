@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -106,9 +107,16 @@ func (b *ServeRunBuilder) ResolveModel(wireModel string) (string, error) {
 	b.mu.RLock()
 	defaultMC, cfg := b.mc, b.Cfg
 	b.mu.RUnlock()
+	// An override that can't be resolved (e.g. a cross-session turn routed
+	// to a target with a different model catalog) is not a hard error: fall
+	// back to the server default.
+	if wireModel == "" {
+		return defaultMC.Model, nil
+	}
 	selected, err := resolveTurnModel(cfg, defaultMC, wireModel)
 	if err != nil {
-		return "", err
+		fmt.Fprintf(os.Stderr, "[serve-builder] model override %q unavailable, using default %q: %v\n", wireModel, defaultMC.Model, err)
+		return defaultMC.Model, nil
 	}
 	return selected.Model, nil
 }

@@ -532,8 +532,15 @@ func (e *TurnExecutor) AcceptCrossSessionMessage(ctx, executionCtx context.Conte
 		if err == nil && !sess.ArchivedAt.IsZero() {
 			err = ErrConversationArchived
 		}
+		// Use the session's own model when no explicit override is provided.
+		// A newly created session may have no model yet — the server default
+		// will be resolved by the runner builder.
+		model := envelope.Model
+		if model == "" {
+			model = sess.Model
+		}
 		if err == nil {
-			_, err = e.executeWithSessionAssets(executionCtx, sess, envelope.MessageID, envelope.Text, envelope.Model, nil, nil, provenance, notify)
+			_, err = e.executeWithSessionAssets(executionCtx, sess, envelope.MessageID, envelope.Text, model, nil, nil, provenance, notify)
 		}
 		notify(TurnAdmission{}, err)
 	}()
