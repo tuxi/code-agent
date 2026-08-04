@@ -544,9 +544,38 @@ func MergeConfigs(user, project Config) Config {
 	if project.DefaultModel == "" {
 		project.DefaultModel = user.DefaultModel
 	}
+	// Agent 段字段级合并（项目 wins when set, else user）——agent 性能参数
+	// （max_steps/max_parallel_tools/compact_ratio/compact_keep_ratio/
+	// client_tool_timeout_seconds）是用户级偏好，项目未显式设置时应继承用户。
+	// 0 是 LoadConfigBytes 归一化后的「未设置」哨兵值，字段级覆盖安全。
+	mergeAgentField := func(dst *int, src int) {
+		if *dst == 0 {
+			*dst = src
+		}
+	}
+	mergeAgentField(&project.Agent.MaxSteps, user.Agent.MaxSteps)
+	mergeAgentField(&project.Agent.MaxParallelTools, user.Agent.MaxParallelTools)
+	mergeAgentField(&project.Agent.ClientToolTimeoutSeconds, user.Agent.ClientToolTimeoutSeconds)
+	if project.Agent.CompactRatio <= 0 || project.Agent.CompactRatio >= 1 {
+		project.Agent.CompactRatio = user.Agent.CompactRatio
+	}
+	if project.Agent.CompactKeepRatio <= 0 || project.Agent.CompactKeepRatio >= 1 {
+		project.Agent.CompactKeepRatio = user.Agent.CompactKeepRatio
+	}
 	if project.Agent.SubagentModel == "" {
 		project.Agent.SubagentModel = user.Agent.SubagentModel
 	}
+
+	// Provider 段字段级合并（超时/重试/退避同样按「项目 wins when set, else user」）。
+	mergeProviderField := func(dst *int, src int) {
+		if *dst == 0 {
+			*dst = src
+		}
+	}
+	mergeProviderField(&project.Provider.RequestTimeoutSeconds, user.Provider.RequestTimeoutSeconds)
+	mergeProviderField(&project.Provider.MaxRetries, user.Provider.MaxRetries)
+	mergeProviderField(&project.Provider.BackoffMillis, user.Provider.BackoffMillis)
+	mergeProviderField(&project.Provider.MaxBackoffSeconds, user.Provider.MaxBackoffSeconds)
 	// Merge warnings from both layers.
 	project.Warnings = append(project.Warnings, user.Warnings...)
 	return project
@@ -557,32 +586,86 @@ func MergeConfigs(user, project Config) Config {
 // registry already provides open-box models; this file is a scaffold (nil return
 // = start without user config, same as before). Failure is best-effort — the
 // registry keeps the runtime usable.
+//
+// The template is deliberately comprehensive: every config section is present,
+// commented, with the built-in default value shown, so a user can uncomment the
+// knob they care about without hunting through docs. Unknown/unsupported
+// sections are intentionally omitted (hooks, permissions — those live in the
+// project settings layer, P11).
 func bootstrapUserConfig(userPath string) {
 	if err := os.MkdirAll(filepath.Dir(userPath), 0o755); err != nil {
 		return
 	}
-	const template = `# ~/.codeagent/config.yaml — 用户级模型/凭证配置
-# 首次启动时自动生成。edit it to add custom models, connections, or credentials.
-# 内建 registry 已提供 deepseek / qwen / glm / ollama / gateway 的开箱模型;
-# 本文件在其基础上追加或覆盖。
+	const template = `# ~/.codeagent/config.yaml — 用户级配置（任何目录启动均生效）
+# 首次启动时自动生成。取消注释想要覆盖的项即可；未覆盖项使用内建默认值。
+# 内建 registry 已提供 deepseek / qwen / glm / ollama / gateway 的开箱模型，
+# 本文件的 models / credentials 在其基础上追加或覆盖。
+#
+# 分层：用户级（本文件）→ 项目级（<cwd>/.codeagent/config.yaml）。
+# 项目文件存在时，项目未显式设置的字段继承本文件的用户级值。
 
-# default_model: deepseek-pro  # 取消注释以选择默认模型
-# subagent_model: deepseek     # 取消注释以指定子代理模型（性能/成本偏好）
+# ── 默认模型 ────────────────────────────────────────────────
+# default_model: deepseek-pro        # 未设置时用 deepseek / 第一个模型
 
+# ── 模型选择（子代理 / 成本偏好）─────────────────────────────
+# subagent_model: deepseek           # task 子代理用哪个模型
+
+# ── Agent 行为（性能偏好）────────────────────────────────────
+# agent:
+#   max_steps: 68                    # 单个任务最大步数（默认 8）
+#   max_parallel_tools: 8            # 并行工具数（0/1 = 严格串行）
+#   compact_ratio: 0.75              # 上下文压缩阈值（默认 0.75）
+#   compact_keep_ratio: 0.3          # 压缩保留的最近尾部比例
+#   client_tool_timeout_seconds: 900 # 客户端工具执行超时
+#   subagent_model: deepseek         # 或在此处设置子代理模型
+
+# ── Provider 传输层（超时 / 重试）─────────────────────────────
+# provider:
+#   request_timeout_seconds: 600     # 单次请求超时
+#   max_retries: 5                   # 重试次数
+#   backoff_millis: 500              # 首次退避
+#   max_backoff_seconds: 8           # 退避上限
+
+# ── 凭证来源 ────────────────────────────────────────────────
 # credentials:
 #   llm:
-#     my-key:
-#       source: env
-#       env: MY_API_KEY
+#     my-key:                        # 直连模型 API key
+#       source: env                  # env | injected | none
+#       env: MY_API_KEY              # source=env 时的环境变量名
+#   gateway:
+#     default:
+#       source: injected             # gateway JWT（宿主注入）
 
+# ── 自定义模型（registry 之外 / 覆盖）────────────────────────
 # models:
 #   my-model:
-#     provider: openai
+#     provider: openai               # openai | ollama
 #     base_url: https://api.example.com/v1
 #     model: my-model-name
 #     credential:
-#       namespace: llm
-#       name: my-key
+#       namespace: llm               # llm | gateway
+#       name: my-key                 # 引用上方 credentials 条目
+#     context_window: 128000
+#     input_price_per_million: 0.27
+#     output_price_per_million: 1.10
+
+# ── Web 搜索 / 抓取 ──────────────────────────────────────────
+# web:
+#   search:
+#     provider: tavily               # tavily | brave | gateway
+#     tavily_api_key_env: TAVILY_API_KEY
+#     top_k: 5
+#     timeout_seconds: 10
+#   fetch:
+#     timeout_seconds: 30
+#     cache_ttl_seconds: 600
+
+# ── 并发 ────────────────────────────────────────────────────
+# runtime:
+#   max_concurrent_turns: 5
+
+# ── 展示 / 成本 ─────────────────────────────────────────────
+# currency: "$"
 `
 	os.WriteFile(userPath, []byte(template), 0o644)
 }
