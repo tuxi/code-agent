@@ -81,7 +81,7 @@
 **位置**: `internal/app`、`internal/credential`、`internal/runtime`、`internal/model`、`internal/server`、`internal/embed`
 
 #### R1 凭证核心重构（§10 步 1-3）
-- [ ] R1.1 删除 `ModelConfig.APIKey`/`APIKeyEnv`（`config.go:167,195`），凭证统一走 Credential（F3.1）
+- [x] R1.1 删除 `ModelConfig.APIKey`（派生 secret，`config.go:201`），凭证统一走 Credential（F3.1）——**`APIKeyEnv` 保留**为 env 声明字段（registry 填充、credentials 段引用、Resolver 在调用时读 env，不再 load 时快照）
 - [ ] R1.2 扁平 Target：`Target{Namespace,Name}` → 扁平 id，保留 namespace 兼容解析（F1.1）
 - [ ] R1.3 两级凭证解析：会话覆盖 + connection 单一来源，`effectiveCredentialResolver`/`BuildProvider` 内建链移除（`serve_builder.go:190-203`、`provider.go:22-51`）
 - [ ] R1.4 `EnvResolver` 双重人格消除：映射显式声明或统一 `TOUPPER(id)_API_KEY` 约定

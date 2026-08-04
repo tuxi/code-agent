@@ -200,7 +200,8 @@ Configuration lives in `config.yaml` at the workspace root and in Claude-compati
 | `models.<name>.provider` | `openai` or `ollama` | — |
 | `models.<name>.base_url` | API base URL | — |
 | `models.<name>.model` | Wire model name | — |
-| `models.<name>.api_key_env` | Environment variable holding the API key | — |
+| `models.<name>.api_key_env` | Environment variable holding the API key — **deprecated**; prefer `credential: {namespace, name}` referencing a `credentials:` entry (connection-flattening) | — |
+| `models.<name>.credential` | `{namespace, name}` ref to a `credentials:` entry (e.g. `{llm, deepseek}`) | — |
 | `models.<name>.context_window` | Max context in tokens; sizes compaction threshold | 128000 |
 | `models.<name>.input_price_per_million` | Cost per 1M input tokens (for `stats`) | — |
 | `models.<name>.cache_input_price_per_million` | Cost per 1M cached input tokens | — |

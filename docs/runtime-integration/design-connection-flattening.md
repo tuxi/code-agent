@@ -297,7 +297,7 @@ Resolver(connectionID):
 - **EnvResolver 双重人格消失**：映射要么显式声明、要么走统一约定，不再有 `Mapping==nil` 的隐式切换
 - **BuildProvider 不再包链**：传入的 resolver 已是最终形态，去掉内部 `EnvResolver`/`ChainResolver` 重建（`internal/runtime/provider.go:22-51`）
 - **`ModelConfig.APIKey`/`APIKeyEnv` 删除**：三个凭证字段收敛成 connection 上的一个 `Credential`
-- **MCP 共享凭证解析而非模型**：MCP 服务器走同一两级凭证查询，但连接定义/生命周期/工具图留在 MCP 自己的体系（§11），不并入 Connection 模型
+- **MCP 共享凭证解析而非模型**：MCP 服务器走同一两级凭证查询（`design-mcp-credential-resolution.md`），但连接定义/生命周期/工具图留在 MCP 自己的体系（§11），不并入 Connection 模型
 
 ---
 
@@ -605,7 +605,7 @@ ModelProfile（模型层 — 怎么用）
 - F2.6 传输层参数归属：ProviderConfig 默认值归 registry，connection 可覆盖，gateway 超时更长（§2.4）
 
 **F3 删除与迁移**
-- F3.1 `ModelConfig.APIKey`/`APIKeyEnv` 删除，凭证统一走 Credential
+- F3.1 `ModelConfig.APIKey`（派生 secret 字段）删除，凭证统一走 Credential；`APIKeyEnv` 保留为 env 声明（registry 填充、resolver 调用时读 env，不再 load 时快照）
 - F3.2 `models:` section 三阶段移除（flattening → deprecate 警告 → delete）
 - F3.3 现有 `api_key_env` 配置在兼容期读取 + 警告
 - F3.4 runtime alias 迁移：已持久化 session 的模型引用映射到新 alias（开放问题 8）
