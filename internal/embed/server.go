@@ -954,20 +954,29 @@ type connectionDefinition struct {
 }
 
 // connectionModelDef is one model profile within a connection definition.
-// WireModel is the string sent in the API request body; RuntimeAlias maps to
-// the alias the host uses for the model picker.
+// WireModelID is the string sent in the API request body; RuntimeAlias is the
+// host-facing alias for the model picker (used as the friendly name when set);
+// DisplayName is an optional human label.
 type connectionModelDef struct {
-	WireModel    string `json:"wire_model_id"`
+	WireModelID  string `json:"wire_model_id"`
 	RuntimeAlias string `json:"runtime_alias"`
 	DisplayName  string `json:"display_name,omitempty"`
 }
 
 // connectionCredentialDecl declares where a connection's credential comes from
 // (non-secret). It never carries a secret value.
+//
+// Namespace is explicit when the host wants to route outside the default for
+// its Source: "gateway" (gateway/default) or an llm/<ref> name. When omitted,
+// Source determines the namespace: jwt/injected → gateway/default, env → llm/<id>.
 type connectionCredentialDecl struct {
 	Source string `json:"source"` // "jwt" | "keychain" | "env" | "none"
-	Ref    string `json:"ref"`    // keychain ref (source == keychain)
-	Env    string `json:"env"`    // env var name (source == env)
+	// Namespace overrides the Source-derived credential target. Reserved
+	// value "gateway" → gateway/default; any other non-empty value is an
+	// llm/<namespace> BYOK credential name.
+	Namespace string `json:"namespace,omitempty"`
+	Ref       string `json:"ref"` // credential name (llm/<ref>); legacy alias kept for compat
+	Env       string `json:"env"` // env var name (source == env)
 }
 
 // applyConnections merges injected connection definitions into a Config: each
@@ -995,25 +1004,53 @@ func applyConnections(cfg *app.Config, conns map[string]connectionDefinition) {
 		var cred app.CredentialRef
 		apiKeyEnv := ""
 		if def.Credential != nil {
-			switch def.Credential.Source {
-			case "jwt", "injected", "keychain":
-				// Use the Ref field to determine the credential namespace:
-				// "gateway" or <connection id> → gateway/default; any other
-				// ref → llm/<ref> (BYOK connections).
-				if def.Credential.Ref == "gateway" {
-					cred = app.CredentialRef{Namespace: "gateway", Name: "default"}
-				} else if def.Credential.Ref != "" {
-					cred = app.CredentialRef{Namespace: "llm", Name: def.Credential.Ref}
-				} else {
-					cred = app.CredentialRef{Namespace: "gateway", Name: "default"}
+			// Resolve the credential target. Namespace, when set, wins; the
+			// fallback discriminates on Ref (the wire uses source:"injected"
+			// for BOTH gateway and BYOK — ref "gateway" vs <id> is the
+			// differentiator). env → llm/<id>.
+			ns := def.Credential.Namespace
+			if ns == "" {
+				switch def.Credential.Source {
+				case "jwt", "injected", "keychain":
+					if def.Credential.Ref == "gateway" || def.Credential.Ref == "" {
+						ns = "gateway"
+					} else {
+						ns = "llm"
+					}
+				case "env":
+					ns = "llm"
 				}
-			case "env":
-				cred = app.CredentialRef{Namespace: "llm", Name: id}
-				if def.Credential.Env != "" {
+			}
+			switch ns {
+			case "gateway":
+				cred = app.CredentialRef{Namespace: "gateway", Name: "default"}
+			case "llm":
+				name := def.Credential.Ref
+				if name == "" {
+					name = id
+				}
+				cred = app.CredentialRef{Namespace: "llm", Name: name}
+				if def.Credential.Source == "env" && def.Credential.Env != "" {
 					apiKeyEnv = def.Credential.Env
 				}
-			case "none":
-				// no credential needed (local)
+			}
+		}
+		// Record credential config for injected connections so the catalog
+		// builder (probeModelAvailability) knows these are not env-sourced.
+		// Done before the models/gateway branch so the gateway `continue`
+		// below still records it.
+		if def.Credential != nil {
+			src := def.Credential.Source
+			if src == "injected" || src == "jwt" || src == "keychain" {
+				if !cred.IsZero() {
+					if cfg.Credentials == nil {
+						cfg.Credentials = map[string]map[string]app.CredentialConfig{}
+					}
+					if cfg.Credentials[cred.Namespace] == nil {
+						cfg.Credentials[cred.Namespace] = map[string]app.CredentialConfig{}
+					}
+					cfg.Credentials[cred.Namespace][cred.Name] = app.CredentialConfig{Source: "injected"}
+				}
 			}
 		}
 		if len(def.Models) == 0 {
@@ -1030,18 +1067,21 @@ func applyConnections(cfg *app.Config, conns map[string]connectionDefinition) {
 			continue
 		}
 		for _, m := range def.Models {
-			if m.WireModel == "" {
+			if m.WireModelID == "" {
 				continue
 			}
-			friendlyName := m.WireModel
-			if m.DisplayName != "" {
-				friendlyName = m.DisplayName
+			// Friendly name = host's runtime alias when provided (it is the
+			// key the host's model picker and the catalog use); otherwise the
+			// wire model id. DisplayName is presentation-only.
+			friendlyName := m.WireModelID
+			if m.RuntimeAlias != "" {
+				friendlyName = m.RuntimeAlias
 			}
 			mc := app.ModelConfig{
-				Name:     friendlyName,
-				Provider: api,
-				BaseURL:  def.BaseURL,
-				Model:    m.WireModel,
+				Name:       friendlyName,
+				Provider:   api,
+				BaseURL:    def.BaseURL,
+				Model:      m.WireModelID,
 				Credential: cred,
 				APIKeyEnv:  apiKeyEnv,
 			}
@@ -1050,22 +1090,6 @@ func applyConnections(cfg *app.Config, conns map[string]connectionDefinition) {
 			}
 			cfg.Models[friendlyName] = mc
 		}
-			// Record credential config for injected connections so the catalog
-			// builder (probeModelAvailability) knows these are not env-sourced.
-			if def.Credential != nil {
-				src := def.Credential.Source
-				if src == "injected" || src == "jwt" || src == "keychain" {
-					if !cred.IsZero() {
-						if cfg.Credentials == nil {
-							cfg.Credentials = map[string]map[string]app.CredentialConfig{}
-						}
-						if cfg.Credentials[cred.Namespace] == nil {
-							cfg.Credentials[cred.Namespace] = map[string]app.CredentialConfig{}
-						}
-						cfg.Credentials[cred.Namespace][cred.Name] = app.CredentialConfig{Source: "injected"}
-					}
-				}
-			}
 	}
 }
 // cannot bridge a map, so secrets cross as a JSON string). Empty input yields a

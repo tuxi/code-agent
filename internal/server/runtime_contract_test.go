@@ -23,7 +23,7 @@ func TestRuntimeContractPersistsIdentityAndCatalogRevisionWithoutSecrets(t *test
 			alias: {
 				Name: alias, Provider: "openai",
 				BaseURL: "https://secret-provider.example/v1", Model: "deepseek-chat",
-				APIKey: "secret-api-key", ContextWindow: 128000,
+				ContextWindow: 128000,
 				Credential: app.CredentialRef{Namespace: "llm", Name: "deepseek-prod"},
 				Catalog: app.ModelCatalogMetadata{
 					ConnectionID: "deepseek-prod", ProviderID: "deepseek",

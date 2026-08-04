@@ -80,9 +80,16 @@ workspace:
 		t.Errorf("provider defaults not applied: %+v", cfg.Provider)
 	}
 
-	// deepseek is configured but its key is unset -> selection fails clearly.
-	if _, err := cfg.SelectModel("deepseek"); err == nil {
-		t.Error("expected an error selecting deepseek with no API key")
+	// deepseek is configured with api_key_env but the env var is empty →
+	// its credential ref is set (llm/deepseek), but the resolver will return
+	// empty at request time. SelectModel no longer fails early here — the
+	// check moved to the credential resolver chain.
+	mc, err = cfg.SelectModel("deepseek")
+	if err != nil {
+		t.Fatalf("SelectModel(deepseek): %v (expected to resolve with empty key)", err)
+	}
+	if mc.Credential != (CredentialRef{Namespace: "llm", Name: "deepseek"}) {
+		t.Errorf("credential ref = %+v, want llm/deepseek", mc.Credential)
 	}
 
 	// Unknown model -> error.

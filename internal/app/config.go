@@ -197,8 +197,7 @@ type ModelConfig struct {
 	Catalog    ModelCatalogMetadata `yaml:"catalog"`
 
 	// Resolved at load time, not read from YAML.
-	Name   string `yaml:"-"` // the friendly name (the map key)
-	APIKey string `yaml:"-"` // resolved from APIKeyEnv
+	Name string `yaml:"-"` // the friendly name (the map key)
 }
 
 // ModelCatalogMetadata is optional, non-secret presentation metadata used by
@@ -635,7 +634,7 @@ func LoadConfigBytes(data []byte) (Config, error) {
 		}
 		// R1.5: flag the legacy api_key_env path BEFORE the registry fills it,
 		// so only user-written api_key_env (from YAML) triggers it.
-		if mc.APIKey == "" && mc.APIKeyEnv != "" {
+		if mc.APIKeyEnv != "" {
 			cfg.Warnings = append(cfg.Warnings,
 				fmt.Sprintf("model %q uses legacy api_key_env %q; migrate to the credentials section (api_key_env is deprecated)", name, mc.APIKeyEnv))
 		}
@@ -648,19 +647,11 @@ func LoadConfigBytes(data []byte) (Config, error) {
 		if mc.ContextWindow <= 0 {
 			mc.ContextWindow = defaultContextWindow
 		}
-		// Resolve the API key from the env (legacy path). Done first so the
-		// credential-ref normalisation below can inspect the resolved key.
-		// Injection-priority: a key already set on the struct (e.g. injected by
-		// an embedded host from the iOS Keychain) wins over the env lookup.
-		if mc.APIKey == "" && mc.APIKeyEnv != "" {
-			mc.APIKey = os.Getenv(mc.APIKeyEnv)
-		}
 
 		// Normalise credential ref: if not explicitly set, derive from the
-		// resolved state. Only derive when we actually have a working credential
-		// so SelectModel can still give an early error for missing keys.
+		// resolved state. api_key_env or a local base URL drive the derivation.
 		if mc.Credential.IsZero() {
-			if mc.APIKey != "" {
+			if mc.APIKeyEnv != "" {
 				mc.Credential = CredentialRef{Namespace: "llm", Name: name}
 			} else if model.IsLocalBaseURL(mc.BaseURL) {
 				mc.Credential = CredentialRef{} // none needed
@@ -779,14 +770,8 @@ func (c Config) SelectModel(name string) (ModelConfig, error) {
 		} else if conn.Env != "" {
 			mc.Credential = CredentialRef{Namespace: "llm", Name: name}
 		}
-		if mc.APIKey == "" && mc.APIKeyEnv != "" {
-			mc.APIKey = os.Getenv(mc.APIKeyEnv)
-		}
 	}
-	if mc.APIKey == "" && !model.IsLocalBaseURL(mc.BaseURL) && mc.Credential.IsZero() {
-		if mc.APIKeyEnv != "" {
-			return ModelConfig{}, fmt.Errorf("model %q has no API key; set the %s environment variable", name, mc.APIKeyEnv)
-		}
+	if mc.APIKeyEnv == "" && !model.IsLocalBaseURL(mc.BaseURL) && mc.Credential.IsZero() {
 		return ModelConfig{}, fmt.Errorf("model %q has no credential configured; add a credential: section or set api_key_env", name)
 	}
 	return mc, nil

@@ -239,7 +239,7 @@ func TestInjectSecrets_WebSearchEmptySecret(t *testing.T) {
 func TestInjectSecrets_NilSecrets(t *testing.T) {
 	cfg := app.Config{
 		Models: map[string]app.ModelConfig{
-			"deepseek": {APIKeyEnv: "DEEPSEEK_API_KEY", APIKey: "already-set"},
+			"deepseek": {APIKeyEnv: "DEEPSEEK_API_KEY"},
 		},
 	}
 	cfg.Web.Search.TavilyAPIKeyEnv = "TAVILY_API_KEY"
@@ -247,8 +247,8 @@ func TestInjectSecrets_NilSecrets(t *testing.T) {
 	// Empty map → no-op, must not clear existing values.
 	injectSecrets(&cfg, map[string]string{})
 
-	if cfg.Models["deepseek"].APIKey != "already-set" {
-		t.Error("empty secrets cleared existing model key")
+	if cfg.Models["deepseek"].APIKeyEnv != "DEEPSEEK_API_KEY" {
+		t.Error("empty secrets cleared existing APIKeyEnv")
 	}
 	if cfg.Web.Search.TavilyKey != "" {
 		t.Error("empty secrets set a web key")

@@ -34,13 +34,8 @@ func BuildProvider(mc app.ModelConfig, pc app.ProviderConfig, cred credential.Re
 				c = &credential.EnvResolver{}
 			}
 			inner = model.NewOpenAICompatibleProvider(mc.BaseURL, c, mc.Credential.Target())
-			// Propagate the resolved APIKey as a static fallback so injectSecrets
-			// and env-var resolution from config-load time still take effect.
-			if p, ok := inner.(*model.OpenAICompatibleProvider); ok {
-				p.APIKey = mc.APIKey
-			}
 		} else {
-			inner = model.NewOpenAICompatibleProviderWithKey(mc.BaseURL, mc.APIKey)
+			inner = model.NewOpenAICompatibleProviderWithKey(mc.BaseURL, "")
 		}
 	case "ollama":
 		inner = model.NewOllamaProvider(mc.BaseURL)

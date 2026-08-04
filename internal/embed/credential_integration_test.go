@@ -38,16 +38,16 @@ func TestE0_OldBYOK(t *testing.T) {
 	srv := httptest.NewServer(stubChatHandler(t, &authHeader, 200, ""))
 	defer srv.Close()
 
-	// Old BYOK: no CredentialRef — falls through to static APIKey path.
-	// This tests that models without credential: section still work.
+	// Legacy BYOK: the env-var declaration and credential ref are set; the
+	// secret now comes solely from the resolver chain (EnvResolver), not
+	// from a static APIKey field.
+	t.Setenv("DEEPSEEK_API_KEY", "sk-legacy-byok")
 	mc := app.ModelConfig{
 		Provider:  "openai",
 		BaseURL:   srv.URL,
 		Model:     "test-model",
 		APIKeyEnv: "DEEPSEEK_API_KEY",
-		APIKey:    "sk-old-byok",
-		// Credential is zero — the auto-derivation only fires when APIKey != "",
-		// but the static path is used because Credential.IsZero() is true.
+		Credential: app.CredentialRef{Namespace: "llm", Name: "deepseek"},
 	}
 	pc := app.ProviderConfig{
 		RequestTimeoutSeconds: 10,
@@ -67,8 +67,8 @@ func TestE0_OldBYOK(t *testing.T) {
 		t.Fatalf("Complete: %v", err)
 	}
 
-	if authHeader != "Bearer sk-old-byok" {
-		t.Errorf("Authorization = %q, want %q", authHeader, "Bearer sk-old-byok")
+	if authHeader != "Bearer sk-legacy-byok" {
+		t.Errorf("Authorization = %q, want %q", authHeader, "Bearer sk-legacy-byok")
 	}
 }
 
