@@ -384,7 +384,7 @@ func handleCommand(line string, cfg app.Config, mc *app.ModelConfig, runner *age
 		return sess, false, nil
 
 	case "/models":
-		for _, name := range cfg.ModelNames() {
+		for _, name := range cfg.AvailableModelNames() {
 			marker := "  "
 			if name == mc.Name {
 				marker = "* "

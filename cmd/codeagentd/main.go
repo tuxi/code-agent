@@ -57,7 +57,7 @@ func run() error {
 		addr = args[0]
 	}
 
-	cfg, err := app.LoadConfig("config.yaml")
+	cfg, err := app.LoadConfigLayered(".codeagent/config.yaml")
 	if err != nil {
 		return err
 	}

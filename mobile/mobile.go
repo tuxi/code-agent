@@ -246,7 +246,18 @@ func (s *Server) Reconfigure(secretsJSON, modelName string) error {
 	if s == nil || s.h == nil {
 		return nil
 	}
-	return s.h.Reconfigure(secretsJSON, modelName)
+	return s.h.Reconfigure("", secretsJSON, modelName)
+}
+
+// ReconfigureConnections is the connection-flattening v2 form (R3.2): accepts
+// connection DEFINITIONS via connectionsJSON (non-secret, "" = keep current) in
+// addition to secrets and model. The 2-argument Reconfigure above is the
+// backward-compatible wrapper. Swift: `reconfigure(connectionsJSON:secretsJSON:modelName:) throws`.
+func (s *Server) ReconfigureConnections(connectionsJSON, secretsJSON, modelName string) error {
+	if s == nil || s.h == nil {
+		return nil
+	}
+	return s.h.Reconfigure(connectionsJSON, secretsJSON, modelName)
 }
 
 // Stop shuts the server down and releases all runtime resources. Call it ONLY on

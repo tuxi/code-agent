@@ -91,6 +91,13 @@ type Options struct {
 	// secrets pulled from the iOS Keychain.
 	Secrets map[string]string
 
+	// ConnectionsJSON carries connection DEFINITIONS (non-secret) as a JSON
+	// string: {"connections": {"<id>": {api, base_url, credential, models}}}.
+	// R3.4/R3.5: definitions flow here instead of the ConfigYAML models block,
+	// so hosts do not hand-assemble the full YAML document. Empty => no
+	// connections injected.
+	ConnectionsJSON string
+
 	// Addr is the listen address. Empty => "127.0.0.1:0", i.e. an OS-assigned
 	// ephemeral port on the loopback interface; read it back via Handle.Port.
 	Addr string
@@ -511,7 +518,11 @@ func (h *Handle) ResumeSession(sessionID string) error {
 // Reconfigure swaps model and managed-tool credentials at the next turn
 // boundary. Structural tool graph changes (provider kind, MCP server list, etc.)
 // still require a server restart.
-func (h *Handle) Reconfigure(secretsJSON, modelName string) error {
+//
+// R3.2: the 3-argument form also accepts connection DEFINITIONS via
+// connectionsJSON (non-secret; "" = keep current). The 2-argument form below is
+// the backward-compatible wrapper (connectionsJSON = "").
+func (h *Handle) Reconfigure(connectionsJSON, secretsJSON, modelName string) error {
 	h.reconfigureMu.Lock()
 	defer h.reconfigureMu.Unlock()
 
@@ -522,10 +533,17 @@ func (h *Handle) Reconfigure(secretsJSON, modelName string) error {
 	if err != nil {
 		return err
 	}
-	// Start from the stored config, re-inject secrets, and select the model. The
-	// copy-on-stack pattern keeps h.cfg unchanged on error so a failed reconfigure
-	// doesn't leave a half-updated stored config.
+	conns, err := parseConnectionsJSON(connectionsJSON)
+	if err != nil {
+		return err
+	}
+	// Start from the stored config, apply connection definitions + secrets, and
+	// select the model. The copy-on-stack pattern keeps h.cfg unchanged on error
+	// so a failed reconfigure doesn't leave a half-updated stored config.
 	cfg := h.cfg
+	if len(conns) > 0 {
+		applyConnections(&cfg, conns)
+	}
 	credChain := h.credential
 	if len(secrets) > 0 {
 		injectedResolver := injectSecrets(&cfg, secrets)
@@ -576,6 +594,13 @@ func StartServer(ctx context.Context, opt Options) (*Handle, error) {
 	cfg, err := app.LoadConfigBytes([]byte(opt.ConfigYAML))
 	if err != nil {
 		return nil, err
+	}
+	// R3.5: connection definitions injected via connectionsJSON are merged into
+	// the config as the top (host) layer before MCP/skills assembly.
+	if conns, err := parseConnectionsJSON(opt.ConnectionsJSON); err != nil {
+		return nil, err
+	} else {
+		applyConnections(&cfg, conns)
 	}
 	// MCP servers are injected as a Claude-compatible `.mcp.json` document rather
 	// than embedded in the YAML config. Empty => no MCP.
@@ -896,7 +921,153 @@ func Assemble(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider 
 	return handler, rt, closers, nil
 }
 
-// parseSecretsJSON decodes the JSON secrets object Reconfigure receives (gomobile
+// parseConnectionsJSON decodes the connectionsJSON document (R3.4) into a map
+// of connection id → definition. Shape (design-connection-injection-channel §4):
+//
+//	{"connections": {"<id>": {"api": "openai", "base_url": "...", "credential": {...}}}}
+//
+// Empty input yields nil. Definitions are non-secret; credential carries only a
+// source declaration (jwt/keychain/env/none), never a value.
+func parseConnectionsJSON(connectionsJSON string) (map[string]connectionDefinition, error) {
+	if connectionsJSON == "" {
+		return nil, nil
+	}
+	var doc struct {
+		Connections map[string]connectionDefinition `json:"connections"`
+	}
+	if err := json.Unmarshal([]byte(connectionsJSON), &doc); err != nil {
+		return nil, fmt.Errorf("invalid connectionsJSON: %w", err)
+	}
+	return doc.Connections, nil
+}
+
+// connectionDefinition is the non-secret wire shape of a connection.
+// Models lists the wire models this connection exposes; a connection with
+// no models entry (gateway) creates a single model with an empty wire model
+// (gateway chooses the model). When models is non-empty, each entry becomes
+// one ModelConfig sharing the connection's base_url and credential.
+type connectionDefinition struct {
+	API        string                      `json:"api"`
+	BaseURL    string                      `json:"base_url"`
+	Credential *connectionCredentialDecl   `json:"credential"`
+	Models     []connectionModelDef        `json:"models"`
+}
+
+// connectionModelDef is one model profile within a connection definition.
+// WireModel is the string sent in the API request body; RuntimeAlias maps to
+// the alias the host uses for the model picker.
+type connectionModelDef struct {
+	WireModel    string `json:"wire_model_id"`
+	RuntimeAlias string `json:"runtime_alias"`
+	DisplayName  string `json:"display_name,omitempty"`
+}
+
+// connectionCredentialDecl declares where a connection's credential comes from
+// (non-secret). It never carries a secret value.
+type connectionCredentialDecl struct {
+	Source string `json:"source"` // "jwt" | "keychain" | "env" | "none"
+	Ref    string `json:"ref"`    // keychain ref (source == keychain)
+	Env    string `json:"env"`    // env var name (source == env)
+}
+
+// applyConnections merges injected connection definitions into a Config: each
+// model listed in a definition becomes a model keyed by its wire model (friendly
+// name), sharing the connection's base_url and credential. When a definition
+// declares no models (the gateway case), a single model with an empty wire model
+// is created under the connection id so the gateway-picks-model semantic is
+// preserved. Injected connections act as the top layer (design §8.3 层级 4) —
+// they are added, not replacing config-declared models.
+func applyConnections(cfg *app.Config, conns map[string]connectionDefinition) {
+	if len(conns) == 0 {
+		return
+	}
+	if cfg.Models == nil {
+		cfg.Models = map[string]app.ModelConfig{}
+	}
+	for id, def := range conns {
+		if id == "" {
+			continue
+		}
+		api := def.API
+		if api == "" {
+			api = "openai"
+		}
+		var cred app.CredentialRef
+		apiKeyEnv := ""
+		if def.Credential != nil {
+			switch def.Credential.Source {
+			case "jwt", "injected", "keychain":
+				// Use the Ref field to determine the credential namespace:
+				// "gateway" or <connection id> → gateway/default; any other
+				// ref → llm/<ref> (BYOK connections).
+				if def.Credential.Ref == "gateway" {
+					cred = app.CredentialRef{Namespace: "gateway", Name: "default"}
+				} else if def.Credential.Ref != "" {
+					cred = app.CredentialRef{Namespace: "llm", Name: def.Credential.Ref}
+				} else {
+					cred = app.CredentialRef{Namespace: "gateway", Name: "default"}
+				}
+			case "env":
+				cred = app.CredentialRef{Namespace: "llm", Name: id}
+				if def.Credential.Env != "" {
+					apiKeyEnv = def.Credential.Env
+				}
+			case "none":
+				// no credential needed (local)
+			}
+		}
+		if len(def.Models) == 0 {
+			// Gateway / fallback: single model with empty wire model
+			// (gateway chooses). The friendly name is the connection id.
+			cfg.Models[id] = app.ModelConfig{
+				Name:     id,
+				Provider: api,
+				BaseURL:  def.BaseURL,
+				Model:    "",
+				Credential: cred,
+				APIKeyEnv:  apiKeyEnv,
+			}
+			continue
+		}
+		for _, m := range def.Models {
+			if m.WireModel == "" {
+				continue
+			}
+			friendlyName := m.WireModel
+			if m.DisplayName != "" {
+				friendlyName = m.DisplayName
+			}
+			mc := app.ModelConfig{
+				Name:     friendlyName,
+				Provider: api,
+				BaseURL:  def.BaseURL,
+				Model:    m.WireModel,
+				Credential: cred,
+				APIKeyEnv:  apiKeyEnv,
+			}
+			if m.DisplayName != "" {
+				mc.Catalog = app.ModelCatalogMetadata{DisplayName: m.DisplayName}
+			}
+			cfg.Models[friendlyName] = mc
+		}
+			// Record credential config for injected connections so the catalog
+			// builder (probeModelAvailability) knows these are not env-sourced.
+			if def.Credential != nil {
+				src := def.Credential.Source
+				if src == "injected" || src == "jwt" || src == "keychain" {
+					if !cred.IsZero() {
+						if cfg.Credentials == nil {
+							cfg.Credentials = map[string]map[string]app.CredentialConfig{}
+						}
+						if cfg.Credentials[cred.Namespace] == nil {
+							cfg.Credentials[cred.Namespace] = map[string]app.CredentialConfig{}
+						}
+						cfg.Credentials[cred.Namespace][cred.Name] = app.CredentialConfig{Source: "injected"}
+					}
+				}
+			}
+	}
+}
 // cannot bridge a map, so secrets cross as a JSON string). Empty input yields a
 // nil map.
 //
@@ -928,12 +1099,18 @@ func parseSecretsJSON(secretsJSON string) (map[string]string, error) {
 }
 
 // injectSecrets overrides resolved API keys from the host-supplied secrets map.
-// A secret may be keyed by a model's api_key_env name or by its friendly name;
-// the model-name match takes precedence. Empty values are ignored.
+// A secret may be keyed by a model's api_key_env name, by its friendly name, by
+// a {namespace}/{name} credential target, or by a flat connection id (R3.3
+// three-form bridging). Empty values are ignored.
 //
 // Web search provider keys (Tavily, Brave) are also injected here: a secret whose
 // key matches the configured tavily_api_key_env or brave_api_key_env is set on the
 // WebSearchConfig, following the same pattern as model keys.
+//
+// The injected secrets become a StaticResolver (for the dynamic credential
+// path) and, for legacy single-value keys, populate the matching model's
+// Credential ref so the two-level resolver can serve it. This no longer writes
+// ModelConfig.APIKey (R1.1: the APIKey field is deprecated and on its way out).
 func injectSecrets(cfg *app.Config, secrets map[string]string) credential.Resolver {
 	if len(secrets) == 0 {
 		return nil
@@ -945,7 +1122,8 @@ func injectSecrets(cfg *app.Config, secrets map[string]string) credential.Resolv
 			continue
 		}
 		// Detect format: keys containing '/' or '%2F' are credential targets
-		// (new format per credential-injection-v1 §3).
+		// ({namespace}/{name}); plain keys are either flat connection ids
+		// (R3.3) or legacy env-var/friendly names.
 		if strings.Contains(key, "/") || strings.Contains(key, "%2F") {
 			target, err := parseTargetKey(key)
 			if err != nil {
@@ -956,28 +1134,45 @@ func injectSecrets(cfg *app.Config, secrets map[string]string) credential.Resolv
 				continue
 			}
 			resolver[target] = cred
-			// Also set APIKey on matching models for backward compat.
+			// Also align the model's Credential ref for backward compat so the
+			// static resolver is reached via the ref, not the (deprecated)
+			// APIKey field.
 			for name, mc := range cfg.Models {
 				if mc.Credential.Namespace == target.Namespace && mc.Credential.Name == target.Name {
-					mc.APIKey = cred.Secret
 					cfg.Models[name] = mc
 				}
 			}
-		} else {
-			// Old format: env-var name → plain string value.
-			for name, mc := range cfg.Models {
-				if key == mc.APIKeyEnv || key == name {
-					mc.APIKey = val
+			continue
+		}
+		// Flat connection id (R3.3): map to the canonical target and inject.
+		if target := credential.TargetFromConnectionID(key); target.Namespace != "" {
+			cred, err := parseCredentialValue(val)
+			if err == nil {
+				resolver[target] = cred
+				continue
+			}
+		}
+		// Legacy env-var name → plain string value. The plain string IS the
+		// secret (old format had no JSON envelope), so inject it directly as a
+		// bearer credential on llm/<name> and align the model's Credential ref.
+		for name, mc := range cfg.Models {
+			if key == mc.APIKeyEnv || key == name {
+				if mc.Credential.IsZero() {
+					mc.Credential = app.CredentialRef{Namespace: "llm", Name: name}
 					cfg.Models[name] = mc
 				}
+				resolver[credential.Target{Namespace: "llm", Name: name}] = credential.Credential{
+					Type:   credential.Bearer,
+					Secret: val,
+				}
 			}
-			// Web search provider keys.
-			if cfg.Web.Search.TavilyAPIKeyEnv != "" && key == cfg.Web.Search.TavilyAPIKeyEnv {
-				cfg.Web.Search.TavilyKey = val
-			}
-			if cfg.Web.Search.BraveAPIKeyEnv != "" && key == cfg.Web.Search.BraveAPIKeyEnv {
-				cfg.Web.Search.BraveKey = val
-			}
+		}
+		// Web search provider keys.
+		if cfg.Web.Search.TavilyAPIKeyEnv != "" && key == cfg.Web.Search.TavilyAPIKeyEnv {
+			cfg.Web.Search.TavilyKey = val
+		}
+		if cfg.Web.Search.BraveAPIKeyEnv != "" && key == cfg.Web.Search.BraveAPIKeyEnv {
+			cfg.Web.Search.BraveKey = val
 		}
 	}
 	if len(resolver) == 0 {

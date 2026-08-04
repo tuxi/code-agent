@@ -30,9 +30,10 @@ func TestInjectSecrets_WebSearchKeys(t *testing.T) {
 
 	injectSecrets(&cfg, secrets)
 
-	// Model key injected.
-	if cfg.Models["deepseek"].APIKey != "sk-model" {
-		t.Errorf("model APIKey = %q, want sk-model", cfg.Models["deepseek"].APIKey)
+	// Model key injected — the model's Credential ref is aligned to llm/deepseek
+	// (the deprecated APIKey field is no longer written, R1.1).
+	if got := cfg.Models["deepseek"].Credential; got != (app.CredentialRef{Namespace: "llm", Name: "deepseek"}) {
+		t.Errorf("model Credential ref = %+v, want llm/deepseek", got)
 	}
 
 	// Web search keys injected.
@@ -161,7 +162,7 @@ func TestStartServerWithZeroModelsSupportsReadOnlyWorkspace(t *testing.T) {
 	if notConfigured.AgentInputErrorCode() != "model_not_configured" {
 		t.Fatalf("error code = %q", notConfigured.AgentInputErrorCode())
 	}
-	if err := h.Reconfigure("{}", ""); err != nil {
+	if err := h.Reconfigure("", "{}", ""); err != nil {
 		t.Fatalf("zero-model Reconfigure: %v", err)
 	}
 }

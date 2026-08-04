@@ -12,9 +12,13 @@ import (
 // BuildProvider constructs a model.Provider from a resolved model config.
 //
 // When cred is non-nil and the model config has an explicit CredentialRef,
-// the provider resolves its credential dynamically via cred.Resolve().
-// When cred is nil (backward compat), the provider falls back to the static
-// APIKey field.
+// the provider resolves its credential dynamically via cred.Resolve(). The
+// caller passes the full effective resolver (session override → base chain);
+// BuildProvider no longer wraps it in an EnvResolver (R1.3) — every non-nil
+// cred built by Config.CredentialResolver already ends in an EnvResolver
+// fallback, so re-wrapping was a redundant chain-in-chain. When cred is nil
+// (CLI backward compat), the provider falls back to a plain EnvResolver so
+// the credentials section still works.
 //
 // Every provider is wrapped in a ResilientProvider so a transient API error
 // (timeout, 429, 5xx) does not kill the run: timeout and retry policy live in
@@ -25,15 +29,9 @@ func BuildProvider(mc app.ModelConfig, pc app.ProviderConfig, cred credential.Re
 	case "openai", "":
 		if !mc.Credential.IsZero() {
 			// Model has an explicit credential ref — use the dynamic path.
-			// When cred is nil (CLI mode), fall back to a plain EnvResolver
-			// so the credentials section still works.
 			c := cred
 			if c == nil {
 				c = &credential.EnvResolver{}
-			} else {
-				c = &credential.ChainResolver{
-					Resolvers: []credential.Resolver{c, &credential.EnvResolver{}},
-				}
 			}
 			inner = model.NewOpenAICompatibleProvider(mc.BaseURL, c, mc.Credential.Target())
 			// Propagate the resolved APIKey as a static fallback so injectSecrets

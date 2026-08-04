@@ -1,3 +1,9 @@
+# ── 项目级配置（project-level config.yaml）──────────────────────
+# 模型/凭证定义已迁至 ~/.codeagent/config.yaml（首次启动自动生成模板）。
+# 内建 registry 提供 deepseek / qwen / glm / ollama / gateway 的开箱模型;
+# 用户级文件在其基础上追加或覆盖自定义连接与凭证。
+# 于此只留项目级语义：default_model + server + agent + provider + web + hooks + runtime。
+
 default_model: deepseek-pro
 
 # ── Runtime Server 访问控制 ───────────────────────────────────
@@ -19,118 +25,10 @@ server:
   # tls_certificate: "/etc/codeagent/server.crt"
   # tls_private_key: "/etc/codeagent/server.key"
 
-# ── Credential 来源 ────────────────────────────────────────────
-# 每个 credential 条目用 namespace + name 唯一标识。
-# model 通过 credential.namespace + credential.name 引用此处的条目。
-#
-# source:
-#   injected  — 宿主（AgentKit / CLI --gateway-token）注入，不在本文件配置 secret
-#   env       — 从环境变量读取
-#   none      — 无需凭证（本地模型）
-credentials:
-  # ── Gateway ──
-  gateway:
-    default:
-      source: injected
-
-  # ── BYOK ──
-  llm:
-    deepseek:
-      source: env
-      env: DEEPSEEK_API_KEY
-    openai:
-      source: env
-      env: OPENAI_API_KEY
-    qwen:
-      source: env
-      env: DASHSCOPE_API_KEY
-    glm:
-      source: env
-      env: GLM_API_KEY
-
-models:
-  # ── Gateway 模式 ─────────────────────────────────────────────
-  # 通过 Agent Gateway 调用模型。认证由宿主注入 JWT：
-  #   secretsJSON: {"gateway/default": {"type": "bearer", "secret": "eyJ..."}}
-  # 模型选择在 Gateway 服务端完成（model: "" = 默认模型）。
-  gateway:
-    provider: openai
-    base_url: "https://agent.xxx.com/api/v1/agent"
-    model: ""                                       # Gateway 服务端选择
-    credential:
-      namespace: gateway
-      name: default
-    context_window: 128000
-
-  # ── BYOK 模式 ────────────────────────────────────────────────
-  # 直连模型 API。credential.namespace + credential.name 引用
-  # 上方 credentials section 中的条目。
-  deepseek:
-    provider: openai
-    base_url: "https://api.deepseek.com"
-    model: "deepseek-v4-flash"
-    credential:
-      namespace: llm
-      name: deepseek
-    temperature: 0.2
-    context_window: 128000
-    input_price_per_million: 0.27
-    output_price_per_million: 1.10
-    cache_input_price_per_million: 0.027
-    # /v1/runtime/models 只发布下面的白名单展示元数据，不发布 URL 或凭证。
-    catalog:
-      connection_id: deepseek
-      provider_id: deepseek
-      connection_display_name: "DeepSeek"
-      display_name: "DeepSeek V4 Flash"
-      supports_tools: true
-      supports_reasoning: false
-      input_modalities: [text]
-
-  deepseek-pro:
-    provider: openai
-    base_url: "https://api.deepseek.com"
-    model: "deepseek-v4-pro"
-    credential:
-      namespace: llm
-      name: deepseek
-    context_window: 128000
-    input_price_per_million: 2.0
-    output_price_per_million: 8.0
-
-  qwen:
-    provider: openai
-    base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
-    model: "qwen3-coder-plus"
-    credential:
-      namespace: llm
-      name: qwen
-    context_window: 256000
-    input_price_per_million: 2.0
-    output_price_per_million: 8.0
-
-  glm:
-    provider: openai
-    base_url: "https://open.bigmodel.cn/api/paas/v4"
-    model: "glm-4.7"
-    credential:
-      namespace: llm
-      name: glm
-    context_window: 128000
-
-  # ── 本地模型（Ollama）───────────────────────────────────────
-  ollama-coder:
-    provider: ollama
-    base_url: "http://localhost:11434"
-    model: "qwen3-coder-tool"
-    temperature: 0.2
-    context_window: 32768
-
 agent:
   max_steps: 48
   max_parallel_tools: 8
   compact_ratio: 0.75
-  subagent_model: deepseek
   client_tool_timeout_seconds: 900
 
 provider:
@@ -143,17 +41,16 @@ currency: "$"
 
 web:
   search:
-    # Managed mode: reuses the same gateway/default JWT as model calls.
-    # Gateway owns Tavily credentials, provider fallback, billing and idempotency.
-    provider: gateway
-    gateway_base_url: "https://agent.xxx.com/api/v1/agent"
-    credential:
-      namespace: gateway
-      name: default
+    provider: tavily
+    tavily_api_key_env: TAVILY_API_KEY
+    # Managed mode（可选）：复用 gateway/default JWT，Gateway 托管 Tavily 凭证。
+    # provider: gateway
+    # gateway_base_url: "https://agent.xxx.com/api/v1/agent"
+    # credential:
+    #   namespace: gateway
+    #   name: default
     top_k: 5
-    # Runtime -> Gateway whole-request timeout. Keep separate from the direct
-    # provider timeout because Gateway also performs quota and billing writes.
-    gateway_timeout_seconds: 120
+    timeout_seconds: 10
   fetch:
     timeout_seconds: 30
     cache_ttl_seconds: 600

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -10,6 +11,8 @@ import (
 
 	"code-agent/internal/app"
 	"code-agent/internal/buildinfo"
+	"code-agent/internal/credential"
+	"code-agent/internal/model"
 	runtimepkg "code-agent/internal/runtime"
 )
 
@@ -47,6 +50,18 @@ type RuntimeModelConnection struct {
 	DisplayName   string                   `json:"display_name"`
 	BillingSource string                   `json:"billing_source"`
 	Models        []RuntimeModelDescriptor `json:"models"`
+	// Credential is the per-connection credential status/source (wire v2,
+	// design-runtime-models-wire-v2 §4). Optional: old clients ignore it; a nil
+	// value means the connection has no configured credential.
+	Credential *RuntimeConnectionCredential `json:"credential,omitempty"`
+}
+
+// RuntimeConnectionCredential is the non-secret declaration of how a
+// connection authenticates, surfaced for host UIs. It never carries the secret
+// value itself.
+type RuntimeConnectionCredential struct {
+	Status string `json:"status"` // "configured" | "missing" | "none"
+	Source string `json:"source"` // "env" | "injected" | "keychain" | "none"
 }
 
 type RuntimeModelDescriptor struct {
@@ -58,6 +73,9 @@ type RuntimeModelDescriptor struct {
 	SupportsReasoning bool     `json:"supports_reasoning"`
 	InputModalities   []string `json:"input_modalities"`
 	Available         bool     `json:"available"`
+	// UnavailableReason explains why Available is false (wire v2). Omitted when
+	// the model is available.
+	UnavailableReason string `json:"unavailable_reason,omitempty"`
 }
 
 // BuildRuntimeContract constructs allowlisted public DTOs and binds them to the
@@ -96,6 +114,15 @@ func buildRuntimeModelCatalog(cfg app.Config) RuntimeModelCatalog {
 	type connectionBuilder struct {
 		connection RuntimeModelConnection
 	}
+	// Wire v2: real availability instead of the hardcoded true. Probe each
+	// model's credential through the configured resolver chain (env + the
+	// credentials section). The probe is cheap and non-network — it only checks
+	// declaration existence / env presence, per design-runtime-models-wire-v2 §5.
+	// A source-injected credential (e.g. gateway JWT) is treated as configured:
+	// the catalog is a snapshot taken before the host's next Reconfigure, and
+	// marking it unavailable would blank the gateway model on first start.
+	resolver := cfg.CredentialResolver(nil)
+	ctx := context.Background()
 	groups := make(map[string]*connectionBuilder)
 	included := make(map[string]struct{})
 	for _, alias := range cfg.ModelNames() {
@@ -135,11 +162,20 @@ func buildRuntimeModelCatalog(cfg app.Config) RuntimeModelCatalog {
 			supportsTools = *mc.Catalog.SupportsTools
 		}
 		modalities := normalizedModalities(mc.Catalog.InputModalities)
+		available, reason, credStatus, credSource := probeModelAvailability(cfg, mc, resolver, ctx)
+		// First model in the connection determines the connection-level
+		// credential status (models in a connection share its credential).
+		if group.connection.Credential == nil {
+			if credStatus != "" {
+				group.connection.Credential = &RuntimeConnectionCredential{Status: credStatus, Source: credSource}
+			}
+		}
 		group.connection.Models = append(group.connection.Models, RuntimeModelDescriptor{
 			RuntimeAlias: alias, WireModelID: mc.Model, DisplayName: displayName,
 			ContextWindow: mc.ContextWindow, SupportsTools: supportsTools,
 			SupportsReasoning: mc.Catalog.SupportsReasoning,
-			InputModalities:   modalities, Available: true,
+			InputModalities:   modalities, Available: available,
+			UnavailableReason: reason,
 		})
 		included[alias] = struct{}{}
 	}
@@ -162,9 +198,55 @@ func buildRuntimeModelCatalog(cfg app.Config) RuntimeModelCatalog {
 		defaultAlias = ""
 	}
 	return RuntimeModelCatalog{
-		Schema: "runtime-model-catalog/v1", DefaultRuntimeAlias: defaultAlias,
+		Schema: "runtime-model-catalog/v2", DefaultRuntimeAlias: defaultAlias,
 		Connections: connections,
 	}
+}
+
+// probeModelAvailability reports whether a model can be called right now and
+// the connection-level credential status to surface. A model is available when
+// its credential resolves to a non-zero value, its endpoint needs no
+// credential (local base URL / source none), or its credential is declared
+// as injected (the real secret will be provided by the host at runtime; the
+// env-based resolver chain won't see it at catalog-build time).
+func probeModelAvailability(cfg app.Config, mc app.ModelConfig, resolver credential.Resolver, ctx context.Context) (available bool, reason, credStatus, credSource string) {
+	// Declared as injected → treat as configured (the secret is not in the
+	// env chain — it arrives via injectSecrets / Reconfigure at runtime).
+	if !mc.Credential.IsZero() {
+		ns, name := mc.Credential.Namespace, mc.Credential.Name
+		if entries, ok := cfg.Credentials[ns]; ok {
+			if cc, ok := entries[name]; ok && (cc.Source == "injected" || cc.Source == "jwt" || cc.Source == "keychain") {
+				return true, "", "configured", "injected"
+			}
+		}
+	}
+	// No credential ref and a local base URL → no auth needed.
+	if mc.Credential.IsZero() {
+		if model.IsLocalBaseURL(mc.BaseURL) {
+			return true, "", "none", "none"
+		}
+		// No credential declared at all: treat as unavailable-but-listed so the
+		// host sees why the model cannot run.
+		return false, "no_auth", "missing", ""
+	}
+	// Resolve through the chain (env / credentials section / injected).
+	resolved, err := resolver.Resolve(ctx, mc.Credential.Target())
+	if err != nil {
+		return false, "no_auth", "missing", ""
+	}
+	if resolved.IsZero() {
+		return false, "no_auth", "missing", "env"
+	}
+	return true, "", "configured", credentialSourceFor(mc.Credential)
+}
+
+// credentialSourceFor maps a credential ref's namespace to the wire "source"
+// label. Injected credentials (gateway) are declared, not probed.
+func credentialSourceFor(ref app.CredentialRef) string {
+	if ref.Namespace == "gateway" {
+		return "injected"
+	}
+	return "env"
 }
 
 func normalizedModalities(values []string) []string {

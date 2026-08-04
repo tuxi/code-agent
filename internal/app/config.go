@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -79,6 +80,11 @@ type Config struct {
 	// side-effecting call still goes through the normal approver. See
 	// PermissionsConfig and approve.Allowlisted.
 	Permissions PermissionsConfig `yaml:"permissions"`
+
+	// Warnings collects non-fatal configuration notes raised during load (e.g.
+	// legacy api_key_env usage slated for removal). Printed by CLI entry points
+	// at startup; empty when the config is clean. Code-level only (yaml:"-").
+	Warnings []string `yaml:"-"`
 
 	// StoreFactory, if set, creates the session store for a workspace root.
 	// When nil (default), the built-in SQLite store is used (backward compatible).
@@ -400,6 +406,188 @@ func LoadConfig(path string) (Config, error) {
 	return LoadConfigBytes(data)
 }
 
+// LoadConfigLayered loads configuration with the flattening layering
+// (design-connection-flattening §8.3): built-in registry defaults (layer 1,
+// applied during LoadConfigBytes normalization) → user-global
+// ~/.codeagent/config.yaml (layer 2) → project <cwd>/.codeagent/config.yaml
+// (layer 3). The project layer wins on conflict; a missing user file is not
+// an error.
+//
+// The project config lives under a hidden directory (.codeagent/) to avoid
+// colliding with any project's own config.yaml (§8.5.1). When the new path
+// does not exist but an old bare config.yaml does, the old file is read with
+// a deprecation warning.
+//
+// LoadConfig keeps its single-file semantics for embedded hosts and tests;
+// CLI/daemon entry points use this layered form so model/credential config
+// follows the user across directories instead of requiring a config.yaml copy
+// in every workspace.
+func LoadConfigLayered(projectPath string) (Config, error) {
+	// Layer 2: user-global config.
+	var userCfg Config
+	if home, err := os.UserHomeDir(); err == nil {
+		userPath := filepath.Join(home, ".codeagent", "config.yaml")
+		if data, err := os.ReadFile(userPath); err == nil {
+			if userCfg, err = LoadConfigBytes(data); err != nil {
+				return Config{}, fmt.Errorf("user config %s: %w", userPath, err)
+			}
+		} else if errors.Is(err, os.ErrNotExist) {
+			bootstrapUserConfig(userPath)
+		} else {
+			return Config{}, fmt.Errorf("read user config %s: %w", userPath, err)
+		}
+	}
+
+	// Layer 3: project config (<cwd>/.codeagent/config.yaml).
+	projectCfg, err := LoadConfig(projectPath)
+	if err != nil {
+		return Config{}, err
+	}
+	// When the new project path does not exist, try the legacy bare
+	// config.yaml (with warning) before falling back to user config alone.
+	// This avoids the conflict with backend projects' own config.yaml and
+	// the "default_model is not defined" error when a bare project file
+	// has no models.
+	if projectFileDidNotExist(projectPath) {
+		if oldCfg, oldErr := tryLegacyProjectConfig(); oldErr == nil {
+			oldCfg.Warnings = append(oldCfg.Warnings,
+				"config.yaml at the project root is deprecated; move it to .codeagent/config.yaml")
+			if userCfg.DefaultModel != "" && oldCfg.DefaultModel == "" {
+				oldCfg.DefaultModel = userCfg.DefaultModel
+			}
+			merged := MergeConfigs(userCfg, oldCfg)
+			if err := validateMergedDefaultModel(merged); err != nil {
+				return Config{}, err
+			}
+			return merged, nil
+		}
+		if err := validateMergedDefaultModel(userCfg); err != nil {
+			return Config{}, err
+		}
+		return userCfg, nil
+	}
+	merged := MergeConfigs(userCfg, projectCfg)
+	if err := validateMergedDefaultModel(merged); err != nil {
+		return Config{}, err
+	}
+	return merged, nil
+}
+
+// validateMergedDefaultModel checks that the default_model (after merging
+// all layers) is present in the merged model space. This replaces the
+// single-file validation that was in LoadConfigBytes; layered loads must
+// validate against the fully merged result because the project layer may
+// have default_model while models come from the user layer.
+func validateMergedDefaultModel(cfg Config) error {
+	if len(cfg.Models) == 0 && cfg.DefaultModel != "" {
+		return fmt.Errorf("default_model %q cannot be set when models is empty", cfg.DefaultModel)
+	}
+	if len(cfg.Models) > 0 && cfg.DefaultModel != "" {
+		if _, ok := cfg.Models[cfg.DefaultModel]; !ok {
+			return fmt.Errorf("default_model %q is not defined under models", cfg.DefaultModel)
+		}
+	}
+	return nil
+}
+
+// tryLegacyProjectConfig reads a bare config.yaml in the current directory
+// for backward compatibility. A nonexistent file returns an error.
+func tryLegacyProjectConfig() (Config, error) {
+	return LoadConfig("config.yaml")
+}
+
+// projectFileDidNotExist reports whether the project config path was absent
+// when LoadConfig was called — the config came entirely from builtin defaults.
+func projectFileDidNotExist(path string) bool {
+	if path == "" {
+		return true
+	}
+	_, err := os.Stat(path)
+	return err != nil
+}
+
+// MergeConfigs merges a lower-priority (user-global) config with a
+// higher-priority (project) config. The flattening-relevant sections are
+// merged per design §8.3: models and credentials union with the project layer
+// winning per key; default_model and subagent_model fall back to the user
+// layer when the project leaves them unset. All other sections (server,
+// provider, agent, web, ...) come from the project layer, which is already
+// defaulted by LoadConfigBytes — a user config that does not touch them has no
+// effect, matching the "project owns behavior, user owns models/credentials"
+// split.
+func MergeConfigs(user, project Config) Config {
+	// Models: union, project wins per friendly name.
+	if project.Models == nil {
+		project.Models = map[string]ModelConfig{}
+	}
+	for name, mc := range user.Models {
+		if _, exists := project.Models[name]; !exists {
+			project.Models[name] = mc
+		}
+	}
+	// Credentials: union, project wins per namespace/name.
+	if project.Credentials == nil {
+		project.Credentials = map[string]map[string]CredentialConfig{}
+	}
+	for ns, entries := range user.Credentials {
+		merged, ok := project.Credentials[ns]
+		if !ok {
+			merged = map[string]CredentialConfig{}
+		}
+		for name, cc := range entries {
+			if _, exists := merged[name]; !exists {
+				merged[name] = cc
+			}
+		}
+		project.Credentials[ns] = merged
+	}
+	// default_model / subagent_model: project wins when set, else user.
+	if project.DefaultModel == "" {
+		project.DefaultModel = user.DefaultModel
+	}
+	if project.Agent.SubagentModel == "" {
+		project.Agent.SubagentModel = user.Agent.SubagentModel
+	}
+	// Merge warnings from both layers.
+	project.Warnings = append(project.Warnings, user.Warnings...)
+	return project
+}
+
+// bootstrapUserConfig writes a commented template config to userPath on first
+// launch so the user knows the file exists and can edit it. The built-in
+// registry already provides open-box models; this file is a scaffold (nil return
+// = start without user config, same as before). Failure is best-effort — the
+// registry keeps the runtime usable.
+func bootstrapUserConfig(userPath string) {
+	if err := os.MkdirAll(filepath.Dir(userPath), 0o755); err != nil {
+		return
+	}
+	const template = `# ~/.codeagent/config.yaml — 用户级模型/凭证配置
+# 首次启动时自动生成。edit it to add custom models, connections, or credentials.
+# 内建 registry 已提供 deepseek / qwen / glm / ollama / gateway 的开箱模型;
+# 本文件在其基础上追加或覆盖。
+
+# default_model: deepseek-pro  # 取消注释以选择默认模型
+# subagent_model: deepseek     # 取消注释以指定子代理模型（性能/成本偏好）
+
+# credentials:
+#   llm:
+#     my-key:
+#       source: env
+#       env: MY_API_KEY
+
+# models:
+#   my-model:
+#     provider: openai
+#     base_url: https://api.example.com/v1
+#     model: my-model-name
+#     credential:
+#       namespace: llm
+#       name: my-key
+`
+	os.WriteFile(userPath, []byte(template), 0o644)
+}
+
 // LoadConfigBytes parses configuration from raw YAML bytes (nil or empty =>
 // built-in defaults), applying the same normalization and validation as
 // LoadConfig. Embedded hosts (iOS/macOS in-app) supply config in-memory rather
@@ -422,10 +610,9 @@ func LoadConfigBytes(data []byte) (Config, error) {
 	if cfg.Models == nil {
 		cfg.Models = map[string]ModelConfig{
 			"deepseek": {
-				Provider:  "openai",
-				BaseURL:   "https://api.deepseek.com",
-				Model:     "deepseek-v4-flash",
-				APIKeyEnv: "DEEPSEEK_API_KEY",
+				Provider: "openai",
+				BaseURL:  "https://api.deepseek.com",
+				Model:    "deepseek-v4-flash",
 			},
 		}
 	}
@@ -446,6 +633,15 @@ func LoadConfigBytes(data []byte) (Config, error) {
 		if mc.Provider == "" {
 			mc.Provider = "openai"
 		}
+		// R1.5: flag the legacy api_key_env path BEFORE the registry fills it,
+		// so only user-written api_key_env (from YAML) triggers it.
+		if mc.APIKey == "" && mc.APIKeyEnv != "" {
+			cfg.Warnings = append(cfg.Warnings,
+				fmt.Sprintf("model %q uses legacy api_key_env %q; migrate to the credentials section (api_key_env is deprecated)", name, mc.APIKeyEnv))
+		}
+		// R2.1: fill base_url / api_key_env from the built-in registry when the
+		// config leaves them empty (registry never overrides explicit values).
+		applyRegistryDefaults(&mc)
 		if mc.Temperature <= 0 {
 			mc.Temperature = 0.2
 		}
@@ -498,13 +694,10 @@ func LoadConfigBytes(data []byte) (Config, error) {
 	if cfg.Currency == "" {
 		cfg.Currency = "$"
 	}
+	// Explicit models: {} means the host intentionally wants no models. A
+	// non-empty default_model contradicts that intent — catch it early.
 	if len(cfg.Models) == 0 && cfg.DefaultModel != "" {
 		return Config{}, fmt.Errorf("default_model %q cannot be set when models is empty", cfg.DefaultModel)
-	}
-	if len(cfg.Models) > 0 {
-		if _, ok := cfg.Models[cfg.DefaultModel]; !ok {
-			return Config{}, fmt.Errorf("default_model %q is not defined under models", cfg.DefaultModel)
-		}
 	}
 
 	if cfg.Web.Search.Provider == "gateway" {
@@ -562,8 +755,33 @@ func (c Config) SelectModel(name string) (ModelConfig, error) {
 	}
 	mc, ok := c.Models[name]
 	if !ok {
-		return ModelConfig{}, fmt.Errorf("unknown model %q; configured models: %s",
-			name, strings.Join(c.ModelNames(), ", "))
+		// R2.3: fall back to the built-in registry for known connection names so
+		// `--model deepseek` / subagent_model: deepseek keep working even when
+		// the config never declared them (the model/credential config is
+		// user-level; the registry provides the open-box default). Unknown names
+		// still error exactly as before.
+		conn, known := builtinConnections[name]
+		if !known {
+			return ModelConfig{}, fmt.Errorf("unknown model %q; configured models: %s",
+				name, strings.Join(c.ModelNames(), ", "))
+		}
+		mc = ModelConfig{
+			Name:       name,
+			Provider:   "openai",
+			BaseURL:    conn.BaseURL,
+			Model:      conn.WireModel,
+			APIKeyEnv:  conn.Env,
+			ContextWindow: defaultContextWindow,
+			Temperature: 0.2,
+		}
+		if model.IsLocalBaseURL(mc.BaseURL) {
+			mc.Credential = CredentialRef{} // none needed
+		} else if conn.Env != "" {
+			mc.Credential = CredentialRef{Namespace: "llm", Name: name}
+		}
+		if mc.APIKey == "" && mc.APIKeyEnv != "" {
+			mc.APIKey = os.Getenv(mc.APIKeyEnv)
+		}
 	}
 	if mc.APIKey == "" && !model.IsLocalBaseURL(mc.BaseURL) && mc.Credential.IsZero() {
 		if mc.APIKeyEnv != "" {

@@ -45,9 +45,13 @@ func run() error {
 	autoMode, args := runtime.ExtractAutoFlag(args)
 	noContextFiles, args := runtime.ExtractNoContextFilesFlag(args)
 
-	cfg, err := app.LoadConfig("config.yaml")
+	cfg, err := app.LoadConfigLayered(".codeagent/config.yaml")
 	if err != nil {
 		return err
+	}
+	// R1.5: surface legacy api_key_env deprecation notes collected during load.
+	for _, w := range cfg.Warnings {
+		fmt.Fprintln(os.Stderr, "warning:", w)
 	}
 	// MCP servers come from Claude-compatible `.mcp.json` files, layered by scope:
 	// project (<root>/.mcp.json) over user (~/.codeagent/mcp.json). Set
@@ -319,9 +323,20 @@ func printCostReport(usage []session.ModelUsage, cfg app.Config) {
 		return
 	}
 	// Requests store the wire model string; map it to that model's prices.
+	// Include the built-in registry connections so a model selected without a
+	// config declaration (T2.2) is still matched to its (registry-derived)
+	// ModelConfig.
 	priced := map[string]app.ModelConfig{}
 	for _, mc := range cfg.Models {
 		priced[mc.Model] = mc
+	}
+	for _, name := range cfg.AvailableModelNames() {
+		if _, exists := priced[name]; exists {
+			continue
+		}
+		if mc, err := cfg.SelectModel(name); err == nil {
+			priced[mc.Model] = mc
+		}
 	}
 	cur := cfg.Currency
 	if cur == "" {
@@ -766,7 +781,7 @@ func runTUI(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider mo
 		}, nil
 	}
 	goalOps := buildGoalOps(cfg, mc, runner, store)
-	return tui.Run(ctx, backend, runner, sess, store, header, resume, modelSwap, cfg.ModelNames(), approver, rules, mcpPromptOps{ctx: ctx, mgr: mcpMgr}, goalOps)
+	return tui.Run(ctx, backend, runner, sess, store, header, resume, modelSwap, cfg.AvailableModelNames(), approver, rules, mcpPromptOps{ctx: ctx, mgr: mcpMgr}, goalOps)
 }
 
 // runPlugin handles `codeagent plugin <subcommand> [args...]`.

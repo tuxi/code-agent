@@ -110,3 +110,66 @@ func TestEnvResolverCustomMappingNotMatched(t *testing.T) {
 		t.Errorf("expected zero credential, got %+v", c)
 	}
 }
+
+// TestEnvResolverUseDefault verifies the explicit "mapping plus convention"
+// mode (R1.4): with UseDefault set, a target absent from the mapping still
+// falls back to the default <NAME>_API_KEY convention.
+func TestEnvResolverUseDefault(t *testing.T) {
+	os.Setenv("DEEPSEEK_API_KEY", "sk-convention")
+	defer os.Unsetenv("DEEPSEEK_API_KEY")
+
+	r := &EnvResolver{
+		Mapping: map[string][]Target{
+			"MY_CUSTOM_KEY": {{Namespace: "gateway", Name: "default"}},
+		},
+		UseDefault: true,
+	}
+	ctx := context.Background()
+
+	// llm/deepseek is not in the mapping — UseDefault falls back to the
+	// convention (DEEPSEEK_API_KEY).
+	c, err := r.Resolve(ctx, Target{Namespace: "llm", Name: "deepseek"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if c.Secret != "sk-convention" {
+		t.Errorf("Secret = %q, want %q (default convention fallback)", c.Secret, "sk-convention")
+	}
+	if c.Source != "env:DEEPSEEK_API_KEY" {
+		t.Errorf("Source = %q, want %q", c.Source, "env:DEEPSEEK_API_KEY")
+	}
+
+	// Non-llm targets still resolve via the explicit mapping only.
+	c, err = r.Resolve(ctx, Target{Namespace: "gateway", Name: "default"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if c.Secret != "" {
+		t.Errorf("gateway/default should be zero without MY_CUSTOM_KEY set, got %q", c.Secret)
+	}
+}
+
+// TestEnvResolverUseDefaultStillHonorsMapping verifies that an explicitly
+// mapped target wins over the convention when UseDefault is set.
+func TestEnvResolverUseDefaultStillHonorsMapping(t *testing.T) {
+	os.Setenv("MY_CUSTOM_KEY", "sk-custom")
+	defer os.Unsetenv("MY_CUSTOM_KEY")
+	os.Setenv("DEEPSEEK_API_KEY", "sk-convention")
+	defer os.Unsetenv("DEEPSEEK_API_KEY")
+
+	r := &EnvResolver{
+		Mapping: map[string][]Target{
+			"MY_CUSTOM_KEY": {{Namespace: "llm", Name: "deepseek"}},
+		},
+		UseDefault: true,
+	}
+	ctx := context.Background()
+
+	c, err := r.Resolve(ctx, Target{Namespace: "llm", Name: "deepseek"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if c.Secret != "sk-custom" {
+		t.Errorf("Secret = %q, want %q (explicit mapping must win)", c.Secret, "sk-custom")
+	}
+}

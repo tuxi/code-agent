@@ -475,7 +475,8 @@ models:
 }
 
 // TestE0_InjectSecretsOldFormatStillWorks verifies that old-format secrets
-// (env-var-name → plain string) still inject into APIKey.
+// (env-var-name → plain string) still inject: the plain string becomes a
+// bearer credential on llm/<name> served through the resolver chain (R3.3).
 func TestE0_InjectSecretsOldFormatStillWorks(t *testing.T) {
 	cfg := app.Config{
 		Models: map[string]app.ModelConfig{
@@ -488,14 +489,18 @@ func TestE0_InjectSecretsOldFormatStillWorks(t *testing.T) {
 	}
 	resolver := injectSecrets(&cfg, secrets)
 
-	// Old format should not produce a resolver.
-	if resolver != nil {
-		t.Error("old-format secrets should return nil resolver")
+	// Old format now produces a resolver carrying the plain-string secret.
+	if resolver == nil {
+		t.Fatal("old-format secrets should produce a resolver")
 	}
-
-	// APIKey should still be set (backward compat).
-	if cfg.Models["deepseek"].APIKey != "sk-legacy" {
-		t.Errorf("APIKey = %q, want sk-legacy", cfg.Models["deepseek"].APIKey)
+	c, err := resolver.Resolve(context.Background(), credential.Target{Namespace: "llm", Name: "deepseek"})
+	if err != nil || c.Secret != "sk-legacy" {
+		t.Errorf("resolved = %q, %v; want sk-legacy", c.Secret, err)
+	}
+	// The model's Credential ref is aligned to llm/deepseek so the resolver is
+	// reachable via the ref (the deprecated APIKey field is no longer written).
+	if mc := cfg.Models["deepseek"]; mc.Credential != (app.CredentialRef{Namespace: "llm", Name: "deepseek"}) {
+		t.Errorf("Credential ref = %+v, want llm/deepseek", mc.Credential)
 	}
 }
 
@@ -572,9 +577,10 @@ models:
 	// but the old APIKey on the model should still be "valid-token".
 	_ = injectedMalformed
 
-	// Re-verify old token: the model in the ORIGINAL cfg still points to valid-token.
-	if cfg.Models["agent"].APIKey != "valid-token" {
-		t.Errorf("APIKey = %q, want valid-token (old state preserved)", cfg.Models["agent"].APIKey)
+	// Re-verify old token: the model in the ORIGINAL cfg still points to the
+	// gateway credential ref (the deprecated APIKey field is no longer written).
+	if mc := cfg.Models["agent"]; mc.Credential != (app.CredentialRef{Namespace: "gateway", Name: "default"}) {
+		t.Errorf("Credential ref = %+v, want gateway/default (old state preserved)", mc.Credential)
 	}
 
 	// The original resolver still returns the valid token.

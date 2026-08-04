@@ -58,19 +58,34 @@ func TestRuntimeContractPersistsIdentityAndCatalogRevisionWithoutSecrets(t *test
 	}
 	model := catalog1.Connections[0].Models[0]
 	if model.RuntimeAlias != alias || model.WireModelID != "deepseek-chat" ||
-		!model.SupportsTools || len(model.InputModalities) != 2 || !model.Available {
+		!model.SupportsTools || len(model.InputModalities) != 2 {
 		t.Fatalf("catalog model = %+v", model)
+	}
+	// R3.1: availability is real. The test config has no credential for the
+	// model, so it must be listed-but-unavailable with a reason (not the old
+	// hardcoded true).
+	if model.Available {
+		t.Errorf("model should be unavailable without a credential, got %+v", model)
+	}
+	if model.UnavailableReason != "no_auth" {
+		t.Errorf("UnavailableReason = %q, want no_auth", model.UnavailableReason)
 	}
 	encoded, _ := json.Marshal(catalog1)
 	for _, forbidden := range []string{
 		"secret-provider.example",
 		"secret-api-key",
 		`"base_url"`,
-		`"credential"`,
 	} {
 		if strings.Contains(string(encoded), forbidden) {
 			t.Fatalf("catalog leaked %q: %s", forbidden, encoded)
 		}
+	}
+	// R3.1: the credential subobject is non-secret (status/source only) — it
+	// must never carry a secret value (N1.2).
+	if cred := catalog1.Connections[0].Credential; cred == nil {
+		t.Error("expected connection credential subobject")
+	} else if cred.Status != "missing" || cred.Source != "env" {
+		t.Errorf("credential = %+v, want {missing env}", cred)
 	}
 
 	changed := cfg
@@ -98,7 +113,7 @@ func TestRuntimeModelCatalogAllowsZeroModels(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if catalog.Schema != "runtime-model-catalog/v1" || catalog.DefaultRuntimeAlias != "" ||
+	if catalog.Schema != "runtime-model-catalog/v2" || catalog.DefaultRuntimeAlias != "" ||
 		catalog.Connections == nil || len(catalog.Connections) != 0 {
 		t.Fatalf("zero-model catalog = %+v", catalog)
 	}
