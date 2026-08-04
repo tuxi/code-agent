@@ -333,6 +333,14 @@ func (m model) handleEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 		return m, waitForEvent(m.b.events)
 	}
 
+	// Plan-mode state is live UI state (the ⏸ PLAN badge), never transcript
+	// output — same treatment as the checklist. This is what makes the badge
+	// react to the model's own enter_plan_mode, not just the user's ctrl+p.
+	if ev.Kind == agent.EventPlanStateChanged {
+		m.planState = ev.PlanState
+		return m, waitForEvent(m.b.events)
+	}
+
 	// Streamed text (8.6): an ephemeral live preview, never the transcript. It is
 	// cleared around each model call (below), so the authoritative render — the
 	// step card or the final reply printed to scrollback — takes over cleanly.

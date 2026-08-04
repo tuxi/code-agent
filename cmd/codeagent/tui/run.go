@@ -151,7 +151,7 @@ func Run(ctx context.Context, b *Backend, runner *agent.Runner, sess *session.Se
 				if on {
 					runner.BeginPlanning("")
 				} else {
-					runner.PlanState = agent.PlanStatusNone
+					runner.SetPlanState(agent.PlanStatusNone)
 				}
 			case obj := <-b.goalStart:
 				// A /goal pursuit is a long, multi-turn turn: it drives runner.RunTurn

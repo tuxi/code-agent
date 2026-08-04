@@ -66,12 +66,17 @@ const (
 	EventTaskStarted  EventKind = "task_started"
 	EventTaskFinished EventKind = "task_finished"
 
-	// Plan mode (10.1). PlanProposed fires when the model calls propose_plan.
-	// Text carries the full plan content. PlanApproved/PlanRejected fire after the
-	// user's verdict; Text carries the plan ID.
-	EventPlanProposed EventKind = "plan_proposed"
-	EventPlanApproved EventKind = "plan_approved"
-	EventPlanRejected EventKind = "plan_rejected"
+	// Plan mode (10.1). PlanStateChanged fires whenever the plan state machine
+	// transitions — entering plan mode (enter_plan_mode), proposing, approving,
+	// rejecting, or exiting — so a client can render plan-mode state without
+	// polling. PlanState carries the new state. PlanProposed fires when the model
+	// calls propose_plan. Text carries the full plan content.
+	// PlanApproved/PlanRejected fire after the user's verdict; Text carries the
+	// plan ID.
+	EventPlanStateChanged EventKind = "plan_state_changed"
+	EventPlanProposed     EventKind = "plan_proposed"
+	EventPlanApproved     EventKind = "plan_approved"
+	EventPlanRejected     EventKind = "plan_rejected"
 
 	// Human-in-the-Loop task clarification. AskUserPosted fires when the model
 	// calls ask_user with a question and options. AskUserResolved fires when the
@@ -184,6 +189,9 @@ type Event struct {
 
 	// Todos carries the model's current task checklist on EventTodoUpdated (8.4).
 	Todos []tools.Todo
+
+	// PlanState carries the new state on EventPlanStateChanged (10.1).
+	PlanState PlanStatus
 
 	// Model / thinking.
 	Text               string        // reasoning delta/snapshot or final answer, selected by Kind

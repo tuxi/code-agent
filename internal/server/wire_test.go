@@ -207,6 +207,11 @@ func cases() map[string]wireCase {
 			SessionID: "sess_root", TurnID: "turn_7",
 			Text: "plan_abc123",
 		}},
+		"plan_state_changed": {ev: agent.Event{
+			Kind: agent.EventPlanStateChanged, At: fixedAt,
+			SessionID: "sess_root", TurnID: "turn_7",
+			PlanState: agent.PlanStatusPlanning,
+		}},
 		// Job events (P8.7): session_id carries the JOB's id — the partition key a
 		// client uses to fetch the child stream (GET /v1/jobs/{job_id}/events).
 		// call_id = the originating run_command(background) call, for the same

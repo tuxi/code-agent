@@ -12,7 +12,7 @@ type RunnerRef struct {
 // BeginPlanning starts a fresh discovery cycle. All prior critic/reviewer
 // verdicts are scoped to the old plan and must not leak into the new one.
 func (r *Runner) BeginPlanning(title string) {
-	r.PlanState = PlanStatusPlanning
+	r.SetPlanState(PlanStatusPlanning)
 	r.planTitle = title
 	r.activePlan = nil
 	r.lastAssistantText = ""
@@ -21,6 +21,21 @@ func (r *Runner) BeginPlanning(title string) {
 	r.planCriticDigest = ""
 	r.plannedMutation = false
 	r.independentReviewPassed = false
+}
+
+// SetPlanState transitions the plan state machine and emits a
+// plan_state_changed event so clients can render plan-mode state without
+// polling (10.1). It is the single mutation point for Runner.PlanState; every
+// transition — entering plan mode, proposing, approving, rejecting, or
+// exiting — funnels through here. No-op when the state is unchanged (e.g.
+// enter_plan_mode's already-in-plan-mode guard), so a redundant transition
+// never spams the event stream.
+func (r *Runner) SetPlanState(s PlanStatus) {
+	if r.PlanState == s {
+		return
+	}
+	r.PlanState = s
+	r.emit(Event{Kind: EventPlanStateChanged, PlanState: s})
 }
 
 func (r *Runner) independentTaskAvailable() bool {
@@ -47,6 +62,24 @@ const (
 	PlanStatusRejected                    // user rejected the plan
 	PlanStatusExecuting                   // approved plan is being implemented
 )
+
+// String renders the stable wire form of a plan state (plan_state_changed).
+func (s PlanStatus) String() string {
+	switch s {
+	case PlanStatusPlanning:
+		return "planning"
+	case PlanStatusProposing:
+		return "proposing"
+	case PlanStatusApproved:
+		return "approved"
+	case PlanStatusRejected:
+		return "rejected"
+	case PlanStatusExecuting:
+		return "executing"
+	default:
+		return "none"
+	}
+}
 
 // Plan is an implementation plan produced during plan mode. It is written to disk
 // as a .md file under .codeagent/plans/ so the user can review it outside the tool.

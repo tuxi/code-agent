@@ -59,6 +59,9 @@ type wireEvent struct {
 	// Todo checklist.
 	Todos []tools.Todo `json:"todos,omitempty"`
 
+	// Plan state (plan_state_changed). Carries the new PlanStatus on the wire.
+	PlanState string `json:"plan_state,omitempty"`
+
 	// Model / thinking.
 	Text               string `json:"text,omitempty"`
 	PromptTokens       int    `json:"prompt_tokens,omitempty"`
@@ -154,6 +157,10 @@ func toWire(e agent.Event) wireEvent {
 	}
 	if e.Kind == agent.EventTurnFailed && e.Err != "" {
 		w.Error = &wireError{Code: e.ErrorCode, Message: e.Err}
+	}
+	// Plan state rides only its own kind so existing frames never gain a field.
+	if e.Kind == agent.EventPlanStateChanged {
+		w.PlanState = e.PlanState.String()
 	}
 	// Duration goes out as milliseconds, never Go's default nanoseconds (§3.2).
 	if e.Elapsed > 0 {

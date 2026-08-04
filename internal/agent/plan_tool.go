@@ -248,7 +248,7 @@ func (t *proposePlanTool) Execute(_ context.Context, ec tools.ExecutionContext, 
 			"propose_plan: the plan file differs from the version approved by plan_critic; run the critic again")
 	}
 
-	r.PlanState = PlanStatusProposing
+	r.SetPlanState(PlanStatusProposing)
 	r.activePlan = &plan
 
 	r.emit(Event{
@@ -264,7 +264,7 @@ func (t *proposePlanTool) Execute(_ context.Context, ec tools.ExecutionContext, 
 
 	switch decision {
 	case PlanApproved:
-		r.PlanState = PlanStatusExecuting
+		r.SetPlanState(PlanStatusExecuting)
 		plan.Status = PlanStatusApproved
 		r.emit(Event{Kind: EventPlanApproved, Text: plan.ID})
 		promptNote := ""
@@ -279,7 +279,7 @@ func (t *proposePlanTool) Execute(_ context.Context, ec tools.ExecutionContext, 
 				plan.FilePath, promptNote),
 		}, nil
 	default:
-		r.PlanState = PlanStatusPlanning
+		r.SetPlanState(PlanStatusPlanning)
 		r.planCriticPassed = false
 		r.planCriticPath = ""
 		r.planCriticDigest = ""
