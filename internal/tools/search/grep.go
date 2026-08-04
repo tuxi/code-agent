@@ -11,6 +11,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"unicode/utf8"
 )
@@ -52,6 +53,33 @@ func NewGrepTool() *GrepTool {
 	}
 }
 
+// queryMatcher matches a query against a single line. Queries are interpreted
+// as case-insensitive RE2 regular expressions; when the pattern does not
+// compile (e.g. "C++" or a stray "("), matching falls back to a
+// case-insensitive literal substring search so plain text queries keep working.
+type queryMatcher struct {
+	re  *regexp.Regexp // nil when the query is not a valid regex
+	lit string         // lowercased literal query, used only when re == nil
+}
+
+func compileQuery(query string) *queryMatcher {
+	if re, err := regexp.Compile(`(?i)` + query); err == nil {
+		return &queryMatcher{re: re}
+	}
+	return &queryMatcher{lit: strings.ToLower(query)}
+}
+
+// find returns the 0-based byte offset of the first match in line, or -1.
+func (m *queryMatcher) find(line string) int {
+	if m.re != nil {
+		if loc := m.re.FindStringIndex(line); loc != nil {
+			return loc[0]
+		}
+		return -1
+	}
+	return strings.Index(strings.ToLower(line), m.lit)
+}
+
 func (g *GrepTool) Name() string {
 	return "grep"
 }
@@ -62,7 +90,7 @@ func (g *GrepTool) Description() string {
 
 func (g *GrepTool) InputSchema() json.RawMessage {
 	return tools.Object(map[string]tools.Property{
-		"query": {Type: "string", Description: "Text or pattern to search for."},
+		"query": {Type: "string", Description: "Text or pattern to search for. Interpreted as a case-insensitive RE2 regular expression; falls back to literal text when the pattern is invalid."},
 		"path":  {Type: "string", Description: `Directory to search under, relative to the workspace root. Use "." for the root.`},
 	}, "query").JSON()
 }
@@ -79,6 +107,7 @@ func (g *GrepTool) Execute(ctx context.Context, ec tools.ExecutionContext, input
 	if in.Query == "" {
 		return tools.ToolResult{}, fmt.Errorf("missing query")
 	}
+	matcher := compileQuery(in.Query)
 
 	if in.Path == "" {
 		in.Path = "."
@@ -143,7 +172,7 @@ func (g *GrepTool) Execute(ctx context.Context, ec tools.ExecutionContext, input
 				return nil
 			}
 
-			fileMatches, err := g.searchFile(rootAbs, path, in.Query)
+			fileMatches, err := g.searchFile(rootAbs, path, matcher)
 			if err == nil {
 				matches = append(matches, fileMatches...)
 			}
@@ -151,7 +180,7 @@ func (g *GrepTool) Execute(ctx context.Context, ec tools.ExecutionContext, input
 		})
 	} else {
 		var fileMatches []grepMatch
-		fileMatches, err = g.searchFile(rootAbs, targetAbs, in.Query)
+		fileMatches, err = g.searchFile(rootAbs, targetAbs, matcher)
 		if err == nil {
 			matches = append(matches, fileMatches...)
 		}
@@ -176,7 +205,7 @@ func (g *GrepTool) Execute(ctx context.Context, ec tools.ExecutionContext, input
 	return tools.ToolResult{Content: content, Output: output, Assets: refs}, nil
 }
 
-func (g *GrepTool) searchFile(rootAbs, path, query string) ([]grepMatch, error) {
+func (g *GrepTool) searchFile(rootAbs, path string, m *queryMatcher) ([]grepMatch, error) {
 
 	info, err := os.Stat(path)
 	if err != nil {
@@ -201,12 +230,10 @@ func (g *GrepTool) searchFile(rootAbs, path, query string) ([]grepMatch, error) 
 	abs, _ := filepath.Abs(path)
 	scanner := bufio.NewScanner(strings.NewReader(string(data)))
 	lineNo := 0
-	lowerQuery := strings.ToLower(query)
 	for scanner.Scan() {
 		lineNo++
 		line := scanner.Text()
-		lowerLine := strings.ToLower(line)
-		if idx := strings.Index(lowerLine, lowerQuery); idx >= 0 {
+		if idx := m.find(line); idx >= 0 {
 			matches = append(matches, grepMatch{
 				Path:         rel,
 				AbsolutePath: abs,

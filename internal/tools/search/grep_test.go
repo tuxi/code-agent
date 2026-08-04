@@ -49,3 +49,61 @@ func TestGrepEmitsSearchAssets(t *testing.T) {
 		t.Fatalf("output = %+v, asset id = %q", out, ref.ID)
 	}
 }
+
+func TestGrepRegexQuery(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "cfg.go"), []byte("cfg.Hooks = append(cfg.Hooks, sf.Hooks...)\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := NewGrepTool().Execute(context.Background(), tools.ExecutionContext{
+		WorkspaceRoot: root,
+		TurnID:        "turn_2",
+		CallID:        "call_grep",
+	}, json.RawMessage(`{"query":"\\.Hooks","path":"."}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Content != "cfg.go:1: cfg.Hooks = append(cfg.Hooks, sf.Hooks...)" {
+		t.Fatalf("regex query content:\n%s", res.Content)
+	}
+}
+
+func TestGrepRegexAnchors(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "a.go"), []byte("var x = 1\nx = 2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := NewGrepTool().Execute(context.Background(), tools.ExecutionContext{
+		WorkspaceRoot: root,
+		TurnID:        "turn_3",
+		CallID:        "call_grep",
+	}, json.RawMessage(`{"query":"^x = ","path":"."}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Content != "a.go:2: x = 2" {
+		t.Fatalf("anchored regex content:\n%s", res.Content)
+	}
+}
+
+func TestGrepInvalidRegexFallsBackToLiteral(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "cpp.go"), []byte("// C++ style\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// "C++" is not a valid RE2 pattern; must fall back to a literal match.
+	res, err := NewGrepTool().Execute(context.Background(), tools.ExecutionContext{
+		WorkspaceRoot: root,
+		TurnID:        "turn_4",
+		CallID:        "call_grep",
+	}, json.RawMessage(`{"query":"C++","path":"."}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Content != "cpp.go:1: // C++ style" {
+		t.Fatalf("literal fallback content:\n%s", res.Content)
+	}
+}
