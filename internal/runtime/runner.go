@@ -44,18 +44,13 @@ func BuildCompactor(cfg app.Config, mc app.ModelConfig, provider model.Provider)
 // tool) and the Emitter (how the event stream is rendered) — everything else
 // (tools, observation, reflection, the skills nudge, compaction, the step cap) is
 // identical, so it lives here and callers cannot drift apart.
-func BuildRunner(cfg app.Config, mc app.ModelConfig, provider model.Provider, registry *tools.Registry, skillReg *skills.Registry, approver agent.Approver, emitter agent.Emitter, rules *approve.RuleStore, root string) *agent.Runner {
-	// Load the project settings layer once; both hooks (P11.c) and the verify
-	// command (P11.b) are sourced from it.
-	set := settings.Load(root, userHome(), os.Stderr)
-
-	// Assign the hook runner only when non-nil, so an absent config stays a nil
-	// interface (not a typed-nil that would defeat the loop's nil-safe check).
-	// Hooks run `sh -c`, so on a no-subprocess host (iOS) BOTH config-layer and
-	// settings-layer hooks are suppressed — never just cfg.Hooks (P11.c).
+func BuildRunner(cfg app.Config, set settings.Settings, mc app.ModelConfig, provider model.Provider, registry *tools.Registry, skillReg *skills.Registry, approver agent.Approver, emitter agent.Emitter, rules *approve.RuleStore, root string) *agent.Runner {
+	// Hook runner: settings-layer hooks (the config layer no longer carries
+	// hooks). Hooks run `sh -c`, so on a no-subprocess host (iOS) they are
+	// suppressed — never just set.Hooks (P11.c).
 	var hook agent.ToolHook
 	if cfg.Profile.AllowsSubprocess() {
-		allHooks := append(append([]hooks.Hook(nil), cfg.Hooks...), set.Hooks...)
+		allHooks := set.Hooks
 		if hr := hooks.New(allHooks, root); hr != nil {
 			hook = hr
 		}
@@ -82,9 +77,10 @@ func BuildRunner(cfg app.Config, mc app.ModelConfig, provider model.Provider, re
 		RemindSkills:     skillReg.Len() > 0,
 		RemindParallel:   cfg.Agent.MaxParallelTools > 1,
 		RemindHypothesis: true,
-		// Verify command resolution (P11.b): the settings layer's verify block wins,
-		// else the config.yaml legacy value; "auto" detects from the workspace.
-		VerifyCommand: settings.ResolveVerifyFrom(set, root, cfg.Agent.VerifyCommand),
+		// Verify command resolution (P11.b): the settings layer's verify block
+		// wins; "auto" detects from the workspace. Config no longer carries a
+		// legacy verify_command.
+		VerifyCommand: settings.ResolveVerifyFrom(set, root, ""),
 		PlanTools:     tools.Subset(registry, PlanModeToolNames...),
 		Hook:          hook,
 		Compactor:     BuildCompactor(cfg, mc, provider),

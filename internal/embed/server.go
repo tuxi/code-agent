@@ -581,6 +581,38 @@ func (h *Handle) Reconfigure(connectionsJSON, secretsJSON, modelName string) err
 	return nil
 }
 
+// settingsHasInfrastructure reports whether a settings.File carries any
+// infrastructure section (models/credentials/agent/provider/web/runtime/
+// default_model/currency) as opposed to only behavior (permissions/verify/
+// hooks). When true, the embedded cfg is rebuilt from the settings document
+// (single config source); when false the YAML-derived cfg stands and the
+// document supplies behavior only.
+func settingsHasInfrastructure(sf settings.File) bool {
+	if sf.DefaultModel != "" || sf.SubagentModel != "" || sf.Currency != "" {
+		return true
+	}
+	if len(sf.Models) > 0 || len(sf.Credentials) > 0 {
+		return true
+	}
+	if sf.Agent.MaxSteps != 0 || sf.Agent.MaxParallelTools != 0 ||
+		sf.Agent.CompactRatio != 0 || sf.Agent.CompactKeepRatio != 0 ||
+		sf.Agent.ClientToolTimeoutSeconds != 0 || sf.Agent.SubagentModel != "" {
+		return true
+	}
+	if sf.Provider.RequestTimeoutSeconds != 0 || sf.Provider.MaxRetries != 0 ||
+		sf.Provider.BackoffMillis != 0 || sf.Provider.MaxBackoffSeconds != 0 {
+		return true
+	}
+	if sf.Web.Search.Provider != "" || sf.Web.Search.FallbackProvider != "" ||
+		sf.Web.Search.GatewayBaseURL != "" || sf.Web.Search.TopK != 0 ||
+		sf.Web.Search.TimeoutSeconds != 0 || sf.Web.Search.TavilyAPIKeyEnv != "" ||
+		sf.Web.Search.BraveAPIKeyEnv != "" || sf.Web.Fetch.TimeoutSeconds != 0 ||
+		sf.Web.Fetch.CacheTTLSeconds != 0 {
+		return true
+	}
+	return sf.Runtime.MaxConcurrentTurns != 0
+}
+
 // StartServer assembles the runtime and starts the agent-wire HTTP/WS server on
 // the loopback interface, returning once it is listening. The server runs until
 // Handle.Stop is called. The assembly mirrors cmd/codeagent.runServe.
@@ -594,6 +626,36 @@ func StartServer(ctx context.Context, opt Options) (*Handle, error) {
 	cfg, err := app.LoadConfigBytes([]byte(opt.ConfigYAML))
 	if err != nil {
 		return nil, err
+	}
+	// Merged settings view: parse any host-injected SettingsJSON early so
+	// permissions/verify/hooks flow through NewServeRunBuilder → BuildRunner.
+	// Desktop loads disk settings.json via settings.Load; embedded gets them
+	// from the host via opt.SettingsJSON (parse + merge below).
+	var embeddedSettings settings.Settings
+	// design-config-settings-merge.md stage C: settings.json is the single
+	// config source. When the host injects SettingsJSON, it is authoritative —
+	// infrastructure (models/credentials/agent/provider/web) AND behavior
+	// (permissions/verify/hooks) come from it. A legacy ConfigYAML is still
+	// honored (compat): if SettingsJSON carries infrastructure we rebuild cfg
+	// from it; otherwise the ConfigYAML-parsed cfg stands and SettingsJSON only
+	// supplies behavior.
+	if opt.SettingsJSON != "" {
+		sf, err := settings.ParseJSON([]byte(opt.SettingsJSON))
+		if err != nil {
+			return nil, err
+		}
+		// If the settings document declares infrastructure, it replaces the
+		// YAML-derived cfg entirely (single source). If it only carries
+		// behavior (no models/credentials), keep the ConfigYAML cfg and just
+		// merge the behavior into embeddedSettings.
+		if settingsHasInfrastructure(sf) {
+			cfg = app.FromSettings(settings.Settings{DefaultModel: sf.DefaultModel, SubagentModel: sf.SubagentModel, Models: sf.Models, Credentials: sf.Credentials, Agent: sf.Agent, Provider: sf.Provider, Web: sf.Web, Runtime: sf.Runtime, Currency: sf.Currency})
+		}
+		embeddedSettings.Permissions = sf.Permissions
+		embeddedSettings.Hooks = sf.Hooks
+		if sf.Verify != nil {
+			embeddedSettings.Verify = sf.Verify
+		}
 	}
 	// R3.5: connection definitions injected via connectionsJSON are merged into
 	// the config as the top (host) layer before MCP/skills assembly.
@@ -610,26 +672,10 @@ func StartServer(ctx context.Context, opt Options) (*Handle, error) {
 	if opt.WorkspaceDir != "" {
 		// cfg.Workspace removed: workspaceDir flows through Assemble explicitly.
 	}
-	// Project settings injected in-memory (P11.d): fold each block into the config
-	// layer so it flows through the same paths as a disk settings.json — permissions
-	// into the RuleStore seed, verify into the command, hooks into cfg.Hooks. Done
-	// BEFORE the sandboxed block so cfg.Hooks = nil below still wins on iOS.
-	if opt.SettingsJSON != "" {
-		sf, err := settings.ParseJSON([]byte(opt.SettingsJSON))
-		if err != nil {
-			return nil, err
-		}
-		cfg.Permissions.Allow = append(cfg.Permissions.Allow, sf.Permissions.Allow...)
-		cfg.Permissions.Deny = append(cfg.Permissions.Deny, sf.Permissions.Deny...)
-		cfg.Hooks = append(cfg.Hooks, sf.Hooks...)
-		if v := sf.Verify; v != nil && v.Command != "" && !(v.Enabled != nil && !*v.Enabled) {
-			cfg.Agent.VerifyCommand = v.Command
-		}
-	}
 
 	if opt.Sandboxed {
 		cfg.Profile = app.ProfileSandboxed
-		cfg.Hooks = nil // hooks run `sh -c`; disable them on a no-subprocess host
+		embeddedSettings.Hooks = nil // hooks run `sh -c`; disable them on a no-subprocess host
 	}
 
 	// Redirect the session store off $HOME (the read-only iOS container) to a
@@ -693,7 +739,7 @@ func StartServer(ctx context.Context, opt Options) (*Handle, error) {
 		profile = server.RuntimeProfileSandboxed
 	}
 	coreHandler, rt, closers, err := Assemble(
-		srvCtx, cfg, mc, provider, credChain, workspaceDir, cloneStateDir,
+		srvCtx, cfg, embeddedSettings, mc, provider, credChain, workspaceDir, cloneStateDir,
 		RuntimeServerOptions{
 			Profile: profile,
 		},
@@ -761,7 +807,7 @@ func validateEmbeddedLoopbackAddress(addr string) error {
 // The provider must already be built when models are configured (callers differ
 // in how they resolve credentials). It is nil for an intentional models: {}
 // Embedded Runtime. On error, resources opened before the failure are released.
-func Assemble(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider model.Provider, cred credential.Resolver, workspaceDir, cloneStateDir string, serverOptions RuntimeServerOptions) (http.Handler, *Runtime, []func(), error) {
+func Assemble(ctx context.Context, cfg app.Config, set settings.Settings, mc app.ModelConfig, provider model.Provider, cred credential.Resolver, workspaceDir, cloneStateDir string, serverOptions RuntimeServerOptions) (http.Handler, *Runtime, []func(), error) {
 	if workspaceDir == "" {
 		workspaceDir, _ = os.Getwd()
 	}
@@ -826,7 +872,7 @@ func Assemble(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider 
 
 	active := conversation.NewActiveTurnRegistry()
 	subs := conversation.NewSubscriptionManager()
-	rb := runtime.NewServeRunBuilder(cfg, mc, provider, cred, toolReg, wsReg, planRef)
+	rb := runtime.NewServeRunBuilder(cfg, set, mc, provider, cred, toolReg, wsReg, planRef)
 	executor := conversation.NewTurnExecutor(repo, eventStore, active, subs, rb)
 	executor.SetAssetRefReleaseService(rb)
 	maxConcurrentTurns := cfg.RuntimeMaxConcurrentTurns()
@@ -947,10 +993,10 @@ func parseConnectionsJSON(connectionsJSON string) (map[string]connectionDefiniti
 // (gateway chooses the model). When models is non-empty, each entry becomes
 // one ModelConfig sharing the connection's base_url and credential.
 type connectionDefinition struct {
-	API        string                      `json:"api"`
-	BaseURL    string                      `json:"base_url"`
-	Credential *connectionCredentialDecl   `json:"credential"`
-	Models     []connectionModelDef        `json:"models"`
+	API        string                    `json:"api"`
+	BaseURL    string                    `json:"base_url"`
+	Credential *connectionCredentialDecl `json:"credential"`
+	Models     []connectionModelDef      `json:"models"`
 }
 
 // connectionModelDef is one model profile within a connection definition.
@@ -1057,10 +1103,10 @@ func applyConnections(cfg *app.Config, conns map[string]connectionDefinition) {
 			// Gateway / fallback: single model with empty wire model
 			// (gateway chooses). The friendly name is the connection id.
 			cfg.Models[id] = app.ModelConfig{
-				Name:     id,
-				Provider: api,
-				BaseURL:  def.BaseURL,
-				Model:    "",
+				Name:       id,
+				Provider:   api,
+				BaseURL:    def.BaseURL,
+				Model:      "",
 				Credential: cred,
 				APIKeyEnv:  apiKeyEnv,
 			}
@@ -1092,6 +1138,7 @@ func applyConnections(cfg *app.Config, conns map[string]connectionDefinition) {
 		}
 	}
 }
+
 // cannot bridge a map, so secrets cross as a JSON string). Empty input yields a
 // nil map.
 //

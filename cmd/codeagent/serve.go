@@ -10,6 +10,7 @@ import (
 	"code-agent/internal/embed"
 	"code-agent/internal/mcp"
 	"code-agent/internal/model"
+	"code-agent/internal/settings"
 	"code-agent/internal/server"
 )
 
@@ -39,8 +40,9 @@ func runServe(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider 
 
 	// The CLI serve path uses process lifecycle, not the in-app suspend/resume
 	// verbs, so it ignores the returned Runtime bundle.
+	home, _ := os.UserHomeDir()
 	handler, _, closers, err := embed.Assemble(
-		ctx, cfg, mc, provider, cfg.CredentialResolver(nil), root, "",
+		ctx, cfg, settings.Load(root, home, os.Stderr), mc, provider, cfg.CredentialResolver(nil), root, "",
 		embed.RuntimeServerOptions{
 			Profile: server.RuntimeProfileHeadless, DisplayName: cfg.Server.DisplayName, Auth: auth,
 		},

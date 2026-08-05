@@ -36,7 +36,10 @@ type Server struct {
 //   - dataDir:      a writable directory for the runtime's own data (session DBs).
 //     On iOS pass Library/Application Support; pass "" to fall back to workspaceDir.
 //     The desktop $HOME default does not work on iOS ($HOME is read-only).
-//   - configYAML:   the raw config document; pass "" for built-in defaults.
+//   - settingsJSON: the raw settings document (design-config-settings-merge.md) —
+//     the single config source: infrastructure (models/credentials/agent/provider/
+//     web/default_model) AND behavior (permissions/verify/hooks). Pass "" for
+//     built-in defaults.
 //   - modelName:    which configured model to use; pass "" for default_model.
 //   - secretsJSON:  a JSON object of API keys, keyed by a model's api_key_env name
 //     or its friendly name, e.g. {"DEEPSEEK_API_KEY":"sk-..."}. Pass "" for none.
@@ -48,7 +51,7 @@ type Server struct {
 //   - sandboxed:    pass true on iOS to assemble the sandboxed toolset (no shell,
 //     git, gopls, MCP, or hooks). A non-sandboxed macOS host may pass false for
 //     the full desktop toolset.
-func Start(workspaceDir, dataDir, configYAML, modelName, secretsJSON, serverAccessToken, addr string, sandboxed bool) (*Server, error) {
+func Start(workspaceDir, dataDir, settingsJSON, modelName, secretsJSON, serverAccessToken, addr string, sandboxed bool) (*Server, error) {
 	secrets, err := parseSecrets(secretsJSON)
 	if err != nil {
 		return nil, err
@@ -56,7 +59,8 @@ func Start(workspaceDir, dataDir, configYAML, modelName, secretsJSON, serverAcce
 	h, err := embed.StartServer(context.Background(), embed.Options{
 		WorkspaceDir:      workspaceDir,
 		DataDir:           dataDir,
-		ConfigYAML:        configYAML,
+		ConfigYAML:        "",
+		SettingsJSON:      settingsJSON,
 		ModelName:         modelName,
 		Secrets:           secrets,
 		ServerAccessToken: serverAccessToken,

@@ -9,6 +9,7 @@ import (
 	promptpkg "code-agent/internal/prompt"
 	"code-agent/internal/runtime"
 	"code-agent/internal/session"
+	"code-agent/internal/settings"
 	"code-agent/internal/skills"
 	"code-agent/internal/tools"
 	"code-agent/internal/ui"
@@ -30,6 +31,7 @@ import (
 // than the per-turn composite emitter from TurnExecutor. The approver is also
 // statically configured (AutoApprover), not set per-connection.
 type replRunBuilder struct {
+	set      settings.Settings
 	cfg      app.Config
 	mc       app.ModelConfig
 	provider model.Provider
@@ -42,7 +44,7 @@ type replRunBuilder struct {
 }
 
 func (b *replRunBuilder) Build(ctx conversation.RuntimeContext) conversation.TurnRunner {
-	runner := runtime.BuildRunner(b.cfg, b.mc, b.provider, b.registry, b.skillReg, b.approver, b.emitter, b.rules, b.root)
+	runner := runtime.BuildRunner(b.cfg, b.set, b.mc, b.provider, b.registry, b.skillReg, b.approver, b.emitter, b.rules, b.root)
 	runner.ClientWaiter = ctx.ClientWaiter
 	return runner
 }
@@ -119,13 +121,15 @@ func repl(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider mode
 	// Permission rules (config + settings files + interactive "always allow")
 	// live in one store, shared between the terminal approver (which grants into
 	// it) and the loop's allowlist (which reads from it).
-	rules := approve.NewRuleStore(root, cfg.Permissions.Allow, cfg.Permissions.Deny)
+	home, _ := os.UserHomeDir()
+	set := settings.Load(root, home, os.Stderr)
+	rules := approve.NewRuleStore(root, set.Permissions.Allow, set.Permissions.Deny)
 
 	// The AutoApprover wraps the terminal approver and starts disabled unless --auto
 	// seeded it on; /auto on|off flips it per session. Auto-grants are audited by the
 	// loop (correlated EventAutoApproved), so the approver takes no emitter.
 	approver := approve.NewAutoApprover(root, ui.ConfirmApprover{Prompt: ask, Granter: rules}, auto)
-	runner := runtime.BuildRunner(cfg, mc, provider, registry, skillReg, approver, runtime.WithEventStore(buildEmitter(), store, ctx), rules, root)
+	runner := runtime.BuildRunner(cfg, set, mc, provider, registry, skillReg, approver, runtime.WithEventStore(buildEmitter(), store, ctx), rules, root)
 	planRef.R = runner // wire plan tools to the runner (late binding)
 	runner.PlanApprover = &replPlanApprover{ask: ask}
 	runner.AskUserApprover = &replAskUserApprover{ask: ask}

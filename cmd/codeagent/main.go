@@ -9,6 +9,7 @@ import (
 	"code-agent/internal/model"
 	"code-agent/internal/plugins"
 	"code-agent/internal/runtime"
+	"code-agent/internal/settings"
 	"code-agent/internal/session"
 	"code-agent/internal/ui"
 	"context"
@@ -45,10 +46,15 @@ func run() error {
 	autoMode, args := runtime.ExtractAutoFlag(args)
 	noContextFiles, args := runtime.ExtractNoContextFilesFlag(args)
 
-	cfg, err := app.LoadConfigLayered(".codeagent/config.yaml")
-	if err != nil {
-		return err
-	}
+	// Load the merged settings (user + project shared + project local). This is
+	// the single config source post-merge: infrastructure (models/credentials/
+	// agent/provider/web) AND behavior (permissions/verify/hooks) come from
+	// settings.json layers, not config.yaml.
+	home, _ := os.UserHomeDir()
+	set := settings.Load(root, home, os.Stderr)
+	cfg := app.LoadConfigFromSettings(set)
+	var err error
+
 	// R1.5: surface legacy api_key_env deprecation notes collected during load.
 	for _, w := range cfg.Warnings {
 		fmt.Fprintln(os.Stderr, "warning:", w)
@@ -115,6 +121,8 @@ func run() error {
 			return runTranscripts(args[1:])
 		case "init":
 			return runInit(args[1:])
+		case "migrate":
+			return runMigrate(args[1:])
 		}
 	}
 
@@ -590,9 +598,10 @@ func runAgent(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider 
 	// The AutoApprover wraps the human approver; --auto seeds it on, otherwise it is
 	// a transparent pass-through (identical to before). Auto-grants are audited by
 	// the loop (correlated EventAutoApproved), so the approver itself takes no emitter.
-	rules := approve.NewRuleStore(root, cfg.Permissions.Allow, cfg.Permissions.Deny)
+	home, _ := os.UserHomeDir(); set := settings.Load(root, home, os.Stderr)
+	rules := approve.NewRuleStore(root, set.Permissions.Allow, set.Permissions.Deny)
 	approver := approve.NewAutoApprover(root, ui.ConfirmApprover{}, autoMode)
-	runner := runtime.BuildRunner(cfg, mc, provider, registry, skillReg, approver, runtime.WithEventStore(buildEmitter(), store, ctx), rules, root)
+	runner := runtime.BuildRunner(cfg, set, mc, provider, registry, skillReg, approver, runtime.WithEventStore(buildEmitter(), store, ctx), rules, root)
 	planRef.R = runner
 
 	sess, err := session.NewBuilder(root).
@@ -653,9 +662,10 @@ func runGoal(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider m
 		fmt.Fprintln(os.Stderr, "note: auto mode OFF — non-interactive, so confirm-tier tools (mutating commands, edits) will be denied; pass --auto for hands-off.")
 	}
 
-	rules := approve.NewRuleStore(root, cfg.Permissions.Allow, cfg.Permissions.Deny)
+	home, _ := os.UserHomeDir(); set := settings.Load(root, home, os.Stderr)
+	rules := approve.NewRuleStore(root, set.Permissions.Allow, set.Permissions.Deny)
 	approver := approve.NewAutoApprover(root, ui.ConfirmApprover{}, autoMode)
-	runner := runtime.BuildRunner(cfg, mc, provider, registry, skillReg, approver, runtime.WithEventStore(buildEmitter(), store, ctx), rules, root)
+	runner := runtime.BuildRunner(cfg, set, mc, provider, registry, skillReg, approver, runtime.WithEventStore(buildEmitter(), store, ctx), rules, root)
 	planRef.R = runner
 
 	sess, err := session.NewBuilder(root).
@@ -729,9 +739,10 @@ func runTUI(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider mo
 	// hands-off auto mode as repl/run: --auto seeds it on; /auto flips it per session.
 	// The permission store is shared into the loop's allowlist; the TUI card's
 	// interactive "always allow" grant into it is a later step.
-	rules := approve.NewRuleStore(root, cfg.Permissions.Allow, cfg.Permissions.Deny)
+	home, _ := os.UserHomeDir(); set := settings.Load(root, home, os.Stderr)
+	rules := approve.NewRuleStore(root, set.Permissions.Allow, set.Permissions.Deny)
 	approver := approve.NewAutoApprover(root, backend.Approver, autoMode)
-	runner := runtime.BuildRunner(cfg, mc, provider, registry, skillReg, approver, runtime.WithEventStore(backend.Emitter, store, ctx), rules, root)
+	runner := runtime.BuildRunner(cfg, set, mc, provider, registry, skillReg, approver, runtime.WithEventStore(backend.Emitter, store, ctx), rules, root)
 	planRef.R = runner
 	runner.Stream = true // 8.6: stream the model's text live (TUI only)
 	runner.PlanApprover = backend.PlanApprover

@@ -1,8 +1,6 @@
 package app
 
 import (
-	"os"
-	"path/filepath"
 	"testing"
 )
 
@@ -69,90 +67,6 @@ func TestSelectModelRegistryFallback(t *testing.T) {
 	// Unknown names still fail.
 	if _, err := cfg.SelectModel("gpt"); err == nil {
 		t.Error("SelectModel(gpt) must fail (not in registry)")
-	}
-}
-
-// R2.2: layered loading merges a user-global config with a project config;
-// project wins on conflict, user models/credentials survive when the project
-// does not redeclare them, and a missing user file is not an error.
-func TestLoadConfigLayered(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	os.Unsetenv("DEEPSEEK_API_KEY")
-
-	// User-global config: declares qwen + a deepseek model with a credential.
-	userDir := filepath.Join(home, ".codeagent")
-	if err := os.MkdirAll(userDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	userPath := filepath.Join(userDir, "config.yaml")
-	userYAML := `
-default_model: qwen
-models:
-  qwen:
-    model: qwen3-coder-plus
-    credential: {namespace: llm, name: qwen}
-  deepseek:
-    model: deepseek-v4-pro
-credentials:
-  llm:
-    qwen: {source: env, env: DASHSCOPE_API_KEY}
-`
-	if err := os.WriteFile(userPath, []byte(userYAML), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	// Project config: redeclares deepseek (project wins), sets its own
-	// default_model, no user-level key data.
-	projDir := t.TempDir()
-	projPath := filepath.Join(projDir, "config.yaml")
-	projYAML := `
-default_model: deepseek
-models:
-  deepseek:
-    model: deepseek-v4-flash
-`
-	if err := os.WriteFile(projPath, []byte(projYAML), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	cfg, err := LoadConfigLayered(projPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.DefaultModel != "deepseek" {
-		t.Errorf("default_model = %q, want project's deepseek", cfg.DefaultModel)
-	}
-	// Project redeclared deepseek → project's model wins.
-	if mc := cfg.Models["deepseek"]; mc.Model != "deepseek-v4-flash" {
-		t.Errorf("deepseek model = %q, want project's deepseek-v4-flash", mc.Model)
-	}
-	// User's qwen survives the merge.
-	if mc, ok := cfg.Models["qwen"]; !ok || mc.Model != "qwen3-coder-plus" {
-		t.Errorf("qwen = %+v, want merged from user config", mc)
-	}
-	// User's credentials survive.
-	if cc, ok := cfg.Credentials["llm"]["qwen"]; !ok || cc.Source != "env" {
-		t.Errorf("llm/qwen credential = %+v, want merged from user config", cc)
-	}
-}
-
-// A missing user config is not an error — layered loading degrades to the
-// project layer alone.
-func TestLoadConfigLayeredMissingUserConfig(t *testing.T) {
-	home := t.TempDir() // no .codeagent/config.yaml inside
-	t.Setenv("HOME", home)
-
-	projPath := filepath.Join(t.TempDir(), "config.yaml")
-	if err := os.WriteFile(projPath, []byte("default_model: deepseek\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	cfg, err := LoadConfigLayered(projPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.DefaultModel != "deepseek" {
-		t.Errorf("default_model = %q", cfg.DefaultModel)
 	}
 }
 

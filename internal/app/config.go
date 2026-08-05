@@ -4,15 +4,14 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 
 	"code-agent/internal/credential"
-	"code-agent/internal/hooks"
 	"code-agent/internal/mcp"
 	"code-agent/internal/model"
 	"code-agent/internal/session"
+	"code-agent/internal/settings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -70,16 +69,6 @@ type Config struct {
 	// Embedded hosts (iOS/macOS) inject it in-memory (see embed.Options.MCPJSON).
 	// Empty (the default) disables it.
 	MCP mcp.Config `yaml:"-"`
-
-	// Hooks are user-configured pre/post-tool shell commands (8.5). Empty disables.
-	Hooks []hooks.Hook `yaml:"hooks"`
-
-	// Permissions pre-approves (or denies) tool calls by name pattern, mirroring
-	// Claude Code's permission model — so a user need not confirm every call from a
-	// trusted MCP server one at a time. Empty (the default) changes nothing: every
-	// side-effecting call still goes through the normal approver. See
-	// PermissionsConfig and approve.Allowlisted.
-	Permissions PermissionsConfig `yaml:"permissions"`
 
 	// Warnings collects non-fatal configuration notes raised during load (e.g.
 	// legacy api_key_env usage slated for removal). Printed by CLI entry points
@@ -236,14 +225,6 @@ type CredentialConfig struct {
 
 type AgentConfig struct {
 	MaxSteps int `yaml:"max_steps"`
-
-	// VerifyCommand is the project's real build/test command (e.g. "go test ./...").
-	// When set, the finalize self-check runs it deterministically once at the end
-	// of a turn that changed verifiable code without verifying it (P4.3-R Move 2,
-	// the port of Claude Code's Stop hook): a passing run confirms the change, a
-	// failing run re-prompts the model with the real failure. Empty (the default)
-	// disables the runtime verify — the runtime never guesses "unverified".
-	VerifyCommand string `yaml:"verify_command"`
 
 	// CompactRatio is the fraction of a model's context window at which the
 	// session compacts. Defaults to defaultCompactRatio; values outside (0,1) are
@@ -405,106 +386,6 @@ func LoadConfig(path string) (Config, error) {
 	return LoadConfigBytes(data)
 }
 
-// LoadConfigLayered loads configuration with the flattening layering
-// (design-connection-flattening §8.3): built-in registry defaults (layer 1,
-// applied during LoadConfigBytes normalization) → user-global
-// ~/.codeagent/config.yaml (layer 2) → project <cwd>/.codeagent/config.yaml
-// (layer 3). The project layer wins on conflict; a missing user file is not
-// an error.
-//
-// The project config lives under a hidden directory (.codeagent/) to avoid
-// colliding with any project's own config.yaml (§8.5.1). When the new path
-// does not exist but an old bare config.yaml does, the old file is read with
-// a deprecation warning.
-//
-// LoadConfig keeps its single-file semantics for embedded hosts and tests;
-// CLI/daemon entry points use this layered form so model/credential config
-// follows the user across directories instead of requiring a config.yaml copy
-// in every workspace.
-func LoadConfigLayered(projectPath string) (Config, error) {
-	// Layer 2: user-global config.
-	var userCfg Config
-	if home, err := os.UserHomeDir(); err == nil {
-		userPath := filepath.Join(home, ".codeagent", "config.yaml")
-		if data, err := os.ReadFile(userPath); err == nil {
-			if userCfg, err = LoadConfigBytes(data); err != nil {
-				return Config{}, fmt.Errorf("user config %s: %w", userPath, err)
-			}
-		} else if errors.Is(err, os.ErrNotExist) {
-			bootstrapUserConfig(userPath)
-		} else {
-			return Config{}, fmt.Errorf("read user config %s: %w", userPath, err)
-		}
-	}
-
-	// Layer 3: project config (<cwd>/.codeagent/config.yaml).
-	projectCfg, err := LoadConfig(projectPath)
-	if err != nil {
-		return Config{}, err
-	}
-	// When the new project path does not exist, try the legacy bare
-	// config.yaml (with warning) before falling back to user config alone.
-	// This avoids the conflict with backend projects' own config.yaml and
-	// the "default_model is not defined" error when a bare project file
-	// has no models.
-	if projectFileDidNotExist(projectPath) {
-		if oldCfg, oldErr := tryLegacyProjectConfig(); oldErr == nil {
-			oldCfg.Warnings = append(oldCfg.Warnings,
-				"config.yaml at the project root is deprecated; move it to .codeagent/config.yaml")
-			if userCfg.DefaultModel != "" && oldCfg.DefaultModel == "" {
-				oldCfg.DefaultModel = userCfg.DefaultModel
-			}
-			merged := MergeConfigs(userCfg, oldCfg)
-			if err := validateMergedDefaultModel(merged); err != nil {
-				return Config{}, err
-			}
-			return merged, nil
-		}
-		if err := validateMergedDefaultModel(userCfg); err != nil {
-			return Config{}, err
-		}
-		return userCfg, nil
-	}
-	merged := MergeConfigs(userCfg, projectCfg)
-	if err := validateMergedDefaultModel(merged); err != nil {
-		return Config{}, err
-	}
-	return merged, nil
-}
-
-// validateMergedDefaultModel checks that the default_model (after merging
-// all layers) is present in the merged model space. This replaces the
-// single-file validation that was in LoadConfigBytes; layered loads must
-// validate against the fully merged result because the project layer may
-// have default_model while models come from the user layer.
-func validateMergedDefaultModel(cfg Config) error {
-	if len(cfg.Models) == 0 && cfg.DefaultModel != "" {
-		return fmt.Errorf("default_model %q cannot be set when models is empty", cfg.DefaultModel)
-	}
-	if len(cfg.Models) > 0 && cfg.DefaultModel != "" {
-		if _, ok := cfg.Models[cfg.DefaultModel]; !ok {
-			return fmt.Errorf("default_model %q is not defined under models", cfg.DefaultModel)
-		}
-	}
-	return nil
-}
-
-// tryLegacyProjectConfig reads a bare config.yaml in the current directory
-// for backward compatibility. A nonexistent file returns an error.
-func tryLegacyProjectConfig() (Config, error) {
-	return LoadConfig("config.yaml")
-}
-
-// projectFileDidNotExist reports whether the project config path was absent
-// when LoadConfig was called — the config came entirely from builtin defaults.
-func projectFileDidNotExist(path string) bool {
-	if path == "" {
-		return true
-	}
-	_, err := os.Stat(path)
-	return err != nil
-}
-
 // MergeConfigs merges a lower-priority (user-global) config with a
 // higher-priority (project) config. The flattening-relevant sections are
 // merged per design §8.3: models and credentials union with the project layer
@@ -581,93 +462,112 @@ func MergeConfigs(user, project Config) Config {
 	return project
 }
 
-// bootstrapUserConfig writes a commented template config to userPath on first
-// launch so the user knows the file exists and can edit it. The built-in
-// registry already provides open-box models; this file is a scaffold (nil return
-// = start without user config, same as before). Failure is best-effort — the
-// registry keeps the runtime usable.
-//
-// The template is deliberately comprehensive: every config section is present,
-// commented, with the built-in default value shown, so a user can uncomment the
-// knob they care about without hunting through docs. Unknown/unsupported
-// sections are intentionally omitted (hooks, permissions — those live in the
-// project settings layer, P11).
-func bootstrapUserConfig(userPath string) {
-	if err := os.MkdirAll(filepath.Dir(userPath), 0o755); err != nil {
-		return
+// FromSettings builds a Config from the merged settings view
+// (design-config-settings-merge.md). Config remains the runtime view — it
+// carries code-level fields (MCP, Profile, StoreFactory, …) that settings.json
+// never stores; FromSettings fills the user-configurable infrastructure subset
+// and leaves the rest zero for the caller to assemble.
+func FromSettings(set settings.Settings) Config {
+	cfg := Config{
+		DefaultModel: set.DefaultModel,
+		Currency:     set.Currency,
+		Models:       make(map[string]ModelConfig, len(set.Models)),
+		Credentials:  make(map[string]map[string]CredentialConfig, len(set.Credentials)),
 	}
-	const template = `# ~/.codeagent/config.yaml — 用户级配置（任何目录启动均生效）
-# 首次启动时自动生成。取消注释想要覆盖的项即可；未覆盖项使用内建默认值。
-# 内建 registry 已提供 deepseek / qwen / glm / ollama / gateway 的开箱模型，
-# 本文件的 models / credentials 在其基础上追加或覆盖。
-#
-# 分层：用户级（本文件）→ 项目级（<cwd>/.codeagent/config.yaml）。
-# 项目文件存在时，项目未显式设置的字段继承本文件的用户级值。
+	// Models: friendly name → ModelConfig.
+	for name, mc := range set.Models {
+		cfg.Models[name] = ModelConfig{
+			Name:          name,
+			Provider:      mc.Provider,
+			BaseURL:       mc.BaseURL,
+			Model:         mc.Model,
+			APIKeyEnv:     mc.APIKeyEnv,
+			Temperature:   mc.Temperature,
+			ContextWindow: mc.ContextWindow,
+			InputPricePerM:  mc.InputPricePerM,
+			OutputPricePerM: mc.OutputPricePerM,
+			CacheInputPricePerM: mc.CacheInputPricePerM,
+			Credential: CredentialRef{Namespace: mc.Credential.Namespace, Name: mc.Credential.Name},
+			Catalog: ModelCatalogMetadata{
+				ConnectionID:          mc.Catalog.ConnectionID,
+				ProviderID:            mc.Catalog.ProviderID,
+				ConnectionDisplayName: mc.Catalog.ConnectionDisplayName,
+				DisplayName:           mc.Catalog.DisplayName,
+				SupportsTools:         mc.Catalog.SupportsTools,
+				SupportsReasoning:     mc.Catalog.SupportsReasoning,
+				InputModalities:       mc.Catalog.InputModalities,
+			},
+		}
+	}
+	// Credentials: namespace → name → config.
+	for ns, entries := range set.Credentials {
+		cfg.Credentials[ns] = make(map[string]CredentialConfig, len(entries))
+		for name, cc := range entries {
+			cfg.Credentials[ns][name] = CredentialConfig{Source: cc.Source, Env: cc.Env}
+		}
+	}
+	// Agent / Provider / Web / Runtime: field-level copy. VerifyCommand stays
+	// empty here — the finalize-verify command is resolved from settings.Verify
+	// by the runtime (settings.ResolveVerifyFrom); Config no longer carries it.
+	// SubagentModel falls back to the top-level set.SubagentModel (hand-authored
+	// settings.json may put it there instead of under agent).
+	subagentModel := set.Agent.SubagentModel
+	if subagentModel == "" {
+		subagentModel = set.SubagentModel
+	}
+	cfg.Agent = AgentConfig{
+		MaxSteps:                set.Agent.MaxSteps,
+		MaxParallelTools:        set.Agent.MaxParallelTools,
+		CompactRatio:            set.Agent.CompactRatio,
+		CompactKeepRatio:        set.Agent.CompactKeepRatio,
+		ClientToolTimeoutSeconds: set.Agent.ClientToolTimeoutSeconds,
+		SubagentModel:           subagentModel,
+	}
+	cfg.Provider = ProviderConfig{
+		RequestTimeoutSeconds: set.Provider.RequestTimeoutSeconds,
+		MaxRetries:            set.Provider.MaxRetries,
+		BackoffMillis:         set.Provider.BackoffMillis,
+		MaxBackoffSeconds:     set.Provider.MaxBackoffSeconds,
+	}
+	cfg.Web.Search.Provider = set.Web.Search.Provider
+	cfg.Web.Search.FallbackProvider = set.Web.Search.FallbackProvider
+	cfg.Web.Search.GatewayBaseURL = set.Web.Search.GatewayBaseURL
+	cfg.Web.Search.TopK = set.Web.Search.TopK
+	cfg.Web.Search.TimeoutSeconds = set.Web.Search.TimeoutSeconds
+	cfg.Web.Search.TavilyAPIKeyEnv = set.Web.Search.TavilyAPIKeyEnv
+	cfg.Web.Search.BraveAPIKeyEnv = set.Web.Search.BraveAPIKeyEnv
+	cfg.Web.Fetch.TimeoutSeconds = set.Web.Fetch.TimeoutSeconds
+	cfg.Web.Fetch.CacheTTLSeconds = set.Web.Fetch.CacheTTLSeconds
+	cfg.Runtime.MaxConcurrentTurns = set.Runtime.MaxConcurrentTurns
+	// Server carries deployment knobs; AccessTokenEnv is the env var holding the
+	// secret (settings.json never stores the token value itself).
+	cfg.Server = ServerConfig{
+		DisplayName:    set.Server.DisplayName,
+		Authentication: set.Server.Authentication,
+		AccessTokenEnv: set.Server.AccessTokenEnv,
+		PublicHealthz:  set.Server.PublicHealthz,
+		TLSCertificate: set.Server.TLSCertificate,
+		TLSPrivateKey:  set.Server.TLSPrivateKey,
+	}
 
-# ── 默认模型 ────────────────────────────────────────────────
-# default_model: deepseek-pro        # 未设置时用 deepseek / 第一个模型
+	// Apply the shared normalization pass (registry fill, defaults, credential-ref
+	// derivation, default_model fallback) so a settings-sourced Config behaves
+	// identically to one parsed from config.yaml.
+	if err := normalizeConfig(&cfg); err != nil {
+		return cfg
+	}
+	return cfg
+}
 
-# ── 模型选择（子代理 / 成本偏好）─────────────────────────────
-# subagent_model: deepseek           # task 子代理用哪个模型
-
-# ── Agent 行为（性能偏好）────────────────────────────────────
-# agent:
-#   max_steps: 68                    # 单个任务最大步数（默认 8）
-#   max_parallel_tools: 8            # 并行工具数（0/1 = 严格串行）
-#   compact_ratio: 0.75              # 上下文压缩阈值（默认 0.75）
-#   compact_keep_ratio: 0.3          # 压缩保留的最近尾部比例
-#   client_tool_timeout_seconds: 900 # 客户端工具执行超时
-#   subagent_model: deepseek         # 或在此处设置子代理模型
-
-# ── Provider 传输层（超时 / 重试）─────────────────────────────
-# provider:
-#   request_timeout_seconds: 600     # 单次请求超时
-#   max_retries: 5                   # 重试次数
-#   backoff_millis: 500              # 首次退避
-#   max_backoff_seconds: 8           # 退避上限
-
-# ── 凭证来源 ────────────────────────────────────────────────
-# credentials:
-#   llm:
-#     my-key:                        # 直连模型 API key
-#       source: env                  # env | injected | none
-#       env: MY_API_KEY              # source=env 时的环境变量名
-#   gateway:
-#     default:
-#       source: injected             # gateway JWT（宿主注入）
-
-# ── 自定义模型（registry 之外 / 覆盖）────────────────────────
-# models:
-#   my-model:
-#     provider: openai               # openai | ollama
-#     base_url: https://api.example.com/v1
-#     model: my-model-name
-#     credential:
-#       namespace: llm               # llm | gateway
-#       name: my-key                 # 引用上方 credentials 条目
-#     context_window: 128000
-#     input_price_per_million: 0.27
-#     output_price_per_million: 1.10
-
-# ── Web 搜索 / 抓取 ──────────────────────────────────────────
-# web:
-#   search:
-#     provider: tavily               # tavily | brave | gateway
-#     tavily_api_key_env: TAVILY_API_KEY
-#     top_k: 5
-#     timeout_seconds: 10
-#   fetch:
-#     timeout_seconds: 30
-#     cache_ttl_seconds: 600
-
-# ── 并发 ────────────────────────────────────────────────────
-# runtime:
-#   max_concurrent_turns: 5
-
-# ── 展示 / 成本 ─────────────────────────────────────────────
-# currency: "$"
-`
-	os.WriteFile(userPath, []byte(template), 0o644)
+// LoadConfigFromSettings builds a fully-normalized Config from the merged
+// settings view. It is the settings-first counterpart to LoadConfigLayered:
+// CLI/daemon entry points call this instead of reading config.yaml, so
+// infrastructure (models/credentials/agent/provider/web) comes from
+// settings.json while code-level fields (MCP, GlobalSkillsDir, StoreFactory…)
+// remain zero and are assembled by the caller. FromSettings + normalizeConfig
+// keep behavior identical to the YAML path.
+func LoadConfigFromSettings(set settings.Settings) Config {
+	return FromSettings(set)
 }
 
 // LoadConfigBytes parses configuration from raw YAML bytes (nil or empty =>
@@ -698,7 +598,21 @@ func LoadConfigBytes(data []byte) (Config, error) {
 			},
 		}
 	}
+	if err := normalizeConfig(&cfg); err != nil {
+		return Config{}, err
+	}
+	return cfg, nil
+}
 
+// normalizeConfig applies the shared normalization pass to a Config regardless
+// of its source (config.yaml YAML or settings.json via FromSettings): model
+// defaults + registry fill + credential-ref derivation, default_model fallback,
+// agent/provider/web/runtime defaults, and gateway web-search wiring.
+//
+// The api_key_env deprecation warning is deliberately emitted here for BOTH
+// sources: a model declared in settings.json with an api_key_env field is the
+// same legacy path and should be flagged identically.
+func normalizeConfig(cfg *Config) error {
 	if len(cfg.Models) > 0 && cfg.DefaultModel == "" {
 		if _, ok := cfg.Models["deepseek"]; ok {
 			cfg.DefaultModel = "deepseek"
@@ -771,7 +685,7 @@ func LoadConfigBytes(data []byte) (Config, error) {
 	// Explicit models: {} means the host intentionally wants no models. A
 	// non-empty default_model contradicts that intent — catch it early.
 	if len(cfg.Models) == 0 && cfg.DefaultModel != "" {
-		return Config{}, fmt.Errorf("default_model %q cannot be set when models is empty", cfg.DefaultModel)
+		return fmt.Errorf("default_model %q cannot be set when models is empty", cfg.DefaultModel)
 	}
 
 	if cfg.Web.Search.Provider == "gateway" {
@@ -818,7 +732,7 @@ func LoadConfigBytes(data []byte) (Config, error) {
 	// its own normalization and validation. cfg.MCP is populated by the caller
 	// after this returns.
 
-	return cfg, nil
+	return nil
 }
 
 // SelectModel resolves a model by friendly name (empty name => default_model).

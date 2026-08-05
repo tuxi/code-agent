@@ -12,6 +12,7 @@ import (
 	"code-agent/internal/agent"
 	"code-agent/internal/app"
 	"code-agent/internal/approve"
+	"code-agent/internal/settings"
 	"code-agent/internal/conversation"
 	"code-agent/internal/credential"
 	"code-agent/internal/model"
@@ -33,6 +34,11 @@ import (
 // boundary — the same guarantee the TUI's /use already relies on.
 type ServeRunBuilder struct {
 	Cfg app.Config
+	// Set is the merged project settings view (permissions/verify/hooks +
+	// infrastructure). The assembler provides it: desktop loads the disk
+	// settings.json via settings.Load, embedded parses the host-injected
+	// SettingsJSON. Consumers read behavior from Set, never from Cfg.
+	Set settings.Settings
 	// ToolReg is the shared BASE registry (built-ins, no MCP). Build prefers the
 	// session workspace's own registry (base + that workspace's MCP tools) and
 	// falls back to this when the workspace has no MCP config or fails to resolve.
@@ -60,10 +66,13 @@ func (b *ServeRunBuilder) SetSessionControl(control tools.SessionControl) {
 }
 
 // NewServeRunBuilder constructs the builder with the initial model + provider.
-func NewServeRunBuilder(cfg app.Config, mc app.ModelConfig, provider model.Provider, cred credential.Resolver, toolReg *tools.Registry, wsReg *WorkspaceRegistry, _ *agent.RunnerRef) *ServeRunBuilder {
+// set is the merged settings view (permissions/verify/hooks + infrastructure),
+// provided by the assembler — desktop loads disk settings.json, embedded parses
+// the host-injected SettingsJSON.
+func NewServeRunBuilder(cfg app.Config, set settings.Settings, mc app.ModelConfig, provider model.Provider, cred credential.Resolver, toolReg *tools.Registry, wsReg *WorkspaceRegistry, _ *agent.RunnerRef) *ServeRunBuilder {
 	return &ServeRunBuilder{
-		Cfg: cfg, ToolReg: toolReg, WSReg: wsReg,
-		rules:   approve.NewRuleStore("", cfg.Permissions.Allow, cfg.Permissions.Deny),
+		Cfg: cfg, Set: set, ToolReg: toolReg, WSReg: wsReg,
+		rules:   approve.NewRuleStore("", set.Permissions.Allow, set.Permissions.Deny),
 		wsRules: make(map[string]*approve.RuleStore),
 		mc:      mc, provider: provider, credential: cred,
 	}
@@ -86,7 +95,7 @@ func (b *ServeRunBuilder) workspaceRules(root string) *approve.RuleStore {
 	b.wsRulesMu.Lock()
 	ws, ok := b.wsRules[root]
 	if !ok {
-		ws = approve.NewRuleStore(root, b.Cfg.Permissions.Allow, b.Cfg.Permissions.Deny)
+		ws = approve.NewRuleStore(root, b.Set.Permissions.Allow, b.Set.Permissions.Deny)
 		b.wsRules[root] = ws
 	}
 	b.wsRulesMu.Unlock()
@@ -339,7 +348,7 @@ func (b *ServeRunBuilder) Build(ctx conversation.RuntimeContext) conversation.Tu
 		ra.SetGranter(wsRules)
 	}
 
-	runner := BuildRunner(b.Cfg, mc, provider, turnTools, skillReg, ctx.Approver, ctx.Publisher, wsRules, workspacePath)
+	runner := BuildRunner(b.Cfg, b.Set, mc, provider, turnTools, skillReg, ctx.Approver, ctx.Publisher, wsRules, workspacePath)
 	runner.ReservedTurnID = ctx.TurnID
 	runner.RequestID = ctx.RequestID
 	runner.SessionControl = control

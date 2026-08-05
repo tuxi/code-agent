@@ -17,6 +17,7 @@ import (
 	"code-agent/internal/credential"
 	"code-agent/internal/model"
 	"code-agent/internal/session"
+	"code-agent/internal/settings"
 	"code-agent/internal/tools"
 	"code-agent/internal/tools/task"
 	"code-agent/internal/tools/websearch"
@@ -32,7 +33,7 @@ func TestServeRunBuilderPlanToolsAreTurnScoped(t *testing.T) {
 	SetStoreBaseDir(t.TempDir())
 	base := tools.NewRegistry()
 	sharedRef := WirePlanTools(base, t.TempDir())
-	builder := NewServeRunBuilder(app.Config{}, app.ModelConfig{}, nil, nil, base, NewWorkspaceRegistry(""), sharedRef)
+	builder := NewServeRunBuilder(app.Config{}, settings.Settings{}, app.ModelConfig{}, nil, nil, base, NewWorkspaceRegistry(""), sharedRef)
 	workspace := t.TempDir()
 
 	var runners [2]*agent.Runner
@@ -80,7 +81,7 @@ func TestServeRunBuilderUsesSessionCredentialForManagedSearch(t *testing.T) {
 		t.Fatal(err)
 	}
 	sharedRef := WirePlanTools(base, t.TempDir())
-	builder := NewServeRunBuilder(cfg, app.ModelConfig{}, nil, baseCredential, base, NewWorkspaceRegistry(""), sharedRef)
+	builder := NewServeRunBuilder(cfg, settings.Settings{}, app.ModelConfig{}, nil, baseCredential, base, NewWorkspaceRegistry(""), sharedRef)
 	workspace := t.TempDir()
 	runner := builder.Build(conversation.RuntimeContext{
 		Session:    &session.Session{ID: "session-a", WorkspacePath: workspace},
@@ -117,7 +118,7 @@ func TestServeRunBuilderRuntimeAliasStrictness(t *testing.T) {
 		DefaultModel: alias,
 		Models:       map[string]app.ModelConfig{alias: direct},
 	}
-	builder := NewServeRunBuilder(cfg, direct, nil, nil, tools.NewRegistry(), NewWorkspaceRegistry(""), nil)
+	builder := NewServeRunBuilder(cfg, settings.Settings{}, direct, nil, nil, tools.NewRegistry(), NewWorkspaceRegistry(""), nil)
 
 	got, err := builder.ResolveModel(alias)
 	if err != nil || got != "deepseek-chat" {
@@ -141,7 +142,7 @@ func TestServeRunBuilderRuntimeAliasStrictness(t *testing.T) {
 	gateway := direct
 	gateway.BaseURL = "https://gateway.example/api/v1/agent"
 	gateway.Credential = app.CredentialRef{Namespace: "gateway", Name: "default"}
-	gatewayBuilder := NewServeRunBuilder(cfg, gateway, nil, nil, tools.NewRegistry(), NewWorkspaceRegistry(""), nil)
+	gatewayBuilder := NewServeRunBuilder(cfg, settings.Settings{}, gateway, nil, nil, tools.NewRegistry(), NewWorkspaceRegistry(""), nil)
 	got, err = gatewayBuilder.ResolveModel("legacy-gateway-model")
 	if err != nil || got != "legacy-gateway-model" {
 		t.Fatalf("legacy Gateway wire model = %q, %v", got, err)
@@ -192,7 +193,7 @@ func TestServeRunBuilderRoutesConcurrentProvidersAndCredentials(t *testing.T) {
 		t.Fatal(err)
 	}
 	builder := NewServeRunBuilder(
-		cfg, defaultMC, defaultProvider, baseCredentials,
+		cfg, settings.Settings{}, defaultMC, defaultProvider, baseCredentials,
 		tools.NewRegistry(), NewWorkspaceRegistry(""), nil,
 	)
 
@@ -294,7 +295,7 @@ func TestServeRunBuilderRebindsTaskToCurrentTurn(t *testing.T) {
 	if err := base.Register(task.NewTool(template)); err != nil {
 		t.Fatal(err)
 	}
-	builder := NewServeRunBuilder(cfg, mainMC, mainProvider, nil, base, NewWorkspaceRegistry(""), nil)
+	builder := NewServeRunBuilder(cfg, settings.Settings{}, mainMC, mainProvider, nil, base, NewWorkspaceRegistry(""), nil)
 	runner := builder.Build(conversation.RuntimeContext{
 		Session:       &session.Session{ID: "alt", WorkspacePath: t.TempDir()},
 		Model:         altAlias,
@@ -314,7 +315,7 @@ func TestServeRunBuilderRebindsTaskToCurrentTurn(t *testing.T) {
 	}
 
 	cfg.Agent.SubagentModel = mainAlias
-	explicitBuilder := NewServeRunBuilder(cfg, mainMC, mainProvider, nil, base, NewWorkspaceRegistry(""), nil)
+	explicitBuilder := NewServeRunBuilder(cfg, settings.Settings{}, mainMC, mainProvider, nil, base, NewWorkspaceRegistry(""), nil)
 	explicitRunner := explicitBuilder.Build(conversation.RuntimeContext{
 		Session:       &session.Session{ID: "explicit", WorkspacePath: t.TempDir()},
 		Model:         altAlias,
@@ -330,7 +331,7 @@ func TestServeRunBuilderRebindsTaskToCurrentTurn(t *testing.T) {
 	}
 
 	cfg.Agent.SubagentModel = "provider.bWlzc2luZw.model.bWlzc2luZw"
-	strictBuilder := NewServeRunBuilder(cfg, mainMC, mainProvider, nil, base, NewWorkspaceRegistry(""), nil)
+	strictBuilder := NewServeRunBuilder(cfg, settings.Settings{}, mainMC, mainProvider, nil, base, NewWorkspaceRegistry(""), nil)
 	strictRunner := strictBuilder.Build(conversation.RuntimeContext{
 		Session:       &session.Session{ID: "strict", WorkspacePath: t.TempDir()},
 		Model:         altAlias,

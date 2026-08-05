@@ -21,6 +21,7 @@ import (
 	"code-agent/internal/conversation"
 	"code-agent/internal/model"
 	"code-agent/internal/repos"
+	"code-agent/internal/settings"
 	"code-agent/internal/runtime"
 	"code-agent/internal/server"
 )
@@ -57,10 +58,11 @@ func run() error {
 		addr = args[0]
 	}
 
-	cfg, err := app.LoadConfigLayered(".codeagent/config.yaml")
-	if err != nil {
-		return err
-	}
+	root, _ := os.Getwd()
+	home, _ := os.UserHomeDir()
+	set := settings.Load(root, home, os.Stderr)
+	cfg := app.LoadConfigFromSettings(set)
+	var err error
 	auth, err := server.ResolveExternalServerAuth(cfg.Server)
 	if err != nil {
 		return err
@@ -101,7 +103,7 @@ func run() error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 
-	home, err := os.UserHomeDir()
+	home, err = os.UserHomeDir()
 	if err != nil {
 		return fmt.Errorf("resolve user home for projects root: %w", err)
 	}
@@ -164,7 +166,7 @@ func run() error {
 	eventStore := &conversation.StoreEventAdapter{Store: telemetryStore}
 	active := conversation.NewActiveTurnRegistry()
 	subs := conversation.NewSubscriptionManager()
-	rb := runtime.NewServeRunBuilder(cfg, mc, provider, cfg.CredentialResolver(nil), toolReg, wsReg, planRef)
+	rb := runtime.NewServeRunBuilder(cfg, set, mc, provider, cfg.CredentialResolver(nil), toolReg, wsReg, planRef)
 	executor := conversation.NewTurnExecutor(repo, eventStore, active, subs, rb)
 	executor.SetAssetRefReleaseService(rb)
 	maxConcurrentTurns := cfg.RuntimeMaxConcurrentTurns()
