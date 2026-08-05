@@ -1,8 +1,8 @@
 # 配置统一：config.yaml 并入 settings.json
 
-> **状态**: 设计探索阶段
+> **状态**: ✅ 阶段 A/B/C 已落地（2026-08-05，commit 98a8b42）。config.yaml 已移除为配置源；settings.json 为唯一配置层；迁移工具 `codeagent migrate` 可用。
 > **受众**: Runtime 开发 + AgentKit 开发 + 架构评审
-> **版本**: v0.1
+> **版本**: v1.0（实现基线）
 > **日期**: 2026-08-04
 > **前置**: design-connection-flattening.md（分层）、docs/p11-project-settings.md（settings 层）
 

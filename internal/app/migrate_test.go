@@ -3,6 +3,7 @@ package app
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"code-agent/internal/settings"
@@ -22,6 +23,10 @@ func TestMigrateConfigToSettings(t *testing.T) {
 	}
 	userYAML := `
 default_model: deepseek
+server:
+  display_name: "Xiaoyuan Mac"
+  authentication: bearer
+  access_token: "test-token"
 models:
   deepseek:
     model: deepseek-v4-flash
@@ -72,6 +77,22 @@ models:
 	}
 	if cc, ok := set.Credentials["llm"]["deepseek"]; !ok || cc.Source != "env" {
 		t.Errorf("credential llm/deepseek = %+v, want {env}", cc)
+	}
+	// Server is a USER-level (deployment) concern: it must land in the user file
+	// with the token value, and must NOT leak into the committable project file.
+	if set.Server.DisplayName != "Xiaoyuan Mac" {
+		t.Errorf("server display_name = %q, want from user config", set.Server.DisplayName)
+	}
+	if set.Server.AccessToken != "test-token" {
+		t.Errorf("server access_token = %q, want carried into user settings", set.Server.AccessToken)
+	}
+	projPath := filepath.Join(root, ".codeagent", "settings.json")
+	projData, err := os.ReadFile(projPath)
+	if err != nil {
+		t.Fatalf("read project settings.json: %v", err)
+	}
+	if strings.Contains(string(projData), "access_token") || strings.Contains(string(projData), "display_name") {
+		t.Errorf("project settings.json must not carry the server section:\n%s", projData)
 	}
 }
 

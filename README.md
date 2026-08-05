@@ -49,8 +49,9 @@
 
 ```bash
 go install ./cmd/codeagent
-cp config.example.yaml config.yaml
 ```
+配置（可选）：首次启动会自动生成 `~/.codeagent/settings.json` 模板；要迁移旧的
+`config.yaml`，运行 `codeagent migrate`。也可从 `config.example.yaml` 参考字段。
 
 ### Configure
 
@@ -101,12 +102,16 @@ codeagent --auto goal "fix the failing test in internal/agent/loop_test.go"
 
 ### Serve mode
 
-在已被 Git 忽略的 `config.yaml` 中配置一次固定的本地开发 Token：
+在用户级 `~/.codeagent/settings.json` 的 `server` 段配置一次固定的本地开发 Token
+（或设置 `CODEAGENT_SERVER_ACCESS_TOKEN` 环境变量，优先）：
 
-```yaml
-server:
-  authentication: bearer
-  access_token: "<openssl rand -base64 32 的输出>"
+```json
+{
+  "server": {
+    "authentication": "bearer",
+    "access_token": "<openssl rand -base64 32 的输出>"
+  }
+}
 ```
 
 ```bash
@@ -190,7 +195,12 @@ The loop (`internal/agent`) is business-agnostic. It assembles context, calls th
 
 ## Configuration
 
-Configuration lives in `config.yaml` at the workspace root and in Claude-compatible `.mcp.json` files for MCP servers.
+Configuration lives in `settings.json` — layered user (`~/.codeagent/settings.json`)
+over project (`<cwd>/.codeagent/settings.json` + `<cwd>/.codeagent/settings.local.json`)
+— and in Claude-compatible `.mcp.json` files for MCP servers. Models, credentials
+(references only — values stay in env/keychain), agent/provider/web knobs, and
+permissions/verify/hooks all live here. `codeagent migrate` converts legacy
+`config.yaml` files. First start auto-generates a template.
 
 ### Models
 

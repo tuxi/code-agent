@@ -53,8 +53,11 @@ func MigrateConfigToSettings(root, home string) error {
 	if err := writeSettingsFile(userOut, userFile); err != nil {
 		return err
 	}
-	// Project-level settings.json mirrors the project-layer overrides.
+	// Project-level settings.json mirrors the project-layer overrides — but the
+	// server section is a USER-level (deployment) concern and must not leak into
+	// a committable project file. It stays only in ~/.codeagent/settings.json.
 	projFile := settingsFileFrom(projectCfg)
+	projFile.Server = settings.ServerConfig{}
 	if !isEmptySettingsFile(projFile) {
 		projOut := pathJoin(root, ".codeagent", "settings.json")
 		if err := writeSettingsFile(projOut, projFile); err != nil {
@@ -161,9 +164,11 @@ func settingsFileFrom(cfg Config) settings.File {
 		Server: settings.ServerConfig{
 			DisplayName:    cfg.Server.DisplayName,
 			Authentication: cfg.Server.Authentication,
-			// Secrets never migrate into settings.json: the access_token VALUE is
-			// rewritten to access_token_env pointing at CODEAGENT_SERVER_ACCESS_TOKEN.
-			AccessTokenEnv: accessTokenEnvFor(cfg.Server),
+			// The access_token value is carried into the USER-level settings.json
+			// (the file is deployment-scoped; the user decides whether to commit
+			// it). AccessTokenEnv is preserved when set — it wins at resolve time.
+			AccessTokenEnv: cfg.Server.AccessTokenEnv,
+			AccessToken:    cfg.Server.AccessToken,
 			PublicHealthz:  cfg.Server.PublicHealthz,
 			TLSCertificate: cfg.Server.TLSCertificate,
 			TLSPrivateKey:  cfg.Server.TLSPrivateKey,
@@ -271,21 +276,8 @@ func isEmptySettingsFile(f settings.File) bool {
 		f.Web.Search.BraveAPIKeyEnv == "" && f.Web.Fetch.TimeoutSeconds == 0 &&
 		f.Web.Fetch.CacheTTLSeconds == 0 && f.Runtime.MaxConcurrentTurns == 0 &&
 		f.Server.DisplayName == "" && f.Server.Authentication == "" &&
-		f.Server.AccessTokenEnv == "" && !f.Server.PublicHealthz &&
+		f.Server.AccessTokenEnv == "" && f.Server.AccessToken == "" &&
+		!f.Server.PublicHealthz &&
 		f.Server.TLSCertificate == "" && f.Server.TLSPrivateKey == "" &&
 		f.Currency == ""
-}
-
-// accessTokenEnvFor maps a ServerConfig to the env-var name that will hold the
-// access token. When the config declares access_token_env it is preserved; when
-// only an access_token VALUE exists, it is rewritten to the canonical env var
-// CODEAGENT_SERVER_ACCESS_TOKEN (the value itself never enters settings.json).
-func accessTokenEnvFor(s ServerConfig) string {
-	if s.AccessTokenEnv != "" {
-		return s.AccessTokenEnv
-	}
-	if s.AccessToken != "" {
-		return "CODEAGENT_SERVER_ACCESS_TOKEN"
-	}
-	return ""
 }

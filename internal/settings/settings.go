@@ -171,11 +171,15 @@ type RuntimeConfig struct {
 }
 
 // ServerConfig carries deployment-level server knobs (config.yaml server:).
-// AccessToken is never stored — only the env var holding it (AccessTokenEnv).
+// This is a user-level (deployment) concern — the project-scope file should not
+// carry it. AccessTokenEnv names the env var holding the token (preferred for
+// committable files); AccessToken holds the value directly when the user
+// chooses to store it in the user-level file.
 type ServerConfig struct {
 	DisplayName    string `json:"display_name,omitempty"`
 	Authentication string `json:"authentication,omitempty"` // none | bearer
 	AccessTokenEnv string `json:"access_token_env,omitempty"`
+	AccessToken    string `json:"access_token,omitempty"`
 	PublicHealthz  bool   `json:"public_healthz,omitempty"`
 	TLSCertificate string `json:"tls_certificate,omitempty"`
 	TLSPrivateKey  string `json:"tls_private_key,omitempty"`
@@ -394,6 +398,9 @@ func Load(root, home string, warn io.Writer) Settings {
 		}
 		if f.Server.AccessTokenEnv != "" {
 			s.Server.AccessTokenEnv = f.Server.AccessTokenEnv
+		}
+		if f.Server.AccessToken != "" {
+			s.Server.AccessToken = f.Server.AccessToken
 		}
 		if f.Server.PublicHealthz {
 			s.Server.PublicHealthz = true

@@ -545,6 +545,7 @@ func FromSettings(set settings.Settings) Config {
 		DisplayName:    set.Server.DisplayName,
 		Authentication: set.Server.Authentication,
 		AccessTokenEnv: set.Server.AccessTokenEnv,
+		AccessToken:    set.Server.AccessToken,
 		PublicHealthz:  set.Server.PublicHealthz,
 		TLSCertificate: set.Server.TLSCertificate,
 		TLSPrivateKey:  set.Server.TLSPrivateKey,
