@@ -11,6 +11,7 @@ import (
 	"code-agent/internal/app"
 	"code-agent/internal/model"
 	"code-agent/internal/runtime"
+	"code-agent/internal/settings"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -51,18 +52,18 @@ type Harness struct {
 	SkillsDir   string // path to a directory containing skill fixtures
 }
 
-// NewHarness creates a Harness from the project's config.yaml. It looks for
-// config.yaml in the project root (two levels above internal/skills/eval).
+// NewHarness creates a Harness from the project's settings.json. It loads the
+// merged settings (user → project) from the project root (two levels above
+// internal/skills/eval) and builds a provider for the default model.
 func NewHarness() (*Harness, error) {
 	// Find the project root relative to this package.
 	root, err := findProjectRoot()
 	if err != nil {
 		return nil, err
 	}
-	cfg, err := app.LoadConfig(filepath.Join(root, "config.yaml"))
-	if err != nil {
-		return nil, fmt.Errorf("load config: %w", err)
-	}
+	home, _ := os.UserHomeDir()
+	set := settings.Load(root, home, os.Stderr)
+	cfg := app.LoadConfigFromSettings(set)
 	mc, err := cfg.SelectModel("")
 	if err != nil {
 		return nil, fmt.Errorf("select model: %w", err)

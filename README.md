@@ -217,6 +217,56 @@ permissions/verify/hooks all live here. `codeagent migrate` converts legacy
 | `models.<name>.cache_input_price_per_million` | Cost per 1M cached input tokens | — |
 | `models.<name>.output_price_per_million` | Cost per 1M output tokens (for `stats`) | — |
 
+### Credentials
+
+`credentials` maps `namespace → name → {source, env}`. Values are **references
+only** — the secret itself stays in the environment or the host keychain
+(settings.json is committable):
+
+| Field | Description |
+|---|---|
+| `credentials.<ns>.<name>.source` | `env` (read from `env:` variable), `injected` (host-provided), or `none` (local) |
+| `credentials.<ns>.<name>.env` | Environment variable holding the value (source=env) |
+
+Model configs reference a credential via `models.<name>.credential: {namespace, name}`.
+
+### Server (deployment)
+
+`server` lives in the **user-level** `~/.codeagent/settings.json` (never the
+project file). Configure once, any project inherits it:
+
+```json
+{
+  "server": {
+    "authentication": "bearer",
+    "access_token": "<token>",
+    "display_name": "My Mac",
+    "public_healthz": true
+  }
+}
+```
+
+`access_token` may be omitted and `access_token_env: "CODEAGENT_SERVER_ACCESS_TOKEN"` used instead — the env var wins when set.
+
+### Minimal example
+
+```json
+{
+  "default_model": "deepseek",
+  "credentials": {
+    "llm": { "deepseek": { "source": "env", "env": "DEEPSEEK_API_KEY" } }
+  },
+  "models": {
+    "deepseek": {
+      "provider": "openai",
+      "base_url": "https://api.deepseek.com",
+      "model": "deepseek-v4-flash",
+      "credential": { "namespace": "llm", "name": "deepseek" }
+    }
+  }
+}
+```
+
 ### Agent
 
 | Field | Description | Default |
