@@ -39,8 +39,21 @@ func BuildProvider(mc app.ModelConfig, pc app.ProviderConfig, cred credential.Re
 		}
 	case "ollama":
 		inner = model.NewOllamaProvider(mc.BaseURL)
+	case "responses":
+		// OpenAI Responses API (/v1/responses) — the newer OpenAI wire format,
+		// natively supported by OpenAI and DeepSeek. Same credential handling
+		// as the openai-compatible provider.
+		if !mc.Credential.IsZero() {
+			c := cred
+			if c == nil {
+				c = &credential.EnvResolver{}
+			}
+			inner = model.NewResponsesProvider(mc.BaseURL, c, mc.Credential.Target())
+		} else {
+			inner = model.NewResponsesProviderWithKey(mc.BaseURL, "")
+		}
 	default:
-		return nil, fmt.Errorf("unsupported provider %q (supported: \"openai\", \"ollama\")", mc.Provider)
+		return nil, fmt.Errorf("unsupported provider %q (supported: \"openai\", \"ollama\", \"responses\")", mc.Provider)
 	}
 	return &model.ResilientProvider{
 		Inner:      inner,

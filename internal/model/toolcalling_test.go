@@ -139,3 +139,115 @@ func getenvDefault(key, def string) string {
 	}
 	return def
 }
+
+// TestResponsesNativeToolCallingRoundTrip is the Responses-protocol counterpart
+// of TestNativeToolCallingRoundTrip: one live tool-call round trip through
+// POST {base}/responses. Skipped unless DEEPSEEK_API_KEY is set.
+//
+// The base_url forms cover the endpoint semantics decision: the provider appends
+// "/responses" to whatever base_url is configured (OpenAI SDK convention), so
+// both https://api.deepseek.com and https://api.deepseek.com/v1 are exercised
+// — a 404/400 on either form signals a server-side path difference.
+func TestResponsesNativeToolCallingRoundTrip(t *testing.T) {
+	apiKey := os.Getenv("DEEPSEEK_API_KEY")
+	if apiKey == "" {
+		t.Skip("DEEPSEEK_API_KEY not set; skipping live Responses tool-calling test")
+	}
+
+	for _, baseURL := range []string{"https://api.deepseek.com", "https://api.deepseek.com/v1"} {
+		baseURL := baseURL
+		t.Run(baseURL, func(t *testing.T) {
+			provider := NewResponsesProviderWithKey(baseURL, apiKey)
+
+			ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+			defer cancel()
+
+			listFilesSchema := json.RawMessage(`{
+				"type": "object",
+				"properties": {
+					"path": {
+						"type": "string",
+						"description": "Directory path relative to the workspace root."
+					}
+				},
+				"required": ["path"]
+			}`)
+
+			tools := []ToolDefinition{
+				{
+					Type: "function",
+					Function: ToolFunction{
+						Name:        "list_files",
+						Description: "List files and directories under a path in the workspace.",
+						Parameters:  listFilesSchema,
+					},
+				},
+			}
+
+			messages := []Message{
+				{Role: RoleSystem, Content: "You are a coding agent. Use the provided tools to inspect the workspace."},
+				{Role: RoleUser, Content: "List the files in the current directory."},
+			}
+
+			resp, err := provider.Complete(ctx, Request{
+				Model:    "deepseek-v4-flash",
+				Messages: messages,
+				Tools:    tools,
+			})
+			if err != nil {
+				t.Fatalf("turn 1 failed: %v", err)
+			}
+			if !resp.HasToolCalls() {
+				t.Fatalf("model did not request a tool call (finish=%q, content=%q)", resp.FinishReason, resp.Content)
+			}
+
+			call := resp.ToolCalls[0]
+			if call.Function.Name != "list_files" {
+				t.Fatalf("expected a list_files call, got %q", call.Function.Name)
+			}
+			t.Logf("turn 1: model requested tool=%s args=%s", call.Function.Name, call.Function.Arguments)
+
+			var args struct {
+				Path string `json:"path"`
+			}
+			if err := json.Unmarshal([]byte(call.Function.Arguments), &args); err != nil {
+				t.Fatalf("could not parse tool arguments %q: %v", call.Function.Arguments, err)
+			}
+			if args.Path == "" {
+				args.Path = "."
+			}
+
+			entries, err := os.ReadDir(args.Path)
+			if err != nil {
+				t.Fatalf("list_files execution failed: %v", err)
+			}
+			var names []string
+			for _, e := range entries {
+				names = append(names, e.Name())
+			}
+			toolResult := strings.Join(names, "\n")
+
+			messages = append(messages,
+				resp.AssistantMessage(),
+				Message{
+					Role:       RoleTool,
+					ToolCallID: call.ID,
+					Content:    toolResult,
+				},
+			)
+
+			final, err := provider.Complete(ctx, Request{
+				Model:    "deepseek-v4-flash",
+				Messages: messages,
+				Tools:    tools,
+			})
+			if err != nil {
+				t.Fatalf("turn 2 failed: %v", err)
+			}
+			if strings.TrimSpace(final.Content) == "" {
+				t.Fatalf("expected a final text answer, got empty content (finish=%q)", final.FinishReason)
+			}
+			t.Logf("turn 2: final answer: %s", final.Content)
+		})
+	}
+}

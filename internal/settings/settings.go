@@ -99,7 +99,7 @@ type File struct {
 // user-configurable subset). Self-contained here so settings does not depend on
 // internal/app.
 type ModelConfig struct {
-	Provider     string         `json:"provider,omitempty"`     // "openai" | "ollama"
+	Provider     string         `json:"provider,omitempty"`     // "openai" | "responses" | "ollama"
 	BaseURL      string         `json:"base_url,omitempty"`     // API base URL
 	Model        string         `json:"model,omitempty"`        // wire model string
 	APIKeyEnv    string         `json:"api_key_env,omitempty"`  // legacy env var name

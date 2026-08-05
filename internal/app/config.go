@@ -156,7 +156,7 @@ type ProviderConfig struct {
 }
 
 type ModelConfig struct {
-	Provider    string  `yaml:"provider"`    // "openai" (openai-compatible); future: anthropic, gemini, ...
+	Provider    string  `yaml:"provider"`    // "openai" (openai-compatible), "responses" (OpenAI Responses API), "ollama"; future: anthropic, gemini, ...
 	BaseURL     string  `yaml:"base_url"`    // API base URL
 	Model       string  `yaml:"model"`       // the wire model string sent to the provider
 	APIKeyEnv   string  `yaml:"api_key_env"` // name of the env var holding the API key
