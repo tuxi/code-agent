@@ -99,17 +99,19 @@ type File struct {
 // user-configurable subset). Self-contained here so settings does not depend on
 // internal/app.
 type ModelConfig struct {
-	Provider     string         `json:"provider,omitempty"`     // "openai" | "responses" | "ollama"
-	BaseURL      string         `json:"base_url,omitempty"`     // API base URL
-	Model        string         `json:"model,omitempty"`        // wire model string
-	APIKeyEnv    string         `json:"api_key_env,omitempty"`  // legacy env var name
-	Temperature  float64        `json:"temperature,omitempty"`  // default 0.2
-	ContextWindow int           `json:"context_window,omitempty"` // compaction threshold
-	InputPricePerM  float64     `json:"input_price_per_million,omitempty"`
-	OutputPricePerM float64     `json:"output_price_per_million,omitempty"`
-	CacheInputPricePerM float64 `json:"cache_input_price_per_million,omitempty"`
-	Credential   CredentialRef  `json:"credential,omitempty"`
-	Catalog      ModelCatalogMetadata `json:"catalog,omitempty"`
+	Provider            string               `json:"provider,omitempty"`       // "openai" | "responses" | "ollama"
+	BaseURL             string               `json:"base_url,omitempty"`       // API base URL
+	Model               string               `json:"model,omitempty"`          // wire model string
+	APIKeyEnv           string               `json:"api_key_env,omitempty"`    // legacy env var name
+	Temperature         float64              `json:"temperature,omitempty"`    // default 0.2
+	ContextWindow       int                  `json:"context_window,omitempty"` // compaction threshold
+	InputPricePerM      float64              `json:"input_price_per_million,omitempty"`
+	OutputPricePerM     float64              `json:"output_price_per_million,omitempty"`
+	CacheInputPricePerM float64              `json:"cache_input_price_per_million,omitempty"`
+	Credential          CredentialRef        `json:"credential,omitempty"`
+	Catalog             ModelCatalogMetadata `json:"catalog,omitempty"`
+	// WebSearch enables the provider's built-in web_search tool (Responses API).
+	WebSearch bool `json:"web_search,omitempty"`
 }
 
 // CredentialRef references a credentials entry (namespace/name).
@@ -126,12 +128,12 @@ type CredentialConfig struct {
 
 // AgentConfig carries agent behavior knobs.
 type AgentConfig struct {
-	MaxSteps                int     `json:"max_steps,omitempty"`
-	MaxParallelTools        int     `json:"max_parallel_tools,omitempty"`
-	CompactRatio            float64 `json:"compact_ratio,omitempty"`
-	CompactKeepRatio        float64 `json:"compact_keep_ratio,omitempty"`
-	ClientToolTimeoutSeconds int    `json:"client_tool_timeout_seconds,omitempty"`
-	SubagentModel           string  `json:"subagent_model,omitempty"`
+	MaxSteps                 int     `json:"max_steps,omitempty"`
+	MaxParallelTools         int     `json:"max_parallel_tools,omitempty"`
+	CompactRatio             float64 `json:"compact_ratio,omitempty"`
+	CompactKeepRatio         float64 `json:"compact_keep_ratio,omitempty"`
+	ClientToolTimeoutSeconds int     `json:"client_tool_timeout_seconds,omitempty"`
+	SubagentModel            string  `json:"subagent_model,omitempty"`
 }
 
 // ProviderConfig tunes the transport resilience layer.
@@ -150,13 +152,13 @@ type WebConfig struct {
 
 // WebSearchConfig configures the web_search tool.
 type WebSearchConfig struct {
-	Provider        string `json:"provider,omitempty"`
+	Provider         string `json:"provider,omitempty"`
 	FallbackProvider string `json:"fallback_provider,omitempty"`
-	GatewayBaseURL  string `json:"gateway_base_url,omitempty"`
-	TopK            int    `json:"top_k,omitempty"`
-	TimeoutSeconds  int    `json:"timeout_seconds,omitempty"`
-	TavilyAPIKeyEnv string `json:"tavily_api_key_env,omitempty"`
-	BraveAPIKeyEnv  string `json:"brave_api_key_env,omitempty"`
+	GatewayBaseURL   string `json:"gateway_base_url,omitempty"`
+	TopK             int    `json:"top_k,omitempty"`
+	TimeoutSeconds   int    `json:"timeout_seconds,omitempty"`
+	TavilyAPIKeyEnv  string `json:"tavily_api_key_env,omitempty"`
+	BraveAPIKeyEnv   string `json:"brave_api_key_env,omitempty"`
 }
 
 // WebFetchConfig configures the web_fetch tool.

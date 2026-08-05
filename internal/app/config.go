@@ -185,6 +185,11 @@ type ModelConfig struct {
 	Credential CredentialRef        `yaml:"credential"`
 	Catalog    ModelCatalogMetadata `yaml:"catalog"`
 
+	// WebSearch enables the provider's built-in web_search tool on Responses-API
+	// models (e.g. DeepSeek v4-flash executes it server-side). Responses provider
+	// only; ignored by other providers.
+	WebSearch bool `yaml:"web_search"`
+
 	// Resolved at load time, not read from YAML.
 	Name string `yaml:"-"` // the friendly name (the map key)
 }
@@ -477,17 +482,18 @@ func FromSettings(set settings.Settings) Config {
 	// Models: friendly name → ModelConfig.
 	for name, mc := range set.Models {
 		cfg.Models[name] = ModelConfig{
-			Name:          name,
-			Provider:      mc.Provider,
-			BaseURL:       mc.BaseURL,
-			Model:         mc.Model,
-			APIKeyEnv:     mc.APIKeyEnv,
-			Temperature:   mc.Temperature,
-			ContextWindow: mc.ContextWindow,
-			InputPricePerM:  mc.InputPricePerM,
-			OutputPricePerM: mc.OutputPricePerM,
+			Name:                name,
+			Provider:            mc.Provider,
+			BaseURL:             mc.BaseURL,
+			Model:               mc.Model,
+			APIKeyEnv:           mc.APIKeyEnv,
+			Temperature:         mc.Temperature,
+			ContextWindow:       mc.ContextWindow,
+			InputPricePerM:      mc.InputPricePerM,
+			OutputPricePerM:     mc.OutputPricePerM,
 			CacheInputPricePerM: mc.CacheInputPricePerM,
-			Credential: CredentialRef{Namespace: mc.Credential.Namespace, Name: mc.Credential.Name},
+			WebSearch:           mc.WebSearch,
+			Credential:          CredentialRef{Namespace: mc.Credential.Namespace, Name: mc.Credential.Name},
 			Catalog: ModelCatalogMetadata{
 				ConnectionID:          mc.Catalog.ConnectionID,
 				ProviderID:            mc.Catalog.ProviderID,
@@ -516,12 +522,12 @@ func FromSettings(set settings.Settings) Config {
 		subagentModel = set.SubagentModel
 	}
 	cfg.Agent = AgentConfig{
-		MaxSteps:                set.Agent.MaxSteps,
-		MaxParallelTools:        set.Agent.MaxParallelTools,
-		CompactRatio:            set.Agent.CompactRatio,
-		CompactKeepRatio:        set.Agent.CompactKeepRatio,
+		MaxSteps:                 set.Agent.MaxSteps,
+		MaxParallelTools:         set.Agent.MaxParallelTools,
+		CompactRatio:             set.Agent.CompactRatio,
+		CompactKeepRatio:         set.Agent.CompactKeepRatio,
 		ClientToolTimeoutSeconds: set.Agent.ClientToolTimeoutSeconds,
-		SubagentModel:           subagentModel,
+		SubagentModel:            subagentModel,
 	}
 	cfg.Provider = ProviderConfig{
 		RequestTimeoutSeconds: set.Provider.RequestTimeoutSeconds,
@@ -755,13 +761,13 @@ func (c Config) SelectModel(name string) (ModelConfig, error) {
 				name, strings.Join(c.ModelNames(), ", "))
 		}
 		mc = ModelConfig{
-			Name:       name,
-			Provider:   "openai",
-			BaseURL:    conn.BaseURL,
-			Model:      conn.WireModel,
-			APIKeyEnv:  conn.Env,
+			Name:          name,
+			Provider:      "openai",
+			BaseURL:       conn.BaseURL,
+			Model:         conn.WireModel,
+			APIKeyEnv:     conn.Env,
 			ContextWindow: defaultContextWindow,
-			Temperature: 0.2,
+			Temperature:   0.2,
 		}
 		if model.IsLocalBaseURL(mc.BaseURL) {
 			mc.Credential = CredentialRef{} // none needed

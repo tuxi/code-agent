@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"context"
+	"encoding/json"
 	"path/filepath"
 	"testing"
 	"time"
@@ -36,7 +37,9 @@ func sampleSession() *session.Session {
 			{Role: model.RoleTool, ToolCallID: "a", Content: "package agent", Assets: []model.GatewayAssetRef{{
 				AssetID: 42, SHA256: "abc", Kind: "image", MIMEType: "image/png", Filename: "screenshot.png",
 			}}},
-			{Role: model.RoleAssistant, Content: "it drives the loop"},
+			{Role: model.RoleAssistant, Content: "it drives the loop", WebSearchCalls: []model.WebSearchCall{
+				{Type: "web_search_call", ID: "ws_1", Status: "completed", Action: json.RawMessage(`{"type":"search"}`), SearchConfig: json.RawMessage(`{"query":"responses api"}`)},
+			}},
 		},
 		Compactions: []session.CompactionStats{
 			{BeforeTokens: 90000, AfterTokens: 27000, SavedTokens: 63000, CompressionRatio: 0.7, SummaryChars: 1800, CompactedAt: now},
@@ -84,6 +87,11 @@ func TestStoreRoundTrip(t *testing.T) {
 	}
 	if len(got.Messages[3].Assets) != 1 || got.Messages[3].Assets[0].AssetID != 42 || got.Messages[3].Assets[0].SHA256 != "abc" {
 		t.Fatalf("gateway assets lost: %+v", got.Messages[3].Assets)
+	}
+	if len(got.Messages[4].WebSearchCalls) != 1 || got.Messages[4].WebSearchCalls[0].ID != "ws_1" ||
+		got.Messages[4].WebSearchCalls[0].Type != "web_search_call" || got.Messages[4].WebSearchCalls[0].Status != "completed" ||
+		string(got.Messages[4].WebSearchCalls[0].Action) != `{"type":"search"}` {
+		t.Fatalf("web search calls lost: %+v", got.Messages[4].WebSearchCalls)
 	}
 
 	if len(got.Compactions) != 1 || got.Compactions[0].SavedTokens != 63000 {

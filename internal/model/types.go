@@ -64,6 +64,14 @@ type Message struct {
 	// or more tools. It must be echoed back unchanged in the next request.
 	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
 
+	// WebSearchCalls records server-side web searches (Responses API built-in
+	// web_search tool) the assistant requested. ResponsesProvider echoes them
+	// back on later requests so the provider restores the search results into
+	// context. json:"-" keeps them off the OpenAI-compatible wire (a Message is
+	// serialized directly by OpenAICompatibleProvider); the session store
+	// persists them explicitly.
+	WebSearchCalls []WebSearchCall `json:"-"`
+
 	// ToolCallID is set on tool-result messages (Role == RoleTool) to bind the
 	// result to the assistant tool call it answers.
 	ToolCallID string `json:"tool_call_id,omitempty"`
@@ -98,6 +106,24 @@ type ToolCall struct {
 	ID       string       `json:"id"`
 	Type     string       `json:"type"` // currently always "function"
 	Function FunctionCall `json:"function"`
+}
+
+// WebSearchCall records a server-side web search the model requested through
+// the Responses API's built-in web_search tool. The search runs on the
+// provider's side; code-agent echoes the item back verbatim on later requests
+// so the provider restores the search results into context (DeepSeek
+// contract: "原样回传即可，服务端自动恢复搜索结果").
+type WebSearchCall struct {
+	Type   string `json:"type"`
+	ID     string `json:"id"`
+	Status string `json:"status,omitempty"`
+	// Action is the provider's action on the web_search_call item. DeepSeek
+	// emits it as an OBJECT in output items (e.g. {"type":"search"}) and accepts
+	// the bare string "search" on input. Kept as raw JSON so the item round-trips
+	// verbatim per the DeepSeek contract ("原样回传即可"); a legacy item persisted
+	// without it replays as the string "search".
+	Action       json.RawMessage `json:"action,omitempty"`
+	SearchConfig json.RawMessage `json:"search_config,omitempty"`
 }
 
 func (c ToolCall) ValidateForHistory() error {
@@ -187,6 +213,11 @@ type Response struct {
 	// before continuing.
 	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
 
+	// WebSearchCalls records server-side web searches (Responses API built-in
+	// web_search tool). The provider replays them on the next request so search
+	// results stay in context. Persisted via AssistantMessage.
+	WebSearchCalls []WebSearchCall `json:"-"`
+
 	// FinishReason is the raw provider stop reason ("stop", "tool_calls", ...).
 	FinishReason string `json:"finish_reason,omitempty"`
 
@@ -236,9 +267,10 @@ func (m Message) IsEmptyAssistantNoOp() bool {
 // The tool_calls are preserved verbatim, which the API requires.
 func (r Response) AssistantMessage() Message {
 	return Message{
-		Role:      RoleAssistant,
-		Content:   r.Content,
-		ToolCalls: r.ToolCalls,
+		Role:           RoleAssistant,
+		Content:        r.Content,
+		ToolCalls:      r.ToolCalls,
+		WebSearchCalls: r.WebSearchCalls,
 	}
 }
 

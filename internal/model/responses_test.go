@@ -112,6 +112,212 @@ func TestResponsesRequestBodyMapping(t *testing.T) {
 	}
 }
 
+func TestResponsesWebSearchToolAndReplay(t *testing.T) {
+	// Turn 1 request: provider.WebSearch=true advertises the built-in web_search
+	// tool alongside the function tools.
+	var turn1 responsesRequest
+	// Turn 2 request: the assistant message carries a web_search_call that must
+	// be replayed verbatim as an input item.
+	var turn2 responsesRequest
+	call := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		call++
+		switch call {
+		case 1:
+			turn1 = decodeRequestBody(t, r)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"id":"r_1","status":"completed","output":[
+				{"type":"web_search_call","id":"ws_9","status":"completed","action":{"type":"search"},"search_config":{"query":"deepseek responses api"}},
+				{"type":"message","id":"m","content":[{"type":"output_text","text":"found it"}]}
+			],"usage":{}}`))
+		case 2:
+			turn2 = decodeRequestBody(t, r)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"id":"r_2","status":"completed","output":[{"type":"message","id":"m","content":[{"type":"output_text","text":"done"}]}],"usage":{}}`))
+		default:
+			t.Fatalf("unexpected extra request")
+		}
+	}))
+	defer srv.Close()
+
+	p := NewResponsesProviderWithKey(srv.URL, "key")
+	p.WebSearch = true
+
+	// Turn 1: web_search tool advertised.
+	resp, err := p.Complete(context.Background(), Request{
+		Model:    "m",
+		Messages: []Message{{Role: RoleUser, Content: "search something"}},
+		Tools:    []ToolDefinition{{Type: "function", Function: ToolFunction{Name: "list_files"}}},
+	})
+	if err != nil {
+		t.Fatalf("turn 1: %v", err)
+	}
+	if turn1.Tools == nil || len(*turn1.Tools) != 2 {
+		t.Fatalf("turn 1 tools = %+v, want function + web_search", turn1.Tools)
+	}
+	if (*turn1.Tools)[0].Type != "function" || (*turn1.Tools)[0].Name != "list_files" {
+		t.Errorf("first tool = %+v", (*turn1.Tools)[0])
+	}
+	if (*turn1.Tools)[1].Type != "web_search" {
+		t.Errorf("second tool = %+v, want web_search", (*turn1.Tools)[1])
+	}
+	// Turn 1 response: web_search_call parsed out of output, including the
+	// action object DeepSeek emits (must survive as raw JSON).
+	if len(resp.WebSearchCalls) != 1 || resp.WebSearchCalls[0].ID != "ws_9" ||
+		resp.WebSearchCalls[0].Status != "completed" ||
+		string(resp.WebSearchCalls[0].Action) != `{"type":"search"}` ||
+		string(resp.WebSearchCalls[0].SearchConfig) != `{"query":"deepseek responses api"}` {
+		t.Fatalf("web search calls = %+v", resp.WebSearchCalls)
+	}
+
+	// Persist path: AssistantMessage carries the web search calls.
+	assistant := resp.AssistantMessage()
+	if len(assistant.WebSearchCalls) != 1 || assistant.WebSearchCalls[0].ID != "ws_9" {
+		t.Fatalf("assistant message web search calls = %+v", assistant.WebSearchCalls)
+	}
+
+	// Turn 2: replay the web_search_call item verbatim.
+	_, err = p.Complete(context.Background(), Request{
+		Model: "m",
+		Messages: []Message{
+			{Role: RoleUser, Content: "search something"},
+			assistant,
+			{Role: RoleUser, Content: "follow up"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("turn 2: %v", err)
+	}
+	found := false
+	for _, item := range turn2.Input {
+		if item.Type == "web_search_call" {
+			found = true
+			if item.ID != "ws_9" || item.Status != "completed" || string(item.Action) != `{"type":"search"}` ||
+				string(item.SearchConfig) != `{"query":"deepseek responses api"}` {
+				t.Fatalf("replayed web_search_call = %+v", item)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("turn 2 input lacks the replayed web_search_call: %+v", turn2.Input)
+	}
+}
+
+func TestResponsesWebSearchToolAbsentWhenDisabled(t *testing.T) {
+	var got responsesRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = decodeRequestBody(t, r)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"r_1","status":"completed","output":[],"usage":{}}`))
+	}))
+	defer srv.Close()
+
+	p := NewResponsesProviderWithKey(srv.URL, "key") // WebSearch defaults false
+	_, err := p.Complete(context.Background(), Request{
+		Model:    "m",
+		Messages: []Message{{Role: RoleUser, Content: "hi"}},
+		Tools:    []ToolDefinition{{Type: "function", Function: ToolFunction{Name: "list_files"}}},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if got.Tools == nil || len(*got.Tools) != 1 {
+		t.Fatalf("tools = %+v, want only the function tool", got.Tools)
+	}
+	if (*got.Tools)[0].Type != "function" {
+		t.Errorf("tool = %+v", (*got.Tools)[0])
+	}
+}
+
+func TestResponsesWebSearchFiltersLocalTool(t *testing.T) {
+	// code-agent registers its own web_search function tool; when the provider's
+	// built-in server-side search is enabled, the local function tool must be
+	// dropped from the advertisement so the model cannot pick it over the
+	// server-side search.
+	var got responsesRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = decodeRequestBody(t, r)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"r_1","status":"completed","output":[],"usage":{}}`))
+	}))
+	defer srv.Close()
+
+	p := NewResponsesProviderWithKey(srv.URL, "key")
+	p.WebSearch = true
+	localSearchSchema := json.RawMessage(`{"type":"object","properties":{"query":{"type":"string"}},"required":["query"]}`)
+	_, err := p.Complete(context.Background(), Request{
+		Model:    "m",
+		Messages: []Message{{Role: RoleUser, Content: "hi"}},
+		Tools: []ToolDefinition{
+			{Type: "function", Function: ToolFunction{Name: "list_files"}},
+			{Type: "function", Function: ToolFunction{Name: "web_search", Description: "Search the web", Parameters: localSearchSchema}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if got.Tools == nil {
+		t.Fatal("tools = nil, want [list_files, web_search]")
+	}
+	var sawLocal, sawServerSide bool
+	for _, tool := range *got.Tools {
+		if tool.Type == "function" && tool.Name == "web_search" {
+			sawLocal = true
+		}
+		if tool.Type == "web_search" {
+			sawServerSide = true
+		}
+	}
+	if sawLocal {
+		t.Errorf("local web_search function tool was not filtered: %+v", *got.Tools)
+	}
+	if !sawServerSide {
+		t.Errorf("server-side web_search tool missing: %+v", *got.Tools)
+	}
+	if len(*got.Tools) != 2 {
+		t.Errorf("tools = %+v, want exactly [list_files, web_search]", *got.Tools)
+	}
+}
+
+func TestResponsesWebSearchReplayLegacyDefaultsToSearch(t *testing.T) {
+	// Items persisted before the action field existed have no Action; replay
+	// must default it to the bare string "search", which DeepSeek's input
+	// deserializer accepts.
+	var got responsesRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = decodeRequestBody(t, r)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"r_1","status":"completed","output":[],"usage":{}}`))
+	}))
+	defer srv.Close()
+
+	p := NewResponsesProviderWithKey(srv.URL, "key")
+	_, err := p.Complete(context.Background(), Request{
+		Model: "m",
+		Messages: []Message{
+			{Role: RoleUser, Content: "hi"},
+			{Role: RoleAssistant, WebSearchCalls: []WebSearchCall{
+				{Type: "web_search_call", ID: "ws_old", Status: "completed"},
+			}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	found := false
+	for _, item := range got.Input {
+		if item.Type == "web_search_call" {
+			found = true
+			if item.ID != "ws_old" || string(item.Action) != `"search"` {
+				t.Fatalf("legacy web_search_call replay = %+v, want action \"search\"", item)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("input lacks the replayed legacy web_search_call: %+v", got.Input)
+	}
+}
+
 func TestResponsesCompleteParsesMixedOutput(t *testing.T) {
 	body := `{"id":"r_1","status":"completed","output":[
 		{"type":"reasoning","id":"rs_1","content":[{"type":"reasoning_text","text":"think hard"}]},

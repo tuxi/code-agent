@@ -691,6 +691,7 @@ func deepCopySession(s *Session) *Session {
 		}
 		c.Messages[i].Assets = append([]model.GatewayAssetRef(nil), m.Assets...)
 		c.Messages[i].LocalAssets = append([]model.LocalAssetRef(nil), m.LocalAssets...)
+		c.Messages[i].WebSearchCalls = append([]model.WebSearchCall(nil), m.WebSearchCalls...)
 	}
 	c.Metadata = make(map[string]any, len(s.Metadata))
 	for k, v := range s.Metadata {

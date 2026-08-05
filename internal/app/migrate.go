@@ -178,16 +178,17 @@ func settingsFileFrom(cfg Config) settings.File {
 		f.Models = make(map[string]settings.ModelConfig, len(cfg.Models))
 		for name, mc := range cfg.Models {
 			f.Models[name] = settings.ModelConfig{
-				Provider:          mc.Provider,
-				BaseURL:           mc.BaseURL,
-				Model:             mc.Model,
-				APIKeyEnv:         mc.APIKeyEnv,
-				Temperature:       mc.Temperature,
-				ContextWindow:     mc.ContextWindow,
-				InputPricePerM:    mc.InputPricePerM,
-				OutputPricePerM:   mc.OutputPricePerM,
+				Provider:            mc.Provider,
+				BaseURL:             mc.BaseURL,
+				Model:               mc.Model,
+				APIKeyEnv:           mc.APIKeyEnv,
+				Temperature:         mc.Temperature,
+				ContextWindow:       mc.ContextWindow,
+				InputPricePerM:      mc.InputPricePerM,
+				OutputPricePerM:     mc.OutputPricePerM,
 				CacheInputPricePerM: mc.CacheInputPricePerM,
-				Credential:        settings.CredentialRef{Namespace: mc.Credential.Namespace, Name: mc.Credential.Name},
+				WebSearch:           mc.WebSearch,
+				Credential:          settings.CredentialRef{Namespace: mc.Credential.Namespace, Name: mc.Credential.Name},
 				Catalog: settings.ModelCatalogMetadata{
 					ConnectionID:          mc.Catalog.ConnectionID,
 					ProviderID:            mc.Catalog.ProviderID,

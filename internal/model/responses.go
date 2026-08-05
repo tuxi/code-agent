@@ -36,6 +36,12 @@ type ResponsesProvider struct {
 
 	// APIKey is the static API key, used when Credential is nil.
 	APIKey string
+
+	// WebSearch, when true, advertises the provider's built-in web_search tool
+	// on tool-carrying requests (DeepSeek executes it server-side). The
+	// returned web_search_call items are echoed back on later requests so the
+	// provider restores search results into context.
+	WebSearch bool
 }
 
 // NewResponsesProvider creates a provider that resolves credentials
@@ -116,16 +122,21 @@ func toResponsesTools(tools []ToolDefinition) *[]responsesTool {
 	return &out
 }
 
-// responseItem is one input item: a message, a function call to replay, or a
-// function call output. Only one of the field groups is set per item.
+// responseItem is one input item: a message, a function call to replay, a
+// function call output, or a web_search_call to replay. Only one of the field
+// groups is set per item.
 type responseItem struct {
-	Type      string            `json:"type"`
-	Role      string            `json:"role,omitempty"`      // message items
-	Content   []responseContent `json:"content,omitempty"`   // message items
-	CallID    string            `json:"call_id,omitempty"`   // function_call / function_call_output
-	Name      string            `json:"name,omitempty"`      // function_call
-	Arguments string            `json:"arguments,omitempty"` // function_call (JSON string)
-	Output    string            `json:"output,omitempty"`    // function_call_output
+	Type         string            `json:"type"`
+	ID           string            `json:"id,omitempty"`            // web_search_call identity
+	Role         string            `json:"role,omitempty"`          // message items
+	Content      []responseContent `json:"content,omitempty"`       // message items
+	CallID       string            `json:"call_id,omitempty"`       // function_call / function_call_output
+	Name         string            `json:"name,omitempty"`          // function_call
+	Arguments    string            `json:"arguments,omitempty"`     // function_call (JSON string)
+	Output       string            `json:"output,omitempty"`        // function_call_output
+	Status       string            `json:"status,omitempty"`        // web_search_call
+	Action       json.RawMessage   `json:"action,omitempty"`        // web_search_call (object or "search")
+	SearchConfig json.RawMessage   `json:"search_config,omitempty"` // web_search_call
 }
 
 // responseContent is one content block inside a message item. input_text marks
@@ -138,8 +149,10 @@ type responseContent struct {
 
 // toResponsesRequest maps the canonical Request into the Responses body:
 // system messages fold into the top-level instructions field (there is no
-// system role on the wire), everything else becomes input items.
-func toResponsesRequest(req Request) responsesRequest {
+// system role on the wire), everything else becomes input items. When webSearch
+// is enabled AND the request carries function tools, the provider's built-in
+// web_search tool is advertised alongside them.
+func toResponsesRequest(req Request, webSearch bool) responsesRequest {
 	var instructions []string
 	var items []responseItem
 	for _, m := range req.Messages {
@@ -170,6 +183,24 @@ func toResponsesRequest(req Request) responsesRequest {
 					Arguments: tc.Function.Arguments,
 				})
 			}
+			// Replay prior server-side web searches verbatim so the provider
+			// restores their results into context (DeepSeek contract). The action
+			// field is echoed back as-is (DeepSeek emits it as an object, e.g.
+			// {"type":"search"}); a legacy item persisted without it replays as
+			// the bare string "search", which the provider also accepts.
+			for _, ws := range m.WebSearchCalls {
+				action := ws.Action
+				if len(action) == 0 {
+					action = json.RawMessage(`"search"`)
+				}
+				items = append(items, responseItem{
+					Type:         "web_search_call",
+					ID:           ws.ID,
+					Status:       ws.Status,
+					Action:       action,
+					SearchConfig: ws.SearchConfig,
+				})
+			}
 		case RoleTool:
 			items = append(items, responseItem{
 				Type:   "function_call_output",
@@ -178,14 +209,40 @@ func toResponsesRequest(req Request) responsesRequest {
 			})
 		}
 	}
+	tools := toResponsesTools(req.Tools)
+	if webSearch && tools != nil {
+		// code-agent registers its OWN web_search function tool (Tavily/Brave),
+		// which the loop passes through in req.Tools. Advertising both it and
+		// the provider's built-in web_search makes the model call the local
+		// function instead of the server-side search (a same-named function
+		// tool with a full schema always wins the model's attention). Drop the
+		// local function tool so the server-side search is the only search path
+		// the model can choose.
+		*tools = filterLocalWebSearch(*tools)
+		*tools = append(*tools, responsesTool{Type: "web_search"})
+	}
 	return responsesRequest{
 		Model:        req.Model,
 		Instructions: strings.Join(instructions, "\n\n"),
 		Input:        items,
 		Temperature:  req.Temperature,
-		Tools:        toResponsesTools(req.Tools),
+		Tools:        tools,
 		ToolChoice:   req.ToolChoice,
 	}
+}
+
+// filterLocalWebSearch removes code-agent's local web_search function tool from
+// the advertised tool set, leaving the provider's built-in server-side search
+// as the only search option (see toResponsesRequest).
+func filterLocalWebSearch(tools []responsesTool) []responsesTool {
+	out := tools[:0]
+	for _, t := range tools {
+		if t.Type == "function" && t.Name == "web_search" {
+			continue
+		}
+		out = append(out, t)
+	}
+	return out
 }
 
 // ── Responses wire schemas ──────────────────────────────────────────────
@@ -203,14 +260,17 @@ type responsesResponse struct {
 
 // responsesOutput is one output item. message items carry output_text content
 // blocks; reasoning items carry reasoning_text blocks; function_call items
-// carry the requested tool.
+// carry the requested tool; web_search_call items record a server-side search.
 type responsesOutput struct {
-	Type      string            `json:"type"` // message | reasoning | function_call | ...
-	ID        string            `json:"id"`
-	CallID    string            `json:"call_id,omitempty"`
-	Name      string            `json:"name,omitempty"`
-	Arguments string            `json:"arguments,omitempty"`
-	Content   []responseContent `json:"content,omitempty"`
+	Type         string            `json:"type"` // message | reasoning | function_call | web_search_call | ...
+	ID           string            `json:"id"`
+	CallID       string            `json:"call_id,omitempty"`
+	Name         string            `json:"name,omitempty"`
+	Arguments    string            `json:"arguments,omitempty"`
+	Status       string            `json:"status,omitempty"`
+	Action       json.RawMessage   `json:"action,omitempty"`
+	SearchConfig json.RawMessage   `json:"search_config,omitempty"`
+	Content      []responseContent `json:"content,omitempty"`
 }
 
 // responsesUsage reports token accounting. Cached-prompt tokens sit under
@@ -241,10 +301,12 @@ func (u *responsesUsage) toUsage() Usage {
 
 // responsesFromOutput converts a Responses response object into the canonical
 // Response the agent loop consumes. Reasoning text is provider-visible and
-// flows into ReasoningContent; function_call items become ToolCalls.
+// flows into ReasoningContent; function_call items become ToolCalls;
+// web_search_call items are recorded for verbatim replay.
 func responsesFromOutput(r responsesResponse) Response {
 	var content, reasoning strings.Builder
 	var calls []ToolCall
+	var webSearches []WebSearchCall
 	for _, out := range r.Output {
 		switch out.Type {
 		case "message":
@@ -274,6 +336,14 @@ func responsesFromOutput(r responsesResponse) Response {
 					Arguments: out.Arguments,
 				},
 			})
+		case "web_search_call":
+			webSearches = append(webSearches, WebSearchCall{
+				Type:         out.Type,
+				ID:           out.ID,
+				Status:       out.Status,
+				Action:       out.Action,
+				SearchConfig: out.SearchConfig,
+			})
 		}
 	}
 	finish := "stop"
@@ -287,6 +357,7 @@ func responsesFromOutput(r responsesResponse) Response {
 		Content:          strings.TrimSpace(content.String()),
 		ReasoningContent: strings.TrimSpace(reasoning.String()),
 		ToolCalls:        calls,
+		WebSearchCalls:   webSearches,
 		FinishReason:     finish,
 		Usage:            r.Usage.toUsage(),
 	}
@@ -304,7 +375,7 @@ func (p *ResponsesProvider) Complete(ctx context.Context, req Request) (Response
 		return Response{}, fmt.Errorf("missing base url")
 	}
 
-	data, err := json.Marshal(toResponsesRequest(req))
+	data, err := json.Marshal(toResponsesRequest(req, p.WebSearch))
 	if err != nil {
 		return Response{}, err
 	}
@@ -380,7 +451,7 @@ func (p *ResponsesProvider) CompleteStream(ctx context.Context, req Request, onT
 		return Response{}, fmt.Errorf("missing base url")
 	}
 
-	rreq := toResponsesRequest(req)
+	rreq := toResponsesRequest(req, p.WebSearch)
 	rreq.Stream = true
 	data, err := json.Marshal(rreq)
 	if err != nil {
