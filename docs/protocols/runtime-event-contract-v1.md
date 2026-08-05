@@ -476,6 +476,22 @@ User rejected the plan.
 }
 ```
 
+#### `plan_state_changed` (since v1.4)
+
+The plan state machine transitioned. Emitted on every real transition —
+entering plan mode (`enter_plan_mode`), proposing, approving, rejecting
+(re-enters planning), or exiting — so a client can render plan-mode state
+without polling. `plan_state` is one of `none | planning | proposing |
+approved | rejected | executing`. A redundant transition (same state) emits
+nothing.
+
+```json
+{
+  "kind": "plan_state_changed",
+  "plan_state": "planning"
+}
+```
+
 ### 5.7 Todo Events
 
 #### `todo_updated` (since v1.0)

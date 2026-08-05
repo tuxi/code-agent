@@ -348,7 +348,7 @@ func handleCommand(line string, cfg app.Config, mc *app.ModelConfig, runner *age
 
 	case "/plan":
 		if runner.PlanState == agent.PlanStatusPlanning {
-			runner.PlanState = agent.PlanStatusNone
+			runner.SetPlanState(agent.PlanStatusNone)
 		} else {
 			runner.BeginPlanning("")
 		}
