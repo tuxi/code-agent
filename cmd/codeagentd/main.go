@@ -10,10 +10,12 @@ package main
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 
 	"code-agent/internal/app"
 	"code-agent/internal/buildinfo"
@@ -52,6 +54,17 @@ func main() {
 func run() error {
 	args := os.Args[1:]
 	modelName, args := runtime.ExtractModelFlag(args)
+
+	var portFile string
+	for len(args) > 0 && strings.HasPrefix(args[0], "--") {
+		switch {
+		case strings.HasPrefix(args[0], "--port-file="):
+			portFile = strings.TrimPrefix(args[0], "--port-file=")
+		default:
+			return fmt.Errorf("unknown flag: %s", args[0])
+		}
+		args = args[1:]
+	}
 
 	addr := "0.0.0.0:8797"
 	if len(args) > 0 {
@@ -252,7 +265,24 @@ func run() error {
 		WorkflowSnapshot:    runtime.NewWorkflowSnapshotFunc(),
 	})
 
-	srv := &http.Server{Addr: addr, Handler: handler}
+
+	lis, err := net.Listen("tcp", addr)
+	if err != nil {
+		return fmt.Errorf("listen %s: %w", addr, err)
+	}
+	actualPort := lis.Addr().(*net.TCPAddr).Port
+
+	// Write the actual port to the port-file before serving, so the
+	// host process can discover the ephemeral port reliably.
+	if portFile != "" {
+		if err := os.WriteFile(portFile, []byte(fmt.Sprint(actualPort)), 0644); err != nil {
+			_ = lis.Close()
+			return fmt.Errorf("write port-file %s: %w", portFile, err)
+		}
+	}
+
+	srv := &http.Server{Handler: handler}
+
 	go func() {
 		<-ctx.Done()
 		_ = srv.Close()
@@ -262,7 +292,7 @@ func run() error {
 	if cfg.Server.TLSCertificate != "" {
 		scheme = "https"
 	}
-	fmt.Printf("codeagentd serve — %s://%s  (model: %s, cwd: %s, projects: %s)\n", scheme, addr, mc.Model, cwd, projectsRoot)
+	fmt.Printf("codeagentd serve — %s://127.0.0.1:%d  (model: %s, cwd: %s, projects: %s)\n", scheme, actualPort, mc.Model, cwd, projectsRoot)
 	fmt.Println("  GET  /healthz")
 	fmt.Println("  GET  /v1/conversations")
 	fmt.Println("  POST  /v1/conversations            {\"workspace_path\":\"...\"}  -> {\"id\":\"...\"}")
@@ -270,10 +300,10 @@ func run() error {
 	fmt.Println("  PATCH /v1/conversations/{id}        {\"name\":\"...\"}")
 	fmt.Println("  GET   /v1/conversations/{id}/stream   (WebSocket)")
 
-	serve := srv.ListenAndServe
+	serve := func() error { return srv.Serve(lis) }
 	if cfg.Server.TLSCertificate != "" {
 		serve = func() error {
-			return srv.ListenAndServeTLS(cfg.Server.TLSCertificate, cfg.Server.TLSPrivateKey)
+			return srv.ServeTLS(lis, cfg.Server.TLSCertificate, cfg.Server.TLSPrivateKey)
 		}
 	}
 	if err := serve(); err != nil && err != http.ErrServerClosed {
