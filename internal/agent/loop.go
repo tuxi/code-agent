@@ -3,6 +3,7 @@ package agent
 import (
 	"code-agent/internal/assetref"
 	"code-agent/internal/model"
+	"code-agent/internal/observation"
 	"code-agent/internal/reflection"
 	"code-agent/internal/session"
 	"code-agent/internal/tools"
@@ -1021,14 +1022,31 @@ func (r *Runner) drive(ctx context.Context, sess *session.Session) (TurnResult, 
 				// skipped entirely: the runtime never asserts "unverified" (2b silence).
 				if rc.UnverifiedMutation && r.VerifyCommand != "" && !verified {
 					verified = true
-					passed, summary := r.runFinalizeVerify(ctx)
+					status, summary := r.runFinalizeVerify(ctx)
 					r.emit(Event{Kind: EventVerified, Text: summary})
-					if !passed {
+					switch status {
+					case VerifyFailed:
 						reflected = true // don't also stack the fact nudge this pass
 						pendingReflection = "[reflection] The verification `" + r.VerifyCommand +
 							"` was run against your change to " + strings.Join(rc.CodeFilesMutated, ", ") +
 							" and it FAILED:\n" + summary +
 							"\nThis is the real result, not a guess. Fix the cause, then finish."
+						r.emit(Event{Kind: EventReflected, Text: pendingReflection})
+						continue
+					case VerifyCouldNotRun:
+						// The verify never produced a verdict: an environment problem
+						// (toolchain not on PATH, executable not found), NOT a failure
+						// of the change. Never report it as FAILED. One-shot re-prompt
+						// with the honest reason; the model may retry with an explicit
+						// toolchain path or finish without verification.
+						reflected = true
+						if summary == "" {
+							summary = "command could not run (exit -1)"
+						}
+						pendingReflection = "[reflection] The verification `" + r.VerifyCommand +
+							"` could not run: " + summary +
+							"\nThis is an environment problem (e.g. the toolchain is not on PATH), not a verdict on your change." +
+							"\nRetry with an explicit toolchain path, or finish without it."
 						r.emit(Event{Kind: EventReflected, Text: pendingReflection})
 						continue
 					}
@@ -1209,47 +1227,62 @@ func aboutToMutate(calls []model.ToolCall) bool {
 	return false
 }
 
+// VerifyStatus is the honest tri-state outcome of a finalize verify run: the
+// change passed, the change genuinely failed the verify, or the verify could
+// not run at all (environment problem — never a verdict on the change).
+type VerifyStatus int
+
+const (
+	VerifyPassed VerifyStatus = iota
+	VerifyFailed
+	VerifyCouldNotRun
+)
+
 // runFinalizeVerify runs the configured VerifyCommand once at the finalize
 // boundary (P4.3-R Move 2, option 2a — the port of Claude Code's Stop hook) and
 // classifies the outcome via the Observer. It is a runtime action, not a
 // fabricated model turn: the real result is fed back to the model only on
-// failure. Guards keep it safe — it declines (reporting a pass, i.e. "no
+// failure. Guards keep it safe — it declines (reporting Passed, i.e. "no
 // objection") when run_command is unavailable or the command would mutate the
 // workspace, so it never auto-runs a side-effecting command outside approval.
-func (r *Runner) runFinalizeVerify(ctx context.Context) (passed bool, summary string) {
+func (r *Runner) runFinalizeVerify(ctx context.Context) (VerifyStatus, string) {
 	tool, ok := r.Tools.Get("run_command")
 	if !ok {
-		return true, ""
+		return VerifyPassed, ""
 	}
 	input, err := json.Marshal(map[string]string{"command": r.VerifyCommand})
 	if err != nil {
-		return true, ""
+		return VerifyPassed, ""
 	}
 	if tools.HasSideEffectsFor(tool, input) {
-		return true, "" // never auto-run a mutating command
+		return VerifyPassed, "" // never auto-run a mutating command
 	}
 	result, execErr := r.executeTool(ctx, tool, nextCallID(), input)
 	if execErr != nil {
-		return false, "verify command errored: " + execErr.Error()
+		return VerifyCouldNotRun, "verify command could not run: " + execErr.Error()
 	}
-	// Classify via the same rendered "[observation]" marker the loop uses, so a
-	// clean run (FailureNone → "ok") is a pass and only an explicit failure=…
-	// counts as a failure. With no Observer, an unclassifiable result is a pass
-	// (no objection).
-	observed := result.Content
-	summary = ""
+	// Classify via the structured Observation. FailureEnvironment (exit -1,
+	// command never started) is a could-not-run — the runtime must NEVER report
+	// it as "the verification FAILED" and tell the model to fix the cause.
+	// With no Observer, an unclassifiable result is a pass (no objection).
+	summary := ""
 	if r.Observer != nil {
 		obs := r.Observer.Observe("run_command", result.Content)
-		observed = obs.Render(result.Content)
-		summary = obs.Summary
-	}
-	if reflection.SawFailure([]reflection.StepView{{Observation: observed}}) {
-		if summary == "" {
-			summary = "verification failed"
+		if obs.FailureType == observation.FailureEnvironment {
+			if obs.Summary == "" {
+				obs.Summary = "command could not run (exit -1)"
+			}
+			return VerifyCouldNotRun, obs.Summary
 		}
-		return false, summary
+		summary = obs.Summary
+		if reflection.SawFailure([]reflection.StepView{{Observation: obs.Render(result.Content)}}) {
+			if summary == "" {
+				summary = "verification failed"
+			}
+			return VerifyFailed, summary
+		}
 	}
-	return true, summary
+	return VerifyPassed, summary
 }
 
 // planningPrompt is injected as an ephemeral user message when the model enters the

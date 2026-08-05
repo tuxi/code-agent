@@ -41,6 +41,10 @@ func toolCallResp(name, args string) model.Response {
 const (
 	goTestFailJSON = `{"command":"go test ./...","stdout":"--- FAIL: TestX (0.00s)\n    x_test.go:1: bad\nFAIL\tpkg 0.1s","exit_code":1,"decision":"allow"}`
 	goTestOKJSON   = `{"command":"go test ./...","stdout":"ok  pkg 0.1s","exit_code":0,"decision":"allow"}`
+	// goTestEnvJSON mirrors the exact shape run_command emits when the binary
+	// cannot start: exit -1 + a start-error note. Previously this was lumped into
+	// failure=runtime and reported as a lying "verification FAILED".
+	goTestEnvJSON = `{"command":"go test ./...","exit_code":-1,"decision":"allow","note":"exec: \"go\": executable file not found in $PATH"}`
 )
 
 // A paper-over turn (test fails → edit the TEST → test passes → "done") must
@@ -334,6 +338,47 @@ func TestFinalizeVerifyFailReprompts(t *testing.T) {
 	}
 	if res.Final != "fixed for real" {
 		t.Errorf("final = %q, want %q", res.Final, "fixed for real")
+	}
+}
+
+// A verify that COULD NOT RUN (toolchain not on PATH — exit -1, start error)
+// is an environment problem, NOT a failure of the change. The runtime must
+// never report it as "verification FAILED ... fix the cause". It re-prompts
+// once with the honest reason, and the model may finish without re-verifying.
+func TestFinalizeVerifyCouldNotRunIsNotAFailure(t *testing.T) {
+	reg := tools.NewRegistry()
+	mustReg(t, reg, &jsonResultTool{name: "edit_file", out: "edited"})
+	mustReg(t, reg, &sequencedTool{name: "run_command", outs: []string{goTestEnvJSON}})
+
+	provider := &scriptedProvider{responses: []model.Response{
+		toolCallResp("edit_file", `{"path":"internal/app/config.go"}`),
+		{Content: "done", FinishReason: "stop"}, // premature — verify could not run, re-prompted
+		{Content: "finished without verification", FinishReason: "stop"},
+	}}
+	em := &capturingEmitter{}
+	runner := &Runner{
+		Model: provider, Tools: reg, MaxSteps: 10, Emitter: em,
+		Observer:      observation.DefaultObserver{},
+		Reflector:     DefaultReflector{},
+		VerifyCommand: "go test ./...",
+	}
+	res, err := runner.RunTurn(context.Background(), newSession(), "change config")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ev, ok := em.first(EventReflected)
+	if !ok {
+		t.Fatal("expected an environment re-prompt")
+	}
+	low := strings.ToLower(ev.Text)
+	if strings.Contains(low, "failed") {
+		t.Errorf("environment problem must not be reported as FAILED:\n%s", ev.Text)
+	}
+	if !strings.Contains(low, "could not run") || !strings.Contains(low, "environment") {
+		t.Errorf("expected an honest 'could not run' environment message:\n%s", ev.Text)
+	}
+	if res.Final != "finished without verification" {
+		t.Errorf("final = %q, want %q (model may finish without re-verifying)", res.Final, "finished without verification")
 	}
 }
 

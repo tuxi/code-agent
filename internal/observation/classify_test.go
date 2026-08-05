@@ -84,6 +84,26 @@ func TestClassifyRunCommand(t *testing.T) {
 			want: FailureRuntime,
 		},
 		{
+			name: "command could not start is environment, not runtime",
+			res: commandResult{
+				Command:  "go build ./...",
+				ExitCode: -1,
+				Decision: "allow",
+				Note:     `exec: "go": executable file not found in $PATH`,
+			},
+			want: FailureEnvironment,
+		},
+		{
+			name: "signal kill is environment",
+			res: commandResult{
+				Command:  "go test ./...",
+				ExitCode: -1,
+				Decision: "allow",
+				Note:     "signal: killed",
+			},
+			want: FailureEnvironment,
+		},
+		{
 			name: "panic is a test failure",
 			res: commandResult{
 				Command:  "go test ./...",

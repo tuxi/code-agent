@@ -29,6 +29,15 @@ func classifyRunCommand(res commandResult) FailureType {
 	if isTimeout(res.Note) {
 		return FailureTimeout
 	}
+	// exit -1 after the policy/timeout checks means the command never ran to a
+	// verdict: a start failure (exec not found / not executable) or a signal
+	// kill. RunCommandTool encodes those as -1 with the note holding the start
+	// error. Do NOT bucket this as a runtime failure — it is an environment
+	// problem, not a verdict on the change, and must never be reported as
+	// "verification FAILED".
+	if res.ExitCode == -1 {
+		return FailureEnvironment
+	}
 	if res.ExitCode == 0 {
 		return FailureNone
 	}

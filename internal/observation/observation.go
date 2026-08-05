@@ -35,6 +35,11 @@ const (
 	FailureRuntime FailureType = "runtime" // nonzero exit, not one of the above
 	FailureTimeout FailureType = "timeout" // killed by the deadline
 	FailureBlocked FailureType = "blocked" // refused by CommandPolicy
+	// FailureEnvironment means the command never produced a verdict: it could not
+	// start (executable not found / not executable) or was killed by a signal.
+	// This is NOT a failure of the change under test — the runtime must never
+	// report it as "the verification FAILED" and tell the model to fix the cause.
+	FailureEnvironment FailureType = "environment"
 )
 
 // Observation is the enriched, machine-actionable view of a single tool result.
@@ -163,6 +168,15 @@ func observeCommand(res commandResult) Observation {
 		return obs // a success needs no distillation; the bare "ok" line is enough
 	}
 	obs.Salient = extractSalient(res.Stdout, res.Stderr)
+	if ft == FailureEnvironment {
+		// No verdict was produced; the note holds the start error. The summary
+		// must say the command could not run, not that it failed.
+		obs.Summary = res.Note
+		if obs.Summary == "" {
+			obs.Summary = "command could not run (exit -1)"
+		}
+		return obs
+	}
 	obs.Summary = summarize(ft, res, obs.Salient)
 	return obs
 }
