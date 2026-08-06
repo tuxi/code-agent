@@ -47,10 +47,12 @@ const (
 	goTestEnvJSON = `{"command":"go test ./...","exit_code":-1,"decision":"allow","note":"exec: \"go\": executable file not found in $PATH"}`
 )
 
-// A paper-over turn (test fails → edit the TEST → test passes → "done") must
-// trigger exactly one reflection pass, continue, and accept the *second* answer.
-// The premature "done" must never be persisted.
-func TestReflectionTriggersOneSelfCheck(t *testing.T) {
+// The TestEditedAfterFailure fact-question is retired (sign-off): with no
+// VerifyCommand, a paper-over turn (test fails → edit the TEST → test passes →
+// "done") is SILENT — the first finish is accepted as reported. The
+// deterministic finalize verify is the surviving rail (2b silence); see
+// TestFinalizeVerifyFailReprompts for the case where a VerifyCommand catches it.
+func TestFactNudgeRetiredWithoutVerifyCommand(t *testing.T) {
 	reg := tools.NewRegistry()
 	mustReg(t, reg, &sequencedTool{name: "run_command", outs: []string{goTestFailJSON, goTestOKJSON}})
 	mustReg(t, reg, &jsonResultTool{name: "edit_file", out: "edited"})
@@ -60,48 +62,23 @@ func TestReflectionTriggersOneSelfCheck(t *testing.T) {
 		toolCallResp("edit_file", `{"path":"internal/app/config_test.go"}`),
 		toolCallResp("run_command", `{"command":"go test ./..."}`),
 		{Content: "done", FinishReason: "stop"},
-		{Content: "verified for real", FinishReason: "stop"},
 	}}
 
 	em := &capturingEmitter{}
 	runner := &Runner{
 		Model: provider, Tools: reg, MaxSteps: 10, Emitter: em,
 		Observer:  observation.DefaultObserver{},
-		Reflector: DefaultReflector{},
+		Reflector: DefaultReflector{}, // VerifyCommand deliberately empty
 	}
-	sess := newSession()
-	res, err := runner.RunTurn(context.Background(), sess, "make tests pass")
+	res, err := runner.RunTurn(context.Background(), newSession(), "make tests pass")
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	// Exactly one reflection pass.
-	n := 0
-	for _, e := range em.events {
-		if e.Kind == EventReflected {
-			n++
-		}
+	if _, ok := em.first(EventReflected); ok {
+		t.Error("no VerifyCommand — the reflective fact-question must not fire")
 	}
-	if n != 1 {
-		t.Fatalf("EventReflected count = %d, want 1 (one-shot)", n)
-	}
-
-	// The nudge named the edited test file.
-	ev, _ := em.first(EventReflected)
-	if !strings.Contains(ev.Text, "config_test.go") {
-		t.Errorf("reflection nudge missing the test file: %q", ev.Text)
-	}
-
-	// The accepted answer is the post-reflection one.
-	if res.Final != "verified for real" {
-		t.Errorf("final = %q, want %q", res.Final, "verified for real")
-	}
-
-	// The premature "done" was re-prompted, not persisted.
-	for _, m := range sess.Messages {
-		if m.Role == model.RoleAssistant && m.Content == "done" {
-			t.Error("premature finalize 'done' must not be persisted to history")
-		}
+	if res.Final != "done" {
+		t.Errorf("final = %q, want %q (first finish accepted silently)", res.Final, "done")
 	}
 }
 

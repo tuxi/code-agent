@@ -139,37 +139,6 @@ func TestReflectApplyPatchTestFileAfterFailure(t *testing.T) {
 	}
 }
 
-func TestNudgeContainsOnlyTriggeredSignals(t *testing.T) {
-	// No concern → empty nudge.
-	if n := (ReflectionContext{}).Nudge(); n != "" {
-		t.Errorf("Nudge with no concerns = %q, want empty", n)
-	}
-
-	// Only the test-edit signal.
-	n := ReflectionContext{
-		TestEditedAfterFailure: true,
-		TestFilesMutated:       []string{"internal/app/config_test.go"},
-	}.Nudge()
-	if !strings.Contains(n, "edited a test file") || !strings.Contains(n, "config_test.go") {
-		t.Errorf("nudge missing the test-edit line: %q", n)
-	}
-	if strings.Contains(n, "no build or test has confirmed") {
-		t.Errorf("nudge included the unverified line when it should not: %q", n)
-	}
-
-	// P4.3-R Move 2: the unverified signal no longer produces a nudge — the
-	// runtime does not GUESS "unverified"; the loop's deterministic verify (or
-	// silence) handles it. So an unverified-only context yields an empty nudge.
-	n = ReflectionContext{
-		UnverifiedMutation: true,
-		MutatedFiles:       []string{"internal/app/config.go"},
-		CodeFilesMutated:   []string{"internal/app/config.go"},
-	}.Nudge()
-	if n != "" {
-		t.Errorf("unverified-only nudge = %q, want empty (Move 2 retired the guess)", n)
-	}
-}
-
 // P4.3-R Move 1: a turn that writes ONLY doc/data files (no verifiable code) must
 // not fire UnverifiedMutation — there is no build/test to run on a .md.
 func TestReflectDocOnlyTurnHasNoConcern(t *testing.T) {
@@ -193,9 +162,6 @@ func TestReflectDocOnlyTurnHasNoConcern(t *testing.T) {
 	}
 	if rc.Concerns() {
 		t.Errorf("Concerns() = true, want false — nothing verifiable was written: %+v", rc)
-	}
-	if n := rc.Nudge(); n != "" {
-		t.Errorf("Nudge = %q, want empty for a doc-only turn", n)
 	}
 }
 

@@ -72,6 +72,14 @@ type Runner struct {
 	// tools run exactly as before.
 	Hook ToolHook
 
+	// StopPolicy is the finalize decision point (8.5): consulted when the model
+	// returns a text-only message and wants to finish. Nil-safe: nil selects the
+	// built-in default policy (build verify + change review + todo gate),
+	// preserving the loop's pre-policy behavior exactly. A configured policy
+	// REPLACES the default — the operator owns the stop decision. The step
+	// budget remains the hard backstop behind any policy.
+	StopPolicy StopPolicy
+
 	// Stream, when true AND the provider supports it, streams final-answer text
 	// and provider-visible reasoning via their distinct delta events. The returned
 	// Response remains identical to the non-streamed one.
@@ -153,6 +161,12 @@ type Runner struct {
 	independentReviewPassed bool
 	mutatedVerifiableCode   bool // true when this turn touched verifiable code (not docs/data)
 	changeReviewCount       int  // passing change_review completions since the last mutation; re-armed by any new mutation
+
+	// todos is the model's current task checklist (8.4), materialized on the
+	// runner so the loop can consult it at the finalize boundary (the todo gate).
+	// Per-turn state: reset at the start of drive() and rewritten on each
+	// successful todo_write, in model order on the main goroutine.
+	todos []tools.Todo
 
 	Compactor session.Compactor
 
@@ -809,19 +823,21 @@ func (r *Runner) drive(ctx context.Context, sess *session.Session) (TurnResult, 
 	// Reflection (P4.3) per-turn state: at most one self-check pass, and the
 	// ephemeral nudge to apply on the next request once it fires.
 	r.changeReviewCount = 0 // one passing review per mutation; re-armed on any new mutation
-	reflected := false
-	pendingReflection := ""
+	r.todos = nil           // per-turn checklist; rewritten on each todo_write
 	pendingHarness := ""
+	// Stop policy (8.5): the finalize decision point. The configured policy wins;
+	// nil selects the built-in default — one instance per turn, so its one-shot
+	// flags reset here.
+	stopPol := r.StopPolicy
+	if stopPol == nil {
+		stopPol = &finalizePolicy{r: r}
+	}
 
 	// Pre-mutation self-check (P4.3-R Move 3) per-turn state: at most one
 	// hypothesis nudge before an edit that follows a failure, and the ephemeral
 	// nudge to apply on the next request once it fires.
 	hypothesized := false
 	pendingHypothesis := ""
-
-	// Finalize verify (P4.3-R Move 2) per-turn state: run the real verify command
-	// at most once, so a failing verify that re-prompts cannot loop.
-	verified := false
 
 	// Per-turn web_search budget. Counts continuously across this turn (it resets
 	// when Run returns and the next user turn starts a fresh counter). A
@@ -862,13 +878,8 @@ func (r *Runner) drive(ctx context.Context, sess *session.Session) (TurnResult, 
 		if n := len(turn.Steps); r.PlanState != PlanStatusPlanning && n >= r.nudgeThreshold() {
 			msgs = withConvergenceNudge(sess.Messages, n)
 		}
-		// Reflection nudge (P4.3): apply the self-check once, ephemerally — the
-		// same non-persisted mechanism as the convergence nudge, fired at the
-		// opposite boundary (about to finish, not over-investigating).
-		if pendingReflection != "" {
-			msgs = appendEphemeralUser(msgs, pendingReflection)
-			pendingReflection = ""
-		}
+		// Stop-policy nudge (8.5): apply the finalize decision's message once,
+		// ephemerally — the same non-persisted mechanism as the convergence nudge.
 		if pendingHarness != "" {
 			msgs = appendEphemeralUser(msgs, pendingHarness)
 			pendingHarness = ""
@@ -1006,72 +1017,39 @@ func (r *Runner) drive(ctx context.Context, sess *session.Session) (TurnResult, 
 				r.emit(Event{Kind: EventReflected, Text: pendingHarness})
 				continue
 			}
-			// Reflection (P4.3 / P4.3-R): before accepting "done", run one grounded
-			// self-check. Do NOT persist this premature finish (persisting it would
-			// leave a retracted answer, and two assistant turns in a row, in history).
-			// One-shot per turn; the model decides whether to actually do more.
-			if r.Reflector != nil && !reflected {
-				rc := r.Reflector.Reflect(turn.Steps)
-				r.mutatedVerifiableCode = len(rc.CodeFilesMutated) > 0
-
-				// Move 2 (2a): the turn changed verifiable code without verifying it
-				// and a real verify command is configured — run it once,
-				// deterministically, and feed back the TRUTH instead of guessing. A
-				// pass confirms the change; a failure re-prompts with the real error so
-				// the model fixes the actual cause. With no VerifyCommand this block is
-				// skipped entirely: the runtime never asserts "unverified" (2b silence).
-				if rc.UnverifiedMutation && r.VerifyCommand != "" && !verified {
-					verified = true
-					status, summary := r.runFinalizeVerify(ctx)
-					r.emit(Event{Kind: EventVerified, Text: summary})
-					switch status {
-					case VerifyFailed:
-						reflected = true // don't also stack the fact nudge this pass
-						pendingReflection = "[reflection] The verification `" + r.VerifyCommand +
-							"` was run against your change to " + strings.Join(rc.CodeFilesMutated, ", ") +
-							" and it FAILED:\n" + summary +
-							"\nThis is the real result, not a guess. Fix the cause, then finish."
-						r.emit(Event{Kind: EventReflected, Text: pendingReflection})
-						continue
-					case VerifyCouldNotRun:
-						// The verify never produced a verdict: an environment problem
-						// (toolchain not on PATH, executable not found), NOT a failure
-						// of the change. Never report it as FAILED. One-shot re-prompt
-						// with the honest reason; the model may retry with an explicit
-						// toolchain path or finish without verification.
-						reflected = true
-						if summary == "" {
-							summary = "command could not run (exit -1)"
-						}
-						pendingReflection = "[reflection] The verification `" + r.VerifyCommand +
-							"` could not run: " + summary +
-							"\nThis is an environment problem (e.g. the toolchain is not on PATH), not a verdict on your change." +
-							"\nRetry with an explicit toolchain path, or finish without it."
-						r.emit(Event{Kind: EventReflected, Text: pendingReflection})
-						continue
-					}
-					// Passed: the change is genuinely verified. Fall through — a
-					// TestEditedAfterFailure fact-question may still apply.
-				}
-
-				// Fact-only self-check (TestEditedAfterFailure): surfaces a fact and
-				// asks; the runtime does not judge. The retired UnverifiedMutation guess
-				// no longer produces a nudge here (Move 2 handles it above).
-				if nudge := rc.Nudge(); nudge != "" {
-					reflected = true
-					pendingReflection = nudge
-					r.emit(Event{Kind: EventReflected, Text: nudge})
-					continue
-				}
+			// Snapshot the turn for the stop policy. The Reflector computes which
+			// verifiable code changed this turn; the default policy's deterministic
+			// verify consumes the same signal, and an external hook receives it.
+			if r.Reflector != nil {
+				r.mutatedVerifiableCode = len(r.Reflector.Reflect(turn.Steps).CodeFilesMutated) > 0
 			}
-			// Change review: plan-mode changes get one independent review.
-			// Free-form turns rely on the Reflector (build verification) instead.
-			// The count increments only when a review completes, so
-			// the model ignoring the harness re-triggers on the next done.
-			if r.PlanState == PlanStatusExecuting && r.independentTaskAvailable() &&
-				r.plannedMutation && !r.independentReviewPassed && r.changeReviewCount < 1 {
-				pendingHarness = changeReviewPrompt
-				r.emit(Event{Kind: EventReflected, Text: pendingHarness})
+			sc := StopContext{
+				LastText:    resp.Content,
+				Todos:       r.todos,
+				Steps:       turn.Steps,
+				PlanState:   r.PlanState,
+				CodeMutated: r.mutatedVerifiableCode,
+				ToolCalls:   turn.ExecutedToolCalls,
+				MaxSteps:    r.MaxSteps,
+			}
+			// Stop policy (8.5): the finalize decision point. The policy owns the
+			// judgment (build verify, change review, todo gate in the default); the
+			// loop owns only the mechanism. A Continue verdict re-prompts with an
+			// ephemeral nudge — never persisted — so a premature "done" is
+			// retracted, not left in history. The plan-state gate above stays in
+			// the loop because it is a protocol invariant, not a judgment.
+			verdict, err := stopPol.Decide(ctx, sc)
+			if err != nil {
+				// A stop policy that errors must not silently accept the finish
+				// (fail-closed): that is exactly the "stopped anyway" failure this
+				// gate exists to prevent. The step budget backstops the delay.
+				verdict = StopVerdict{Continue: true, Message: "[policy] The stop policy could not decide: " + err.Error()}
+			}
+			if verdict.Continue {
+				if verdict.Message != "" {
+					pendingHarness = verdict.Message
+					r.emit(Event{Kind: EventReflected, Text: verdict.Message})
+				}
 				continue
 			}
 			sess.Messages = append(sess.Messages, resp.AssistantMessage())

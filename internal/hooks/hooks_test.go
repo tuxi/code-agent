@@ -77,3 +77,79 @@ func TestNewReturnsNilWhenEmpty(t *testing.T) {
 		t.Fatal("New(nil) must return nil so the loop's nil-safe path applies")
 	}
 }
+
+// after_turn stop-policy contract (8.5): exit 0 + empty stdout accepts.
+func TestStopDecideAcceptsOnEmptyOutput(t *testing.T) {
+	r := New([]Hook{{Event: AfterTurn, Command: "exit 0"}}, t.TempDir())
+	v := r.StopDecide(context.Background(), StopHookInput{LastText: "done"})
+	if v.Continue {
+		t.Fatalf("exit 0 + empty body must accept the finish, got %+v", v)
+	}
+}
+
+// exit 0 + {"continue":true,"message":...} rejects and carries the nudge.
+func TestStopDecideContinuesWithMessage(t *testing.T) {
+	r := New([]Hook{{Event: AfterTurn, Command: `echo '{"continue":true,"message":"still have todo X"}'`}}, t.TempDir())
+	v := r.StopDecide(context.Background(), StopHookInput{})
+	if !v.Continue || v.Message != "still have todo X" {
+		t.Fatalf("verdict = %+v, want continue+message", v)
+	}
+}
+
+// exit 0 + {"continue":false} accepts (explicit).
+func TestStopDecideAcceptsOnExplicitFalse(t *testing.T) {
+	r := New([]Hook{{Event: AfterTurn, Command: `echo '{"continue":false}'`}}, t.TempDir())
+	if v := r.StopDecide(context.Background(), StopHookInput{}); v.Continue {
+		t.Fatalf("explicit continue:false must accept, got %+v", v)
+	}
+}
+
+// non-zero exit FAILS CLOSED: the finish is rejected and stderr/stdout is the
+// reason — a stop policy that errored must not silently accept a premature stop.
+func TestStopDecideFailsClosedOnNonZeroExit(t *testing.T) {
+	r := New([]Hook{{Event: AfterTurn, Command: `echo "policy crashed"; exit 1`}}, t.TempDir())
+	v := r.StopDecide(context.Background(), StopHookInput{})
+	if !v.Continue || !strings.Contains(v.Message, "policy crashed") {
+		t.Fatalf("verdict = %+v, want fail-closed with the hook's output", v)
+	}
+}
+
+// malformed stdout FAILS CLOSED too.
+func TestStopDecideFailsClosedOnInvalidJSON(t *testing.T) {
+	r := New([]Hook{{Event: AfterTurn, Command: `echo "not json"`}}, t.TempDir())
+	v := r.StopDecide(context.Background(), StopHookInput{})
+	if !v.Continue || !strings.Contains(v.Message, "invalid JSON") {
+		t.Fatalf("verdict = %+v, want fail-closed on malformed output", v)
+	}
+}
+
+// The snapshot arrives on stdin as JSON; Match is ignored for after_turn.
+func TestStopDecideSeesInputAndIgnoresMatch(t *testing.T) {
+	hook := `read -r line; echo "$line" | grep -q '"planState":"executing"' && echo '{"continue":false}' || echo '{"continue":true,"message":"wrong state"}'; exit 0`
+	r := New([]Hook{{Event: AfterTurn, Match: "bash", Command: hook}}, t.TempDir())
+	v := r.StopDecide(context.Background(), StopHookInput{PlanState: "executing", ToolCalls: 3})
+	if v.Continue {
+		t.Fatalf("hook saw planState=executing on stdin, should accept: %+v", v)
+	}
+}
+
+// A StopHookInput todo round-trips onto stdin.
+func TestStopDecideSeesTodos(t *testing.T) {
+	hook := `read -r line; echo "$line" | grep -q '"status":"in_progress"' && echo '{"continue":true,"message":"incomplete"}' || exit 0`
+	r := New([]Hook{{Event: AfterTurn, Command: hook}}, t.TempDir())
+	v := r.StopDecide(context.Background(), StopHookInput{
+		Todos: []StopHookTodo{{Content: "step", Status: "in_progress"}},
+	})
+	if !v.Continue || v.Message != "incomplete" {
+		t.Fatalf("verdict = %+v, want continue on pending todo", v)
+	}
+}
+
+func TestHasAfterTurn(t *testing.T) {
+	if New([]Hook{{Event: PreToolUse, Match: "*", Command: "true"}}, t.TempDir()).HasAfterTurn() {
+		t.Fatal("pre_tool_use hooks must not count as after_turn")
+	}
+	if !New([]Hook{{Event: AfterTurn, Command: "exit 0"}}, t.TempDir()).HasAfterTurn() {
+		t.Fatal("an after_turn hook must be detected")
+	}
+}

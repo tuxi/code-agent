@@ -375,6 +375,10 @@ func (r *Runner) commitToolResult(ctx context.Context, sess *session.Session, tu
 		if ta, ok := p.tool.(tools.TodoAnnouncer); ok {
 			if todos, ok := ta.AnnounceTodos(p.input); ok {
 				r.emit(Event{Kind: EventTodoUpdated, Todos: todos})
+				// Materialize on the runner for the finalize todo gate. This commit
+				// runs on the main goroutine in model order, so the write is
+				// race-free against the concurrent execution phase.
+				r.todos = todos
 			}
 		}
 	}

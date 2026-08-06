@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"context"
 	"net/url"
 	"os"
 	"strings"
@@ -49,10 +50,12 @@ func BuildRunner(cfg app.Config, set settings.Settings, mc app.ModelConfig, prov
 	// hooks). Hooks run `sh -c`, so on a no-subprocess host (iOS) they are
 	// suppressed — never just set.Hooks (P11.c).
 	var hook agent.ToolHook
+	var hookRunner *hooks.Runner
 	if cfg.Profile.AllowsSubprocess() {
 		allHooks := set.Hooks
 		if hr := hooks.New(allHooks, root); hr != nil {
 			hook = hr
+			hookRunner = hr
 		}
 	}
 
@@ -94,6 +97,17 @@ func BuildRunner(cfg app.Config, set settings.Settings, mc app.ModelConfig, prov
 		// deployments whose client tools run long (e.g. DreamAI media generation).
 		ClientToolTimeout: time.Duration(cfg.Agent.ClientToolTimeoutSeconds) * time.Second,
 	}
+	// after_turn stop policy (8.5): an operator-configured after_turn hook owns
+	// the finalize stop decision, REPLACING the harness's built-in default
+	// policy. Same sh -c runner as the tool hooks; suppressed on no-subprocess
+	// hosts (P11.c), where StopPolicy stays nil and the default applies.
+	if hookRunner != nil && hookRunner.HasAfterTurn() {
+		stopHook := hookRunner
+		runner.StopPolicy = agent.StopPolicyFunc(func(ctx context.Context, sc agent.StopContext) (agent.StopVerdict, error) {
+			v := stopHook.StopDecide(ctx, stopHookInput(sc))
+			return agent.StopVerdict{Continue: v.Continue, Message: v.Message}, nil
+		})
+	}
 	// Asset upload is a Gateway-only capability. Direct OpenAI-compatible and
 	// Ollama models must never receive Gateway asset references by accident.
 	if isGatewayModelEndpoint(mc.BaseURL) {
@@ -103,6 +117,23 @@ func BuildRunner(cfg app.Config, set settings.Settings, mc app.ModelConfig, prov
 		}
 	}
 	return runner
+}
+
+// stopHookInput converts the loop's StopContext snapshot into the JSON shape an
+// after_turn hook receives on stdin. Extracted so the field mapping is unit
+// testable without standing up a full BuildRunner.
+func stopHookInput(sc agent.StopContext) hooks.StopHookInput {
+	in := hooks.StopHookInput{
+		LastText:    sc.LastText,
+		PlanState:   sc.PlanState.String(),
+		CodeMutated: sc.CodeMutated,
+		ToolCalls:   sc.ToolCalls,
+		MaxSteps:    sc.MaxSteps,
+	}
+	for _, td := range sc.Todos {
+		in.Todos = append(in.Todos, hooks.StopHookTodo{Content: td.Content, Status: string(td.Status)})
+	}
+	return in
 }
 
 func isGatewayModelEndpoint(baseURL string) bool {

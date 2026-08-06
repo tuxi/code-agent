@@ -26,7 +26,7 @@ func (t *Tool) Description() string {
 		"with 3+ distinct steps; skip it for trivial one-step work. Keep exactly ONE item " +
 		"in_progress at a time: mark an item in_progress BEFORE you start it and completed " +
 		"immediately AFTER it finishes — do not batch completions. Each item has content " +
-		"(imperative, e.g. 'Add tests'), status (pending|in_progress|completed), and activeForm " +
+		"(imperative, e.g. 'Add tests'), status (pending|in_progress|completed), and active_form " +
 		"(present tense shown while it runs, e.g. 'Adding tests')."
 }
 
@@ -38,9 +38,9 @@ func (t *Tool) InputSchema() json.RawMessage {
 			Items: &tools.Property{
 				Type: "object",
 				Properties: map[string]tools.Property{
-					"content":    {Type: "string", Description: "The task in imperative form, e.g. 'Add tests'."},
-					"status":     {Type: "string", Enum: []string{"pending", "in_progress", "completed"}, Description: "pending | in_progress | completed"},
-					"activeForm": {Type: "string", Description: "Present-tense label shown while in_progress, e.g. 'Adding tests'."},
+					"content":     {Type: "string", Description: "The task in imperative form, e.g. 'Add tests'."},
+					"status":      {Type: "string", Enum: []string{"pending", "in_progress", "completed"}, Description: "pending | in_progress | completed"},
+					"active_form": {Type: "string", Description: "Present-tense label shown while in_progress, e.g. 'Adding tests'."},
 				},
 				Required: []string{"content", "status"},
 			},
@@ -77,7 +77,36 @@ func (t *Tool) Execute(_ context.Context, _ tools.ExecutionContext, raw json.Raw
 	if err != nil {
 		return tools.ToolResult{}, err
 	}
-	return tools.ToolResult{Content: summarize(todos)}, nil
+	return tools.ToolResult{Content: render(todos)}, nil
+}
+
+// render returns the model-facing checklist content: the count line followed by
+// one line per item, so the model can diff its checklist in-context instead of
+// relying on memory (which compaction erases). The count line is byte-identical
+// to summarize so existing consumers of that format are unaffected.
+func render(todos []tools.Todo) string {
+	var b strings.Builder
+	b.WriteString(summarize(todos))
+	for _, td := range todos {
+		b.WriteByte('\n')
+		b.WriteString("  ")
+		switch td.Status {
+		case tools.TodoCompleted:
+			b.WriteString("[x] ")
+		case tools.TodoInProgress:
+			b.WriteString("[>] ")
+		default:
+			b.WriteString("[ ] ")
+		}
+		// An in-progress item shows its present-tense activeForm ("Adding tests"),
+		// the same label the finalize todo gate lists — one consistent view.
+		label := td.Content
+		if td.Status == tools.TodoInProgress && td.ActiveForm != "" {
+			label = td.ActiveForm
+		}
+		b.WriteString(label)
+	}
+	return b.String()
 }
 
 // AnnounceTodos lets the loop emit EventTodoUpdated without knowing this tool by
