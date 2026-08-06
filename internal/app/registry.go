@@ -1,6 +1,39 @@
 package app
 
-import "sort"
+import (
+	"encoding/base64"
+	"fmt"
+	"sort"
+	"strings"
+)
+
+// aliasKey builds the flat model map key for a grouped provider model
+// (design-providers-grouped-config.md §3.3): provider.<b64url(pid)>.model.<b64url(mid)>.
+// base64url keeps the key slash-free even when the model id contains "/"
+// (e.g. OpenRouter's deepseek/deepseek-chat), so it can never collide with a
+// user-authored flat models key.
+func aliasKey(pid, mid string) string {
+	return "provider." + b64urlEncode(pid) + ".model." + b64urlEncode(mid)
+}
+
+// b64urlEncode base64url-encodes s without padding (matches the runtime alias
+// encoding in /v1/runtime/models).
+func b64urlEncode(s string) string {
+	return base64.RawURLEncoding.EncodeToString([]byte(s))
+}
+
+// validateFlatModelKey enforces design-providers-grouped-config.md §3.1: a
+// user-authored flat models key must not contain "/". Grouped-provider models
+// expand to alias keys (provider.<b64>.model.<b64>) which are slash-free, so a
+// "/" in a flat key means the user is trying to write a provider-scoped model
+// in the flat form — which would collide with the grouped expansion. Returns an
+// error naming the offending key.
+func validateFlatModelKey(name string) error {
+	if strings.Contains(name, "/") {
+		return fmt.Errorf("models key %q must not contain \"/\"; use the providers section for provider-scoped models", name)
+	}
+	return nil
+}
 
 // Built-in connection registry (design-connection-flattening §8.3 层级 1).
 //

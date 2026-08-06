@@ -69,6 +69,13 @@ type File struct {
 	SubagentModel string `json:"subagent_model,omitempty"`
 	// Models is the friendly-name → model config map (config.yaml models:).
 	Models map[string]ModelConfig `json:"models,omitempty"`
+	// Providers is the grouped form (design-providers-grouped-config.md): a
+	// service id → {public config + models[]} map. Each model entry only carries
+	// per-model differences; base_url/api/credential/headers inherit from the
+	// service. FromSettings expands this into the flat Models map using the
+	// alias key (provider.<b64>.model.<b64>). Backward compatible: flat Models
+	// still works; a model must not appear in both.
+	Providers map[string]ServiceConfig `json:"providers,omitempty"`
 	// Credentials maps namespace → name → credential config (config.yaml
 	// credentials:). Values are references (env var names / injected / none),
 	// never secret values — settings.json is committable.
@@ -118,6 +125,34 @@ type ModelConfig struct {
 type CredentialRef struct {
 	Namespace string `json:"namespace,omitempty"` // "gateway" | "llm" | "mcp"
 	Name      string `json:"name,omitempty"`
+}
+
+// ServiceConfig is one grouped service (design-providers-grouped-config.md
+// §3.1). Fields at this level inherit to every model in Models. Headers hold
+// ENV references only (e.g. "Bearer ${OPENROUTER_API_KEY}") — values never
+// live here (settings.json is committable).
+type ServiceConfig struct {
+	BaseURL    string         `json:"base_url,omitempty"`    // API base URL (registry fills when omitted for known services)
+	API        string         `json:"api,omitempty"`         // api type: "openai" | "responses" | "ollama" (registry derives for known)
+	Credential CredentialRef  `json:"credential,omitempty"`  // credential ref (defaults to llm/<id> when omitted)
+	Headers    map[string]string `json:"headers,omitempty"`  // extra request headers; env refs only
+	Models     []ProviderModel `json:"models"`               // model list; each entry carries per-model differences only
+}
+
+// ProviderModel is one model within a grouped provider. ID is the wire model
+// string sent to the API. All other fields are optional overrides that inherit
+// from the provider when zero.
+type ProviderModel struct {
+	ID                  string  `json:"id"`
+	ContextWindow       int     `json:"context_window,omitempty"`
+	Temperature         float64 `json:"temperature,omitempty"`
+	InputPricePerM      float64 `json:"input_price_per_million,omitempty"`
+	OutputPricePerM     float64 `json:"output_price_per_million,omitempty"`
+	CacheInputPricePerM float64 `json:"cache_input_price_per_million,omitempty"`
+	SupportsTools       *bool   `json:"supports_tools,omitempty"`
+	SupportsReasoning   *bool   `json:"supports_reasoning,omitempty"`
+	InputModalities     []string `json:"input_modalities,omitempty"`
+	WebSearch           bool    `json:"web_search,omitempty"`
 }
 
 // CredentialConfig describes how a named credential is obtained.
@@ -208,6 +243,7 @@ type Settings struct {
 	DefaultModel  string
 	SubagentModel string
 	Models        map[string]ModelConfig
+	Providers     map[string]ServiceConfig
 	Credentials   map[string]map[string]CredentialConfig
 	Agent         AgentConfig
 	Provider      ProviderConfig
@@ -320,6 +356,14 @@ func Load(root, home string, warn io.Writer) Settings {
 		}
 		for name, mc := range f.Models {
 			s.Models[name] = mc
+		}
+		if s.Providers == nil {
+			s.Providers = map[string]ServiceConfig{}
+		}
+		for id, pc := range f.Providers {
+			// Provider-level: the highest layer that sets a provider id wins
+			// wholesale (models array is replaced, not merged per model).
+			s.Providers[id] = pc
 		}
 		if s.Credentials == nil {
 			s.Credentials = map[string]map[string]CredentialConfig{}

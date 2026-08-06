@@ -505,6 +505,51 @@ func FromSettings(set settings.Settings) Config {
 			},
 		}
 	}
+	// Providers: grouped form → flat ModelConfig using the alias key
+	// (provider.<b64>.model.<b64>, design-providers-grouped-config.md §3.3).
+	// Fields inherit from the service; per-model differences override.
+	for pid, pc := range set.Providers {
+		if len(pc.Models) == 0 {
+			continue
+		}
+		api := pc.API
+		if api == "" {
+			api = "openai" // registry re-derives for known services via applyRegistryDefaults
+		}
+		cred := CredentialRef{Namespace: pc.Credential.Namespace, Name: pc.Credential.Name}
+		if cred.IsZero() {
+			cred = CredentialRef{Namespace: "llm", Name: pid}
+		}
+		for _, pm := range pc.Models {
+			if pm.ID == "" {
+				continue
+			}
+			key := aliasKey(pid, pm.ID)
+			mc := ModelConfig{
+				Name:            key,
+				Provider:        api,
+				BaseURL:         pc.BaseURL,
+				Model:           pm.ID,
+				Temperature:     pm.Temperature,
+				ContextWindow:   pm.ContextWindow,
+				InputPricePerM:  pm.InputPricePerM,
+				OutputPricePerM: pm.OutputPricePerM,
+				CacheInputPricePerM: pm.CacheInputPricePerM,
+				Credential:      cred,
+				WebSearch:       pm.WebSearch,
+				Catalog: ModelCatalogMetadata{
+					ConnectionID:          pid,
+					ProviderID:            pid,
+					ConnectionDisplayName: pid,
+					DisplayName:           pm.ID,
+					SupportsTools:         pm.SupportsTools,
+					SupportsReasoning:     pm.SupportsReasoning != nil && *pm.SupportsReasoning,
+					InputModalities:       pm.InputModalities,
+				},
+			}
+			cfg.Models[key] = mc
+		}
+	}
 	// Credentials: namespace → name → config.
 	for ns, entries := range set.Credentials {
 		cfg.Credentials[ns] = make(map[string]CredentialConfig, len(entries))
@@ -632,6 +677,11 @@ func normalizeConfig(cfg *Config) error {
 	// Resolve per-model defaults and API keys. Missing keys are NOT an error
 	// here; they are reported only when a model is actually selected.
 	for name, mc := range cfg.Models {
+		// design-providers-grouped-config.md §3.1: flat model keys must be
+		// slash-free (alias keys from providers expansion already are).
+		if err := validateFlatModelKey(name); err != nil {
+			return err
+		}
 		mc.Name = name
 		if mc.Provider == "" {
 			mc.Provider = "openai"
