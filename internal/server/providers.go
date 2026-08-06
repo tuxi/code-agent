@@ -1,0 +1,154 @@
+package server
+
+import (
+	"encoding/json"
+	"errors"
+	"net/http"
+	"strings"
+)
+
+// ProviderService manages grouped provider configuration (design-providers-
+// grouped-config.md §4). The server layer is a dumb pipe: the interface is
+// implemented by the assembler (main.go / codeagentd) which owns the settings
+// file, the Reconfigure trigger, and the failure-rollback policy. A nil
+// Providers disables the endpoints (404), matching the Granter pattern.
+type ProviderService interface {
+	// List returns all providers (responses strip secrets/headers).
+	List() ([]ProviderDTO, error)
+	// Get returns one provider, or ErrProviderNotFound.
+	Get(id string) (ProviderDTO, error)
+	// Upsert creates or replaces provider id with spec. The spec's headers are
+	// env references only; secrets never cross the wire.
+	Upsert(id string, spec ProviderSpec) error
+	// Delete removes provider id. Returns ErrProviderInUse if it is referenced
+	// by default_model/subagent_model.
+	Delete(id string) error
+}
+
+// ProviderDTO is the wire shape of a provider: the grouped config minus
+// headers and credential details (secrets never leave the runtime, §4.3).
+type ProviderDTO struct {
+	ID         string             `json:"id"`
+	BaseURL    string             `json:"base_url,omitempty"`
+	API        string             `json:"api,omitempty"`
+	Credential ProviderCred       `json:"credential,omitempty"`
+	Models     []ProviderModelDTO `json:"models"`
+}
+
+// ProviderCred is the non-secret credential declaration (namespace/name ref).
+type ProviderCred struct {
+	Namespace string `json:"namespace,omitempty"`
+	Name      string `json:"name,omitempty"`
+}
+
+// ProviderModelDTO is one model in a provider (no pricing/support details —
+// those are presentation data, fetched from /v1/runtime/models).
+type ProviderModelDTO struct {
+	ID string `json:"id"`
+}
+
+// ProviderSpec is the write shape accepted by PUT (may carry headers as env
+// references).
+type ProviderSpec struct {
+	BaseURL    string             `json:"base_url,omitempty"`
+	API        string             `json:"api,omitempty"`
+	Credential ProviderCred       `json:"credential,omitempty"`
+	Headers    map[string]string  `json:"headers,omitempty"`
+	Models     []ProviderModelDTO `json:"models"`
+}
+
+var ErrProviderNotFound = errNotFound("provider")
+
+// ErrProviderInUse is returned by Delete when the provider is referenced by
+// default_model / subagent_model — the delete is refused to avoid a dangling
+// default model (design-providers-grouped-config.md §7 ②).
+var ErrProviderInUse = errors.New("provider is referenced by default_model or subagent_model")
+
+func errNotFound(kind string) error { return &notFoundError{kind: kind} }
+
+type notFoundError struct{ kind string }
+
+func (e *notFoundError) Error() string { return e.kind + " not found" }
+
+func (e *notFoundError) Is(target error) bool {
+	var notFoundError *notFoundError
+	ok := errors.As(target, &notFoundError)
+	return ok
+}
+
+// registerProviderRoutes wires the /v1/providers endpoints onto mux. A nil
+// service leaves the endpoints absent (404), matching other optional MuxOptions.
+func registerProviderRoutes(mux *http.ServeMux, opts MuxOptions) {
+	if opts.Providers == nil {
+		return
+	}
+	svc := opts.Providers
+
+	mux.HandleFunc("GET /v1/providers", func(w http.ResponseWriter, r *http.Request) {
+		list, err := svc.List()
+		if err != nil {
+			writeProviderError(w, err)
+			return
+		}
+		writeJSON(w, r, http.StatusOK, map[string]any{"providers": list})
+	})
+
+	mux.HandleFunc("GET /v1/providers/{id}", func(w http.ResponseWriter, r *http.Request) {
+		dto, err := svc.Get(r.PathValue("id"))
+		if err != nil {
+			writeProviderError(w, err)
+			return
+		}
+		writeJSON(w, r, http.StatusOK, dto)
+	})
+
+	mux.HandleFunc("PUT /v1/providers/{id}", func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+		if id == "" {
+			writeJSON(w, r, http.StatusBadRequest, map[string]any{"error": "provider id required"})
+			return
+		}
+		var spec ProviderSpec
+		if err := json.NewDecoder(r.Body).Decode(&spec); err != nil {
+			writeJSON(w, r, http.StatusBadRequest, map[string]any{"error": "invalid body: " + err.Error()})
+			return
+		}
+		if len(spec.Models) == 0 {
+			writeJSON(w, r, http.StatusBadRequest, map[string]any{"error": "models must not be empty"})
+			return
+		}
+		for _, m := range spec.Models {
+			if strings.TrimSpace(m.ID) == "" {
+				writeJSON(w, r, http.StatusBadRequest, map[string]any{"error": "model id must not be empty"})
+				return
+			}
+		}
+		if err := svc.Upsert(id, spec); err != nil {
+			writeProviderError(w, err)
+			return
+		}
+		writeJSON(w, r, http.StatusOK, map[string]any{"id": id})
+	})
+
+	mux.HandleFunc("DELETE /v1/providers/{id}", func(w http.ResponseWriter, r *http.Request) {
+		if err := svc.Delete(r.PathValue("id")); err != nil {
+			writeProviderError(w, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+}
+
+// writeProviderError maps a ProviderService error to an HTTP status: not-found
+// → 404, in-use → 409, anything else → 400. All responses are plain text so the
+// client sees a stable, greppable error.
+func writeProviderError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, ErrProviderNotFound):
+		http.Error(w, err.Error(), http.StatusNotFound)
+	case errors.Is(err, ErrProviderInUse):
+		http.Error(w, err.Error(), http.StatusConflict)
+	default:
+		http.Error(w, err.Error(), http.StatusBadRequest)
+	}
+}

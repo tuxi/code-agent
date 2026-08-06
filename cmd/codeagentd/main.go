@@ -238,6 +238,7 @@ func run() error {
 		Capabilities:      capabilities,
 		CloneService:      cloneService,
 		Granter:           rb.Rules(),
+		Providers:         server.NewProviderStore(filepath.Join(root, ".codeagent", "settings.json"), nil),
 		WorkspaceReloader: wsReg.ReloadWorkspace,
 		Prompts:           wsReg,
 		CapabilityResolver: func(ctx context.Context) []string {

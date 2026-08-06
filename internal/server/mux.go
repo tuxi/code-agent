@@ -240,6 +240,10 @@ type MuxOptions struct {
 	// store (the same one the loop's allowlist reads). Nil disables persistence, so
 	// an "always" over the wire is treated as a one-time allow.
 	Granter PermissionGranter
+	// Providers manages grouped provider configuration (/v1/providers). Nil
+	// disables the endpoints (404), matching the Granter pattern. The service is
+	// implemented by the assembler and owns the settings file + Reconfigure.
+	Providers ProviderService
 	// WorkspaceReloader reloads MCP servers for a given workspace. Nil disables
 	// the POST /v1/workspaces/{path}/mcp/reload endpoint (returns 404).
 	WorkspaceReloader func(workspacePath string) error
@@ -445,6 +449,8 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 	mux.HandleFunc("GET /v1/runtime/models", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, r, http.StatusOK, opts.RuntimeModels)
 	})
+
+	registerProviderRoutes(mux, opts)
 
 	mux.HandleFunc("GET /v1/activity", func(w http.ResponseWriter, r *http.Request) {
 		generatedAt := time.Now().UTC()

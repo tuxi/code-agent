@@ -33,12 +33,36 @@ func ParseJSON(data []byte) (File, error) {
 // Persist atomically updates the settings file at path by applying mutate to its
 // decoded document, PRESERVING every key mutate does not touch (a corrupt file is
 // replaced with a valid one). Parent dirs are created; the write is temp+rename so
-// a crash can't leave a partial file. Serialized process-wide. This is the single
-// canonical settings writer (P11.d) — permission grants and verify both use it.
+// a crash can't leave a partial file. Serialized process-wide AND across processes
+// via an flock on a sibling <path>.lock file — a CLI agent process writing a
+// permission grant and a server process writing /v1/providers read-modify-write
+// the same document without losing updates (design-providers-grouped-config.md
+// §4.2). This is the single canonical settings writer (P11.d).
 func Persist(path string, mutate func(doc map[string]any)) error {
 	if path == "" {
 		return errors.New("settings: empty path")
 	}
+	// Cross-process lock first: serialize read-modify-write with any other
+	// process (CLI agent grants, server /v1/providers). The sibling .lock file
+	// is flock(2)-exclusive; flock is released on close automatically.
+	lockPath := path + ".lock"
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	lockF, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return fmt.Errorf("open settings lock: %w", err)
+	}
+	if err := flockExclusive(lockF); err != nil {
+		lockF.Close()
+		return fmt.Errorf("lock settings %s: %w", lockPath, err)
+	}
+	defer func() {
+		_ = flockUnlock(lockF)
+		lockF.Close()
+	}()
+
+	// In-process lock second: other goroutines in this process serialize here.
 	writeMu.Lock()
 	defer writeMu.Unlock()
 
