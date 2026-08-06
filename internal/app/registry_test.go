@@ -103,3 +103,101 @@ models:
 		}
 	}
 }
+
+// design-provider-id-model.md: a known service id ("provider: deepseek") resolves
+// to its api type, fills base_url/env, and records the service id in
+// Catalog.ProviderID.
+func TestRegistryServiceIDResolvesToAPIType(t *testing.T) {
+	cfg, err := LoadConfigBytes([]byte(`
+models:
+  deepseek:
+    provider: deepseek
+    model: deepseek-v4-flash
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mc := cfg.Models["deepseek"]
+	if mc.Provider != "openai" {
+		t.Errorf("provider = %q, want resolved api type openai", mc.Provider)
+	}
+	if mc.BaseURL != "https://api.deepseek.com" {
+		t.Errorf("base_url = %q, want registry default", mc.BaseURL)
+	}
+	if mc.APIKeyEnv != "DEEPSEEK_API_KEY" {
+		t.Errorf("api_key_env = %q, want registry default", mc.APIKeyEnv)
+	}
+	if mc.Catalog.ProviderID != "deepseek" {
+		t.Errorf("catalog.provider_id = %q, want deepseek", mc.Catalog.ProviderID)
+	}
+}
+
+// A generic api type ("provider: openai" + explicit base_url) is NOT treated as
+// a service id — the explicit values are preserved (backward compat).
+func TestRegistryGenericAPITypeNotOverridden(t *testing.T) {
+	cfg, err := LoadConfigBytes([]byte(`
+models:
+  deepseek:
+    provider: openai
+    base_url: https://proxy.example.com/v1
+    model: deepseek-v4-flash
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mc := cfg.Models["deepseek"]
+	if mc.Provider != "openai" {
+		t.Errorf("provider = %q, want explicit openai preserved", mc.Provider)
+	}
+	if mc.BaseURL != "https://proxy.example.com/v1" {
+		t.Errorf("base_url = %q, want explicit value preserved", mc.BaseURL)
+	}
+}
+
+// openrouter is a known service: base_url/env/api type resolve; model ids may
+// contain a "/" (e.g. deepseek/deepseek-chat).
+func TestRegistryOpenRouterService(t *testing.T) {
+	cfg, err := LoadConfigBytes([]byte(`
+models:
+  openrouter:
+    provider: openrouter
+    model: deepseek/deepseek-chat
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mc := cfg.Models["openrouter"]
+	if mc.Provider != "openai" {
+		t.Errorf("provider = %q, want resolved openai", mc.Provider)
+	}
+	if mc.BaseURL != "https://openrouter.ai/api/v1" {
+		t.Errorf("base_url = %q, want openrouter endpoint", mc.BaseURL)
+	}
+	if mc.APIKeyEnv != "OPENROUTER_API_KEY" {
+		t.Errorf("api_key_env = %q, want OPENROUTER_API_KEY", mc.APIKeyEnv)
+	}
+	if mc.Model != "deepseek/deepseek-chat" {
+		t.Errorf("model = %q, want deepseek/deepseek-chat (slash preserved)", mc.Model)
+	}
+}
+
+// gateway: provider resolves to openai, but base_url/env stay empty (host injects).
+func TestRegistryGatewayService(t *testing.T) {
+	cfg, err := LoadConfigBytes([]byte(`
+models:
+  gateway:
+    provider: gateway
+    model: ""
+    credential: {namespace: gateway, name: default}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mc := cfg.Models["gateway"]
+	if mc.Provider != "openai" {
+		t.Errorf("provider = %q, want resolved openai", mc.Provider)
+	}
+	if mc.BaseURL != "" {
+		t.Errorf("base_url = %q, want empty (host injected)", mc.BaseURL)
+	}
+}

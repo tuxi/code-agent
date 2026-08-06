@@ -26,19 +26,31 @@ type builtinConnection struct {
 	// but the actual request will fail until a user-declared model entry sets
 	// a concrete wire model.
 	WireModel string
+	// ProviderType is the wire protocol this service speaks ("openai" =
+	// chat-completions compatible, "responses", "ollama"). design-provider-id-
+	// model.md: a known service id resolves to this api type; unknown services
+	// fall back to the generic openai/responses paths.
+	ProviderType string
 }
 
 var builtinConnections = map[string]builtinConnection{
-	"deepseek": {BaseURL: "https://api.deepseek.com", Env: "DEEPSEEK_API_KEY", WireModel: "deepseek-v4-flash"},
-	"qwen":     {BaseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1", Env: "DASHSCOPE_API_KEY", WireModel: "qwen3-coder-plus"},
-	"glm":      {BaseURL: "https://open.bigmodel.cn/api/paas/v4", Env: "GLM_API_KEY", WireModel: "glm-4.7"},
-	"ollama":   {BaseURL: "http://localhost:11434/v1"}, // user declares a modelfile name in config
-	"gateway":  {},                                     // base_url/env/wire_model supplied by the host via injection
+	"deepseek":   {BaseURL: "https://api.deepseek.com", Env: "DEEPSEEK_API_KEY", WireModel: "deepseek-v4-flash", ProviderType: "openai"},
+	"qwen":       {BaseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1", Env: "DASHSCOPE_API_KEY", WireModel: "qwen3-coder-plus", ProviderType: "openai"},
+	"glm":        {BaseURL: "https://open.bigmodel.cn/api/paas/v4", Env: "GLM_API_KEY", WireModel: "glm-4.7", ProviderType: "openai"},
+	"openrouter": {BaseURL: "https://openrouter.ai/api/v1", Env: "OPENROUTER_API_KEY", ProviderType: "openai"}, // model ids may contain "/" (e.g. deepseek/deepseek-chat)
+	"ollama":     {BaseURL: "http://localhost:11434/v1", ProviderType: "ollama"},                               // user declares a modelfile name in config
+	"gateway":    {ProviderType: "openai"},                                                                     // base_url/env/wire_model supplied by the host via injection
 }
 
 // applyRegistryDefaults fills unset BaseURL/APIKeyEnv from the built-in
 // connection registry, keyed by the model's friendly name. Explicit values in
 // the config are never overwritten.
+//
+// design-provider-id-model.md: when the user writes a known service id (e.g.
+// "provider: deepseek" with a model also named deepseek), the registry also
+// resolves the service id to its api type (ProviderType) and records the
+// service id in Catalog.ProviderID for /v1/runtime/models. A generic api type
+// (openai/responses/ollama) or an explicit base_url is never overwritten.
 func applyRegistryDefaults(mc *ModelConfig) {
 	conn, ok := builtinConnections[mc.Name]
 	if !ok {
@@ -49,6 +61,12 @@ func applyRegistryDefaults(mc *ModelConfig) {
 	}
 	if mc.APIKeyEnv == "" {
 		mc.APIKeyEnv = conn.Env
+	}
+	if conn.ProviderType != "" && (mc.Provider == "" || mc.Provider == mc.Name) {
+		mc.Provider = conn.ProviderType
+	}
+	if mc.Catalog.ProviderID == "" {
+		mc.Catalog.ProviderID = mc.Name
 	}
 }
 
