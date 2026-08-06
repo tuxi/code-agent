@@ -18,17 +18,21 @@ type ProviderService interface {
 	// Get returns one provider, or ErrProviderNotFound.
 	Get(id string) (ProviderDTO, error)
 	// Upsert creates or replaces provider id with spec. The spec's headers are
-	// env references only; secrets never cross the wire.
-	Upsert(id string, spec ProviderSpec) error
+	// env references only; secrets never cross the wire. Returns applied=true
+	// when the change took effect immediately, false when it is persisted but
+	// needs a restart (OQ2).
+	Upsert(id string, spec ProviderSpec) (applied bool, err error)
 	// Delete removes provider id. Returns ErrProviderInUse if it is referenced
-	// by default_model/subagent_model.
-	Delete(id string) error
+	// by default_model/subagent_model. Returns applied=true when the removal
+	// took effect immediately, false when it needs a restart.
+	Delete(id string) (applied bool, err error)
 }
 
 // ProviderDTO is the wire shape of a provider: the grouped config minus
 // headers and credential details (secrets never leave the runtime, §4.3).
 type ProviderDTO struct {
 	ID         string             `json:"id"`
+	Enabled    bool               `json:"enabled"`
 	BaseURL    string             `json:"base_url,omitempty"`
 	API        string             `json:"api,omitempty"`
 	Credential ProviderCred       `json:"credential,omitempty"`
@@ -50,6 +54,8 @@ type ProviderModelDTO struct {
 // ProviderSpec is the write shape accepted by PUT (may carry headers as env
 // references).
 type ProviderSpec struct {
+	// Enabled defaults to true when absent (OQ1).
+	Enabled    *bool              `json:"enabled,omitempty"`
 	BaseURL    string             `json:"base_url,omitempty"`
 	API        string             `json:"api,omitempty"`
 	Credential ProviderCred       `json:"credential,omitempty"`
@@ -123,19 +129,21 @@ func registerProviderRoutes(mux *http.ServeMux, opts MuxOptions) {
 				return
 			}
 		}
-		if err := svc.Upsert(id, spec); err != nil {
-			writeProviderError(w, err)
+		applied, uerr := svc.Upsert(id, spec)
+		if uerr != nil {
+			writeProviderError(w, uerr)
 			return
 		}
-		writeJSON(w, r, http.StatusOK, map[string]any{"id": id})
+		writeJSON(w, r, http.StatusOK, map[string]any{"id": id, "applied": applied})
 	})
 
 	mux.HandleFunc("DELETE /v1/providers/{id}", func(w http.ResponseWriter, r *http.Request) {
-		if err := svc.Delete(r.PathValue("id")); err != nil {
+		applied, err := svc.Delete(r.PathValue("id"))
+		if err != nil {
 			writeProviderError(w, err)
 			return
 		}
-		w.WriteHeader(http.StatusNoContent)
+		writeJSON(w, r, http.StatusOK, map[string]any{"id": r.PathValue("id"), "applied": applied})
 	})
 }
 

@@ -132,11 +132,15 @@ type CredentialRef struct {
 // ENV references only (e.g. "Bearer ${OPENROUTER_API_KEY}") — values never
 // live here (settings.json is committable).
 type ServiceConfig struct {
-	BaseURL    string         `json:"base_url,omitempty"`    // API base URL (registry fills when omitted for known services)
-	API        string         `json:"api,omitempty"`         // api type: "openai" | "responses" | "ollama" (registry derives for known)
-	Credential CredentialRef  `json:"credential,omitempty"`  // credential ref (defaults to llm/<id> when omitted)
-	Headers    map[string]string `json:"headers,omitempty"`  // extra request headers; env refs only
-	Models     []ProviderModel `json:"models"`               // model list; each entry carries per-model differences only
+	// Enabled disables the service without deleting its config (OQ1): the
+	// models are skipped at expansion, but the definition is preserved.
+	// Defaults to true when absent.
+	Enabled    *bool             `json:"enabled,omitempty"`
+	BaseURL    string            `json:"base_url,omitempty"`   // API base URL (registry fills when omitted for known services)
+	API        string            `json:"api,omitempty"`        // api type: "openai" | "responses" | "ollama" (registry derives for known)
+	Credential CredentialRef     `json:"credential,omitempty"` // credential ref (defaults to llm/<id> when omitted)
+	Headers    map[string]string `json:"headers,omitempty"`    // extra request headers; env refs only
+	Models     []ProviderModel   `json:"models"`               // model list; each entry carries per-model differences only
 }
 
 // ProviderModel is one model within a grouped provider. ID is the wire model

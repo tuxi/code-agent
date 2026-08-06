@@ -21,6 +21,7 @@ import (
 	"code-agent/internal/buildinfo"
 	"code-agent/internal/controlplane"
 	"code-agent/internal/conversation"
+	"code-agent/internal/credential"
 	"code-agent/internal/model"
 	"code-agent/internal/repos"
 	"code-agent/internal/settings"
@@ -75,6 +76,10 @@ func run() error {
 	home, _ := os.UserHomeDir()
 	set := settings.Load(root, home, os.Stderr)
 	cfg := app.LoadConfigFromSettings(set)
+	// Mutable injected resolver (A2): POST /v1/secrets updates it, and every
+	// credential chain (catalog probing + actual calls) reads it — so a host
+	// can push provider keys to a running daemon without restarting.
+	mutableResolver := credential.NewMutableResolver()
 	var err error
 	auth, err := server.ResolveExternalServerAuth(cfg.Server)
 	if err != nil {
@@ -151,7 +156,7 @@ func run() error {
 	// daemon's launch directory never decides which MCP tools a conversation sees.
 	// root for skills: "" means no project-local skills from the daemon itself;
 	// workspace-scoped skills are loaded per instance by WorkspaceRegistry.
-	toolReg, _, planRef, jobSink, err := runtime.BuildBaseRegistry(ctx, cfg, mc, provider, cfg.CredentialResolver(nil), telemetryStore, "", nil)
+	toolReg, _, planRef, jobSink, err := runtime.BuildBaseRegistry(ctx, cfg, mc, provider, cfg.CredentialResolver(mutableResolver), telemetryStore, "", nil)
 	if err != nil {
 		return err
 	}
@@ -179,7 +184,7 @@ func run() error {
 	eventStore := &conversation.StoreEventAdapter{Store: telemetryStore}
 	active := conversation.NewActiveTurnRegistry()
 	subs := conversation.NewSubscriptionManager()
-	rb := runtime.NewServeRunBuilder(cfg, set, mc, provider, cfg.CredentialResolver(nil), toolReg, wsReg, planRef)
+	rb := runtime.NewServeRunBuilder(cfg, set, mc, provider, cfg.CredentialResolver(mutableResolver), toolReg, wsReg, planRef)
 	executor := conversation.NewTurnExecutor(repo, eventStore, active, subs, rb)
 	executor.SetAssetRefReleaseService(rb)
 	maxConcurrentTurns := cfg.RuntimeMaxConcurrentTurns()
@@ -234,16 +239,25 @@ func run() error {
 		ServerName:        buildinfo.ServerName(),
 		RuntimeInfo:       runtimeInfo,
 		RuntimeModels:     runtimeModels,
+		RuntimeModelsBuilder: func() server.RuntimeModelCatalog {
+			// A2: live rebuild with the current injected credentials so a
+			// POST /v1/secrets makes models available without a restart.
+			return server.BuildRuntimeModelCatalog(cfg, mutableResolver)
+		},
+		InjectSecrets: func(targets map[credential.Target]credential.Credential) error {
+			mutableResolver.SetAll(targets)
+			return nil
+		},
 		ServerAuth:        auth,
 		Capabilities:      capabilities,
 		CloneService:      cloneService,
 		Granter:           rb.Rules(),
-		Providers:         server.NewProviderStore(filepath.Join(root, ".codeagent", "settings.json"), nil),
+		Providers:         server.NewProviderStore(settings.UserPath(home), nil),
 		WorkspaceReloader: wsReg.ReloadWorkspace,
 		Prompts:           wsReg,
 		CapabilityResolver: func(ctx context.Context) []string {
 			persistence, ok := repo.(conversation.UserAssetsPersistenceCapability)
-			if ok && persistence.SupportsUserAssetsPersistence() && rb.ImageInputCapability(ctx, cfg.CredentialResolver(nil)) {
+			if ok && persistence.SupportsUserAssetsPersistence() && rb.ImageInputCapability(ctx, cfg.CredentialResolver(mutableResolver)) {
 				return []string{"image_input"}
 			}
 			return nil
@@ -253,7 +267,7 @@ func run() error {
 				fmt.Fprintf(os.Stderr, "[control-plane] session ready reconcile: %v\n", err)
 			}
 			_, _ = executor.RecoverSessionTurnInputs(context.WithoutCancel(ctx), sessionID)
-			go executor.FlushAssetRefReleases(context.WithoutCancel(ctx), cfg.CredentialResolver(nil))
+			go executor.FlushAssetRefReleases(context.WithoutCancel(ctx), cfg.CredentialResolver(mutableResolver))
 		},
 		OwnershipChanged: func(ctx context.Context) {
 			if err := owner.Heartbeat(context.WithoutCancel(ctx)); err != nil {

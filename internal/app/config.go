@@ -512,6 +512,11 @@ func FromSettings(set settings.Settings) Config {
 		if len(pc.Models) == 0 {
 			continue
 		}
+		// OQ1: a disabled service keeps its config but its models are skipped at
+		// expansion — they do not appear in the available model space.
+		if pc.Enabled != nil && !*pc.Enabled {
+			continue
+		}
 		api := pc.API
 		if api == "" {
 			api = "openai" // registry re-derives for known services via applyRegistryDefaults

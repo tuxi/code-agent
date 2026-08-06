@@ -78,10 +78,19 @@ type RuntimeModelDescriptor struct {
 	UnavailableReason string `json:"unavailable_reason,omitempty"`
 }
 
+// BuildRuntimeModelCatalog rebuilds the runtime model catalog with the given
+// injected resolver (A2). It is the live-rebuild entry used by codeagentd's
+// GET /v1/runtime/models after a POST /v1/secrets — the startup snapshot
+// (BuildRuntimeContract) and the live view diverge only in credential
+// availability.
+func BuildRuntimeModelCatalog(cfg app.Config, injected credential.Resolver) RuntimeModelCatalog {
+	return buildRuntimeModelCatalog(cfg, injected)
+}
+
 // BuildRuntimeContract constructs allowlisted public DTOs and binds them to the
 // durable identity of the current session data source.
 func BuildRuntimeContract(cfg app.Config, root, displayName, profile string) (RuntimeInfo, RuntimeModelCatalog, error) {
-	catalog := buildRuntimeModelCatalog(cfg)
+	catalog := buildRuntimeModelCatalog(cfg, nil)
 	fingerprint, err := json.Marshal(catalog)
 	if err != nil {
 		return RuntimeInfo{}, RuntimeModelCatalog{}, err
@@ -110,18 +119,17 @@ func BuildRuntimeContract(cfg app.Config, root, displayName, profile string) (Ru
 	}, catalog, nil
 }
 
-func buildRuntimeModelCatalog(cfg app.Config) RuntimeModelCatalog {
+func buildRuntimeModelCatalog(cfg app.Config, injected credential.Resolver) RuntimeModelCatalog {
 	type connectionBuilder struct {
 		connection RuntimeModelConnection
 	}
 	// Wire v2: real availability instead of the hardcoded true. Probe each
 	// model's credential through the configured resolver chain (env + the
-	// credentials section). The probe is cheap and non-network — it only checks
-	// declaration existence / env presence, per design-runtime-models-wire-v2 §5.
-	// A source-injected credential (e.g. gateway JWT) is treated as configured:
-	// the catalog is a snapshot taken before the host's next Reconfigure, and
-	// marking it unavailable would blank the gateway model on first start.
-	resolver := cfg.CredentialResolver(nil)
+	// credentials section + any injected resolver). The probe is cheap and
+	// non-network — it only checks declaration existence / env presence, per
+	// design-runtime-models-wire-v2 §5. A source-injected credential (e.g.
+	// gateway JWT or a /v1/secrets post) is treated as configured.
+	resolver := cfg.CredentialResolver(injected)
 	ctx := context.Background()
 	groups := make(map[string]*connectionBuilder)
 	included := make(map[string]struct{})

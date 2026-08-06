@@ -128,8 +128,20 @@ func TestProviderStoreDeleteOK(t *testing.T) {
 	req := httptest.NewRequest(http.MethodDelete, "/v1/providers/orphan", nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
-	if rec.Code != http.StatusNoContent {
-		t.Errorf("status = %d, want 204", rec.Code)
+	// OQ2: DELETE now returns 200 with an applied marker (no more 204).
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", rec.Code)
+	}
+	var env struct {
+		Data struct {
+			Applied bool `json:"applied"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &env); err != nil {
+		t.Fatal(err)
+	}
+	if env.Data.Applied {
+		t.Error("applied = true, want false (reconfigure is nil → restart required)")
 	}
 	// Persisted: reload the settings file and confirm the provider is gone.
 	f, err := settings.ParseJSON(mustRead(t, path))

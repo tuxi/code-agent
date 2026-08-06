@@ -270,6 +270,50 @@ id（稳定连接 ID）+ providerID（模板类目）+ transport + authenticatio
 | 跨服务商同名模型 | 已解决 | (provider_id, model_id) 二元组 + providers 分组 |
 | **范围边界** | 低 | providers 段只覆盖 chat-completions/responses/ollama 类服务商；**MCP 仍在独立 `.mcp.json`，gateway web_search 仍在 web 段**——本设计不合并它们（保持现有边界） |
 
+### 8.1 Open Questions 裁决（stage ③ 调研后定案）
+
+调研产出：`requirements-agentkit-provider-http.md`、`requirements-chater-provider-http.md`。两端的共同 open questions 在此裁决：
+
+**OQ1 — enable/disable 语义：`isEnabled` 标志 vs presence/absence**
+
+现状 `DELETE /v1/providers/{id}` 删除即丢配置（无「禁用保留」语义），与 chater 的 `setEnabled` 冲突。
+
+**裁决：providers 段加 `enabled` 字段，默认 true；禁用 = `enabled: false`（保留配置），删除 = DELETE（移除配置）。**
+
+```json
+"providers": {
+  "dashscope": {
+    "enabled": false,
+    "base_url": "...",
+    "models": [{"id": "qwen3-coder-plus"}]
+  }
+}
+```
+
+- `settings.FromSettings` 展开时跳过 `enabled: false` 的服务商（模型不出现在 `/v1/runtime/models` 的可用列表，但配置保留）
+- HTTP 端点：`PUT` 接受 `enabled`；新增 `PATCH /v1/providers/{id}` 切换 `enabled`（或 PUT 全量带 enabled）；`GET` 返回 `enabled` 字段
+- 映射 chater `setEnabled` → `PATCH enabled`；DELETE 仅用于真正移除
+- **影响**：`DELETE` 的 `ErrProviderInUse`（被 default_model 引用）保持拒绝；禁用不涉及引用检查（配置保留，default 仍可指向但运行时跳过 → SelectModel 报「未配置」）
+
+**OQ2 — 「已存未生效」：`requires_restart` 标记**
+
+现状：reconfigure=nil（codeagentd）时变更只落盘、重启生效；`reconfigure` 存在但 api 类型变时需重启——客户端不知道何时生效。
+
+**裁决：写端点响应统一带 `applied` 字段：`true`（已热生效）/ `false`（已落盘，需重启）。**
+
+```json
+// PUT /v1/providers/dashscope → 200
+{ "id": "dashscope", "applied": false }
+```
+
+- ProviderStore 判定：`reconfigure == nil` 或本次变更含 api 类型变化 → `applied: false`；否则 `true`
+- chater 收到 `applied: false` → UI 显示「已保存，重启后生效」；`true` → 直接刷新模型列表
+- `GET /v1/providers` 响应不含 applied（只读）
+
+**OQ3（记录，暂不改）— codeagentd 读写路径不一致**
+
+`settings.Load(root, home)` 读用户级 `~/.codeagent/settings.json`，但 `NewProviderStore(filepath.Join(root, ".codeagent", "settings.json"))` 写项目级 `<cwd>/.codeagent/settings.json` —— 读写在两层，PUT 落盘后运行时加载不到。**已记录为待办（用户 2026-08-06 指示先记录不改）**，实施 ③ 前必须修复：ProviderStore 的 settings 路径应与 settings.Load 的写入层对齐（用户级 + 项目级合并写）。
+
 ---
 
 ## 9. 验收

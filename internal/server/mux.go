@@ -15,6 +15,7 @@ import (
 	"code-agent/internal/agent"
 	"code-agent/internal/assetref"
 	"code-agent/internal/conversation"
+	"code-agent/internal/credential"
 	"code-agent/internal/managedworktree"
 	"code-agent/internal/mcp"
 	"code-agent/internal/repos"
@@ -244,6 +245,15 @@ type MuxOptions struct {
 	// disables the endpoints (404), matching the Granter pattern. The service is
 	// implemented by the assembler and owns the settings file + Reconfigure.
 	Providers ProviderService
+	// RuntimeModelsBuilder, when set, rebuilds the model catalog on each
+	// GET /v1/runtime/models with the latest injected credentials — so a
+	// POST /v1/secrets makes models available without a restart. When nil, the
+	// startup snapshot (RuntimeModels) is served.
+	RuntimeModelsBuilder func() RuntimeModelCatalog
+	// InjectSecrets, when set, wires POST /v1/secrets: the body is a
+	// {target: secret} map updated into the mutable injected resolver. Nil
+	// disables the endpoint (404).
+	InjectSecrets func(targets map[credential.Target]credential.Credential) error
 	// WorkspaceReloader reloads MCP servers for a given workspace. Nil disables
 	// the POST /v1/workspaces/{path}/mcp/reload endpoint (returns 404).
 	WorkspaceReloader func(workspacePath string) error
@@ -447,10 +457,17 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 	})
 
 	mux.HandleFunc("GET /v1/runtime/models", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, r, http.StatusOK, opts.RuntimeModels)
+		catalog := opts.RuntimeModels
+		if opts.RuntimeModelsBuilder != nil {
+			// Live rebuild with the latest injected credentials (A2): a
+			// POST /v1/secrets makes models available without a restart.
+			catalog = opts.RuntimeModelsBuilder()
+		}
+		writeJSON(w, r, http.StatusOK, catalog)
 	})
 
 	registerProviderRoutes(mux, opts)
+	registerSecretsRoutes(mux, opts)
 
 	mux.HandleFunc("GET /v1/activity", func(w http.ResponseWriter, r *http.Request) {
 		generatedAt := time.Now().UTC()

@@ -76,17 +76,19 @@ func (s *ProviderStore) Get(id string) (ProviderDTO, error) {
 // Upsert implements ProviderService. It writes the providers section via
 // settings.Persist (cross-process file lock), then triggers reconfigure. On
 // reconfigure failure the change is rolled back (the section is restored) so
-// disk and runtime do not silently diverge (design §4.2).
-func (s *ProviderStore) Upsert(id string, spec ProviderSpec) error {
+// disk and runtime do not silently diverge (design §4.2). Returns applied=true
+// when the change is hot-effective, false when it needs a restart (OQ2).
+func (s *ProviderStore) Upsert(id string, spec ProviderSpec) (bool, error) {
 	if id == "" {
-		return errors.New("provider id required")
+		return false, errors.New("provider id required")
 	}
 	// Read the current section for rollback.
 	before, err := LoadProviders(s.settingsPath)
 	if err != nil {
-		return err
+		return false, err
 	}
 	pc := settings.ServiceConfig{
+		Enabled:    spec.Enabled,
 		BaseURL:    spec.BaseURL,
 		API:        spec.API,
 		Credential: settings.CredentialRef{Namespace: spec.Credential.Namespace, Name: spec.Credential.Name},
@@ -99,59 +101,62 @@ func (s *ProviderStore) Upsert(id string, spec ProviderSpec) error {
 	if err := s.writeProviders(func(doc map[string]any, providers map[string]settings.ServiceConfig) {
 		providers[id] = pc
 	}); err != nil {
-		return err
+		return false, err
 	}
-	if s.reconfigure != nil {
-		if rerr := s.reconfigure(); rerr != nil {
-			// Roll back the disk change so "stored but not effective" cannot
-			// silently persist.
-			if berr := s.writeProviders(func(doc map[string]any, providers map[string]settings.ServiceConfig) {
-				if _, existed := before[id]; existed {
-					providers[id] = before[id]
-				} else {
-					delete(providers, id)
-				}
-			}); berr != nil {
-				return fmt.Errorf("apply change failed (%v) and rollback failed (%v)", rerr, berr)
+	if s.reconfigure == nil {
+		return false, nil // persisted, restart required
+	}
+	if rerr := s.reconfigure(); rerr != nil {
+		// Roll back the disk change so "stored but not effective" cannot
+		// silently persist.
+		if berr := s.writeProviders(func(doc map[string]any, providers map[string]settings.ServiceConfig) {
+			if _, existed := before[id]; existed {
+				providers[id] = before[id]
+			} else {
+				delete(providers, id)
 			}
-			return fmt.Errorf("apply change failed; rolled back: %w", rerr)
+		}); berr != nil {
+			return false, fmt.Errorf("apply change failed (%v) and rollback failed (%v)", rerr, berr)
 		}
+		return false, fmt.Errorf("apply change failed; rolled back: %w", rerr)
 	}
-	return nil
+	return true, nil
 }
 
 // Delete implements ProviderService. Refuses when the provider is referenced
-// by default_model/subagent_model (dangling default).
-func (s *ProviderStore) Delete(id string) error {
+// by default_model/subagent_model (dangling default). Returns applied=true
+// when the removal is hot-effective, false when it needs a restart (OQ2).
+func (s *ProviderStore) Delete(id string) (bool, error) {
 	providers, err := LoadProviders(s.settingsPath)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if _, ok := providers[id]; !ok {
-		return fmt.Errorf("%w %q", ErrProviderNotFound, id)
+		return false, fmt.Errorf("%w %q", ErrProviderNotFound, id)
 	}
 	// Reference check: if the current default/subagent model belongs to this
 	// provider, refuse.
 	if s.referencedByDefault(id) {
-		return ErrProviderInUse
+		return false, ErrProviderInUse
 	}
 	before := providers
 	if err := s.writeProviders(func(doc map[string]any, providers map[string]settings.ServiceConfig) {
 		delete(providers, id)
 	}); err != nil {
-		return err
+		return false, err
 	}
-	if s.reconfigure != nil {
-		if rerr := s.reconfigure(); rerr != nil {
-			_ = s.writeProviders(func(doc map[string]any, providers map[string]settings.ServiceConfig) {
-				for k, v := range before {
-					providers[k] = v
-				}
-			})
-			return fmt.Errorf("apply delete failed; rolled back: %w", rerr)
-		}
+	if s.reconfigure == nil {
+		return false, nil // persisted, restart required
 	}
-	return nil
+	if rerr := s.reconfigure(); rerr != nil {
+		_ = s.writeProviders(func(doc map[string]any, providers map[string]settings.ServiceConfig) {
+			for k, v := range before {
+				providers[k] = v
+			}
+		})
+		return false, fmt.Errorf("apply delete failed; rolled back: %w", rerr)
+	}
+	return true, nil
 }
 
 // writeProviders applies mutate under the settings cross-process lock and
@@ -222,6 +227,7 @@ func aliasProviderID(key string) (string, bool) {
 func toProviderDTO(id string, pc settings.ServiceConfig) ProviderDTO {
 	dto := ProviderDTO{
 		ID:         id,
+		Enabled:    pc.Enabled == nil || *pc.Enabled,
 		BaseURL:    pc.BaseURL,
 		API:        pc.API,
 		Credential: ProviderCred{Namespace: pc.Credential.Namespace, Name: pc.Credential.Name},
