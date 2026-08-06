@@ -5,6 +5,7 @@ import (
 	"code-agent/internal/app"
 	"code-agent/internal/approve"
 	"code-agent/internal/conversation"
+	"code-agent/internal/credential"
 	"code-agent/internal/model"
 	promptpkg "code-agent/internal/prompt"
 	"code-agent/internal/runtime"
@@ -66,6 +67,11 @@ type lineReader func(prompt string) (string, error)
 // wrap rendering.
 func repl(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider model.Provider, resumeID string, auto bool, noContextFiles bool) error {
 	root, _ := os.Getwd()
+
+	// Shared credential file: the host app writes Keychain provider keys to
+	// ~/.codeagent/secrets.json; the REPL loads them so /use can switch to an
+	// app-managed provider without an env var (env still wins when both exist).
+	secretsResolver, _ := credential.SecretsFile{}.Load()
 
 	store, err := runtime.OpenStore(root)
 	if err != nil {
@@ -256,7 +262,7 @@ func repl(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider mode
 				runTurn(text)
 				continue
 			}
-			newSess, quit, cerr := handleCommand(line, cfg, &mc, runner, sess, store, ask)
+			newSess, quit, cerr := handleCommand(line, cfg, &mc, runner, sess, store, ask, secretsResolver)
 			if cerr != nil {
 				fmt.Println("error:", cerr)
 			}
@@ -280,7 +286,7 @@ func repl(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider mode
 // usually the one passed in, but /resume swaps it for a different stored session
 // — plus quit=true for /exit and /quit. ask reads sub-prompts (e.g. /resume's
 // selection) through the shared readline instance.
-func handleCommand(line string, cfg app.Config, mc *app.ModelConfig, runner *agent.Runner, sess *session.Session, store session.Store, ask lineReader) (*session.Session, bool, error) {
+func handleCommand(line string, cfg app.Config, mc *app.ModelConfig, runner *agent.Runner, sess *session.Session, store session.Store, ask lineReader, secretsResolver credential.Resolver) (*session.Session, bool, error) {
 	fields := strings.Fields(line)
 	switch fields[0] {
 	case "/exit", "/quit":
@@ -405,7 +411,7 @@ func handleCommand(line string, cfg app.Config, mc *app.ModelConfig, runner *age
 		if err != nil {
 			return sess, false, err
 		}
-		newProvider, err := runtime.BuildProvider(newMC, cfg.Provider, nil)
+		newProvider, err := runtime.BuildProvider(newMC, cfg.Provider, secretsResolver)
 		if err != nil {
 			return sess, false, err
 		}

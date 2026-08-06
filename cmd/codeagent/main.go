@@ -171,7 +171,7 @@ func run() error {
 	}
 
 	if len(args) == 0 {
-		return runTUI(ctx, cfg, mc, provider, autoMode, noContextFiles)
+		return runTUI(ctx, cfg, mc, provider, secretsResolver, autoMode, noContextFiles)
 	}
 
 	command := args[0]
@@ -185,7 +185,7 @@ func run() error {
 	case "goal":
 		return runGoal(ctx, cfg, mc, provider, goal, autoMode, noContextFiles)
 	case "tui":
-		return runTUI(ctx, cfg, mc, provider, autoMode, noContextFiles)
+		return runTUI(ctx, cfg, mc, provider, secretsResolver, autoMode, noContextFiles)
 	case "repl":
 		return repl(ctx, cfg, mc, provider, "", autoMode, noContextFiles)
 	case "resume":
@@ -711,7 +711,7 @@ func (o mcpPromptOps) Render(command string, args []string) (string, error) {
 // as `run`/`repl` (buildRunner) but with channel-backed Emitter/Approver, so the
 // loop runs on a background goroutine while the program owns the terminal. The
 // agent is unchanged; only the renderer differs.
-func runTUI(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider model.Provider, autoMode bool, noContextFiles bool) error {
+func runTUI(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider model.Provider, secretsResolver credential.Resolver, autoMode bool, noContextFiles bool) error {
 	root, _ := os.Getwd()
 
 	store, err := runtime.OpenStore(root)
@@ -781,7 +781,7 @@ func runTUI(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider mo
 		if err != nil {
 			return tui.HeaderInfo{}, err
 		}
-		newProvider, err := runtime.BuildProvider(newMC, cfg.Provider, nil)
+		newProvider, err := runtime.BuildProvider(newMC, cfg.Provider, secretsResolver)
 		if err != nil {
 			return tui.HeaderInfo{}, err
 		}
