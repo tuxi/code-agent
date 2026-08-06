@@ -393,7 +393,7 @@ func handleCommand(line string, cfg app.Config, mc *app.ModelConfig, runner *age
 			if name == mc.Name {
 				marker = "* "
 			}
-			fmt.Printf("%s%s\n", marker, name)
+			fmt.Printf("%s%s\n", marker, cfg.DisplayModelName(name))
 		}
 		return sess, false, nil
 

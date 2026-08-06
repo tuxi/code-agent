@@ -22,6 +22,34 @@ func b64urlEncode(s string) string {
 	return base64.RawURLEncoding.EncodeToString([]byte(s))
 }
 
+// b64urlDecode base64url-decodes s; returns ok=false on invalid input.
+func b64urlDecode(s string) (string, bool) {
+	buf, err := base64.RawURLEncoding.DecodeString(s)
+	if err != nil {
+		return "", false
+	}
+	return string(buf), true
+}
+
+// DisplayModelName returns a human-readable label for a model key. A grouped-
+// provider model (alias key provider.<b64>.model.<b64>) becomes
+// "<provider-id>/<model-id>"; any other key is returned unchanged. The TUI
+// /use picker and REPL /models use this so users never see base64 alias keys.
+func (c Config) DisplayModelName(key string) string {
+	mc, ok := c.Models[key]
+	if !ok {
+		return key
+	}
+	if mc.Catalog.ConnectionID == "" {
+		return key // flat model, key is already the friendly name
+	}
+	display := mc.Catalog.DisplayName
+	if display == "" {
+		display = mc.Model
+	}
+	return mc.Catalog.ConnectionID + "/" + display
+}
+
 // validateFlatModelKey enforces design-providers-grouped-config.md §3.1: a
 // user-authored flat models key must not contain "/". Grouped-provider models
 // expand to alias keys (provider.<b64>.model.<b64>) which are slash-free, so a

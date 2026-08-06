@@ -82,7 +82,8 @@ type ModelSwapFunc func(name string) (HeaderInfo, error)
 
 // modelInfo is one selectable model for the /use picker.
 type modelInfo struct {
-	name string
+	name    string // the model key (what SelectModel / modelSwap expect)
+	display string // human-readable label shown in the picker (may differ from name)
 }
 
 // sessionSource is the cmd-layer's window into saved sessions for /sessions and
@@ -106,7 +107,7 @@ type sessionSource struct {
 // b.inputs, runs the turn, persists, and signals done — and handles
 // session/model swaps between turns. The BubbleTea program owns the terminal.
 // Run blocks until the user quits.
-func Run(ctx context.Context, b *Backend, runner *agent.Runner, sess *session.Session, store Store, header HeaderInfo, resume ResumeFunc, modelSwap ModelSwapFunc, modelNames []string, auto AutoMode, granter PermissionGranter, promptOps PromptOps, goalOps GoalOps) error {
+func Run(ctx context.Context, b *Backend, runner *agent.Runner, sess *session.Session, store Store, header HeaderInfo, resume ResumeFunc, modelSwap ModelSwapFunc, modelNames []string, displayName func(string) string, auto AutoMode, granter PermissionGranter, promptOps PromptOps, goalOps GoalOps) error {
 	// Cancelling on quit stops an in-flight turn rather than orphaning it.
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -199,7 +200,11 @@ func Run(ctx context.Context, b *Backend, runner *agent.Runner, sess *session.Se
 
 	models := make([]modelInfo, len(modelNames))
 	for i, n := range modelNames {
-		models[i] = modelInfo{name: n}
+		disp := n
+		if displayName != nil {
+			disp = displayName(n)
+		}
+		models[i] = modelInfo{name: n, display: disp}
 	}
 	src := sessionSource{
 		list: func() []session.Meta {

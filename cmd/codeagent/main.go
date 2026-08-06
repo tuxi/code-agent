@@ -5,6 +5,7 @@ import (
 	"code-agent/internal/agent"
 	"code-agent/internal/app"
 	"code-agent/internal/approve"
+	"code-agent/internal/credential"
 	"code-agent/internal/mcp"
 	"code-agent/internal/model"
 	"code-agent/internal/plugins"
@@ -89,6 +90,17 @@ func run() error {
 
 	ctx := context.Background()
 
+	// Shared credential share (Claude-style): the host app writes Keychain
+	// provider keys to ~/.codeagent/secrets.json; the CLI loads them so TUI
+	// sessions reuse the app-managed keys without sharing a runtime process.
+	// Env vars still win when both exist (resolver chain: injected first, then
+	// env — env resolution happens inside CredentialResolver, this injected
+	// layer sits before it). A missing/empty file yields nil (env-only).
+	secretsResolver, err := credential.SecretsFile{}.Load()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "warning: could not load ~/.codeagent/secrets.json:", err)
+	}
+
 	// These only read the store — no model, no API key required.
 	if len(args) > 0 {
 		switch args[0] {
@@ -134,7 +146,7 @@ func run() error {
 			if err != nil {
 				return err
 			}
-			provider, err = runtime.BuildProvider(mc, cfg.Provider, nil)
+			provider, err = runtime.BuildProvider(mc, cfg.Provider, secretsResolver)
 			if err != nil {
 				return err
 			}
@@ -153,7 +165,7 @@ func run() error {
 		return err
 	}
 
-	provider, err := runtime.BuildProvider(mc, cfg.Provider, nil)
+	provider, err := runtime.BuildProvider(mc, cfg.Provider, secretsResolver)
 	if err != nil {
 		return err
 	}
@@ -792,7 +804,7 @@ func runTUI(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider mo
 		}, nil
 	}
 	goalOps := buildGoalOps(cfg, mc, runner, store)
-	return tui.Run(ctx, backend, runner, sess, store, header, resume, modelSwap, cfg.AvailableModelNames(), approver, rules, mcpPromptOps{ctx: ctx, mgr: mcpMgr}, goalOps)
+	return tui.Run(ctx, backend, runner, sess, store, header, resume, modelSwap, cfg.AvailableModelNames(), cfg.DisplayModelName, approver, rules, mcpPromptOps{ctx: ctx, mgr: mcpMgr}, goalOps)
 }
 
 // runPlugin handles `codeagent plugin <subcommand> [args...]`.

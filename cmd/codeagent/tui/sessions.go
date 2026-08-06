@@ -129,7 +129,11 @@ func renderModelPicker(p modelPicker, width int) []string {
 		if i == p.idx {
 			cursor, ts = stylePaletteSel.Render("❯ "), stylePaletteSel
 		}
-		lines = append(lines, cursor+ts.Render(runewidth.Truncate(m.name, width-2, "…")))
+		label := m.display
+		if label == "" {
+			label = m.name
+		}
+		lines = append(lines, cursor+ts.Render(runewidth.Truncate(label, width-2, "…")))
 	}
 	return lines
 }
