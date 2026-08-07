@@ -13,7 +13,9 @@ import (
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textarea"
+	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/mattn/go-runewidth"
 )
 
@@ -49,6 +51,14 @@ type model struct {
 	// tr renders the agent event stream into the printed transcript — shared with
 	// /resume history replay (transcript.go).
 	tr transcript
+
+	// buf is the alt-screen scrollback. Inline mode printed finalized events to
+	// the terminal's own scrollback via appendLines; alt-screen owns the whole
+	// screen, so finalized events are appended here and rendered through vp.
+	buf []string
+	// vp is the scrollable transcript viewport (alt-screen replacement for the
+	// terminal's native scrollback).
+	vp viewport.Model
 
 	showThinking bool             // ctrl+o toggle: show current step's thinking in the live region (on by default)
 	planState    agent.PlanStatus // current plan state (synced from events + ctrl+p toggle)
@@ -125,7 +135,22 @@ func newModel(b *Backend, header HeaderInfo, src sessionSource) model {
 		src:            src,
 		showThinking:   true, // on by default — thinking is the signal, ctrl+o hides it
 		composerHeight: minComposerLines,
+		vp:             viewport.New(0, 0),
 	}
+}
+
+// appendMsg carries pre-styled lines to be added to the scrollback buffer. In
+// inline mode these were appendLines calls (the terminal owned the scrollback);
+// in alt-screen mode the model owns the scrollback, so appending is a state
+// mutation handled in Update, not a side-effecting Cmd.
+type appendMsg []string
+
+// appendLines is the drop-in replacement for appendLines: it returns a tea.Cmd
+// that emits an appendMsg. Update handles it by extending m.buf and scrolling
+// the viewport to the bottom.
+func appendLines(lines ...string) tea.Cmd {
+	msg := appendMsg(lines)
+	return func() tea.Msg { return msg }
 }
 
 func (m model) Init() tea.Cmd {
@@ -139,8 +164,9 @@ func (m model) Init() tea.Cmd {
 		waitForDone(m.b.done),
 		waitForGoalDone(m.b.goalDone),
 	}
-	// Banner printed once at startup — no git summary here (it follows each turn).
-	return tea.Batch(append([]tea.Cmd{tea.Println(m.banner())}, cmds...)...)
+	// Banner added to the scrollback buffer once at startup — no git summary
+	// here (it follows each turn).
+	return tea.Batch(append([]tea.Cmd{appendLines(m.banner())}, cmds...)...)
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -150,6 +176,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.composer.SetWidth(composerWidth(msg.Width))
 		m.ready = true
 		m.syncComposer() // <- 宽度变了，折行数也会变，必须同步！
+		// Size the viewport to the terminal height minus the header and bottom
+		// region. The exact reserved height is computed in View(); here we give
+		// it a reasonable default that View's layout will refine.
+		m.vp.Width = msg.Width
+		m.vp.Height = msg.Height - reservedHeight
+		return m, nil
+
+	case appendMsg:
+		// Alt-screen scrollback: former appendLines output lands here instead.
+		m.buf = append(m.buf, msg...)
+		m.vp.SetContent(strings.Join(m.buf, "\n"))
+		m.vp.GotoBottom()
 		return m, nil
 
 	case tea.KeyMsg:
@@ -245,11 +283,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case modelSwappedMsg:
 		if msg.err != nil {
-			return m, tea.Println(theme.Default.Fail.Render("model switch failed: " + msg.err.Error()))
+			return m, appendLines(theme.Default.Fail.Render("model switch failed: " + msg.err.Error()))
 		}
 		m.header = msg.header
 		m.promptTokens = 0 // gauge will update on the next model call
-		return m, tea.Println(theme.Default.Meta.Render(fmt.Sprintf("switched to %s", msg.header.Model)))
+		return m, appendLines(theme.Default.Meta.Render(fmt.Sprintf("switched to %s", msg.header.Model)))
 
 	case doneMsg:
 		m.busy = false
@@ -258,12 +296,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		out := m.tr.flush(m.width)               // a turn that errored never sent TurnFinished
 		cmds := []tea.Cmd{waitForDone(m.b.done)} // re-issue THIS listener only
 		if len(out) > 0 {
-			cmds = append(cmds, tea.Println(strings.Join(out, "\n")))
+			cmds = append(cmds, appendLines(strings.Join(out, "\n")))
 		}
 		// Print a fresh git summary so the user can see the workspace state after
 		// the agent's changes without leaving the TUI.
 		if gs := gitSummaryLine(); gs != "" {
-			cmds = append(cmds, tea.Println(gs))
+			cmds = append(cmds, appendLines(gs))
 		}
 		return m, tea.Batch(cmds...)
 
@@ -272,13 +310,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// feed the rendered text into the turn path (busy stays set through the turn).
 		if msg.err != nil {
 			m.busy = false
-			return m, tea.Println("error: " + msg.err.Error())
+			return m, appendLines("error: " + msg.err.Error())
 		}
 		b := m.b
 		return m, func() tea.Msg { b.inputs <- msg.text; return nil }
 
 	case goalCtlResultMsg:
-		return m, tea.Println(string(msg))
+		return m, appendLines(string(msg))
 
 	case goalDoneMsg:
 		m.busy = false
@@ -287,15 +325,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		out := m.tr.flush(m.width) // surface any buffered transcript from the last turn
 		cmds := []tea.Cmd{waitForGoalDone(m.b.goalDone)}
 		if len(out) > 0 {
-			cmds = append(cmds, tea.Println(strings.Join(out, "\n")))
+			cmds = append(cmds, appendLines(strings.Join(out, "\n")))
 		}
 		if msg.err != nil {
-			cmds = append(cmds, tea.Println(theme.Default.Fail.Render("goal: "+msg.err.Error())))
+			cmds = append(cmds, appendLines(theme.Default.Fail.Render("goal: "+msg.err.Error())))
 		} else if msg.summary != "" {
-			cmds = append(cmds, tea.Println(msg.summary))
+			cmds = append(cmds, appendLines(msg.summary))
 		}
 		if gs := gitSummaryLine(); gs != "" {
-			cmds = append(cmds, tea.Println(gs))
+			cmds = append(cmds, appendLines(gs))
 		}
 		return m, tea.Batch(cmds...)
 
@@ -374,8 +412,9 @@ func (m model) handleEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 
 	out := m.tr.render(ev, m.width)
 	if len(out) > 0 {
+		str := strings.Join(out, "\n")
 		return m, tea.Batch(
-			tea.Println(strings.Join(out, "\n")),
+			appendLines(str),
 			waitForEvent(m.b.events),
 		)
 	}
@@ -423,7 +462,7 @@ func (m model) submit() (tea.Model, tea.Cmd) {
 	if strings.HasPrefix(input, "/mcp__") {
 		if m.src.promptOps == nil {
 			m.busy = false
-			return m, tea.Println("MCP prompts are not available")
+			return m, appendLines("MCP prompts are not available")
 		}
 		fields := strings.Fields(input)
 		command := strings.TrimPrefix(fields[0], "/")
@@ -614,7 +653,8 @@ func (m model) runCommand(name, args string) (tea.Model, tea.Cmd) {
 	m.lastEsc = time.Time{}
 	cmd, ok := lookupCommand(name)
 	if !ok {
-		return m, tea.Println("unknown command: " + name)
+		return m, appendLines("unknown command: " + name)
+
 	}
 	return m, cmd.run(&m, args)
 }
@@ -639,7 +679,7 @@ func (m model) promptHelp() string {
 // going through the run loop.
 func (m model) toggleAuto(args string) tea.Cmd {
 	if m.src.auto == nil {
-		return tea.Println("auto mode is not available in this session")
+		return appendLines("auto mode is not available in this session")
 	}
 	switch strings.TrimSpace(args) {
 	case "on":
@@ -647,14 +687,14 @@ func (m model) toggleAuto(args string) tea.Cmd {
 	case "off":
 		m.src.auto.SetEnabled(false)
 	case "":
-		return tea.Println("auto mode is " + onOff(m.src.auto.Enabled()) + " (usage: /auto on|off)")
+		return appendLines("auto mode is " + onOff(m.src.auto.Enabled()) + " (usage: /auto on|off)")
 	default:
-		return tea.Println("usage: /auto [on|off]")
+		return appendLines("usage: /auto [on|off]")
 	}
 	if m.src.auto.Enabled() {
-		return tea.Println("auto mode ON — in-workspace edits (edit_file/create_file) auto-approved; commands, patches, and commits still confirmed.")
+		return appendLines("auto mode ON — in-workspace edits (edit_file/create_file) auto-approved; commands, patches, and commits still confirmed.")
 	}
-	return tea.Println("auto mode OFF — every side-effecting tool is confirmed again.")
+	return appendLines("auto mode OFF — every side-effecting tool is confirmed again.")
 }
 
 func onOff(b bool) string {
@@ -669,7 +709,7 @@ func onOff(b bool) string {
 // objective. All forms refuse while busy (Ctrl-C pauses a running pursuit first).
 func (m *model) goalDispatch(args string) tea.Cmd {
 	if m.busy {
-		return tea.Println("a pursuit is running — Ctrl-C to pause it first")
+		return appendLines("a pursuit is running — Ctrl-C to pause it first")
 	}
 	switch a := strings.TrimSpace(args); a {
 	case "", "status":
@@ -711,17 +751,17 @@ func (m model) goalCtl(kind int) tea.Cmd {
 // (with an id). Refuses mid-turn — the swap lands at a turn boundary anyway.
 func (m *model) openResume(args string) tea.Cmd {
 	if m.busy {
-		return tea.Println("finish the current turn before resuming")
+		return appendLines("finish the current turn before resuming")
 	}
 	if args != "" {
 		return m.resume(session.Meta{ID: args})
 	}
 	if m.src.list == nil {
-		return tea.Println("no saved sessions")
+		return appendLines("no saved sessions")
 	}
 	metas := m.src.list()
 	if len(metas) == 0 {
-		return tea.Println("no saved sessions")
+		return appendLines("no saved sessions")
 	}
 	m.picker = &sessionPicker{metas: metas}
 	return nil
@@ -761,11 +801,11 @@ const maxReplayLines = 300
 func (m *model) resume(meta session.Meta) tea.Cmd {
 	m.picker = nil
 	if m.src.resume == nil {
-		return tea.Println("resume not available")
+		return appendLines("resume not available")
 	}
 	sess, err := m.src.resume(meta.ID)
 	if err != nil {
-		return tea.Println("resume failed: " + err.Error())
+		return appendLines("resume failed: " + err.Error())
 	}
 	m.b.sessSwap <- sess // buffered (cap 1); the run loop applies it between turns
 	m.header.Session = sess.ID
@@ -792,7 +832,7 @@ func (m *model) resume(meta session.Meta) tea.Cmd {
 			m.tr.started = true // separate the next live turn from the replayed history
 		}
 	}
-	return tea.Println(strings.Join(lines, "\n"))
+	return appendLines(strings.Join(lines, "\n"))
 }
 
 // syncComposer grows/shrinks the composer to fit its content (1..max rows). A
@@ -871,13 +911,13 @@ func clampInt(n, lo, hi int) int {
 // name). Refuses mid-turn — the swap lands at a turn boundary via modelSwap.
 func (m *model) openUse(args string) tea.Cmd {
 	if m.busy {
-		return tea.Println("finish the current turn before switching models")
+		return appendLines("finish the current turn before switching models")
 	}
 	if args != "" {
 		return m.useModel(args)
 	}
 	if len(m.src.modelNames) == 0 {
-		return tea.Println("no other configured models")
+		return appendLines("no other configured models")
 	}
 	m.modelPick = &modelPicker{models: m.src.modelNames}
 	return nil
@@ -911,18 +951,56 @@ func (m model) handleModelPickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m *model) useModel(name string) tea.Cmd {
 	m.modelPick = nil
 	if m.src.modelSwap == nil {
-		return tea.Println("model switch not available")
+		return appendLines("model switch not available")
 	}
 	m.b.modelSwap <- name // buffered; the run loop applies it between turns
 	return waitForModelSwapResult(m.b.modelSwapResult)
 }
 
-// --- live region --------------------------------------------------------
+// reservedHeight is the terminal rows reserved for the header and bottom
+// region (status + overlays + composer). The viewport fills the rest. This is
+// a conservative lower bound; the bottom region can be taller when overlays
+// are open, in which case the viewport content is simply clipped at the top
+// (viewport scrolls). A precise per-frame height is a later refinement.
+const reservedHeight = 6
 
+// View renders the full-screen alt-screen layout: a fixed header, the
+// scrollable transcript viewport, and a bottom region (live status + overlays
+// + composer). Formerly inline mode printed finalized events to the
+// terminal's own scrollback via appendLines; now they live in m.buf and are
+// rendered through the viewport.
 func (m model) View() string {
 	if !m.ready {
 		return ""
 	}
+	// Header (fixed top).
+	header := m.bannerLine()
+
+	// Transcript viewport (fills the middle).
+	m.vp.SetContent(strings.Join(m.buf, "\n"))
+	transcript := m.vp.View()
+
+	// Bottom region: live preview + todos + status + overlays + composer.
+	bottom := m.renderBottom()
+
+	return lipgloss.JoinVertical(lipgloss.Left, header, transcript, bottom)
+}
+
+// bannerLine is the one-line header: CodeAgent · model · workspace.
+func (m model) bannerLine() string {
+	parts := []string{"CodeAgent"}
+	if m.header.Model != "" {
+		parts = append(parts, m.header.Model)
+	}
+	if m.header.Workspace != "" {
+		parts = append(parts, m.header.Workspace)
+	}
+	return theme.Default.AsstLabel.Render(strings.Join(parts, " · "))
+}
+
+// renderBottom is the live region below the viewport: streaming/thinking
+// preview, todo panel, status line, overlay cards, and the composer.
+func (m model) renderBottom() string {
 	lines := []string{}
 	switch {
 	case m.streaming != "":
@@ -967,10 +1045,7 @@ func (m model) View() string {
 		cv = cv[:l-1]
 	}
 	lines = append(lines, cv)
-	// BubbleTea inline mode positions the View one line above where it belongs,
-	// overlaying scrollback. Three leading empty lines shift the live region down
-	// so the clear-to-end-of-line + composer text don't bleed into the transcript.
-	return "\n\n\n" + strings.Join(lines, "\n")
+	return strings.Join(lines, "\n")
 }
 
 func (m model) composerCursorColumn() int {

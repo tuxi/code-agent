@@ -23,7 +23,7 @@
 > Event-Collapse / cursor-nav / expand-collapse are gone (scrollback is
 > immutable) — expansion is a print-time decision (failures print their body,
 > successes their header). The async seam still applies, but `RunTurn` events are
-> *printed* (`tea.Println`) rather than rendered into a viewport. Decisions §13.9
+> *printed* (`appendLines`) rather than rendered into a viewport. Decisions §13.9
 > (mouse off) and the inline note there are now **adopted**, not deferred.
 
 ## 1. Background

@@ -12,6 +12,7 @@ import (
 
 	"code-agent/internal/agent"
 	"code-agent/internal/session"
+
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -236,12 +237,13 @@ func Run(ctx context.Context, b *Backend, runner *agent.Runner, sess *session.Se
 		granter:      granter,
 		promptOps:    promptOps,
 	}
-	// Inline mode (no alt-screen, no mouse capture): finalized output goes to the
-	// terminal's own scrollback, so native select/copy, scroll, and Ctrl+R search
-	// all just work. The program only owns the live region (status + composer).
+	// Alt-screen mode: the program owns the full screen. Finalized events go
+	// into the model's scrollback buffer (m.buf) and render through a viewport,
+	// replacing the inline-mode appendLines-to-terminal-scrollback path.
 	p := tea.NewProgram(
 		newModel(b, header, src),
 		tea.WithContext(ctx),
+		tea.WithAltScreen(),
 	)
 	_, err := p.Run()
 	close(b.inputs) // stop the turn loop; in-flight turn is cancelled via ctx

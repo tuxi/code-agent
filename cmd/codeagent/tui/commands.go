@@ -20,16 +20,16 @@ type command struct {
 
 // commandRegistry is the menu. Session-mutating commands (resume/use) are listed
 // but deferred — see the design doc; they swap the session/model between turns.
-// Commands print to scrollback (tea.Println) or return a program command
+// Commands print to scrollback (appendLines) or return a program command
 // (tea.Quit / tea.ClearScreen) — output is part of the transcript, not a
 // separate mutable view.
 var commandRegistry = []command{
 	{name: "/help", desc: "show commands and key bindings", ready: true,
-		run: func(m *model, _ string) tea.Cmd { return tea.Println(helpText) }},
+		run: func(m *model, _ string) tea.Cmd { return appendLines(helpText) }},
 	{name: "/sessions", desc: "list saved sessions", ready: true,
-		run: func(m *model, _ string) tea.Cmd { return tea.Println(m.sessions()) }},
+		run: func(m *model, _ string) tea.Cmd { return appendLines(m.sessions()) }},
 	{name: "/model", desc: "show the current model", ready: true,
-		run: func(m *model, _ string) tea.Cmd { return tea.Println("model: " + m.header.Model) }},
+		run: func(m *model, _ string) tea.Cmd { return appendLines("model: " + m.header.Model) }},
 	{name: "/clear", desc: "clear the screen", ready: true,
 		run: func(m *model, _ string) tea.Cmd { return tea.ClearScreen }},
 	{name: "/resume", desc: "resume a saved session", ready: true,
@@ -41,13 +41,13 @@ var commandRegistry = []command{
 	{name: "/goal", desc: "pursue an objective (no arg: status · resume · clear)", ready: true,
 		run: func(m *model, args string) tea.Cmd { return m.goalDispatch(args) }},
 	{name: "/prompts", desc: "list MCP prompts (invoke as /mcp__server__prompt)", ready: true,
-		run: func(m *model, _ string) tea.Cmd { return tea.Println(m.promptHelp()) }},
+		run: func(m *model, _ string) tea.Cmd { return appendLines(m.promptHelp()) }},
 	{name: "/exit", aliases: []string{"/quit"}, desc: "quit", ready: true,
 		run: func(m *model, _ string) tea.Cmd { return tea.Quit }},
 }
 
 func deferNotice(_ *model, _ string) tea.Cmd {
-	return tea.Println("that command isn't wired in the TUI yet — relaunch: codeagent resume <id>  /  codeagent --model NAME tui")
+	return appendLines("that command isn't wired in the TUI yet — relaunch: codeagent resume <id>  /  codeagent --model NAME tui")
 }
 
 // matches reports whether the command's name or any alias starts with tok.
