@@ -66,43 +66,6 @@ func TestExecuteRejectsInvalidJSON(t *testing.T) {
 	}
 }
 
-func TestPlanCriticInjectsIndependentReviewContract(t *testing.T) {
-	fa := &fakeAgent{result: "VERDICT: PASS\nLooks sound."}
-	_, err := NewTool(fa).Execute(
-		context.Background(),
-		tools.ExecutionContext{},
-		json.RawMessage(`{"kind":"plan_critic","subject_path":".codeagent/plans/auth.md","prompt":"Review auth."}`),
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, required := range []string{
-		"independent Plan Critic",
-		".codeagent/plans/auth.md",
-		"VERDICT: REQUEST_CHANGES",
-		"Review auth.",
-	} {
-		if !strings.Contains(fa.gotPrompt, required) {
-			t.Fatalf("critic prompt missing %q: %s", required, fa.gotPrompt)
-		}
-	}
-}
-
-func TestPlanCriticRequiresSubjectPath(t *testing.T) {
-	fa := &fakeAgent{}
-	_, err := NewTool(fa).Execute(
-		context.Background(),
-		tools.ExecutionContext{},
-		json.RawMessage(`{"kind":"plan_critic","prompt":"Review it."}`),
-	)
-	if err == nil || !strings.Contains(err.Error(), "requires subject_path") {
-		t.Fatalf("expected subject-path rejection, got %v", err)
-	}
-	if fa.called {
-		t.Fatal("subagent must not run without the critic subject")
-	}
-}
-
 func TestChangeReviewInjectsIndependentDiffContract(t *testing.T) {
 	fa := &fakeAgent{result: "VERDICT: PASS\nLooks sound."}
 	_, err := NewTool(fa).Execute(

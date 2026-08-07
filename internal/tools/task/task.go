@@ -57,7 +57,7 @@ func (t *Tool) Description() string {
 		"the files it already covered. " +
 		"The subagent sees NOTHING of this conversation — its only input is your prompt, so put every " +
 		"file path, error message, and the precise question into that prompt. It is read-only (no edits, " +
-		"no commands). For a harness gate, set kind to plan_critic or change_review and require the first " +
+		"no commands). For a harness gate, set kind to change_review and require the first " +
 		"line to be exactly VERDICT: PASS or VERDICT: REQUEST_CHANGES. Returns the subagent's findings."
 }
 
@@ -65,14 +65,12 @@ func (t *Tool) InputSchema() json.RawMessage {
 	return tools.Object(map[string]tools.Property{
 		"kind": {
 			Type: "string",
-			Enum: []string{"investigation", "plan_critic", "change_review"},
-			Description: "Optional harness role. Use plan_critic to challenge a plan before proposal, " +
-				"and change_review for the independent review after implementation.",
+			Enum: []string{"investigation", "change_review"},
+			Description: "Optional harness role: change_review for the independent review after implementation.",
 		},
 		"subject_path": {
 			Type: "string",
-			Description: "For plan_critic, the workspace-relative .codeagent/plans/*.md file that " +
-				"the critic inspected. The harness binds PASS to this exact file version.",
+			Description: "For change_review, the workspace-relative path to the primary changed or affected file.",
 		},
 		"prompt": {
 			Type: "string",
@@ -110,23 +108,14 @@ func (t *Tool) Execute(ctx context.Context, ec tools.ExecutionContext, raw json.
 
 func harnessPrompt(in input) (string, error) {
 	switch in.Kind {
-	case "plan_critic":
-		if strings.TrimSpace(in.SubjectPath) == "" {
-			return "", fmt.Errorf("task kind plan_critic requires subject_path")
-		}
-		return "You are an independent Plan Critic. Inspect the repository evidence yourself; do not " +
-			"trust the parent agent's conclusions. The authoritative plan to review is `" +
-			strings.TrimSpace(in.SubjectPath) + "`. Check scope, dependencies, architectural fit, " +
-			"missing inputs, edge cases, and whether the proposed verification can prove correctness. " +
-			"Your first non-empty line MUST be exactly `VERDICT: PASS` or " +
-			"`VERDICT: REQUEST_CHANGES`. Use PASS only when no blocking issue remains.\n\n" +
-			in.Prompt, nil
 	case "change_review":
 		return "You are an independent Change Reviewer. Inspect git_diff and the relevant files yourself; " +
 			"do not trust the implementing agent's summary. Compare the changes with the stated requirement " +
 			"and approved plan. Look for wrong-direction implementation, regressions, missing tests, unsafe " +
 			"behavior, and verification gaps. Your first non-empty line MUST be exactly `VERDICT: PASS` or " +
-			"`VERDICT: REQUEST_CHANGES`. Use PASS only when no blocking issue remains.\n\n" +
+			"`VERDICT: REQUEST_CHANGES`.\n\n" +
+			"Categorize every finding as blocking (must fix), advisory (note for follow-up), or nit (style/formatting). " +
+			"Return VERDICT: PASS when no blocking finding remains. Advisory and nit findings do not block.\n\n" +
 			in.Prompt, nil
 	default:
 		return in.Prompt, nil

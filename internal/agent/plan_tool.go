@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"code-agent/internal/tools"
@@ -96,10 +95,10 @@ func (t *proposePlanTool) Name() string { return "propose_plan" }
 func (t *proposePlanTool) Description() string {
 	return "Propose your implementation plan for user approval. " +
 		"Call this AFTER you have researched and written a complete plan, resolved all blocking " +
-		"unknowns, and received VERDICT: PASS from an independent task with kind plan_critic. " +
+		"unknowns. " +
 		"Write the full plan to a markdown file under .codeagent/plans/, then pass " +
-		"that workspace-relative file path plus evidence_paths, verification, blocking_unknowns, " +
-		"and critic_summary. Keep any accompanying text brief. " +
+		"that workspace-relative file path plus evidence_paths, verification, blocking_unknowns. " +
+		"Keep any accompanying text brief. " +
 		"The user will review the plan and approve or reject it. " +
 		"If approved you may proceed to implement with full tool access. " +
 		"If rejected you must revise the plan."
@@ -134,10 +133,7 @@ func (t *proposePlanTool) InputSchema() json.RawMessage {
 			Type: "array", Description: "Unresolved questions that could materially change the design. Must be empty.",
 			Items: &tools.Property{Type: "string"},
 		},
-		"critic_summary": {
-			Type: "string", Description: "Short summary of the passing independent plan critic's findings.",
-		},
-	}, "plan_path", "evidence_paths", "verification", "blocking_unknowns", "critic_summary").JSON()
+	}, "plan_path", "evidence_paths", "verification", "blocking_unknowns").JSON()
 }
 
 func (t *proposePlanTool) Execute(_ context.Context, ec tools.ExecutionContext, input json.RawMessage) (tools.ToolResult, error) {
@@ -162,16 +158,11 @@ func (t *proposePlanTool) Execute(_ context.Context, ec tools.ExecutionContext, 
 		EvidencePaths    []string `json:"evidence_paths"`
 		Verification     []string `json:"verification"`
 		BlockingUnknowns []string `json:"blocking_unknowns"`
-		CriticSummary    string   `json:"critic_summary"`
 	}
 	if len(input) > 0 {
 		if err := json.Unmarshal(input, &in); err != nil {
 			return tools.ToolResult{}, fmt.Errorf("propose_plan: invalid input: %w", err)
 		}
-	}
-	if r.independentTaskAvailable() && !r.planCriticPassed {
-		return tools.ToolResult{}, fmt.Errorf(
-			"propose_plan: a passing independent task with kind plan_critic is required")
 	}
 	if len(in.EvidencePaths) == 0 {
 		return tools.ToolResult{}, fmt.Errorf("propose_plan: evidence_paths must contain inspected workspace files")
@@ -182,9 +173,6 @@ func (t *proposePlanTool) Execute(_ context.Context, ec tools.ExecutionContext, 
 	if len(in.BlockingUnknowns) > 0 {
 		return tools.ToolResult{}, fmt.Errorf(
 			"propose_plan: resolve blocking_unknowns before proposal: %v", in.BlockingUnknowns)
-	}
-	if len(strings.TrimSpace(in.CriticSummary)) == 0 {
-		return tools.ToolResult{}, fmt.Errorf("propose_plan: critic_summary is required")
 	}
 
 	planID := newPlanID()
@@ -208,8 +196,9 @@ func (t *proposePlanTool) Execute(_ context.Context, ec tools.ExecutionContext, 
 		Status:    PlanStatusProposing,
 		CreatedAt: time.Now(),
 		Readiness: PlanReadiness{
-			EvidencePaths: in.EvidencePaths, Verification: in.Verification,
-			BlockingUnknowns: in.BlockingUnknowns, CriticSummary: strings.TrimSpace(in.CriticSummary),
+			EvidencePaths:    in.EvidencePaths,
+			Verification:     in.Verification,
+			BlockingUnknowns: in.BlockingUnknowns,
 		},
 	}
 
@@ -237,15 +226,6 @@ func (t *proposePlanTool) Execute(_ context.Context, ec tools.ExecutionContext, 
 			return tools.ToolResult{}, fmt.Errorf("propose_plan: cannot write legacy plan file: %w", err)
 		}
 		plan.WorkspaceRelativePath = relativePlanPath(ec.WorkspaceRoot, plan.FilePath)
-	}
-	if r.independentTaskAvailable() &&
-		(r.planCriticPath != plan.WorkspaceRelativePath ||
-			r.planCriticDigest != planContentDigest(plan.Content)) {
-		r.planCriticPassed = false
-		r.planCriticPath = ""
-		r.planCriticDigest = ""
-		return tools.ToolResult{}, fmt.Errorf(
-			"propose_plan: the plan file differs from the version approved by plan_critic; run the critic again")
 	}
 
 	r.SetPlanState(PlanStatusProposing)
@@ -280,9 +260,6 @@ func (t *proposePlanTool) Execute(_ context.Context, ec tools.ExecutionContext, 
 		}, nil
 	default:
 		r.SetPlanState(PlanStatusPlanning)
-		r.planCriticPassed = false
-		r.planCriticPath = ""
-		r.planCriticDigest = ""
 		plan.Status = PlanStatusRejected
 		r.emit(Event{Kind: EventPlanRejected, Text: plan.ID})
 		return tools.ToolResult{

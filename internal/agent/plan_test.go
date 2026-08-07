@@ -356,10 +356,9 @@ func TestProposePlanApprovesAndTransitions(t *testing.T) {
 
 	// Second turn: propose the plan (no PlanApprover → auto-approve).
 	provider2 := &scriptedProvider{responses: []model.Response{
-		toolCallResp("propose_plan", `{"allowed_prompts":["run tests"],"evidence_paths":["internal/auth.go"],"verification":["go test ./..."],"blocking_unknowns":[],"critic_summary":"Independent critic found the plan coherent."}`),
+		toolCallResp("propose_plan", `{"allowed_prompts":["run tests"],"evidence_paths":["internal/auth.go"],"verification":["go test ./..."],"blocking_unknowns":[]}`),
 		{Content: "implementing now", FinishReason: "stop"},
 	}}
-	runner.planCriticPassed = true
 	runner.Model = provider2
 	_, err = runner.RunTurn(context.Background(), newSession(), "propose it")
 	if err != nil {
@@ -389,13 +388,12 @@ func TestProposePlanUsesCanonicalPlanFile(t *testing.T) {
 		WorkspaceRoot:     root,
 		planTitle:         "Canonical plan",
 		lastAssistantText: "The plan is ready at .codeagent/plans/canonical.md.",
-		planCriticPassed:  true,
 	}
 	ref.R = runner
 	tool := NewProposePlanTool(ref, plansDir)
 
 	result, err := tool.Execute(context.Background(), tools.ExecutionContext{WorkspaceRoot: root},
-		json.RawMessage(`{"plan_path":".codeagent/plans/canonical.md","evidence_paths":["internal/server.go"],"verification":["go test ./..."],"blocking_unknowns":[],"critic_summary":"PASS: scope and verification are adequate."}`))
+		json.RawMessage(`{"plan_path":".codeagent/plans/canonical.md","evidence_paths":["internal/server.go"],"verification":["go test ./..."],"blocking_unknowns":[]}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -442,12 +440,12 @@ func TestProposePlanRejectsPathOutsidePlansDirectory(t *testing.T) {
 	}
 
 	ref := &RunnerRef{}
-	runner := &Runner{PlanState: PlanStatusPlanning, WorkspaceRoot: root, planCriticPassed: true}
+	runner := &Runner{PlanState: PlanStatusPlanning, WorkspaceRoot: root}
 	ref.R = runner
 	tool := NewProposePlanTool(ref, plansDir)
 
 	_, err := tool.Execute(context.Background(), tools.ExecutionContext{WorkspaceRoot: root},
-		json.RawMessage(`{"plan_path":"outside.md","evidence_paths":["outside.md"],"verification":["go test ./..."],"blocking_unknowns":[],"critic_summary":"PASS"}`))
+		json.RawMessage(`{"plan_path":"outside.md","evidence_paths":["outside.md"],"verification":["go test ./..."],"blocking_unknowns":[]}`))
 	if err == nil || !strings.Contains(err.Error(), "inside .codeagent/plans") {
 		t.Fatalf("expected plans-directory rejection, got %v", err)
 	}
@@ -456,115 +454,36 @@ func TestProposePlanRejectsPathOutsidePlansDirectory(t *testing.T) {
 	}
 }
 
-func TestProposePlanRequiresPassingCritic(t *testing.T) {
-	ref := &RunnerRef{}
-	planTools := tools.NewRegistry()
-	if err := planTools.Register(readTool{"task"}); err != nil {
+func TestProposePlanSucceedsWithoutCritic(t *testing.T) {
+	// After D7, propose_plan no longer requires a passing plan_critic task.
+	// The critic gate was removed — the human approves the plan, the compiler
+	// and tests verify the implementation.
+	root := t.TempDir()
+	plansDir := filepath.Join(root, ".codeagent", "plans")
+	planRel := ".codeagent/plans/test-plan.md"
+	planPath := filepath.Join(root, planRel)
+	if err := os.MkdirAll(plansDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	runner := &Runner{PlanState: PlanStatusPlanning, PlanTools: planTools}
+	if err := os.WriteFile(planPath, []byte("# Test Plan\n\nContent."), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ref := &RunnerRef{}
+	runner := &Runner{PlanState: PlanStatusPlanning}
 	ref.R = runner
 
-	_, err := NewProposePlanTool(ref, t.TempDir()).Execute(
-		context.Background(),
-		tools.ExecutionContext{WorkspaceRoot: t.TempDir()},
-		json.RawMessage(`{"plan_path":".codeagent/plans/plan.md","evidence_paths":["internal/agent/loop.go"],"verification":["go test ./..."],"blocking_unknowns":[],"critic_summary":"looks good"}`),
-	)
-	if err == nil || !strings.Contains(err.Error(), "passing independent task") {
-		t.Fatalf("expected critic gate rejection, got %v", err)
-	}
-}
-
-func TestHarnessReviewVerdictsAndMutationInvalidation(t *testing.T) {
-	root := t.TempDir()
-	plansDir := filepath.Join(root, ".codeagent", "plans")
-	if err := os.MkdirAll(plansDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(plansDir, "plan.md"), []byte("# Plan\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	runner := &Runner{PlanState: PlanStatusPlanning, WorkspaceRoot: root}
-
-	runner.updateHarnessGates("task", json.RawMessage(`{"kind":"plan_critic","subject_path":".codeagent/plans/plan.md"}`),
-		"VERDICT: REQUEST_CHANGES\nMissing an edge case.", false)
-	if runner.planCriticPassed {
-		t.Fatal("request-changes verdict must not pass the critic gate")
-	}
-	runner.updateHarnessGates("task", json.RawMessage(`{"kind":"plan_critic","subject_path":".codeagent/plans/plan.md"}`),
-		"VERDICT: PASS\nThe evidence supports the design.", false)
-	if !runner.planCriticPassed {
-		t.Fatal("passing critic did not open the proposal gate")
-	}
-	runner.updateHarnessGates("create_file", json.RawMessage(`{}`), "written", true)
-	if runner.planCriticPassed {
-		t.Fatal("editing the plan after critique must invalidate the critic")
-	}
-
-	runner.PlanState = PlanStatusExecuting
-	runner.updateHarnessGates("edit_file", json.RawMessage(`{}`), "edited", true)
-	if !runner.plannedMutation || runner.independentReviewPassed {
-		t.Fatal("implementation mutation did not close the independent review gate")
-	}
-	runner.updateHarnessGates("task", json.RawMessage(`{"kind":"change_review"}`),
-		"Some preamble\nVERDICT: PASS", false)
-	if runner.independentReviewPassed {
-		t.Fatal("review verdict must be the first non-empty line")
-	}
-	runner.updateHarnessGates("task", json.RawMessage(`{"kind":"change_review"}`),
-		"VERDICT: PASS\nTests and diff are coherent.", false)
-	if !runner.independentReviewPassed {
-		t.Fatal("passing independent review did not open finalization")
-	}
-	runner.updateHarnessGates("edit_file", json.RawMessage(`{}`), "edited again", true)
-	if runner.independentReviewPassed {
-		t.Fatal("a later mutation must invalidate the prior review")
-	}
-}
-
-func TestPlanCriticPassIsBoundToReviewedFileVersion(t *testing.T) {
-	root := t.TempDir()
-	plansDir := filepath.Join(root, ".codeagent", "plans")
-	if err := os.MkdirAll(plansDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	planFile := filepath.Join(plansDir, "plan.md")
-	if err := os.WriteFile(planFile, []byte("# Reviewed plan\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	planTools := tools.NewRegistry()
-	if err := planTools.Register(readTool{"task"}); err != nil {
-		t.Fatal(err)
-	}
-	runner := &Runner{
-		PlanState:     PlanStatusPlanning,
-		PlanTools:     planTools,
-		WorkspaceRoot: root,
-	}
-	runner.updateHarnessGates(
-		"task",
-		json.RawMessage(`{"kind":"plan_critic","subject_path":".codeagent/plans/plan.md"}`),
-		"VERDICT: PASS\nReviewed current plan.",
-		false,
-	)
-	if !runner.planCriticPassed {
-		t.Fatal("critic did not bind to the existing plan")
-	}
-	if err := os.WriteFile(planFile, []byte("# Changed after review\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	ref := &RunnerRef{R: runner}
 	_, err := NewProposePlanTool(ref, plansDir).Execute(
 		context.Background(),
 		tools.ExecutionContext{WorkspaceRoot: root},
-		json.RawMessage(`{"plan_path":".codeagent/plans/plan.md","evidence_paths":["internal/agent/loop.go"],"verification":["go test ./..."],"blocking_unknowns":[],"critic_summary":"PASS"}`),
+		json.RawMessage(`{"plan_path":"`+planRel+`","evidence_paths":["go.mod"],"verification":["go test ./..."],"blocking_unknowns":[]}`),
 	)
-	if err == nil || !strings.Contains(err.Error(), "differs from the version") {
-		t.Fatalf("expected stale critic rejection, got %v", err)
+	// Without a PlanApprover, auto-approve → Executing.
+	if err != nil {
+		t.Fatalf("expected proposal to succeed without plan_critic, got %v", err)
 	}
-	if runner.planCriticPassed {
-		t.Fatal("stale critic binding was not invalidated")
+	if runner.PlanState != PlanStatusExecuting {
+		t.Fatalf("expected Executing after auto-approve, got %v", runner.PlanState)
 	}
 }
 

@@ -186,7 +186,7 @@ Message 可以记录一次协作，但不因此变成 Organization/Collaboration
 | Task 内 Subagent（隔离上下文、只回结论） | `internal/tools/task/task.go` + `internal/runtime/subagent.go`（prompt 是唯一信道，父上下文零污染） |
 | 执行环境 Worktree | `internal/managedworktree/` + `internal/runtime/managed_worktrees.go` |
 | Graph/DAG 拓扑 | 自带 Flux DAG 引擎（`plan_workflow`、`internal/fluxstore/`），比 Codex 只能"自己写 App Server 客户端"更强 |
-| Generator-Critic | harness gate（`task` 工具 `kind=plan_critic/change_review`，`VERDICT: PASS/REQUEST_CHANGES` 首行约束） |
+| Generator-Critic | harness gate（`task` 工具 `kind=change_review`，`VERDICT: PASS/REQUEST_CHANGES` 首行约束） |
 | Hook 注入纪律 | `internal/hooks/`（目前是 pre/post-tool shell hook，非 subagent 生命周期 hook） |
 | 事件流/可观测性 | `agent.Event` 40+ 事件类型 + `internal/trace/` + `internal/observation/` + jobs 事件分区 |
 | 沙箱档位 | `internal/sandbox/` + `internal/approve/`（allow/confirm/block 三级 + AutoApprover） |

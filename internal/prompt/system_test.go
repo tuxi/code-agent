@@ -11,7 +11,7 @@ func TestAgentStoppingPolicyIsPhaseAware(t *testing.T) {
 		"Planning (after enter_plan_mode)",
 		"Readiness-complete",
 		"Executing (an approved plan",
-		"Reviewing (plan_critic or change_review)",
+		"Reviewing (change_review)",
 		"VERDICT: REQUEST_CHANGES",
 	} {
 		if !strings.Contains(AgentSystemPrompt, required) {
@@ -33,7 +33,6 @@ func TestAgentStoppingPolicyIsPhaseAware(t *testing.T) {
 func TestSubAgentStoppingPolicyDistinguishesReviewFromInvestigation(t *testing.T) {
 	for _, required := range []string{
 		"ordinary investigation",
-		"plan_critic",
 		"change_review",
 		"do not stop at the first plausible result",
 		"before choosing a verdict",

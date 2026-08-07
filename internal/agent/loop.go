@@ -12,7 +12,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/google/uuid"
 	"io"
 	"os"
 	"path/filepath"
@@ -22,6 +21,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 type Runner struct {
@@ -151,12 +152,6 @@ type Runner struct {
 	// confusing user-visible text with provider reasoning.
 	lastAssistantText string
 
-	// Harness gates persist across user turns while an approved plan is active.
-	// A passing critic is required before proposal; any implementation mutation
-	// invalidates the independent change review until a reviewer passes it again.
-	planCriticPassed        bool
-	planCriticPath          string
-	planCriticDigest        string
 	plannedMutation         bool
 	independentReviewPassed bool
 	mutatedVerifiableCode   bool // true when this turn touched verifiable code (not docs/data)
@@ -909,9 +904,6 @@ func (r *Runner) drive(ctx context.Context, sess *session.Session) (TurnResult, 
 		// The restricted toolset already prevents edits; this shapes the output.
 		if r.PlanState == PlanStatusPlanning {
 			msgs = appendEphemeralUser(msgs, planningPrompt)
-			if !r.independentTaskAvailable() {
-				msgs = appendEphemeralUser(msgs, criticUnavailablePrompt)
-			}
 		}
 		msgs = withLocalAssetManifests(msgs)
 
@@ -1110,10 +1102,7 @@ func (r *Runner) drive(ctx context.Context, sess *session.Session) (TurnResult, 
 	// what it has — instead of a useless "stopped" message that forces the user to
 	// re-ask (and re-pay for the whole investigation).
 	if r.PlanState == PlanStatusPlanning {
-		turn.Final = "Planning paused at the step limit before a review-ready plan was proposed. Continue discovery and call propose_plan with the required readiness evidence."
-		if r.independentTaskAvailable() {
-			turn.Final = "Planning paused at the step limit before a review-ready plan was proposed. Continue discovery, run a passing plan_critic task, then call propose_plan."
-		}
+		turn.Final = "Planning paused at the step limit before a review-ready plan was proposed. Continue discovery, then call propose_plan."
 		turn.HitStepLimit = true
 		r.emit(Event{Kind: EventTurnFinished, Text: turn.Final})
 		return turn, nil
@@ -1268,8 +1257,11 @@ func (r *Runner) runFinalizeVerify(ctx context.Context) (VerifyStatus, string) {
 // blocks project edits; this tells the model what to produce instead.
 const planningPrompt = "[plan mode] You are in PLAN MODE. You can read, search, and write plan " +
 	"files to .codeagent/plans/, but you CANNOT edit project files or run commands. " +
-	"Treat this as a discovery and graph-compilation phase: delay convergence until the evidence supports the design. " +
-	"Research the task thoroughly, then produce a concrete implementation plan. " +
+	"Treat this as a discovery and design phase: research thoroughly, then produce a concrete implementation plan. " +
+	"Your plan should describe WHAT to do and WHY — do NOT write pseudo-code, function signatures, " +
+	"switch/case blocks, or method call chains. Those are implementation details; the compiler and " +
+	"tests verify them. If you find yourself writing 5+ lines of code-like content, stop: that " +
+	"belongs in the implementation phase, not the plan.\n" +
 	"Your plan should include:\n" +
 	"1. Problem summary — what needs to be done\n" +
 	"2. Files to change — list each file and what changes\n" +
@@ -1279,23 +1271,15 @@ const planningPrompt = "[plan mode] You are in PLAN MODE. You can read, search, 
 	"6. Constraints and unknowns — resolve blocking unknowns with ask_user; do not propose while any remain\n" +
 	"7. Risks and edge cases — what could go wrong and how to handle it\n" +
 	"8. Verification — exact tests/checks that will prove the implementation\n" +
-	"Before proposing, delegate an independent critique with task kind plan_critic and subject_path set to " +
-	"the authoritative plan file. Give it the plan path, " +
-	"require it to inspect the relevant code independently, and require a first-line VERDICT: PASS or " +
-	"VERDICT: REQUEST_CHANGES. Revise and re-run the critic until it passes. " +
 	"When your plan is complete, write it to a markdown file under .codeagent/plans/, " +
-	"then call propose_plan with plan_path, evidence_paths, verification, blocking_unknowns, and critic_summary. " +
+	"then call propose_plan with plan_path, evidence_paths, verification, and blocking_unknowns. " +
 	"Keep the accompanying text brief; the plan file is the authoritative content " +
 	"submitted for approval. Do NOT make any project changes. " +
 	"You may track your plan's steps with todo_write."
 
 const planningContinuationPrompt = "[plan mode] Plain assistant text cannot finish PLAN MODE. " +
-	"Continue discovery. Write the authoritative plan under .codeagent/plans/, obtain a passing independent " +
-	"task with kind plan_critic, then call propose_plan with the readiness evidence."
-
-const criticUnavailablePrompt = "[plan mode capability override] The task tool is disabled in this configuration, " +
-	"so the independent plan_critic requirement is waived. Complete the other readiness fields and set " +
-	"critic_summary to explain that the isolated critic capability was unavailable."
+	"Continue discovery. Write the authoritative plan under .codeagent/plans/, " +
+	"then call propose_plan with the readiness evidence."
 
 const changeReviewPrompt = "[review] Plan execution changed the workspace. Delegate task with kind " +
 	"change_review containing the original requirement, changed files, and verification results. " +

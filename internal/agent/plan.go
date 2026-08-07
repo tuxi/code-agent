@@ -16,9 +16,6 @@ func (r *Runner) BeginPlanning(title string) {
 	r.planTitle = title
 	r.activePlan = nil
 	r.lastAssistantText = ""
-	r.planCriticPassed = false
-	r.planCriticPath = ""
-	r.planCriticDigest = ""
 	r.plannedMutation = false
 	r.independentReviewPassed = false
 }
@@ -104,7 +101,6 @@ type PlanReadiness struct {
 	EvidencePaths    []string `json:"evidence_paths"`
 	Verification     []string `json:"verification"`
 	BlockingUnknowns []string `json:"blocking_unknowns"`
-	CriticSummary    string   `json:"critic_summary"`
 }
 
 // PlanStep is a single actionable step within a plan. Steps are populated from the

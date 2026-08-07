@@ -2,11 +2,9 @@ package agent
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -436,12 +434,6 @@ func (r *Runner) commitToolResult(ctx context.Context, sess *session.Session, tu
 
 func (r *Runner) updateHarnessGates(toolName string, input json.RawMessage, observation string, sideEffecting bool) {
 	if sideEffecting {
-		if r.PlanState == PlanStatusPlanning {
-			// A critic only approves the plan version it saw.
-			r.planCriticPassed = false
-			r.planCriticPath = ""
-			r.planCriticDigest = ""
-		}
 		// Any side-effecting call is a mutation that must be reviewed before
 		// the turn is final — plan mode or not.
 		r.plannedMutation = true
@@ -471,20 +463,6 @@ func (r *Runner) updateHarnessGates(toolName string, input json.RawMessage, obse
 		return
 	}
 	switch in.Kind {
-	case "plan_critic":
-		if r.PlanState == PlanStatusPlanning {
-			content, _, relativePath, err := loadPlanFile(
-				r.WorkspaceRoot,
-				filepath.Join(r.WorkspaceRoot, ".codeagent", "plans"),
-				in.SubjectPath,
-			)
-			if err != nil {
-				return
-			}
-			r.planCriticPassed = true
-			r.planCriticPath = relativePath
-			r.planCriticDigest = planContentDigest(content)
-		}
 	case "change_review":
 		r.independentReviewPassed = true
 		// Count only a PASSING review (this switch is unreachable for other
@@ -493,11 +471,6 @@ func (r *Runner) updateHarnessGates(toolName string, input json.RawMessage, obse
 		// fires again and the fix gets re-reviewed.
 		r.changeReviewCount++
 	}
-}
-
-func planContentDigest(content string) string {
-	sum := sha256.Sum256([]byte(content))
-	return fmt.Sprintf("%x", sum[:])
 }
 
 func hasPassingReviewVerdict(observation string) bool {

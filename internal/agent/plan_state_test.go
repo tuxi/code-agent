@@ -101,11 +101,10 @@ func TestProposePlanEmitsStateTransitions(t *testing.T) {
 		t.Fatal(err)
 	}
 	in, err := json.Marshal(map[string]any{
-		"plan_path":        ".codeagent/plans/p.md",
-		"evidence_paths":   []string{"a.go"},
-		"verification":     []string{"go test ./..."},
+		"plan_path":         ".codeagent/plans/p.md",
+		"evidence_paths":    []string{"a.go"},
+		"verification":      []string{"go test ./..."},
 		"blocking_unknowns": []string{},
-		"critic_summary":   "ok",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -155,11 +154,10 @@ func TestProposePlanRejectedReEntersPlanning(t *testing.T) {
 		t.Fatal(err)
 	}
 	in, err := json.Marshal(map[string]any{
-		"plan_path":        ".codeagent/plans/p.md",
-		"evidence_paths":   []string{"a.go"},
-		"verification":     []string{"go test ./..."},
+		"plan_path":         ".codeagent/plans/p.md",
+		"evidence_paths":    []string{"a.go"},
+		"verification":      []string{"go test ./..."},
 		"blocking_unknowns": []string{},
-		"critic_summary":   "ok",
 	})
 	if err != nil {
 		t.Fatal(err)
