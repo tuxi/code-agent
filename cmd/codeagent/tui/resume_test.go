@@ -24,20 +24,23 @@ func TestResumeOpensPickerNavigatesAndSwaps(t *testing.T) {
 	// /resume opens the picker.
 	m.composer.SetValue("/resume")
 	m = asModel(t, must(m.Update(tea.KeyMsg{Type: tea.KeyEnter})))
-	if m.picker == nil || len(m.picker.metas) != 2 {
-		t.Fatalf("/resume should open a picker listing 2 sessions, got %+v", m.picker)
+	p, ok := m.overlay.(*sessionPickerOverlay)
+	if !ok || len(p.metas) != 2 {
+		t.Fatalf("/resume should open a picker listing 2 sessions, got %T %+v", m.overlay, m.overlay)
 	}
 
-	// ↓ moves the selection.
-	m = asModel(t, must(m.handlePickerKey(tea.KeyMsg{Type: tea.KeyDown})))
-	if m.picker.idx != 1 {
-		t.Fatalf("down should select index 1, got %d", m.picker.idx)
+	// ↓ moves the selection (Key mutates the picker in place and returns it).
+	next, _, _ := p.Key(tea.KeyMsg{Type: tea.KeyDown}, &m)
+	if n := next.(*sessionPickerOverlay); n.idx != 1 {
+		t.Fatalf("down should select index 1, got %d", n.idx)
 	}
 
 	// Enter resumes the selected session: picker closes, header updates, and the
-	// session is handed to the run loop.
-	m = asModel(t, must(m.handlePickerKey(tea.KeyMsg{Type: tea.KeyEnter})))
-	if m.picker != nil {
+	// session is handed to the run loop. Route through Update — the real key
+	// dispatch — so the model's overlay field is rewired too.
+	m.overlay = next
+	m = asModel(t, must(m.Update(tea.KeyMsg{Type: tea.KeyEnter})))
+	if m.overlay != nil {
 		t.Fatal("resume should close the picker")
 	}
 	if m.header.Session != "s2" {
@@ -56,9 +59,9 @@ func TestResumeOpensPickerNavigatesAndSwaps(t *testing.T) {
 func TestResumeEscCancels(t *testing.T) {
 	m := readyModel(t)
 	m.src.list = twoSessions
-	m.picker = &sessionPicker{metas: twoSessions()}
-	m = asModel(t, must(m.handlePickerKey(tea.KeyMsg{Type: tea.KeyEsc})))
-	if m.picker != nil {
+	m.overlay = &sessionPickerOverlay{metas: twoSessions()}
+	m = asModel(t, must(m.Update(tea.KeyMsg{Type: tea.KeyEsc})))
+	if m.overlay != nil {
 		t.Fatal("esc should cancel the picker")
 	}
 }
@@ -68,7 +71,7 @@ func TestResumeRefusedMidTurn(t *testing.T) {
 	m.src.list = twoSessions
 	m.busy = true
 	cmd := m.openResume("")
-	if m.picker != nil {
+	if m.overlay != nil {
 		t.Fatal("a turn is running — the picker should not open")
 	}
 	if cmd == nil {
@@ -77,7 +80,7 @@ func TestResumeRefusedMidTurn(t *testing.T) {
 }
 
 func TestPickerRendersTitleAndCursor(t *testing.T) {
-	out := strings.Join(renderPicker(sessionPicker{metas: twoSessions(), idx: 0}, 80), "\n")
+	out := strings.Join(renderPicker(&sessionPickerOverlay{metas: twoSessions(), idx: 0}, 80), "\n")
 	if !strings.Contains(out, "查看 agent/loop 实现") {
 		t.Fatalf("picker should show the session title:\n%s", out)
 	}

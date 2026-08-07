@@ -1,65 +1,12 @@
 package tui
 
 import (
-	"code-agent/cmd/codeagent/tui/theme"
 	"fmt"
 	"strings"
 	"time"
 
 	"code-agent/internal/session"
-
-	"github.com/mattn/go-runewidth"
 )
-
-// sessionPicker is the /resume overlay: a navigable list of saved sessions. It
-// lives in the live region (re-rendered), so ↑/↓ selection works without
-// touching scrollback.
-type sessionPicker struct {
-	metas []session.Meta
-	idx   int
-}
-
-const maxPickerItems = 8 // window the list so it never overflows the live region
-
-// renderPicker renders the session list for the live region: each session is a
-// title line (the first user message) plus a dim metadata line, the selected one
-// marked with ❯.
-func renderPicker(p sessionPicker, width int) []string {
-	lines := []string{theme.Default.Meta.Render("resume a session  (↑/↓ select · enter resume · esc cancel)")}
-	if len(p.metas) == 0 {
-		return append(lines, theme.Default.Meta.Render("  no saved sessions"))
-	}
-
-	start := 0
-	if len(p.metas) > maxPickerItems {
-		start = clampInt(p.idx-maxPickerItems/2, 0, len(p.metas)-maxPickerItems)
-	}
-	end := start + maxPickerItems
-	if end > len(p.metas) {
-		end = len(p.metas)
-	}
-	if start > 0 {
-		lines = append(lines, theme.Default.Meta.Render(fmt.Sprintf("  … %d earlier", start)))
-	}
-	for i := start; i < end; i++ {
-		meta := p.metas[i]
-		title := effectiveTitle(meta)
-		if title == "" {
-			title = meta.ID
-		}
-		cursor, ts := "  ", theme.Default.Assistant
-		if i == p.idx {
-			cursor, ts = theme.Default.PaletteSel.Render("❯ "), theme.Default.PaletteSel
-		}
-		lines = append(lines, cursor+ts.Render(runewidth.Truncate(title, width-2, "…")))
-		meta2 := fmt.Sprintf("    %s · %s · %d msgs", humanAgo(meta.UpdatedAt), meta.Model, meta.MessageCount)
-		lines = append(lines, theme.Default.Meta.Render(runewidth.Truncate(meta2, width, "…")))
-	}
-	if end < len(p.metas) {
-		lines = append(lines, theme.Default.Meta.Render(fmt.Sprintf("  … %d more", len(p.metas)-end)))
-	}
-	return lines
-}
 
 // formatSessionList is the text output for the /sessions command (printed to
 // scrollback), built from the same metas the picker uses.
@@ -115,27 +62,4 @@ func ago(n int, unit string) string {
 		return "1 " + unit + " ago"
 	}
 	return fmt.Sprintf("%d %ss ago", n, unit)
-}
-
-// --- /use model picker --------------------------------------------------
-
-type modelPicker struct {
-	models []modelInfo
-	idx    int
-}
-
-func renderModelPicker(p modelPicker, width int) []string {
-	lines := []string{theme.Default.Meta.Render("switch model  (↑/↓ select · enter confirm · esc cancel)")}
-	for i, m := range p.models {
-		cursor, ts := "  ", theme.Default.Meta
-		if i == p.idx {
-			cursor, ts = theme.Default.PaletteSel.Render("❯ "), theme.Default.PaletteSel
-		}
-		label := m.display
-		if label == "" {
-			label = m.name
-		}
-		lines = append(lines, cursor+ts.Render(runewidth.Truncate(label, width-2, "…")))
-	}
-	return lines
 }

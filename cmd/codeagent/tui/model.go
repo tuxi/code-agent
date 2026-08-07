@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"code-agent/internal/agent"
-	"code-agent/internal/session"
 	"code-agent/internal/tools"
 
 	"github.com/charmbracelet/bubbles/key"
@@ -37,11 +36,12 @@ const (
 	composerRightPadding = 1
 )
 
-// model is the inline BubbleTea program (no alt-screen): an "enhanced terminal",
-// not a full-screen TUI. Finalized events are printed to the terminal's own
-// scrollback (native copy / scroll / search); the live region it redraws is just
-// a status line, an optional command palette, and the composer at the very
-// bottom. It renders the event stream and owns no control flow — the agent does.
+// model is the BubbleTea program (alt-screen): a full-screen workspace renderer.
+// Finalized events are appended to the internal scrollback buffer (m.buf) and
+// shown through a viewport, since alt-screen owns the whole terminal; the live
+// region it redraws each frame is the status line, any open overlay, and the
+// composer at the very bottom. It renders the event stream and owns no control
+// flow — the agent does.
 type model struct {
 	b      *Backend
 	header HeaderInfo
@@ -64,18 +64,10 @@ type model struct {
 	planState    agent.PlanStatus // current plan state (synced from events + ctrl+p toggle)
 	lastEsc      time.Time        // double-Esc clears the composer (like Claude Code)
 
-	cmdIdx    int            // selected slash-command in the palette
-	src       sessionSource  // saved-session / model access for slash commands
-	picker    *sessionPicker // /resume overlay; nil when closed
-	modelPick *modelPicker   // /use overlay; nil when closed
+	src     sessionSource  // saved-session / model access for slash commands
+	overlay Overlay        // the open modal in the live region (approval card, picker…); nil = none
+	palette paletteOverlay // the slash-command menu: always alive, shown when paletteActive()
 
-	pending         *approvalReq     // set while a side-effecting tool awaits y/n
-	planPending     *planApprovalReq // set while a plan awaits approval (a/r)
-	askUserPending  *askUserReq      // set while ask_user awaits the user's answer
-	askUserSelected int              // highlighted option index (↑/↓)
-	askUserMulti    map[int]bool     // selected indices when multiSelect is on
-	approveIdx      int              // 0 = allow once, 1 = always allow, 2 = deny — ↑/↓ switches
-	showPreview     bool             // 'v' toggles the diff preview below the approval card
 	busy            bool             // a turn is running; submit is locked
 	thinking        bool             // a model call is in flight; show the spinner
 	lastErr         error
@@ -135,6 +127,7 @@ func newModel(b *Backend, header HeaderInfo, src sessionSource) model {
 		src:            src,
 		showThinking:   true, // on by default — thinking is the signal, ctrl+o hides it
 		composerHeight: minComposerLines,
+		palette:        paletteOverlay{},
 		vp:             viewport.New(0, 0),
 	}
 }
@@ -191,14 +184,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
-		if m.askUserPending != nil {
-			return m.handleAskUserKey(msg)
-		}
-		if m.planPending != nil {
-			return m.handlePlanApprovalKey(msg)
-		}
-		if m.pending != nil {
-			return m.handleApprovalKey(msg)
+		// An open overlay gets first crack at every key. The modal cards
+		// (approval, plan, ask_user) consume everything — a tool or decision is
+		// waiting. The pickers yield the global keys (ctrl+c/z/o/p) and consume
+		// the rest, matching the old routing where the global switch ran before
+		// the picker handlers.
+		if m.overlay != nil {
+			if next, handled, cmd := m.overlay.Key(msg, &m); handled {
+				m.overlay = next
+				return m, cmd
+			}
 		}
 		switch msg.String() {
 		case "ctrl+c":
@@ -222,15 +217,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			desired := m.planState != agent.PlanStatusNone
 			return m, func() tea.Msg { m.b.planToggle <- desired; return nil }
 		}
-		if m.picker != nil {
-			return m.handlePickerKey(msg)
-		}
-		if m.modelPick != nil {
-			return m.handleModelPickerKey(msg)
-		}
 		if m.paletteActive() {
-			if handled, mm, cmd := m.handlePaletteKey(msg); handled {
-				return mm, cmd
+			if _, handled, cmd := m.palette.Key(msg, &m); handled {
+				return m, cmd
 			}
 		}
 		if msg.String() == "esc" && m.composer.Value() != "" {
@@ -261,16 +250,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case askUserMsg:
 		req := askUserReq(msg)
-		m.askUserPending = &req
-		m.askUserSelected = 0
-		if req.q.MultiSelect {
-			m.askUserMulti = make(map[int]bool)
-		}
+		m.overlay = &askUserOverlay{q: req.q, reply: req.reply}
 		return m, waitForAskUser(m.b.askUsers)
 
 	case planApprovalMsg:
 		req := planApprovalReq(msg)
-		m.planPending = &req
+		m.overlay = &planOverlay{plan: req.plan, reply: req.reply}
 		return m, waitForPlanApproval(m.b.planApprovals)
 
 	case eventMsg:
@@ -278,7 +263,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case approvalMsg:
 		req := approvalReq(msg)
-		m.pending, m.approveIdx, m.showPreview = &req, 0, false
+		m.overlay = &approvalOverlay{req: req, granter: m.src.granter}
 		return m, waitForApproval(m.b.approvals)
 
 	case modelSwappedMsg:
@@ -478,361 +463,12 @@ func (m model) submit() (tea.Model, tea.Cmd) {
 	return m, func() tea.Msg { b.inputs <- input; return nil }
 }
 
-// handleAskUserKey drives the ask_user card. Index 0 is always the custom-text
-// input; indices 1..N map to q.Options[0..N-1]. ↑/↓ navigates, Space toggles
-// multi-select, Enter confirms, Esc cancels.
-func (m model) handleAskUserKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	q := m.askUserPending.q
-	optCount := len(q.Options) + 1 // +1 for the always-present custom input
-
-	switch msg.String() {
-	case "up", "k", "ctrl+p":
-		if m.askUserSelected > 0 {
-			m.askUserSelected--
-		}
-	case "down", "j", "ctrl+n":
-		if m.askUserSelected < optCount-1 {
-			m.askUserSelected++
-		}
-	case " ":
-		if q.MultiSelect {
-			if m.askUserMulti == nil {
-				m.askUserMulti = make(map[int]bool)
-			}
-			m.askUserMulti[m.askUserSelected] = !m.askUserMulti[m.askUserSelected]
-		}
-	case "enter":
-		return m.confirmAskUser()
-	case "esc", "escape", "ctrl+c":
-		// Cancel: send empty answer (model gets "user skipped").
-		m.askUserPending.reply <- agent.AskUserAnswer{}
-		m.askUserPending = nil
-		m.askUserMulti = nil
-		return m, nil
-	}
-	return m, nil
-}
-
-// confirmAskUser builds the answer from the user's selection and hands it back.
-// Index 0 = custom text input, 1..N = q.Options[0..N-1].
-func (m model) confirmAskUser() (tea.Model, tea.Cmd) {
-	q := m.askUserPending.q
-	answer := agent.AskUserAnswer{}
-
-	if q.MultiSelect && m.askUserMulti != nil {
-		for idx, sel := range m.askUserMulti {
-			if sel {
-				if idx == 0 {
-					answer.Selected = append(answer.Selected, "Other")
-				} else if optIdx := idx - 1; optIdx < len(q.Options) {
-					answer.Selected = append(answer.Selected, q.Options[optIdx].Label)
-				}
-			}
-		}
-	} else if m.askUserSelected == 0 {
-		// Custom input selected: mark "Other" so the model knows the user had
-		// their own answer (free-text notes come from the composer).
-		answer.Selected = []string{"Other"}
-	} else if optIdx := m.askUserSelected - 1; optIdx < len(q.Options) {
-		answer.Selected = []string{q.Options[optIdx].Label}
-	}
-
-	m.askUserPending.reply <- answer
-	m.askUserPending = nil
-	m.askUserMulti = nil
-	return m, nil
-}
-
-// handlePlanApprovalKey drives the plan approval card: a approves, r rejects.
-func (m model) handlePlanApprovalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
-	case "a", "A", "enter":
-		m.planPending.reply <- agent.PlanApproved
-		m.planPending = nil
-		return m, nil
-	case "r", "R", "esc", "ctrl+c":
-		m.planPending.reply <- agent.PlanRejected
-		m.planPending = nil
-		return m, nil
-	}
-	return m, nil
-}
-
-// handleApprovalKey drives the approval card: ↑/↓ moves between allow-once,
-// always-allow, and deny; Enter confirms the selection; Esc denies. Direct keys
-// still work: y/o = allow once, a = always allow, n = deny. "Always allow"
-// persists a rule (for an MCP tool, the whole server) via the granter so future
-// matching calls skip the prompt; with no granter wired it falls back to once.
-func (m model) handleApprovalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	answer := func(approved, always bool) (tea.Model, tea.Cmd) {
-		if approved && always && m.src.granter != nil {
-			// Best-effort: a failed persist still allows this call.
-			_, _ = m.src.granter.AllowAlways(m.pending.tool)
-		}
-		if approved {
-			m.pending.reply <- agent.VerdictAllow
-		} else {
-			m.pending.reply <- agent.VerdictDeny
-		}
-		m.pending, m.approveIdx, m.showPreview = nil, 0, false
-		return m, nil // listeners stay alive (approvalMsg already re-issued waitForApproval)
-	}
-	switch msg.String() {
-	case "up", "k", "ctrl+p":
-		if m.approveIdx > 0 {
-			m.approveIdx--
-		}
-	case "down", "j", "ctrl+n":
-		if m.approveIdx < 2 {
-			m.approveIdx++
-		}
-	case "v", "V":
-		m.showPreview = !m.showPreview
-	case "enter":
-		return answer(m.approveIdx != 2, m.approveIdx == 1)
-	case "y", "Y", "o", "O":
-		return answer(true, false)
-	case "a", "A":
-		return answer(true, true)
-	case "n", "N", "esc":
-		return answer(false, false)
-	case "ctrl+c":
-		m.pending.reply <- agent.VerdictDeny
-		m.pending, m.approveIdx, m.showPreview = nil, 0, false
-		return m, tea.Quit
-	}
-	return m, nil
-}
-
 // --- command palette ----------------------------------------------------
 
-// paletteActive reports whether the slash-command menu should show: no approval
-// pending, and the line so far matches at least one command.
+// paletteActive reports whether the slash-command menu should show: no overlay
+// open, and the line so far matches at least one command.
 func (m model) paletteActive() bool {
-	return m.pending == nil && len(filterCommands(m.composer.Value())) > 0
-}
-
-// handlePaletteKey drives the command menu. Returns handled=false for keys it
-// doesn't own (e.g. typing), so they fall through to the composer.
-func (m model) handlePaletteKey(msg tea.KeyMsg) (bool, tea.Model, tea.Cmd) {
-	cmds := filterCommands(m.composer.Value())
-	m.cmdIdx = clampInt(m.cmdIdx, 0, len(cmds)-1)
-	switch msg.String() {
-	case "up", "ctrl+p":
-		if m.cmdIdx > 0 {
-			m.cmdIdx--
-		}
-		return true, m, nil
-	case "down", "ctrl+n":
-		if m.cmdIdx < len(cmds)-1 {
-			m.cmdIdx++
-		}
-		return true, m, nil
-	case "tab":
-		m.composer.SetValue(cmds[m.cmdIdx].name + " ")
-		m.cmdIdx = 0
-		return true, m, nil
-	case "esc":
-		m.composer.Reset()
-		m.syncComposer()
-		m.cmdIdx = 0
-		return true, m, nil
-	case "enter":
-		mm, cmd := m.runCommand(cmds[m.cmdIdx].name, commandArgs(m.composer.Value()))
-		return true, mm, cmd
-	}
-	return false, m, nil
-}
-
-// runCommand looks the command up in the registry and runs it — no dispatch
-// switch, so new commands are added in commands.go alone.
-func (m model) runCommand(name, args string) (tea.Model, tea.Cmd) {
-	m.composer.Reset()
-	m.syncComposer()
-	m.cmdIdx = 0
-	m.lastEsc = time.Time{}
-	cmd, ok := lookupCommand(name)
-	if !ok {
-		return m, appendLines("unknown command: " + name)
-
-	}
-	return m, cmd.run(&m, args)
-}
-
-func (m model) sessions() string {
-	if m.src.list == nil {
-		return "no saved sessions"
-	}
-	return formatSessionList(m.src.list())
-}
-
-// promptHelp lists the available MCP prompts for the /prompts command.
-func (m model) promptHelp() string {
-	if m.src.promptOps == nil {
-		return "(no MCP prompts available)"
-	}
-	return m.src.promptOps.Help()
-}
-
-// toggleAuto flips auto-approval (the shared AutoApprover). SetEnabled is an
-// atomic on shared state, so it is safe to call from the render goroutine without
-// going through the run loop.
-func (m model) toggleAuto(args string) tea.Cmd {
-	if m.src.auto == nil {
-		return appendLines("auto mode is not available in this session")
-	}
-	switch strings.TrimSpace(args) {
-	case "on":
-		m.src.auto.SetEnabled(true)
-	case "off":
-		m.src.auto.SetEnabled(false)
-	case "":
-		return appendLines("auto mode is " + onOff(m.src.auto.Enabled()) + " (usage: /auto on|off)")
-	default:
-		return appendLines("usage: /auto [on|off]")
-	}
-	if m.src.auto.Enabled() {
-		return appendLines("auto mode ON — in-workspace edits (edit_file/create_file) auto-approved; commands, patches, and commits still confirmed.")
-	}
-	return appendLines("auto mode OFF — every side-effecting tool is confirmed again.")
-}
-
-func onOff(b bool) string {
-	if b {
-		return "ON"
-	}
-	return "OFF"
-}
-
-// goalDispatch routes a /goal command: no-arg/status → status, clear → clear,
-// resume → resume the existing goal, anything else → start a pursuit with that
-// objective. All forms refuse while busy (Ctrl-C pauses a running pursuit first).
-func (m *model) goalDispatch(args string) tea.Cmd {
-	if m.busy {
-		return appendLines("a pursuit is running — Ctrl-C to pause it first")
-	}
-	switch a := strings.TrimSpace(args); a {
-	case "", "status":
-		return m.goalCtl(ctlStatus)
-	case "clear":
-		return m.goalCtl(ctlClear)
-	case "resume":
-		return m.startPursuit("") // "" resumes the session's existing goal
-	default:
-		return m.startPursuit(a)
-	}
-}
-
-// startPursuit kicks off a pursuit (or resume, when obj == "") on the run-loop
-// goroutine and locks the composer until it finishes (goalDoneMsg). The pursuit's
-// turns render live through the event stream; ctrl+c pauses it (CancelTurn).
-func (m *model) startPursuit(obj string) tea.Cmd {
-	m.busy = true
-	m.lastErr = nil
-	b := m.b
-	return func() tea.Msg { b.goalStart <- obj; return nil }
-}
-
-// goalCtl runs a quick status/clear op on the run loop and prints the reply. The
-// blocking receive is fine: it runs in a tea.Cmd goroutine, and these are only
-// issued when idle (the run loop's select handles them at once).
-func (m model) goalCtl(kind int) tea.Cmd {
-	b := m.b
-	return func() tea.Msg {
-		reply := make(chan string, 1)
-		b.goalCtl <- goalCtlReq{kind: kind, reply: reply}
-		return goalCtlResultMsg(<-reply)
-	}
-}
-
-// --- /resume picker -----------------------------------------------------
-
-// openResume opens the session picker (no arg) or resumes a session directly
-// (with an id). Refuses mid-turn — the swap lands at a turn boundary anyway.
-func (m *model) openResume(args string) tea.Cmd {
-	if m.busy {
-		return appendLines("finish the current turn before resuming")
-	}
-	if args != "" {
-		return m.resume(session.Meta{ID: args})
-	}
-	if m.src.list == nil {
-		return appendLines("no saved sessions")
-	}
-	metas := m.src.list()
-	if len(metas) == 0 {
-		return appendLines("no saved sessions")
-	}
-	m.picker = &sessionPicker{metas: metas}
-	return nil
-}
-
-func (m model) handlePickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	p := m.picker
-	switch msg.String() {
-	case "up", "k", "ctrl+p":
-		if p.idx > 0 {
-			p.idx--
-		}
-	case "down", "j", "ctrl+n":
-		if p.idx < len(p.metas)-1 {
-			p.idx++
-		}
-	case "enter":
-		if len(p.metas) == 0 {
-			m.picker = nil
-			return m, nil
-		}
-		return m, m.resume(p.metas[p.idx])
-	case "esc":
-		m.picker = nil
-	}
-	return m, nil
-}
-
-// maxReplayLines bounds the resumed-history dump so a huge session doesn't flood
-// the terminal; the tail (most recent) is kept and the full conversation is still
-// loaded into context.
-const maxReplayLines = 300
-
-// resume loads the chosen session, hands it to the run loop (swapped in at the
-// next turn boundary), replays its history to scrollback, and updates the
-// header/gauge.
-func (m *model) resume(meta session.Meta) tea.Cmd {
-	m.picker = nil
-	if m.src.resume == nil {
-		return appendLines("resume not available")
-	}
-	sess, err := m.src.resume(meta.ID)
-	if err != nil {
-		return appendLines("resume failed: " + err.Error())
-	}
-	m.b.sessSwap <- sess // buffered (cap 1); the run loop applies it between turns
-	m.header.Session = sess.ID
-	m.promptTokens = sess.PromptTokens
-	m.skills = map[string]bool{}
-	m.tr = transcript{} // fresh transcript for the resumed session's new turns
-
-	title := sessionTitle(meta.Title)
-	if title == "" {
-		title = sess.ID
-	}
-	lines := []string{theme.Default.Meta.Render(fmt.Sprintf("──── resumed: %s · %d messages ────", title, len(sess.Messages)))}
-
-	// Replay the persisted event history through the same transcript renderer, so
-	// it reads exactly as it did live. Sessions older than the EventStore have no
-	// events — they resume with context intact but no visible back-scroll.
-	if m.src.events != nil {
-		if hist := renderTranscript(m.src.events(meta.ID), m.width); len(hist) > 0 {
-			if len(hist) > maxReplayLines {
-				omitted := len(hist) - maxReplayLines
-				hist = append([]string{theme.Default.Meta.Render(fmt.Sprintf("… %d earlier lines omitted (full conversation is loaded)", omitted))}, hist[len(hist)-maxReplayLines:]...)
-			}
-			lines = append(lines, hist...)
-			m.tr.started = true // separate the next live turn from the replayed history
-		}
-	}
-	return appendLines(strings.Join(lines, "\n"))
+	return m.overlay == nil && len(filterCommands(m.composer.Value())) > 0
 }
 
 // syncComposer grows/shrinks the composer to fit its content (1..max rows). A
@@ -905,58 +541,6 @@ func clampInt(n, lo, hi int) int {
 // picker actions just print — they don't touch the listeners, which stay alive
 // independently.
 
-// --- /use model picker ---------------------------------------------------
-
-// openUse opens the model picker (no arg) or switches model directly (with a
-// name). Refuses mid-turn — the swap lands at a turn boundary via modelSwap.
-func (m *model) openUse(args string) tea.Cmd {
-	if m.busy {
-		return appendLines("finish the current turn before switching models")
-	}
-	if args != "" {
-		return m.useModel(args)
-	}
-	if len(m.src.modelNames) == 0 {
-		return appendLines("no other configured models")
-	}
-	m.modelPick = &modelPicker{models: m.src.modelNames}
-	return nil
-}
-
-func (m model) handleModelPickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	p := m.modelPick
-	switch msg.String() {
-	case "up", "k", "ctrl+p":
-		if p.idx > 0 {
-			p.idx--
-		}
-	case "down", "j", "ctrl+n":
-		if p.idx < len(p.models)-1 {
-			p.idx++
-		}
-	case "enter":
-		if len(p.models) == 0 {
-			m.modelPick = nil
-			return m, nil
-		}
-		return m, m.useModel(p.models[p.idx].name)
-	case "esc":
-		m.modelPick = nil
-	}
-	return m, nil
-}
-
-// useModel sends the model name to the run-loop goroutine (swapped between
-// turns), then awaits the result — the same async-safety pattern as /resume.
-func (m *model) useModel(name string) tea.Cmd {
-	m.modelPick = nil
-	if m.src.modelSwap == nil {
-		return appendLines("model switch not available")
-	}
-	m.b.modelSwap <- name // buffered; the run loop applies it between turns
-	return waitForModelSwapResult(m.b.modelSwapResult)
-}
-
 // reservedHeight is the terminal rows reserved for the header and bottom
 // region (status + overlays + composer). The viewport fills the rest. This is
 // a conservative lower bound; the bottom region can be taller when overlays
@@ -1019,24 +603,10 @@ func (m model) renderBottom() string {
 	lines = append(lines, m.todoPanel()...)
 	lines = append(lines, m.statusLine())
 	switch {
-	case m.askUserPending != nil:
-		q := m.askUserPending.q
-		card := renderAskUserCard(q, m.askUserSelected, m.askUserMulti, m.width)
-		lines = append(lines, card...)
-	case m.planPending != nil:
-		lines = append(lines, renderPlanApprovalCard(m.planPending.plan, m.width)...)
-	case m.pending != nil:
-		lines = append(lines, renderApprovalCard(*m.pending, m.approveIdx, m.width)...)
-		if m.showPreview {
-			lines = append(lines, renderApprovalPreview(*m.pending, m.width)...)
-		}
-	case m.picker != nil:
-		lines = append(lines, renderPicker(*m.picker, m.width)...)
-	case m.modelPick != nil:
-		lines = append(lines, renderModelPicker(*m.modelPick, m.width)...)
+	case m.overlay != nil:
+		lines = append(lines, m.overlay.View(m.width, &m)...)
 	case m.paletteActive():
-		cmds := filterCommands(m.composer.Value())
-		lines = append(lines, renderPalette(cmds, clampInt(m.cmdIdx, 0, len(cmds)-1), m.width)...)
+		lines = append(lines, m.palette.View(m.width, &m)...)
 	default:
 		lines = append(lines, theme.Default.Meta.Render(m.hint()))
 	}

@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"code-agent/internal/agent"
+	"code-agent/internal/session"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/mattn/go-runewidth"
 )
@@ -63,12 +64,16 @@ func TestApprovalApprove(t *testing.T) {
 	req := approvalReq{tool: "create_file", input: json.RawMessage(`{"path":"x"}`), reply: reply}
 
 	m = asModel(t, must(m.Update(approvalMsg(req))))
-	if m.pending == nil {
-		t.Fatal("approvalMsg should set a pending request")
+	o, ok := m.overlay.(*approvalOverlay)
+	if !ok {
+		t.Fatalf("approvalMsg should open an approvalOverlay, got %T", m.overlay)
 	}
-	m = asModel(t, must(m.handleApprovalKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})))
-	if m.pending != nil {
-		t.Fatal("answering should clear pending")
+	next, handled, _ := o.Key(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}}, &m)
+	if !handled {
+		t.Fatal("'y' should be handled by the approval card")
+	}
+	if next != nil {
+		t.Fatal("answering should close the overlay")
 	}
 	if <-reply != agent.VerdictAllow {
 		t.Fatal("'y' should approve the tool")
@@ -78,10 +83,11 @@ func TestApprovalApprove(t *testing.T) {
 func TestApprovalDeny(t *testing.T) {
 	m := newTestModel()
 	reply := make(chan agent.Verdict, 1)
-	m.pending = &approvalReq{tool: "run_command", reply: reply}
-	m = asModel(t, must(m.handleApprovalKey(tea.KeyMsg{Type: tea.KeyEsc})))
-	if m.pending != nil {
-		t.Fatal("esc should clear pending")
+	m.overlay = &approvalOverlay{req: approvalReq{tool: "run_command", reply: reply}}
+	o := m.overlay.(*approvalOverlay)
+	next, _, _ := o.Key(tea.KeyMsg{Type: tea.KeyEsc}, &m)
+	if next != nil {
+		t.Fatal("esc should close the overlay")
 	}
 	if <-reply == agent.VerdictAllow {
 		t.Fatal("esc should deny the tool")
@@ -149,15 +155,58 @@ func TestApprovalAlwaysGrants(t *testing.T) {
 	g := &fakeGranter{}
 	m.src.granter = g
 	reply := make(chan agent.Verdict, 1)
-	m.pending = &approvalReq{tool: "mcp__github__list_issues", reply: reply}
+	m.overlay = &approvalOverlay{req: approvalReq{tool: "mcp__github__list_issues", reply: reply}, granter: g}
 
 	// 'a' = always allow: approves this call AND persists a rule via the granter.
-	m = asModel(t, must(m.handleApprovalKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})))
+	o := m.overlay.(*approvalOverlay)
+	next, _, _ := o.Key(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}}, &m)
+	if next != nil {
+		t.Fatal("'a' should close the overlay")
+	}
 	if <-reply != agent.VerdictAllow {
 		t.Fatal("'a' should approve the tool")
 	}
 	if g.tool != "mcp__github__list_issues" {
 		t.Fatalf("'a' should persist an always-allow rule, granter saw %q", g.tool)
+	}
+}
+
+// TestApprovalSwallowsCtrlC: the approval card is modal — ctrl+c denies AND
+// quits, never falls through to the global quit handler.
+func TestApprovalSwallowsCtrlC(t *testing.T) {
+	m := newTestModel()
+	reply := make(chan agent.Verdict, 1)
+	m.overlay = &approvalOverlay{req: approvalReq{tool: "run_command", reply: reply}}
+
+	tm, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	m = asModel(t, tm)
+	if _, ok := m.overlay.(*approvalOverlay); ok {
+		t.Fatal("ctrl+c on the approval card should close the overlay")
+	}
+	if cmd == nil {
+		t.Fatal("ctrl+c on the approval card should return the quit command")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Fatalf("ctrl+c on the approval card should quit, got %v", cmd())
+	}
+	if <-reply == agent.VerdictAllow {
+		t.Fatal("ctrl+c on the approval card should deny")
+	}
+}
+
+// TestPickerPassesCtrlC: the /resume picker yields ctrl+c to the global handler
+// (quit when idle), matching the pre-refactor routing.
+func TestPickerPassesCtrlC(t *testing.T) {
+	m := newTestModel()
+	m.overlay = &sessionPickerOverlay{metas: []session.Meta{{ID: "s1"}}}
+
+	tm, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	m = asModel(t, tm)
+	if _, ok := m.overlay.(*sessionPickerOverlay); !ok {
+		t.Fatal("ctrl+c should leave the picker open (yields to the global quit)")
+	}
+	if cmd == nil {
+		t.Fatal("ctrl+c while idle should quit")
 	}
 }
 
