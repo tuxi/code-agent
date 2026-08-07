@@ -30,7 +30,7 @@ func TestPruneOldContext(t *testing.T) {
 
 	// 250-token protection covers the two 100-token recent messages and stops at
 	// the think-block assistant.
-	saved := PruneOldContext(sess, 250)
+	saved, _, _ := PruneOldContext(sess, 250)
 	if saved == 0 {
 		t.Fatal("expected pruning to reclaim characters")
 	}
@@ -70,7 +70,7 @@ func TestPruneOldContextLeavesSmallResults(t *testing.T) {
 			{Role: model.RoleAssistant, Content: strings.Repeat("f", 400)},
 		},
 	}
-	if saved := PruneOldContext(sess, 100); saved != 0 {
+	if saved, _, _ := PruneOldContext(sess, 100); saved != 0 {
 		t.Fatalf("nothing over the limit, but saved %d", saved)
 	}
 	if sess.Messages[2].Content != small {

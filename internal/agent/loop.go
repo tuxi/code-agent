@@ -25,6 +25,13 @@ import (
 	"github.com/google/uuid"
 )
 
+// cooldownSample records the cache performance of one model call for the
+// adaptive compaction cooldown (see effectiveCooldownRatio).
+type cooldownSample struct {
+	promptTokens int // total prompt tokens for the request
+	cachedTokens int // portion served from the provider's prompt cache
+}
+
 type Runner struct {
 	Model       model.Provider
 	ModelName   string
@@ -176,6 +183,16 @@ type Runner struct {
 	// cfg.CompactKeepTokens(mc), the same source as the compactor's budget.
 	CompactKeepTokens int
 
+	// gitCache avoids redundant git(1) invocations on every model request within
+	// a turn. Nil leaves the legacy per-request GitInfo() path intact.
+	GitCache *session.FastGitProvider
+
+	// cooldownSamples is a sliding window of (promptTokens, cachedTokens) pairs
+	// from recent model calls, used by effectiveCooldownRatio to tune the
+	// compaction cooldown threshold against observed cache performance.
+	cooldownSamples    []cooldownSample
+	cooldownWindowSize int // cap on cooldownSamples; default 8
+
 	// Checkpointer, if set, persists the session mid-turn at each consistent loop
 	// boundary (v1.2 §2). Best-effort: a checkpoint error never fails the turn — the
 	// caller's turn-boundary Save is the backstop. Set by the serve/embedded path
@@ -233,6 +250,63 @@ type Runner struct {
 	// emitMu serializes r.emit so concurrent tool workers (P8.8) can't race the
 	// downstream emitter.
 	emitMu sync.Mutex
+}
+
+// effectiveCooldownRatio returns the compaction cooldown threshold adapted to
+// recent cache performance. When the provider's prompt cache is healthy (≥80%
+// hit rate), the ratio rises toward 0.20 to protect the stable prefix. When
+// the cache is cold (≤30% hit rate), the ratio drops toward 0.05 so the agent
+// prioritizes reclaiming context over protecting a cache that isn't helping.
+// Returns the base ratio (0.10) when there are too few samples.
+func (r *Runner) effectiveCooldownRatio() float64 {
+	const (
+		baseRatio  = 0.10
+		minRatio   = 0.05
+		maxRatio   = 0.20
+		highWater  = 0.80
+		lowWater   = 0.30
+		minSamples = 3
+	)
+
+	if len(r.cooldownSamples) < minSamples {
+		return baseRatio
+	}
+
+	var sumHit, sumTotal int
+	for _, s := range r.cooldownSamples {
+		sumHit += s.cachedTokens
+		sumTotal += s.promptTokens
+	}
+	if sumTotal == 0 {
+		return baseRatio
+	}
+
+	hitRatio := float64(sumHit) / float64(sumTotal)
+	switch {
+	case hitRatio >= highWater:
+		return maxRatio
+	case hitRatio <= lowWater:
+		return minRatio
+	default:
+		// Linear interpolation between [lowWater, highWater] → [minRatio, maxRatio].
+		scale := (hitRatio - lowWater) / (highWater - lowWater)
+		return minRatio + scale*(maxRatio-minRatio)
+	}
+}
+
+// recordCacheSample appends a cache-performance sample from a model response
+// to the sliding window. It keeps at most cooldownWindowSize samples (default 8).
+func (r *Runner) recordCacheSample(promptTokens, cachedTokens int) {
+	if r.cooldownWindowSize <= 0 {
+		r.cooldownWindowSize = 8
+	}
+	r.cooldownSamples = append(r.cooldownSamples, cooldownSample{
+		promptTokens: promptTokens,
+		cachedTokens: cachedTokens,
+	})
+	if len(r.cooldownSamples) > r.cooldownWindowSize {
+		r.cooldownSamples = r.cooldownSamples[len(r.cooldownSamples)-r.cooldownWindowSize:]
+	}
 }
 
 // newInvocationID returns a globally-unique invocation identifier so the
@@ -1321,15 +1395,20 @@ func withCurrentDate(msgs []model.Message, now time.Time) []model.Message {
 	return out
 }
 
-// withGitInfo appends a fresh git status snapshot to the system message on every
-// model request. Unlike buildEnvInfo (static workspace/os/shell baked in at
-// session creation), git state is dynamic and is injected here alongside the date
-// so it never goes stale. Runs best-effort with a 5s timeout per git command.
-func withGitInfo(msgs []model.Message, workspaceRoot string) []model.Message {
+// injectGitInfo appends a fresh git status snapshot to the system message on
+// every model request. When a GitCache is configured, repeated calls within the
+// same turn reuse a cached snapshot (TTL + dirty-flag) instead of re-running
+// git(1) on every model call.
+func (r *Runner) injectGitInfo(msgs []model.Message) []model.Message {
 	if len(msgs) == 0 || msgs[0].Role != model.RoleSystem {
 		return msgs
 	}
-	info := session.GitInfo(workspaceRoot)
+	var info string
+	if r.GitCache != nil {
+		info = r.GitCache.GitInfo()
+	} else {
+		info = session.GitInfo(r.WorkspaceRoot)
+	}
 	if info == "" {
 		return msgs
 	}
@@ -1431,6 +1510,19 @@ func (r *Runner) maybeCompact(ctx context.Context, sess *session.Session) error 
 	if r.Compactor == nil || !sess.NeedCompaction() {
 		return nil
 	}
+
+	// Adaptive cooldown (P12.b extended): require ≥N% growth past the
+	// post-compaction size before re-triggering. N adapts to observed
+	// prompt-cache performance — a healthy cache gets a higher bar (don't
+	// break a working prefix), a cold cache gets a lower one (reclaim
+	// context aggressively).
+	if last := sess.LastCompaction(); last != nil && last.Finalized() {
+		growthRequired := int(float64(sess.CompactThreshold) * r.effectiveCooldownRatio())
+		if sess.PromptTokens < last.AfterTokens+growthRequired {
+			return nil
+		}
+	}
+
 	before := sess.PromptTokens
 
 	// Context editing: clear stale tool results before the LLM summarizer
@@ -1447,10 +1539,12 @@ func (r *Runner) maybeCompact(ctx context.Context, sess *session.Session) error 
 	// truth either way, and if it disagrees this path re-runs with nothing left
 	// to prune and falls through to the summarizer.
 	if r.CompactKeepTokens > 0 {
-		if saved := session.PruneOldContext(sess, r.CompactKeepTokens); saved > 0 {
+		saved, truncated, toolMsgs := session.PruneOldContext(sess, r.CompactKeepTokens)
+		if saved > 0 {
 			savedTokens := saved / 4
 			r.emit(Event{Kind: EventContextPruned, BeforeTokens: before, SavedTokens: savedTokens})
-			if before-savedTokens < sess.CompactThreshold {
+			fragmented := toolMsgs > 0 && float64(truncated)/float64(toolMsgs) > 0.3
+			if !fragmented && before-savedTokens < sess.CompactThreshold {
 				return nil
 			}
 		}
@@ -1504,7 +1598,7 @@ func (r *Runner) complete(ctx context.Context, req model.Request, streamedText, 
 	// Every model call goes through here, so this is the one place the current
 	// date and git status are injected — the main loop, the step-limit answer,
 	// and subagents all get them without each call site remembering to.
-	req.Messages = withGitInfo(req.Messages, r.WorkspaceRoot)
+	req.Messages = r.injectGitInfo(req.Messages)
 	req.Messages = withCurrentDate(withReferenceProtocol(req.Messages), time.Now())
 	req.SessionID = r.emitSessionID
 	req.TurnID = r.emitTurnID
@@ -1512,7 +1606,7 @@ func (r *Runner) complete(ctx context.Context, req model.Request, streamedText, 
 	req.ExecutionID = r.emitInvocationID
 	if r.Stream {
 		if sp, ok := r.Model.(model.StreamingProvider); ok {
-			return sp.CompleteStream(ctx, req, func(delta string) {
+			resp, err := sp.CompleteStream(ctx, req, func(delta string) {
 				if streamedText != nil {
 					streamedText.WriteString(delta)
 				}
@@ -1523,9 +1617,17 @@ func (r *Runner) complete(ctx context.Context, req model.Request, streamedText, 
 				}
 				r.emit(Event{Kind: EventReasoningDelta, Text: delta})
 			})
+			if err == nil {
+				r.recordCacheSample(resp.Usage.PromptTokens, resp.Usage.CachedPromptTokens)
+			}
+			return resp, err
 		}
 	}
-	return r.Model.Complete(ctx, req)
+	resp, err := r.Model.Complete(ctx, req)
+	if err == nil {
+		r.recordCacheSample(resp.Usage.PromptTokens, resp.Usage.CachedPromptTokens)
+	}
+	return resp, err
 }
 
 // workflowPlanApproval returns a PlanApproval callback wired to the Runner's

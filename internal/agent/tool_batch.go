@@ -295,6 +295,13 @@ func (r *Runner) runToolCall(ctx context.Context, p toolCallPlan) toolCallResult
 			// Post-tool hook (8.5): react to the change (format/lint). It runs the
 			// configured command but does not alter the result in v1.
 			r.postHook(ctx, p.call.Function.Name, p.wireInput, observation)
+			// Mark git cache dirty so the next model call re-reads workspace
+			// state. Only side-effecting tools (bash, file writes) can change
+			// the repo; read-only tools (read_file, grep, list_files) should
+			// not invalidate the cache.
+			if r.GitCache != nil && tools.HasSideEffectsFor(p.tool, p.wireInput) {
+				r.GitCache.MarkDirty()
+			}
 		}
 	}
 	if execErr != nil {

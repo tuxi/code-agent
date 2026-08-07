@@ -31,20 +31,26 @@ var thinkBlockRe = regexp.MustCompile(`(?s)<think>.*?</think>`)
 
 // PruneOldContext truncates oversized tool results and strips think-blocks from
 // conversation messages OUTSIDE the protected recent tail (protectTokens is the
-// same approximate-token budget the compactor keeps verbatim). It returns the
-// number of characters removed.
+// same approximate-token budget the compactor keeps verbatim). It returns:
+//
+//   - saved: characters removed
+//   - truncatedCount: number of tool results destructively truncated (head-only)
+//   - toolMsgCount: total number of tool messages in the pruned region
+//
+// The caller uses truncatedCount/toolMsgCount to decide whether the surviving
+// fragments are too broken to skip LLM summarization.
 //
 // It only shrinks message contents in place — the system message, the summary
 // message, and the protected tail are untouched, and no message is removed, so
 // tool-call groups stay balanced and the history stays provider-valid.
-func PruneOldContext(sess *Session, protectTokens int) int {
+func PruneOldContext(sess *Session, protectTokens int) (saved int, truncatedCount int, toolMsgCount int) {
 	msgs := sess.Messages
 	convStart := 1
 	if sess.Summary != "" {
 		convStart = 2
 	}
 	if convStart >= len(msgs) {
-		return 0
+		return 0, 0, 0
 	}
 
 	// Protected boundary: walk back from the end spending the token budget —
@@ -61,16 +67,20 @@ func PruneOldContext(sess *Session, protectTokens int) int {
 		protectStart--
 	}
 
-	saved := 0
+	saved = 0
+	truncatedCount = 0
+	toolMsgCount = 0
 	for i := convStart; i < protectStart; i++ {
 		m := &msgs[i]
 		switch m.Role {
 		case model.RoleTool:
+			toolMsgCount++
 			if len(m.Content) > pruneToolResultLimit {
 				head := truncateAtRune(m.Content, pruneToolResultHead)
 				dropped := len(m.Content) - len(head)
 				m.Content = head + fmt.Sprintf("\n[pruned: %d chars of old tool output dropped to fit the context window]", dropped)
 				saved += dropped
+				truncatedCount++
 			}
 		case model.RoleAssistant:
 			if stripped := thinkBlockRe.ReplaceAllString(m.Content, ""); len(stripped) < len(m.Content) {
@@ -79,7 +89,7 @@ func PruneOldContext(sess *Session, protectTokens int) int {
 			}
 		}
 	}
-	return saved
+	return saved, truncatedCount, toolMsgCount
 }
 
 // truncateAtRune cuts s to at most n bytes without splitting a UTF-8 rune.

@@ -116,6 +116,10 @@ func TestRunTurnIneffectiveCompactionCoolsDown(t *testing.T) {
 // Tier-0 pruning that already reclaims enough must skip the LLM summarize
 // entirely for that round (P12.c): no compactor call, no compaction stat, and a
 // context_pruned event with the old tool result truncated in place.
+//
+// The integrity guard skips the early exit when >30% of old tool results were
+// destructively truncated — fragmented context is worse than a summary. This
+// test has enough small results in the pruned region to stay below that bar.
 func TestRunTurnPruningSkipsSummarize(t *testing.T) {
 	provider := &scriptedProvider{responses: []model.Response{
 		{Content: "done", FinishReason: "stop", Usage: model.Usage{PromptTokens: 50000}},
@@ -125,21 +129,24 @@ func TestRunTurnPruningSkipsSummarize(t *testing.T) {
 	runner := &Runner{Model: provider, Tools: tools.NewRegistry(), MaxSteps: 3,
 		Compactor: cc, CompactKeepTokens: 100, Emitter: rec}
 
-	// 40k chars of old tool output ≈ 10k approx tokens; pruning it estimates
-	// 95000 − ~10000 < 90000, under the threshold.
+	// 40k chars of old tool output ≈ 10k approx tokens. Three small results
+	// before it keep the truncation ratio at 25% (<30%), so the integrity
+	// guard lets the early exit through.
+	bigResult := strings.Repeat("A", 40000)
 	sess := &session.Session{
 		Messages: []model.Message{
 			{Role: model.RoleSystem, Content: "sys"},
-			{Role: model.RoleUser, Content: "old"},
-			{Role: model.RoleAssistant, ToolCalls: []model.ToolCall{{
-				ID:   "a",
-				Type: "function",
-				Function: model.FunctionCall{
-					Name:      "read_file",
-					Arguments: `{"path":"old.txt"}`,
-				},
-			}}},
-			{Role: model.RoleTool, ToolCallID: "a", Content: strings.Repeat("A", 40000)},
+			{Role: model.RoleAssistant, ToolCalls: []model.ToolCall{
+				{ID: "a", Type: "function", Function: model.FunctionCall{Name: "bash", Arguments: `{"command":"ls"}`}},
+				{ID: "b", Type: "function", Function: model.FunctionCall{Name: "bash", Arguments: `{"command":"pwd"}`}},
+				{ID: "c", Type: "function", Function: model.FunctionCall{Name: "bash", Arguments: `{"command":"whoami"}`}},
+				{ID: "big", Type: "function", Function: model.FunctionCall{Name: "read_file", Arguments: `{"path":"old.txt"}`}},
+			}},
+			{Role: model.RoleTool, ToolCallID: "a", Content: "file1.go"},
+			{Role: model.RoleTool, ToolCallID: "b", Content: "/home/project"},
+			{Role: model.RoleTool, ToolCallID: "c", Content: "user"},
+			{Role: model.RoleTool, ToolCallID: "big", Content: bigResult},
+			{Role: model.RoleUser, Content: "recent"},
 			{Role: model.RoleAssistant, Content: "ans"},
 		},
 		Metadata:         map[string]any{},
@@ -159,8 +166,15 @@ func TestRunTurnPruningSkipsSummarize(t *testing.T) {
 	if _, ok := rec.first(EventContextPruned); !ok {
 		t.Fatal("expected a context_pruned event")
 	}
-	if got := sess.Messages[3].Content; len(got) >= 40000 || !strings.Contains(got, "[pruned:") {
+	// The big result at index 5 (pushed from index 3 by 3 small results).
+	if got := sess.Messages[5].Content; len(got) >= len(bigResult) || !strings.Contains(got, "[pruned:") {
 		t.Fatalf("old tool result should be truncated in place, got %d chars", len(got))
+	}
+	// Small results are untouched.
+	for _, i := range []int{2, 3, 4} {
+		if strings.Contains(sess.Messages[i].Content, "[pruned:") {
+			t.Fatalf("small result at index %d should not be truncated", i)
+		}
 	}
 }
 

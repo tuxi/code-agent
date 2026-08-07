@@ -93,6 +93,8 @@ func BuildRunner(cfg app.Config, set settings.Settings, mc app.ModelConfig, prov
 		Emitter:           emitter,
 		WorkspaceRoot:     root,
 		SessionIndex:      SessionIndex(),
+		// Fast git-status cache avoids redundant git(1) invocations per model call.
+		GitCache: session.NewFastGitProvider(root, 30*time.Second),
 		// Client-tool lease (0 = loop's built-in 2-minute default). Raised by
 		// deployments whose client tools run long (e.g. DreamAI media generation).
 		ClientToolTimeout: time.Duration(cfg.Agent.ClientToolTimeoutSeconds) * time.Second,
