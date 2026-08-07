@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"code-agent/cmd/codeagent/tui/theme"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -10,29 +11,6 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/mattn/go-runewidth"
-)
-
-// Styles. Adaptive colors adjust to light/dark terminals; lipgloss honors
-// NO_COLOR automatically, so this stays accessible without a config knob.
-var (
-	accent = lipgloss.AdaptiveColor{Light: "#005f87", Dark: "#5fafff"}
-
-	styleUser       = lipgloss.NewStyle().Bold(true).Foreground(accent)
-	styleThinking   = lipgloss.NewStyle().Faint(true).Italic(true)
-	styleOK         = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#207020", Dark: "#5fd75f"})
-	styleFail       = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.AdaptiveColor{Light: "#af0000", Dark: "#ff5f5f"})
-	styleSkill      = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#8700af", Dark: "#d787ff"})
-	styleReflection = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#af5f00", Dark: "#ffaf5f"})
-	styleMeta       = lipgloss.NewStyle().Faint(true)
-	styleArgs       = lipgloss.NewStyle().Faint(true)
-	styleAssistant  = lipgloss.NewStyle()
-	styleAsstLabel  = lipgloss.NewStyle().Bold(true).Foreground(accent)
-	styleBody       = lipgloss.NewStyle().Faint(true)
-	stylePaletteSel = lipgloss.NewStyle().Bold(true).Foreground(accent)
-	styleSoon       = lipgloss.NewStyle().Faint(true).Italic(true)
-	styleApproveBox = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(styleFail.GetForeground())
-	styleApproveHl  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.AdaptiveColor{Light: "#005f87", Dark: "#5fafff"})
-	styleApproveDim = lipgloss.NewStyle().Faint(true)
 )
 
 const failBodyLines = 12 // a failed tool prints this many body lines (the failure is the signal)
@@ -60,7 +38,7 @@ func renderEntry(e Item, width int) []string {
 	case ItemReflection:
 		return entryReflection(e, width)
 	case ItemCompaction:
-		return []string{styleMeta.Render(compactionLine(e))}
+		return []string{theme.Default.Meta.Render(compactionLine(e))}
 	case ItemAssistant:
 		return entryAssistant(e, width)
 	case ItemSystem:
@@ -79,22 +57,22 @@ func entryTool(e Item, width int) []string {
 }
 
 func toolHeader(e Item) string {
-	mark := styleOK.Render("✓")
+	mark := theme.Default.OK.Render("✓")
 	switch e.Status {
 	case StatusFail:
-		mark = styleFail.Render("✗")
+		mark = theme.Default.Fail.Render("✗")
 	case StatusPending:
-		mark = styleMeta.Render("◦")
+		mark = theme.Default.Meta.Render("◦")
 	}
 	parts := []string{}
 	if a := briefArgs(e.Args); a != "" {
-		parts = append(parts, styleArgs.Render(a))
+		parts = append(parts, theme.Default.Args.Render(a))
 	}
 	if e.Status == StatusFail && e.Failure != "" {
-		parts = append(parts, styleFail.Render(e.Failure))
+		parts = append(parts, theme.Default.Fail.Render(e.Failure))
 	}
 	if d := e.Duration(); d >= 500*time.Millisecond {
-		parts = append(parts, styleMeta.Render(fmt.Sprintf("(%.1fs)", d.Seconds())))
+		parts = append(parts, theme.Default.Meta.Render(fmt.Sprintf("(%.1fs)", d.Seconds())))
 	}
 	line := mark + " " + e.Name
 	if len(parts) > 0 {
@@ -106,14 +84,14 @@ func toolHeader(e Item) string {
 // entryGroup renders a collapsed run (kept for the projection library / future
 // turn-end batch collapse; live printing does not collapse).
 func entryGroup(e Item, width int) []string {
-	head := styleOK.Render("✓") + " " + collapsedLabel(e.Name, len(e.Children))
+	head := theme.Default.OK.Render("✓") + " " + collapsedLabel(e.Name, len(e.Children))
 	lines := []string{head}
 	for _, c := range e.Children {
 		label := c.Name
 		if a := briefArgs(c.Args); a != "" {
 			label = a
 		}
-		lines = append(lines, "  "+styleBody.Render(runewidth.Truncate(label, width-2, "…")))
+		lines = append(lines, "  "+theme.Default.Body.Render(runewidth.Truncate(label, width-2, "…")))
 	}
 	return lines
 }
@@ -123,21 +101,21 @@ func entrySkill(e Item) []string {
 	if e.Version != "" {
 		label += " v" + e.Version
 	}
-	return []string{styleSkill.Render(label)}
+	return []string{theme.Default.Skill.Render(label)}
 }
 
 func entryReflection(e Item, width int) []string {
-	lines := []string{styleReflection.Render("↻ reflection")}
+	lines := []string{theme.Default.Reflection.Render("↻ reflection")}
 	for _, ln := range wrapProse(e.Text, width-2) {
-		lines = append(lines, "  "+styleReflection.Render(ln))
+		lines = append(lines, "  "+theme.Default.Reflection.Render(ln))
 	}
 	return lines
 }
 
 func entryAssistant(e Item, width int) []string {
-	lines := []string{styleAsstLabel.Render("⏺ assistant")}
+	lines := []string{theme.Default.Assistant.Render("⏺ assistant")}
 	for _, ln := range wrapProse(e.Text, width) {
-		lines = append(lines, styleAssistant.Render(ln))
+		lines = append(lines, theme.Default.Assistant.Render(ln))
 	}
 	return lines
 }
@@ -149,7 +127,7 @@ func entryUser(e Item, width int) []string {
 		if i == 0 {
 			prefix = "› "
 		}
-		lines = append(lines, styleUser.Render(prefix+ln))
+		lines = append(lines, theme.Default.User.Render(prefix+ln))
 	}
 	return lines
 }
@@ -157,7 +135,7 @@ func entryUser(e Item, width int) []string {
 func entryThinking(e Item, width int) []string {
 	out := []string{}
 	for _, ln := range wrapProse(e.Text, width) {
-		out = append(out, styleThinking.Render(ln))
+		out = append(out, theme.Default.Thinking.Render(ln))
 	}
 	return out
 }
@@ -165,7 +143,7 @@ func entryThinking(e Item, width int) []string {
 func entrySystem(e Item, width int) []string {
 	var out []string
 	for _, ln := range strings.Split(strings.TrimRight(e.Text, "\n"), "\n") {
-		out = append(out, styleMeta.Render(runewidth.Truncate(ln, width, "…")))
+		out = append(out, theme.Default.Meta.Render(runewidth.Truncate(ln, width, "…")))
 	}
 	return out
 }
@@ -193,19 +171,19 @@ func compactionLine(e Item) string {
 // just above the composer). The selected row is marked; not-yet-wired commands
 // are dimmed with a hint.
 func renderPalette(cmds []command, idx, width int) []string {
-	lines := []string{styleMeta.Render("commands  (↑/↓ select · enter run · esc cancel)")}
+	lines := []string{theme.Default.Meta.Render("commands  (↑/↓ select · enter run · esc cancel)")}
 	for i, c := range cmds {
 		marker := "  "
 		name := c.name
 		if i == idx {
-			marker = stylePaletteSel.Render("▌ ")
-			name = stylePaletteSel.Render(c.name)
+			marker = theme.Default.PaletteSel.Render("▌ ")
+			name = theme.Default.PaletteSel.Render(name)
 		}
 		desc := c.desc
 		if !c.ready {
-			desc += "  " + styleSoon.Render("(soon)")
+			desc += " " + theme.Default.Soon.Render("(soon)")
 		}
-		line := marker + name + "  " + styleMeta.Render(desc)
+		line := marker + name + "  " + theme.Default.Meta.Render(desc)
 		lines = append(lines, lipgloss.NewStyle().MaxWidth(width).Render(line))
 	}
 	return lines
@@ -221,7 +199,7 @@ func indentBody(text string, width, max int) []string {
 	}
 	out := make([]string, len(lines))
 	for i, ln := range lines {
-		out[i] = "  " + styleBody.Render(runewidth.Truncate(ln, width-2, "…"))
+		out[i] = "  " + theme.Default.Body.Render(runewidth.Truncate(ln, width-2, "…"))
 	}
 	return out
 }
@@ -305,7 +283,7 @@ func renderApprovalCard(req approvalReq, approveIdx, width int) []string {
 	preview := approvalPreview(req.tool, string(req.input), innerW)
 	sel := approvalSelector(approveIdx)
 	lines := append(preview, "", sel)
-	return strings.Split(styleApproveBox.Width(innerW).Render(strings.Join(lines, "\n")), "\n")
+	return strings.Split(theme.Default.ApproveBox().Width(innerW).Render(strings.Join(lines, "\n")), "\n")
 }
 
 // approvalPreview renders the tool input as readable key-value lines so the user
@@ -316,7 +294,7 @@ func approvalPreview(tool string, input string, width int) []string {
 
 	var lines []string
 	// The tool name gets a bold header line.
-	lines = append(lines, styleFail.Render("▸ run "+tool+"?"))
+	lines = append(lines, theme.Default.Fail.Render("▸ run "+tool+"?"))
 
 	// Ordered fields: show the primary ones first, then the rest.
 	for _, key := range []string{"command", "path", "old", "new", "patch", "message"} {
@@ -326,11 +304,11 @@ func approvalPreview(tool string, input string, width int) []string {
 		}
 		s := fmt.Sprint(v)
 		if s == "" {
-			lines = append(lines, styleMeta.Render(fmt.Sprintf("  %s: (empty)", key)))
+			lines = append(lines, theme.Default.Meta.Render(fmt.Sprintf("  %s: (empty)", key)))
 		} else {
-			lines = append(lines, styleMeta.Render(fmt.Sprintf("  %s:", key)))
+			lines = append(lines, theme.Default.Meta.Render(fmt.Sprintf("  %s:", key)))
 			for _, ln := range previewLines(s, width-4, maxPreviewLines) {
-				lines = append(lines, styleBody.Render("    "+ln))
+				lines = append(lines, theme.Default.Body.Render("    "+ln))
 			}
 		}
 		delete(raw, key)
@@ -346,9 +324,9 @@ func approvalPreview(tool string, input string, width int) []string {
 		if s == "" {
 			continue
 		}
-		lines = append(lines, styleMeta.Render(fmt.Sprintf("  %s:", k)))
+		lines = append(lines, theme.Default.Meta.Render(fmt.Sprintf("  %s:", k)))
 		for _, ln := range previewLines(s, width-4, 4) {
-			lines = append(lines, styleBody.Render("    "+ln))
+			lines = append(lines, theme.Default.Body.Render("    "+ln))
 		}
 	}
 	return lines
@@ -358,7 +336,7 @@ func previewLines(s string, width, max int) []string {
 	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
 	if len(lines) > max {
 		extra := len(lines) - max
-		lines = append(lines[:max:max], styleMeta.Render(fmt.Sprintf("  … %d more lines", extra)))
+		lines = append(lines[:max:max], theme.Default.Meta.Render(fmt.Sprintf("  … %d more lines", extra)))
 	}
 	out := make([]string, len(lines))
 	for i, ln := range lines {
@@ -400,18 +378,18 @@ func renderEditPreview(raw map[string]any, width int) []string {
 	if old == "" && new == "" {
 		return nil
 	}
-	lines := []string{styleMeta.Render("── diff preview ──")}
+	lines := []string{theme.Default.Meta.Render("── diff preview ──")}
 	if old != "" && new != "" {
 		for _, ln := range strings.Split(old, "\n") {
-			lines = append(lines, styleFail.Render(runewidth.Truncate("- "+ln, width, "…")))
+			lines = append(lines, theme.Default.Fail.Render(runewidth.Truncate("- "+ln, width, "…")))
 		}
 		for _, ln := range strings.Split(new, "\n") {
-			lines = append(lines, styleOK.Render(runewidth.Truncate("+ "+ln, width, "…")))
+			lines = append(lines, theme.Default.OK.Render(runewidth.Truncate("+ "+ln, width, "…")))
 		}
 	} else if old != "" {
-		lines = append(lines, styleFail.Render("removing:"))
+		lines = append(lines, theme.Default.Fail.Render("removing:"))
 		for _, ln := range strings.Split(old, "\n") {
-			lines = append(lines, styleFail.Render(runewidth.Truncate("- "+ln, width, "…")))
+			lines = append(lines, theme.Default.Fail.Render(runewidth.Truncate("- "+ln, width, "…")))
 		}
 	}
 	return lines
@@ -422,15 +400,15 @@ func renderPatchPreview(raw map[string]any, width int) []string {
 	if patch == "" {
 		return nil
 	}
-	lines := []string{styleMeta.Render("── patch preview ──")}
+	lines := []string{theme.Default.Meta.Render("── patch preview ──")}
 	for _, ln := range strings.Split(strings.TrimRight(patch, "\n"), "\n") {
 		trunc := runewidth.Truncate(ln, width, "…")
 		if strings.HasPrefix(ln, "+") {
-			lines = append(lines, styleOK.Render(trunc))
+			lines = append(lines, theme.Default.OK.Render(trunc))
 		} else if strings.HasPrefix(ln, "-") {
-			lines = append(lines, styleFail.Render(trunc))
+			lines = append(lines, theme.Default.Fail.Render(trunc))
 		} else {
-			lines = append(lines, styleBody.Render(trunc))
+			lines = append(lines, theme.Default.Body.Render(trunc))
 		}
 	}
 	return lines
@@ -441,13 +419,13 @@ func renderCreatePreview(raw map[string]any, width int) []string {
 	if content == "" {
 		return nil
 	}
-	lines := []string{styleMeta.Render("── file content ──")}
+	lines := []string{theme.Default.Meta.Render("── file content ──")}
 	preview := strings.Split(strings.TrimRight(content, "\n"), "\n")
 	if len(preview) > 20 {
-		preview = append(preview[:20:20], styleMeta.Render(fmt.Sprintf("… %d more lines", len(preview)-20)))
+		preview = append(preview[:20:20], theme.Default.Meta.Render(fmt.Sprintf("… %d more lines", len(preview)-20)))
 	}
 	for _, ln := range preview {
-		lines = append(lines, styleBody.Render(runewidth.Truncate(ln, width, "…")))
+		lines = append(lines, theme.Default.Body.Render(runewidth.Truncate(ln, width, "…")))
 	}
 	return lines
 }
@@ -458,15 +436,15 @@ func renderCommandPreview(raw map[string]any, width int) []string {
 		return nil
 	}
 	return []string{
-		styleMeta.Render("── command ──"),
-		styleOK.Render(runewidth.Truncate("$ "+cmd, width, "…")),
+		theme.Default.Meta.Render("── command ──"),
+		theme.Default.OK.Render(runewidth.Truncate("$ "+cmd, width, "…")),
 	}
 }
 
 func renderJSONPreview(raw map[string]any, width int) []string {
-	lines := []string{styleMeta.Render("── tool input ──")}
+	lines := []string{theme.Default.Meta.Render("── tool input ──")}
 	for k, v := range raw {
-		lines = append(lines, styleBody.Render(runewidth.Truncate(fmt.Sprintf("  %s: %v", k, v), width, "…")))
+		lines = append(lines, theme.Default.Body.Render(runewidth.Truncate(fmt.Sprintf("  %s: %v", k, v), width, "…")))
 	}
 	return lines
 }
@@ -478,12 +456,12 @@ func approvalSelector(idx int) string {
 	parts := make([]string, len(labels))
 	for i, label := range labels {
 		if i == idx {
-			parts[i] = styleApproveHl.Render("▶ " + label)
+			parts[i] = theme.Default.ApproveHl.Render("▶ " + label)
 		} else {
-			parts[i] = styleApproveDim.Render("  " + label)
+			parts[i] = theme.Default.ApproveDim.Render("  " + label)
 		}
 	}
-	return strings.Join(parts, "  ") + "  " + styleMeta.Render("[v] preview  (↑/↓ select · enter confirm · esc cancel)")
+	return strings.Join(parts, "  ") + "  " + theme.Default.Meta.Render("[v] preview  (↑/↓ select · enter confirm · esc cancel)")
 }
 
 // renderAskUserCard renders a clarification question card with selectable
@@ -497,18 +475,18 @@ func renderAskUserCard(q agent.AskUserQuestion, selected int, multi map[int]bool
 	}
 
 	var lines []string
-	lines = append(lines, styleSkill.Render("▸ "+q.Header+": "+q.Question))
+	lines = append(lines, theme.Default.Skill.Render("▸ "+q.Header+": "+q.Question))
 	lines = append(lines, "")
 
 	// Index 0: always a custom text input.
 	{
 		prefix := "  "
 		if selected == 0 {
-			prefix = styleApproveBox.Render("▶") + " "
+			prefix = theme.Default.ApproveBox().Render("▶") + " "
 		} else {
 			prefix += "  "
 		}
-		lines = append(lines, prefix+styleBody.Render("💬 输入自定义回答（选中后按 Enter，在下方输入）"))
+		lines = append(lines, prefix+theme.Default.Body.Render("💬 输入自定义回答（选中后按 Enter，在下方输入）"))
 		lines = append(lines, "")
 	}
 
@@ -523,15 +501,15 @@ func renderAskUserCard(q agent.AskUserQuestion, selected int, multi map[int]bool
 				prefix += "[ ] "
 			}
 		} else if optIdx == selected {
-			prefix = styleApproveBox.Render("▶") + " "
+			prefix = theme.Default.ApproveBox().Render("▶") + " "
 		} else {
 			prefix += "  "
 		}
 		label := opt.Label
 		if opt.Description != "" {
-			suffix = styleMeta.Render(" — " + opt.Description)
+			suffix = theme.Default.Meta.Render(" — " + opt.Description)
 		}
-		ln := prefix + styleBody.Render(label) + suffix
+		ln := prefix + theme.Default.Body.Render(label) + suffix
 		if w := runewidth.StringWidth(ln); w > innerW {
 			ln = runewidth.Truncate(ln, innerW, "…")
 		}
@@ -543,9 +521,9 @@ func renderAskUserCard(q agent.AskUserQuestion, selected int, multi map[int]bool
 	if q.MultiSelect {
 		hint = "  [↑/↓] navigate  [space] toggle  [enter] confirm  [esc] cancel"
 	}
-	lines = append(lines, styleMeta.Render(hint))
+	lines = append(lines, theme.Default.Meta.Render(hint))
 
-	return strings.Split(styleApproveBox.Width(innerW).Render(strings.Join(lines, "\n")), "\n")
+	return strings.Split(theme.Default.ApproveBox().Width(innerW).Render(strings.Join(lines, "\n")), "\n")
 }
 
 // renderPlanApprovalCard renders a plan for user approval in the live region.
@@ -556,8 +534,8 @@ func renderPlanApprovalCard(plan agent.Plan, width int) []string {
 	}
 
 	var lines []string
-	lines = append(lines, styleSkill.Render("▸ Plan: "+plan.Title))
-	lines = append(lines, styleMeta.Render(fmt.Sprintf("  ID: %s  |  Saved: %s", plan.ID, plan.FilePath)))
+	lines = append(lines, theme.Default.Skill.Render("▸ Plan: "+plan.Title))
+	lines = append(lines, theme.Default.Meta.Render(fmt.Sprintf("  ID: %s  |  Saved: %s", plan.ID, plan.FilePath)))
 	lines = append(lines, "")
 
 	// Preview first ~15 lines of the plan content.
@@ -568,13 +546,13 @@ func renderPlanApprovalCard(plan agent.Plan, width int) []string {
 	}
 	for i := 0; i < maxLines; i++ {
 		ln := runewidth.Truncate(contentLines[i], innerW-2, "…")
-		lines = append(lines, styleBody.Render("  "+ln))
+		lines = append(lines, theme.Default.Body.Render("  "+ln))
 	}
 	if len(contentLines) > maxLines {
-		lines = append(lines, styleMeta.Render(fmt.Sprintf("  … %d more lines", len(contentLines)-maxLines)))
+		lines = append(lines, theme.Default.Meta.Render(fmt.Sprintf("  … %d more lines", len(contentLines)-maxLines)))
 	}
 	lines = append(lines, "")
-	lines = append(lines, styleMeta.Render("  [a] approve  [r] reject  (esc/r to reject)"))
+	lines = append(lines, theme.Default.Meta.Render("  [a] approve  [r] reject  (esc/r to reject)"))
 
-	return strings.Split(styleApproveBox.Width(innerW).Render(strings.Join(lines, "\n")), "\n")
+	return strings.Split(theme.Default.ApproveBox().Width(innerW).Render(strings.Join(lines, "\n")), "\n")
 }

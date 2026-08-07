@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"code-agent/cmd/codeagent/tui/theme"
 	"fmt"
 	"strings"
 	"time"
@@ -8,6 +9,7 @@ import (
 	"code-agent/internal/agent"
 	"code-agent/internal/session"
 	"code-agent/internal/tools"
+
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textarea"
@@ -112,7 +114,7 @@ func newModel(b *Backend, header HeaderInfo, src sessionSource) model {
 
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
-	sp.Style = styleSkill
+	sp.Style = theme.Default.Skill
 
 	return model{
 		b:              b,
@@ -243,11 +245,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case modelSwappedMsg:
 		if msg.err != nil {
-			return m, tea.Println(styleFail.Render("model switch failed: " + msg.err.Error()))
+			return m, tea.Println(theme.Default.Fail.Render("model switch failed: " + msg.err.Error()))
 		}
 		m.header = msg.header
 		m.promptTokens = 0 // gauge will update on the next model call
-		return m, tea.Println(styleMeta.Render(fmt.Sprintf("switched to %s", msg.header.Model)))
+		return m, tea.Println(theme.Default.Meta.Render(fmt.Sprintf("switched to %s", msg.header.Model)))
 
 	case doneMsg:
 		m.busy = false
@@ -288,7 +290,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, tea.Println(strings.Join(out, "\n")))
 		}
 		if msg.err != nil {
-			cmds = append(cmds, tea.Println(styleFail.Render("goal: "+msg.err.Error())))
+			cmds = append(cmds, tea.Println(theme.Default.Fail.Render("goal: "+msg.err.Error())))
 		} else if msg.summary != "" {
 			cmds = append(cmds, tea.Println(msg.summary))
 		}
@@ -775,7 +777,7 @@ func (m *model) resume(meta session.Meta) tea.Cmd {
 	if title == "" {
 		title = sess.ID
 	}
-	lines := []string{styleMeta.Render(fmt.Sprintf("──── resumed: %s · %d messages ────", title, len(sess.Messages)))}
+	lines := []string{theme.Default.Meta.Render(fmt.Sprintf("──── resumed: %s · %d messages ────", title, len(sess.Messages)))}
 
 	// Replay the persisted event history through the same transcript renderer, so
 	// it reads exactly as it did live. Sessions older than the EventStore have no
@@ -784,7 +786,7 @@ func (m *model) resume(meta session.Meta) tea.Cmd {
 		if hist := renderTranscript(m.src.events(meta.ID), m.width); len(hist) > 0 {
 			if len(hist) > maxReplayLines {
 				omitted := len(hist) - maxReplayLines
-				hist = append([]string{styleMeta.Render(fmt.Sprintf("… %d earlier lines omitted (full conversation is loaded)", omitted))}, hist[len(hist)-maxReplayLines:]...)
+				hist = append([]string{theme.Default.Meta.Render(fmt.Sprintf("… %d earlier lines omitted (full conversation is loaded)", omitted))}, hist[len(hist)-maxReplayLines:]...)
 			}
 			lines = append(lines, hist...)
 			m.tr.started = true // separate the next live turn from the replayed history
@@ -927,13 +929,13 @@ func (m model) View() string {
 		// Streamed text typing out live (8.6) — takes the live region while a call
 		// is in flight; replaced by the step card / final reply once it resolves.
 		for _, ln := range wrapProse(m.streaming, m.width-2) {
-			lines = append(lines, styleBody.Render(ln))
+			lines = append(lines, theme.Default.Body.Render(ln))
 		}
 	case m.showThinking && m.busy && m.tr.step.thinking != "":
 		header := "▾ " + fmtStepHeader(m.tr.step)
-		lines = append(lines, styleThinking.Render(header))
+		lines = append(lines, theme.Default.Thinking.Render(header))
 		for _, ln := range wrapProse(m.tr.step.thinking, m.width-4) {
-			lines = append(lines, "    "+styleBody.Render(ln))
+			lines = append(lines, "    "+theme.Default.Body.Render(ln))
 		}
 	}
 	lines = append(lines, m.todoPanel()...)
@@ -958,7 +960,7 @@ func (m model) View() string {
 		cmds := filterCommands(m.composer.Value())
 		lines = append(lines, renderPalette(cmds, clampInt(m.cmdIdx, 0, len(cmds)-1), m.width)...)
 	default:
-		lines = append(lines, styleMeta.Render(m.hint()))
+		lines = append(lines, theme.Default.Meta.Render(m.hint()))
 	}
 	cv := m.composer.View()
 	if l := len(cv); l > 0 && cv[l-1] == '\n' {
@@ -1005,18 +1007,18 @@ func (m model) statusLine() string {
 		if m.subTool != "" {
 			s += " · " + m.subTool
 		}
-		left = m.spinner.View() + styleMeta.Render(s)
+		left = m.spinner.View() + theme.Default.Meta.Render(s)
 	case m.thinking:
-		left = m.spinner.View() + styleMeta.Render(" thinking…")
+		left = m.spinner.View() + theme.Default.Meta.Render(" thinking…")
 	case m.busy:
-		left = styleMeta.Render("working…")
+		left = theme.Default.Meta.Render("working…")
 	case m.lastErr != nil:
-		left = styleFail.Render("error: " + m.lastErr.Error())
+		left = theme.Default.Fail.Render("error: " + m.lastErr.Error())
 	default:
-		left = styleMeta.Render("ready")
+		left = theme.Default.Meta.Render("ready")
 	}
 	if m.planState != agent.PlanStatusNone {
-		left = styleSkill.Render("⏸ PLAN") + "  " + left
+		left = theme.Default.Skill.Render("⏸ PLAN") + "  " + left
 	}
 	var right []string
 	if m.header.CompactThreshold > 0 {
@@ -1028,7 +1030,7 @@ func (m model) statusLine() string {
 	if len(right) == 0 {
 		return left
 	}
-	return left + "   " + styleMeta.Render(strings.Join(right, " · "))
+	return left + "   " + theme.Default.Meta.Render(strings.Join(right, " · "))
 }
 
 // todoPanel renders the model's checklist as a compact live panel (8.4): a header
@@ -1044,7 +1046,7 @@ func (m model) todoPanel() []string {
 			done++
 		}
 	}
-	out := []string{styleMeta.Render(fmt.Sprintf("Todos %d/%d", done, len(m.todos)))}
+	out := []string{theme.Default.Meta.Render(fmt.Sprintf("Todos %d/%d", done, len(m.todos)))}
 	for _, td := range m.todos {
 		out = append(out, "  "+todoLine(td))
 	}
@@ -1054,15 +1056,15 @@ func (m model) todoPanel() []string {
 func todoLine(td tools.Todo) string {
 	switch td.Status {
 	case tools.TodoCompleted:
-		return styleMeta.Render("☑ " + td.Content)
+		return theme.Default.Meta.Render("☑ " + td.Content)
 	case tools.TodoInProgress:
 		label := td.Content
 		if td.ActiveForm != "" {
 			label = td.ActiveForm
 		}
-		return styleSkill.Render("▶ " + label)
+		return theme.Default.Skill.Render("▶ " + label)
 	default:
-		return styleBody.Render("☐ " + td.Content)
+		return theme.Default.Body.Render("☐ " + td.Content)
 	}
 }
 
@@ -1078,6 +1080,6 @@ func (m model) banner() string {
 	if m.header.Workspace != "" {
 		parts = append(parts, m.header.Workspace)
 	}
-	line := styleAsstLabel.Render(strings.Join(parts, " · "))
-	return line + "\n" + styleMeta.Render("type a request, or /help for commands")
+	line := theme.Default.AsstLabel.Render(strings.Join(parts, " · "))
+	return line + "\n" + theme.Default.Meta.Render("type a request, or /help for commands")
 }

@@ -1,11 +1,13 @@
 package tui
 
 import (
+	"code-agent/cmd/codeagent/tui/theme"
 	"fmt"
 	"strings"
 	"time"
 
 	"code-agent/internal/session"
+
 	"github.com/mattn/go-runewidth"
 )
 
@@ -23,9 +25,9 @@ const maxPickerItems = 8 // window the list so it never overflows the live regio
 // title line (the first user message) plus a dim metadata line, the selected one
 // marked with ❯.
 func renderPicker(p sessionPicker, width int) []string {
-	lines := []string{styleMeta.Render("resume a session  (↑/↓ select · enter resume · esc cancel)")}
+	lines := []string{theme.Default.Meta.Render("resume a session  (↑/↓ select · enter resume · esc cancel)")}
 	if len(p.metas) == 0 {
-		return append(lines, styleMeta.Render("  no saved sessions"))
+		return append(lines, theme.Default.Meta.Render("  no saved sessions"))
 	}
 
 	start := 0
@@ -37,7 +39,7 @@ func renderPicker(p sessionPicker, width int) []string {
 		end = len(p.metas)
 	}
 	if start > 0 {
-		lines = append(lines, styleMeta.Render(fmt.Sprintf("  … %d earlier", start)))
+		lines = append(lines, theme.Default.Meta.Render(fmt.Sprintf("  … %d earlier", start)))
 	}
 	for i := start; i < end; i++ {
 		meta := p.metas[i]
@@ -45,16 +47,16 @@ func renderPicker(p sessionPicker, width int) []string {
 		if title == "" {
 			title = meta.ID
 		}
-		cursor, ts := "  ", styleAssistant
+		cursor, ts := "  ", theme.Default.Assistant
 		if i == p.idx {
-			cursor, ts = stylePaletteSel.Render("❯ "), stylePaletteSel
+			cursor, ts = theme.Default.PaletteSel.Render("❯ "), theme.Default.PaletteSel
 		}
 		lines = append(lines, cursor+ts.Render(runewidth.Truncate(title, width-2, "…")))
 		meta2 := fmt.Sprintf("    %s · %s · %d msgs", humanAgo(meta.UpdatedAt), meta.Model, meta.MessageCount)
-		lines = append(lines, styleMeta.Render(runewidth.Truncate(meta2, width, "…")))
+		lines = append(lines, theme.Default.Meta.Render(runewidth.Truncate(meta2, width, "…")))
 	}
 	if end < len(p.metas) {
-		lines = append(lines, styleMeta.Render(fmt.Sprintf("  … %d more", len(p.metas)-end)))
+		lines = append(lines, theme.Default.Meta.Render(fmt.Sprintf("  … %d more", len(p.metas)-end)))
 	}
 	return lines
 }
@@ -123,11 +125,11 @@ type modelPicker struct {
 }
 
 func renderModelPicker(p modelPicker, width int) []string {
-	lines := []string{styleMeta.Render("switch model  (↑/↓ select · enter confirm · esc cancel)")}
+	lines := []string{theme.Default.Meta.Render("switch model  (↑/↓ select · enter confirm · esc cancel)")}
 	for i, m := range p.models {
-		cursor, ts := "  ", styleMeta
+		cursor, ts := "  ", theme.Default.Meta
 		if i == p.idx {
-			cursor, ts = stylePaletteSel.Render("❯ "), stylePaletteSel
+			cursor, ts = theme.Default.PaletteSel.Render("❯ "), theme.Default.PaletteSel
 		}
 		label := m.display
 		if label == "" {

@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"code-agent/cmd/codeagent/tui/theme"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -42,10 +43,10 @@ func renderStep(s stepBuf, width int, expanded bool) []string {
 	if sum := summarizeTools(s.tools); sum != "" {
 		header += ", " + sum
 	}
-	lines := []string{styleThinking.Render(header)}
+	lines := []string{theme.Default.Thinking.Render(header)}
 	if expanded && s.thinking != "" {
 		for _, ln := range wrapProse(s.thinking, width-4) {
-			lines = append(lines, "    "+styleBody.Render(ln))
+			lines = append(lines, "    "+theme.Default.Body.Render(ln))
 		}
 	}
 	for _, it := range s.tools {
@@ -130,13 +131,13 @@ var mutationTools = map[string]bool{
 // failure always prints its body (the signal); a mutation tool prints its body
 // even on success — the user needs to see what changed.
 func toolDetailLines(it Item, width int) []string {
-	mark := styleOK.Render("✓")
+	mark := theme.Default.OK.Render("✓")
 	if it.Status == StatusFail {
-		mark = styleFail.Render("✗")
+		mark = theme.Default.Fail.Render("✗")
 	}
 	line := "   " + mark + " " + toolAction(it)
 	if d := it.Duration(); d >= 500*time.Millisecond {
-		line += "  " + styleMeta.Render(fmt.Sprintf("(%.1fs)", d.Seconds()))
+		line += "  " + theme.Default.Meta.Render(fmt.Sprintf("(%.1fs)", d.Seconds()))
 	}
 	lines := []string{line}
 	show := it.Status == StatusFail || mutationTools[it.Name]
@@ -160,7 +161,7 @@ func toolAction(it Item) string {
 		if it.Version != "" {
 			s += " v" + it.Version
 		}
-		return styleSkill.Render(s)
+		return theme.Default.Skill.Render(s)
 	}
 	switch it.Name {
 	case "read_file":

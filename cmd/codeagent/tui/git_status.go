@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"code-agent/cmd/codeagent/tui/theme"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -47,7 +48,7 @@ func gitSummaryLine() string {
 	if s == "" {
 		return ""
 	}
-	return styleMeta.Render("── " + s + " ──")
+	return theme.Default.Meta.Render("── " + s + " ──")
 }
 
 func runGit(args ...string) (string, error) {
