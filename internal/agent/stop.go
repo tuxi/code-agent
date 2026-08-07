@@ -58,11 +58,19 @@ func (f StopPolicyFunc) Decide(ctx context.Context, sc StopContext) (StopVerdict
 // decision is replaceable — the harness keeps the point, the policy keeps the
 // judgment.
 type finalizePolicy struct {
-	r             *Runner
-	reflected     bool // one self-check pass per turn
-	verified      bool // the deterministic verify runs at most once
-	todoGateFired bool // the todo gate re-prompts at most once
+	r                *Runner
+	reflected        bool // one self-check pass per turn
+	verified         bool // the deterministic verify runs at most once
+	todoGateFired    bool // the todo gate re-prompts at most once
+	mutatedFileCount int  // captured from reflector for proportional review
 }
+
+const changeReviewPrompt = "[review] Plan execution changed the workspace. Delegate task with kind " +
+	"change_review containing the original requirement, changed files, and verification results. " +
+	"Require VERDICT: PASS or REQUEST_CHANGES as the first line."
+
+const lightReviewNudge = "[review] This is a small change. Self-verify: check the diff is what " +
+	"you intended and run the build. A full independent review is not required for single-file changes."
 
 // Decide implements StopPolicy. It is consulted only after the plan-state
 // machine gate, which is a protocol invariant and stays in the loop.
@@ -77,6 +85,7 @@ func (p *finalizePolicy) Decide(ctx context.Context, sc StopContext) (StopVerdic
 	if p.r.Reflector != nil && !p.reflected {
 		rc := p.r.Reflector.Reflect(sc.Steps)
 		p.r.mutatedVerifiableCode = len(rc.CodeFilesMutated) > 0
+		p.mutatedFileCount = len(rc.CodeFilesMutated)
 		if rc.UnverifiedMutation && p.r.VerifyCommand != "" && !p.verified {
 			p.verified = true
 			status, summary := p.r.runFinalizeVerify(ctx)
@@ -104,13 +113,24 @@ func (p *finalizePolicy) Decide(ctx context.Context, sc StopContext) (StopVerdic
 		// sign-off the reflective nudge was removed from the default policy as
 		// per-turn noise. The deterministic verify above is the surviving rail.
 	}
-	// Change review: plan-mode changes get one independent review. The count
-	// increments only when a review completes, so the model ignoring the harness
-	// re-triggers on the next done.
+
+	// Collect all pending gates into a single combined message so the model
+	// reconciles in one round instead of being hit with sequential re-prompts.
+	var parts []string
+
+	// Change review: plan-mode changes get one independent review per mutation.
+	// Proportional: single-file changes self-verify; multi-file changes need a
+	// subagent review. The count increments only when a review completes, so
+	// the model ignoring the harness re-triggers on the next done.
 	if p.r.PlanState == PlanStatusExecuting && p.r.independentTaskAvailable() &&
 		p.r.plannedMutation && !p.r.independentReviewPassed && p.r.changeReviewCount < 1 {
-		return StopVerdict{Continue: true, Message: changeReviewPrompt}, nil
+		if p.mutatedFileCount <= 1 {
+			parts = append(parts, lightReviewNudge)
+		} else {
+			parts = append(parts, changeReviewPrompt)
+		}
 	}
+
 	// Todo gate: the model declared checklist work it has not completed.
 	// One-shot per turn — force a reconcile (mark done, clear aspirational
 	// items, or state explicitly why it is stopping with these pending) before
@@ -118,7 +138,11 @@ func (p *finalizePolicy) Decide(ctx context.Context, sc StopContext) (StopVerdic
 	// backstop.
 	if !p.todoGateFired && hasPendingTodos(sc.Todos) {
 		p.todoGateFired = true
-		return StopVerdict{Continue: true, Message: todoReconcileNudge(sc.Todos)}, nil
+		parts = append(parts, todoReconcileNudge(sc.Todos))
+	}
+
+	if len(parts) > 0 {
+		return StopVerdict{Continue: true, Message: strings.Join(parts, "\n\n")}, nil
 	}
 	return StopVerdict{}, nil
 }

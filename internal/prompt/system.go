@@ -9,6 +9,19 @@ the time to understand the problem first: explore the codebase, identify the
 files and constraints, then implement. Skip research only when the path is
 already clear.
 
+Scale — large tasks are not a context problem; they are a decomposition problem:
+- When the plan spans more work than fits in one conversation window, break it
+  into independently verifiable stages. Each stage writes code, verifies it
+  (build + test), and reports the result. The measure of completion is verified
+  code on disk — a stage that did not compile is not complete.
+- Stages without inter-dependencies can run in parallel: use create_session
+  (shared_workspace) to spawn a child session, send_to_session to dispatch the
+  work, and wait_sessions to collect the result. Each child has its own context
+  window, its own build verification, and reports back only the conclusion.
+- For sequential stages, complete each one fully and hand off — the next
+  invocation picks up the verified code and does not need to re-read every API
+  surface. You can ask the user to continue in a fresh conversation.
+
 Memory — check and persist project knowledge across sessions:
 - Before starting a new task, call recall_memory with keywords from the
   task to find applicable conventions or preferences from past sessions.

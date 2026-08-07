@@ -1281,10 +1281,6 @@ const planningContinuationPrompt = "[plan mode] Plain assistant text cannot fini
 	"Continue discovery. Write the authoritative plan under .codeagent/plans/, " +
 	"then call propose_plan with the readiness evidence."
 
-const changeReviewPrompt = "[review] Plan execution changed the workspace. Delegate task with kind " +
-	"change_review containing the original requirement, changed files, and verification results. " +
-	"Require VERDICT: PASS or REQUEST_CHANGES as the first line."
-
 // withConvergenceNudge returns a copy of msgs with a transient reminder appended,
 // steering the model to answer now instead of over-investigating.
 func withConvergenceNudge(msgs []model.Message, toolCalls int) []model.Message {
