@@ -185,6 +185,40 @@ func cases() map[string]wireCase {
 			BeforeTokens: 90000, AfterTokens: 30000, SavedTokens: 60000,
 			SummaryChars: 1200, Ratio: 0.33,
 		}},
+
+		// Tier-0 free pruning: old tool outputs truncated, think blocks
+		// cleared — no LLM call. before_tokens / saved_tokens let the
+		// client render a compaction card with tokens reclaimed.
+		"context_pruned": {ev: agent.Event{
+			Kind: agent.EventContextPruned, At: fixedAt,
+			SessionID: "sess_root", TurnID: "turn_7",
+			BeforeTokens: 90000, SavedTokens: 10000,
+		}},
+
+		// Pre-compaction cleanup: stale low-signal tool results replaced
+		// with structured skeletons. text = "cleared N stale tool results".
+		"context_edited": {ev: agent.Event{
+			Kind: agent.EventContextEdited, At: fixedAt,
+			SessionID: "sess_root", TurnID: "turn_7",
+			Text: "cleared 5 stale tool results",
+		}},
+
+		// Pre-mutation root-cause self-check (P4.3-R Move 3): fired before
+		// every edit tool execution to verify the hypothesis.
+		"pre_mutation": {ev: agent.Event{
+			Kind: agent.EventPreMutation, At: fixedAt,
+			SessionID: "sess_root", TurnID: "turn_7",
+			Text: "Verify your hypothesis before editing",
+		}},
+
+		// Deterministic finalize verification (P4.3-R Move 2): the model
+		// ran a build/test/lint command and is reporting results.
+		"verified": {ev: agent.Event{
+			Kind: agent.EventVerified, At: fixedAt,
+			SessionID: "sess_root", TurnID: "turn_7",
+			Text: "go build ./... passed, go test ./... all passed",
+		}},
+
 		// call_id = the originating `task` tool call, so a client correlates the
 		// bracket (and its childStream entry card) with that tool card (P8.7).
 		"task_started": {ev: agent.Event{

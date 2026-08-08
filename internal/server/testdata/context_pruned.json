@@ -1,0 +1,9 @@
+{
+  "event_id": "evt_fixed",
+  "kind": "context_pruned",
+  "at": "2026-06-24T10:00:00.123Z",
+  "session_id": "sess_root",
+  "turn_id": "turn_7",
+  "before_tokens": 90000,
+  "saved_tokens": 10000
+}

@@ -81,9 +81,13 @@ agent-core (Layer 1)          agent-server (Layer 2)         frontends (Layer 3)
 | `observed` | `call_id` `step` `tool_name` `observation` `failure` | 结果被分类（`failure` = FailureType，如 `compile`） |
 | `auto_approved` | `tool_name` `tool_args` `text` | auto 模式自动放行（`text` = 原因，审计用） |
 | `reflected` | `text` | finalize 自检触发 |
-| `skill_loaded` | `tool_name` `skill_version` | 载入 skill（名在 `tool_name`） |
+| `pre_mutation` | `text` | 编辑前根因自检触发（P4.3-R Move 3） |
+| `verified` | `text` | 确定性的 finalize 验证运行（P4.3-R Move 2） |
+| `skill_loaded` | `tool_name` `skill_version` `skill_source` | 载入 skill（名在 `tool_name`，源：`global`/`project`） |
 | `todo_updated` | `todos[]` | 任务清单变化 |
-| `compacted` | `before_tokens` `after_tokens` `saved_tokens` `summary_chars` `ratio` | 上下文压缩 |
+| `compacted` | `before_tokens` `after_tokens` `saved_tokens` `summary_chars` `ratio` `ineffective` | 上下文压缩（LLM 摘要，付费） |
+| `context_pruned` | `before_tokens` `saved_tokens` | 上下文截断（免费，Tier-0）：旧 tool output 截断 + think block 清除，无 LLM 调用 |
+| `context_edited` | `text` | 预压缩清理（免费）：清除过时低信号 tool result，`text` = "cleared N stale tool results" |
 | `turn_finished` | `text` | 最终答复 |
 | `task_started` | `session_id`(子) `parent_session_id` `text` | subagent 委派开始（`text` = 委派 prompt） |
 | `task_finished` | `session_id`(子) `parent_session_id` `text` | subagent 结束（`text` = 结论） |
