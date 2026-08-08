@@ -12,11 +12,11 @@ package chat
 import (
 	"time"
 
-	"github.com/charmbracelet/bubbles/key"
-	"github.com/charmbracelet/bubbles/spinner"
-	"github.com/charmbracelet/bubbles/viewport"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/key"
+	"charm.land/bubbles/v2/spinner"
+	"charm.land/bubbles/v2/viewport"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 
 	"code-agent/cmd/codeagent/tui/components/dialog"
 	"code-agent/cmd/codeagent/tui/styles"
@@ -57,6 +57,23 @@ type List struct {
 	// IME/drag-free scrolling. Up/Down scroll the viewport only when the
 	// composer is empty (the chat page decides this and forwards the keys).
 	allowUpDown bool
+
+	// vpCache memoizes the viewport's rendered string. The viewport's View()
+	// output depends only on (width, height, yOffset, xOffset, content), so a
+	// no-op wheel event at the top/bottom edge — which cannot change any of
+	// those — reuses the cached string instead of re-parsing the whole visible
+	// window. Bubble Tea's event loop runs model.View() after every message, so
+	// without this cache each edge event in a trackpad-momentum burst pays a
+	// full render and delays subsequent input. contentVer is bumped whenever
+	// SetContent replaces the viewport's lines.
+	vpCache    string
+	vpCacheKey vpKey
+	contentVer int
+}
+
+// vpKey is the set of inputs the viewport's View() output depends on.
+type vpKey struct {
+	width, height, yOffset, xOffset, ver int
 }
 
 // cacheItem is a cached rendered message block, valid only at one width.
@@ -124,18 +141,35 @@ func (m *List) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case NewMessageMsg:
 		m.upsert(msg.Message)
-		m.renderView()
-		m.viewport.GotoBottom()
+		if msg.Message.Kind == KindAssistant && !msg.Message.Finished {
+			// Streaming assistant text: defer the full re-render to the
+			// spinner-tick throttle (renderThrottle) so per-token updates stay
+			// cheap no matter how long the transcript grows. Keep the view
+			// pinned to the bottom meanwhile.
+			m.viewport.GotoBottom()
+		} else {
+			m.renderView()
+			m.viewport.GotoBottom()
+		}
 		return m, nil
 
 	case UpdateMessageMsg:
 		m.upsert(msg.Message)
-		m.renderView()
-		// Keep the view pinned to the bottom while the latest message streams.
-		if len(m.messages) > 0 {
-			last := m.messages[len(m.messages)-1]
-			if last.ID == msg.Message.ID {
-				m.viewport.GotoBottom()
+		if msg.Message.Kind == KindAssistant && !msg.Message.Finished {
+			if len(m.messages) > 0 {
+				last := m.messages[len(m.messages)-1]
+				if last.ID == msg.Message.ID {
+					m.viewport.GotoBottom()
+				}
+			}
+		} else {
+			m.renderView()
+			// Keep the view pinned to the bottom while the latest message streams.
+			if len(m.messages) > 0 {
+				last := m.messages[len(m.messages)-1]
+				if last.ID == msg.Message.ID {
+					m.viewport.GotoBottom()
+				}
 			}
 		}
 		return m, nil
@@ -223,16 +257,39 @@ func (m *List) upsert(msg Message) {
 	}
 }
 
-func (m *List) View() string {
-	baseStyle := styles.BaseStyle()
+func (m *List) View() tea.View {
+	// viewportString() and working() each pad to m.width internally, so both
+	// are already full-width rectangles. Joining them is a plain concatenation
+	// — a lipgloss.JoinVertical pass would re-measure every line's width over
+	// the whole visible window (~300µs per frame) for no effect.
+	vp := m.viewportString()
+	w := m.working()
+	if w == "" {
+		return tea.NewView(vp)
+	}
+	return tea.NewView(vp + "\n" + w)
+}
 
-	content := baseStyle.
-		Width(m.width).
-		Render(lipgloss.JoinVertical(lipgloss.Top, m.viewport.View(), m.working()))
-
-	return baseStyle.
-		Width(m.width).
-		Render(content)
+// viewportString returns the rendered viewport, reusing the memoized string
+// when nothing the viewport displays has changed. The event loop calls View()
+// after every message, so scroll events that clamp at an edge — a no-op for
+// the viewport — must not pay a full window re-render; otherwise a
+// trackpad-momentum burst of edge events keeps the loop busy and delays the
+// user's next scroll.
+func (m *List) viewportString() string {
+	key := vpKey{
+		width:   m.width,
+		height:  m.height,
+		yOffset: m.viewport.YOffset(),
+		xOffset: m.viewport.XOffset(),
+		ver:     m.contentVer,
+	}
+	if key == m.vpCacheKey {
+		return m.vpCache
+	}
+	m.vpCache = m.viewport.View()
+	m.vpCacheKey = key
+	return m.vpCache
 }
 
 // renderView re-computes the full uiMessage layout from m.messages, reusing
@@ -244,6 +301,7 @@ func (m *List) renderView() {
 	if m.width == 0 {
 		return
 	}
+	m.contentVer++
 	for _, msg := range m.messages {
 		blocks, ok := m.renderMessage(msg, pos)
 		m.ui = append(m.ui, blocks...)
@@ -318,10 +376,10 @@ func (m *List) SetSize(width, height int) tea.Cmd {
 	}
 	m.width = width
 	m.height = height
-	m.viewport.Width = width
-	m.viewport.Height = max(0, height)
+	m.viewport.SetWidth(width)
+	m.viewport.SetHeight(max(0, height))
 	// Width changed: all cached blocks are invalid.
-	if m.viewport.Width != 0 {
+	if m.viewport.Width() != 0 {
 		m.rerender()
 	}
 	return nil
@@ -353,7 +411,7 @@ func (m *List) BindingKeys() []key.Binding {
 func NewList() *List {
 	s := spinner.New()
 	s.Spinner = spinner.Pulse
-	vp := viewport.New(0, 0)
+	vp := viewport.New()
 	vp.KeyMap.PageUp = messageKeys.PageUp
 	vp.KeyMap.PageDown = messageKeys.PageDown
 	vp.KeyMap.HalfPageUp = messageKeys.HalfPageUp

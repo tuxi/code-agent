@@ -4,8 +4,8 @@ import (
 	"testing"
 	"time"
 
+	tea "charm.land/bubbletea/v2"
 	"code-agent/internal/agent"
-	tea "github.com/charmbracelet/bubbletea"
 )
 
 // runLeaves runs cmd, flattening tea.BatchMsg, and returns every leaf message.

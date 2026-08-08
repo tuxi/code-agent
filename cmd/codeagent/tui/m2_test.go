@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
+	tea "charm.land/bubbletea/v2"
 	"code-agent/internal/agent"
-	tea "github.com/charmbracelet/bubbletea"
 )
 
 // readyModel builds a sized model and plays the given events through Update, so

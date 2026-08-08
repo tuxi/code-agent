@@ -3,9 +3,9 @@ package dialog
 import (
 	"fmt"
 
-	"github.com/charmbracelet/bubbles/key"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/key"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"code-agent/cmd/codeagent/tui/layout"
 	"code-agent/cmd/codeagent/tui/styles"
 	"code-agent/cmd/codeagent/tui/theme"
@@ -39,11 +39,11 @@ type ModelDialog interface {
 }
 
 type modelDialogCmp struct {
-	models        []ModelOption
-	selectedIdx   int
-	width         int
-	height        int
-	scrollOffset  int
+	models       []ModelOption
+	selectedIdx  int
+	width        int
+	height       int
+	scrollOffset int
 }
 
 type modelKeyMap struct {
@@ -148,7 +148,7 @@ func (m *modelDialogCmp) moveSelectionDown() {
 	}
 }
 
-func (m *modelDialogCmp) View() string {
+func (m *modelDialogCmp) View() tea.View {
 	t := theme.CurrentTheme()
 	baseStyle := styles.BaseStyle()
 
@@ -185,12 +185,12 @@ func (m *modelDialogCmp) View() string {
 		scrollIndicator,
 	)
 
-	return baseStyle.Padding(1, 2).
+	return tea.NewView(baseStyle.Padding(1, 2).
 		Border(lipgloss.RoundedBorder()).
 		BorderBackground(t.Background()).
 		BorderForeground(t.TextMuted()).
 		Width(lipgloss.Width(content) + 4).
-		Render(content)
+		Render(content))
 }
 
 func (m *modelDialogCmp) getScrollIndicators(maxWidth int) string {
@@ -233,4 +233,3 @@ func NewModelDialogCmp(models []ModelOption) ModelDialog {
 		scrollOffset: 0,
 	}
 }
-

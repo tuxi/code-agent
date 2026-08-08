@@ -3,9 +3,9 @@ package dialog
 import (
 	"strings"
 
-	"github.com/charmbracelet/bubbles/key"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/key"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"code-agent/cmd/codeagent/tui/layout"
 	"code-agent/cmd/codeagent/tui/styles"
 	"code-agent/cmd/codeagent/tui/theme"
@@ -81,10 +81,10 @@ func (q *quitDialogCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return q, nil
 }
 
-func (q *quitDialogCmp) View() string {
+func (q *quitDialogCmp) View() tea.View {
 	t := theme.CurrentTheme()
 	baseStyle := styles.BaseStyle()
-	
+
 	yesStyle := baseStyle
 	noStyle := baseStyle
 	spacerStyle := baseStyle.Background(t.Background())
@@ -117,12 +117,12 @@ func (q *quitDialogCmp) View() string {
 		),
 	)
 
-	return baseStyle.Padding(1, 2).
+	return tea.NewView(baseStyle.Padding(1, 2).
 		Border(lipgloss.RoundedBorder()).
 		BorderBackground(t.Background()).
 		BorderForeground(t.TextMuted()).
 		Width(lipgloss.Width(content) + 4).
-		Render(content)
+		Render(content))
 }
 
 func (q *quitDialogCmp) BindingKeys() []key.Binding {

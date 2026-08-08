@@ -3,9 +3,9 @@ package dialog
 import (
 	"strings"
 
-	"github.com/charmbracelet/bubbles/key"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/key"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"code-agent/cmd/codeagent/tui/styles"
 	"code-agent/cmd/codeagent/tui/theme"
 )
@@ -134,7 +134,7 @@ func (h *helpCmp) render() string {
 		pairs = append(pairs, pair)
 	}
 
-	// https://github.com/charmbracelet/lipgloss/issues/209
+	// https://charm.land/lipgloss/v2/issues/209
 	if len(pairs) > 1 {
 		prefix := pairs[:len(pairs)-1]
 		lastPair := pairs[len(pairs)-1]
@@ -144,7 +144,7 @@ func (h *helpCmp) render() string {
 			lipgloss.Left,              // x
 			lipgloss.Top,               // y
 			lastPair,                   // content
-			lipgloss.WithWhitespaceBackground(t.Background()),
+			lipgloss.WithWhitespaceStyle(lipgloss.NewStyle().Background(t.Background())),
 		))
 		content := baseStyle.Width(h.width).Render(
 			lipgloss.JoinHorizontal(
@@ -165,7 +165,7 @@ func (h *helpCmp) render() string {
 	return content
 }
 
-func (h *helpCmp) View() string {
+func (h *helpCmp) View() tea.View {
 	t := theme.CurrentTheme()
 	baseStyle := styles.BaseStyle()
 
@@ -176,7 +176,7 @@ func (h *helpCmp) View() string {
 		Foreground(t.Primary()).
 		Render("Keyboard Shortcuts")
 
-	return baseStyle.Padding(1).
+	return tea.NewView(baseStyle.Padding(1).
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(t.TextMuted()).
 		Width(h.width).
@@ -187,7 +187,7 @@ func (h *helpCmp) View() string {
 				baseStyle.Render(strings.Repeat(" ", lipgloss.Width(header))),
 				content,
 			),
-		)
+		))
 }
 
 type HelpCmp interface {

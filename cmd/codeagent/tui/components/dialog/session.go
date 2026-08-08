@@ -5,9 +5,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/key"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/key"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"code-agent/cmd/codeagent/tui/layout"
 	"code-agent/cmd/codeagent/tui/styles"
 	"code-agent/cmd/codeagent/tui/theme"
@@ -110,17 +110,17 @@ func (s *sessionDialogCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return s, nil
 }
 
-func (s *sessionDialogCmp) View() string {
+func (s *sessionDialogCmp) View() tea.View {
 	t := theme.CurrentTheme()
 	baseStyle := styles.BaseStyle()
 
 	if len(s.sessions) == 0 {
-		return baseStyle.Padding(1, 2).
+		return tea.NewView(baseStyle.Padding(1, 2).
 			Border(lipgloss.RoundedBorder()).
 			BorderBackground(t.Background()).
 			BorderForeground(t.TextMuted()).
 			Width(40).
-			Render("No sessions available")
+			Render("No sessions available"))
 	}
 
 	// Calculate max width needed for session titles
@@ -184,12 +184,12 @@ func (s *sessionDialogCmp) View() string {
 		baseStyle.Width(maxWidth).Render(""),
 	)
 
-	return baseStyle.Padding(1, 2).
+	return tea.NewView(baseStyle.Padding(1, 2).
 		Border(lipgloss.RoundedBorder()).
 		BorderBackground(t.Background()).
 		BorderForeground(t.TextMuted()).
 		Width(lipgloss.Width(content) + 4).
-		Render(content)
+		Render(content))
 }
 
 func (s *sessionDialogCmp) BindingKeys() []key.Binding {

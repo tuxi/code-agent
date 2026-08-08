@@ -13,7 +13,7 @@ import (
 	"errors"
 	"os"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 )
 
 // Store is the slice of the session store the TUI needs: persist after each turn,
@@ -253,12 +253,6 @@ func Run(ctx context.Context, b *Backend, runner *agent.Runner, sess *session.Se
 	p := tea.NewProgram(
 		newModel(b, header, src),
 		tea.WithContext(ctx),
-		tea.WithAltScreen(),
-		// Capture mouse events (wheel over the transcript scrolls the chat
-		// pane instead of the terminal's own scrollback). The chat List
-		// forwards tea.MouseMsg to its viewport; every other component
-		// ignores it.
-		tea.WithMouseCellMotion(),
 		// Some terminals pad SGR mouse sequences with spaces that bubbletea's
 		// parser rejects; the filter normalizes them before parsing (see
 		// input.go). It embeds os.Stdin so raw-mode setup still applies.

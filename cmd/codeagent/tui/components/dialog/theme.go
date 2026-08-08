@@ -1,9 +1,9 @@
 package dialog
 
 import (
-	"github.com/charmbracelet/bubbles/key"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/key"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"code-agent/cmd/codeagent/tui/layout"
 	"code-agent/cmd/codeagent/tui/styles"
 	"code-agent/cmd/codeagent/tui/theme"
@@ -122,17 +122,17 @@ func (t *themeDialogCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return t, nil
 }
 
-func (t *themeDialogCmp) View() string {
+func (t *themeDialogCmp) View() tea.View {
 	currentTheme := theme.CurrentTheme()
 	baseStyle := styles.BaseStyle()
 
 	if len(t.themes) == 0 {
-		return baseStyle.Padding(1, 2).
+		return tea.NewView(baseStyle.Padding(1, 2).
 			Border(lipgloss.RoundedBorder()).
 			BorderBackground(currentTheme.Background()).
 			BorderForeground(currentTheme.TextMuted()).
 			Width(40).
-			Render("No themes available")
+			Render("No themes available"))
 	}
 
 	// Calculate max width needed for theme names
@@ -175,12 +175,12 @@ func (t *themeDialogCmp) View() string {
 		baseStyle.Width(maxWidth).Render(""),
 	)
 
-	return baseStyle.Padding(1, 2).
+	return tea.NewView(baseStyle.Padding(1, 2).
 		Border(lipgloss.RoundedBorder()).
 		BorderBackground(currentTheme.Background()).
 		BorderForeground(currentTheme.TextMuted()).
 		Width(lipgloss.Width(content) + 4).
-		Render(content)
+		Render(content))
 }
 
 func (t *themeDialogCmp) BindingKeys() []key.Binding {
@@ -195,4 +195,3 @@ func NewThemeDialogCmp() ThemeDialog {
 		currentTheme: "",
 	}
 }
-

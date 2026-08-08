@@ -5,10 +5,10 @@ import (
 	"strings"
 	"testing"
 
+	tea "charm.land/bubbletea/v2"
 	"code-agent/cmd/codeagent/tui/components/chat"
 	"code-agent/cmd/codeagent/tui/components/dialog"
 	"code-agent/internal/agent"
-	tea "github.com/charmbracelet/bubbletea"
 )
 
 func newTestModel() *model {
@@ -45,7 +45,7 @@ func TestApprovalApprove(t *testing.T) {
 	m = asModel(t, tm)
 
 	// 'a' = allow: the dialog answers the request and emits its close message.
-	tm, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	tm, cmd := m.Update(tea.KeyPressMsg{Code: 'a'})
 	m = asModel(t, tm)
 	if <-reply != agent.VerdictAllow {
 		t.Fatal("'a' should approve the tool")
@@ -85,7 +85,7 @@ func TestApprovalDeny(t *testing.T) {
 	tm, _ := m.Update(approvalMsg{tool: "run_command", reply: reply})
 	m = asModel(t, tm)
 
-	tm, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	tm, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
 	m = asModel(t, tm)
 	if <-reply == agent.VerdictAllow {
 		t.Fatal("esc should deny the tool")
@@ -156,7 +156,7 @@ func TestApprovalAlwaysGrants(t *testing.T) {
 	tm, _ := m.Update(approvalMsg{tool: "mcp__github__list_issues", reply: reply})
 	m = asModel(t, tm)
 
-	tm, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
+	tm, cmd := m.Update(tea.KeyPressMsg{Code: 's'})
 	m = asModel(t, tm)
 	if <-reply != agent.VerdictAllow {
 		t.Fatal("'s' should approve the tool")
@@ -177,7 +177,7 @@ func TestApprovalSwallowsCtrlC(t *testing.T) {
 	tm, _ := m.Update(approvalMsg{tool: "run_command", reply: reply})
 	m = asModel(t, tm)
 
-	tm, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	tm, cmd := m.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
 	m = asModel(t, tm)
 	if <-reply == agent.VerdictAllow {
 		t.Fatal("ctrl+c on the approval card should deny")

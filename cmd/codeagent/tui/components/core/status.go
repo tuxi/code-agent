@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 
 	"code-agent/cmd/codeagent/tui/styles"
 	"code-agent/cmd/codeagent/tui/theme"
@@ -96,7 +96,7 @@ func formatTokens(tokens int64) string {
 	}
 }
 
-func (m statusCmp) View() string {
+func (m statusCmp) View() tea.View {
 	t := theme.CurrentTheme()
 
 	// Initialize the help widget
@@ -170,7 +170,7 @@ func (m statusCmp) View() string {
 			Render("")
 	}
 
-	return status
+	return tea.NewView(status)
 }
 
 func NewStatusCmp() StatusCmp {

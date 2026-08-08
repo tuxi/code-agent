@@ -1,10 +1,14 @@
 package styles
 
 import (
+	"fmt"
+	"os"
+
+	"charm.land/lipgloss/v2"
+	compat "charm.land/lipgloss/v2/compat"
+	"code-agent/cmd/codeagent/tui/theme"
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/glamour/ansi"
-	"github.com/charmbracelet/lipgloss"
-	"code-agent/cmd/codeagent/tui/theme"
 )
 
 const defaultMargin = 1
@@ -14,13 +18,28 @@ func boolPtr(b bool) *bool       { return &b }
 func stringPtr(s string) *string { return &s }
 func uintPtr(u uint) *uint       { return &u }
 
+// mdRendererCache caches glamour renderers per wrap width. All Bubble Tea
+// Update/View calls run on the program's single event-loop goroutine, so no
+// lock is needed. ClearMarkdownRendererCache drops it after a theme change.
+var mdRendererCache = map[int]*glamour.TermRenderer{}
+
 // returns a glamour TermRenderer configured with the current theme
 func GetMarkdownRenderer(width int) *glamour.TermRenderer {
+	if r, ok := mdRendererCache[width]; ok {
+		return r
+	}
 	r, _ := glamour.NewTermRenderer(
 		glamour.WithStyles(generateMarkdownStyleConfig()),
 		glamour.WithWordWrap(width),
 	)
+	mdRendererCache[width] = r
 	return r
+}
+
+// ClearMarkdownRendererCache drops cached renderers so the next render picks
+// up the current theme. Call after ThemeChangedMsg.
+func ClearMarkdownRendererCache() {
+	mdRendererCache = map[int]*glamour.TermRenderer{}
 }
 
 // creates an ansi.StyleConfig for markdown rendering
@@ -274,11 +293,18 @@ func generateMarkdownStyleConfig() ansi.StyleConfig {
 	}
 }
 
-// adaptiveColorToString converts a lipgloss.AdaptiveColor to the appropriate
+// adaptiveColorToString converts a compat.AdaptiveColor to the appropriate
 // hex color string based on the current terminal background
-func adaptiveColorToString(color lipgloss.AdaptiveColor) string {
-	if lipgloss.HasDarkBackground() {
-		return color.Dark
+func adaptiveColorToString(color compat.AdaptiveColor) string {
+	c := color.Light
+	if lipgloss.HasDarkBackground(os.Stdin, os.Stdout) {
+		c = color.Dark
 	}
-	return color.Light
+	r, g, b, a := c.RGBA()
+	if a > 0 && a < 0xffff {
+		r = (r * 0xffff) / a
+		g = (g * 0xffff) / a
+		b = (b * 0xffff) / a
+	}
+	return fmt.Sprintf("#%02x%02x%02x", r>>8, g>>8, b>>8)
 }

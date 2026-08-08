@@ -18,10 +18,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/key"
-	"github.com/charmbracelet/bubbles/textarea"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/key"
+	"charm.land/bubbles/v2/textarea"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/mattn/go-runewidth"
 
 	"code-agent/cmd/codeagent/tui/components/dialog"
@@ -210,20 +210,20 @@ func (m *Editor) notifyEmptyChange() {
 	m.onEmptyChange(empty)
 }
 
-func (m *Editor) View() string {
+func (m *Editor) View() tea.View {
 	t := theme.CurrentTheme()
 	style := lipgloss.NewStyle().
 		Padding(0, 0, 0, 1).
 		Bold(true).
 		Foreground(t.Primary())
 	if len(m.attachments) == 0 {
-		return lipgloss.JoinHorizontal(lipgloss.Top, style.Render(">"), m.textarea.View())
+		return tea.NewView(lipgloss.JoinHorizontal(lipgloss.Top, style.Render(">"), m.textarea.View()))
 	}
 	m.textarea.SetHeight(m.height - 1)
-	return lipgloss.JoinVertical(lipgloss.Top,
+	return tea.NewView(lipgloss.JoinVertical(lipgloss.Top,
 		m.attachmentsContent(),
 		lipgloss.JoinHorizontal(lipgloss.Top, style.Render(">"), m.textarea.View()),
-	)
+	))
 }
 
 func (m *Editor) SetSize(width, height int) tea.Cmd {
@@ -314,15 +314,25 @@ func CreateTextArea(existing *textarea.Model) textarea.Model {
 	textMutedColor := t.TextMuted()
 	ta := textarea.New()
 	// 使用软件高亮块作为光标，避免 ANSI 物理光标坐标算错抛到最底部
-	ta.Cursor.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("205"))
-	ta.BlurredStyle.Base = styles.BaseStyle().Background(bgColor).Foreground(textColor)
-	ta.BlurredStyle.CursorLine = styles.BaseStyle().Background(bgColor)
-	ta.BlurredStyle.Placeholder = styles.BaseStyle().Background(bgColor).Foreground(textMutedColor)
-	ta.BlurredStyle.Text = styles.BaseStyle().Background(bgColor).Foreground(textColor)
-	ta.FocusedStyle.Base = styles.BaseStyle().Background(bgColor).Foreground(textColor)
-	ta.FocusedStyle.CursorLine = styles.BaseStyle().Background(bgColor)
-	ta.FocusedStyle.Placeholder = styles.BaseStyle().Background(bgColor).Foreground(textMutedColor)
-	ta.FocusedStyle.Text = styles.BaseStyle().Background(bgColor).Foreground(textColor)
+	st := ta.Styles()
+	st.Cursor = textarea.CursorStyle{
+		Color: lipgloss.Color("205"),
+		Shape: tea.CursorBlock,
+		Blink: false,
+	}
+	st.Blurred = textarea.StyleState{
+		Base:        styles.BaseStyle().Background(bgColor).Foreground(textColor),
+		CursorLine:  styles.BaseStyle().Background(bgColor),
+		Placeholder: styles.BaseStyle().Background(bgColor).Foreground(textMutedColor),
+		Text:        styles.BaseStyle().Background(bgColor).Foreground(textColor),
+	}
+	st.Focused = textarea.StyleState{
+		Base:        styles.BaseStyle().Background(bgColor).Foreground(textColor),
+		CursorLine:  styles.BaseStyle().Background(bgColor),
+		Placeholder: styles.BaseStyle().Background(bgColor).Foreground(textMutedColor),
+		Text:        styles.BaseStyle().Background(bgColor).Foreground(textColor),
+	}
+	ta.SetStyles(st)
 	ta.Prompt = " "
 	ta.ShowLineNumbers = false
 	ta.CharLimit = -1

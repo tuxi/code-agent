@@ -4,10 +4,10 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/key"
-	"github.com/charmbracelet/bubbles/viewport"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/key"
+	"charm.land/bubbles/v2/viewport"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/mattn/go-runewidth"
 
 	"code-agent/cmd/codeagent/tui/layout"
@@ -114,8 +114,8 @@ func (p *planApprovalDialogCmp) render() string {
 	}
 	lines := renderPlanApprovalCard(p.req.Plan, innerW)
 
-	p.contentViewport.Width = innerW
-	p.contentViewport.Height = max(1, p.height-lipgloss.Height(title)-5)
+	p.contentViewport.SetWidth(innerW)
+	p.contentViewport.SetHeight(max(1, p.height-lipgloss.Height(title)-5))
 	p.contentViewport.SetContent(strings.Join(lines, "\n"))
 
 	content := lipgloss.JoinVertical(
@@ -140,8 +140,8 @@ func (p *planApprovalDialogCmp) styleViewport() string {
 	return lipgloss.NewStyle().Background(t.Background()).Render(p.contentViewport.View())
 }
 
-func (p *planApprovalDialogCmp) View() string {
-	return p.render()
+func (p *planApprovalDialogCmp) View() tea.View {
+	return tea.NewView(p.render())
 }
 
 func (p *planApprovalDialogCmp) BindingKeys() []key.Binding {
@@ -167,7 +167,7 @@ func (p *planApprovalDialogCmp) SetPlan(req PlanApprovalRequest) tea.Cmd {
 
 func NewPlanApprovalDialogCmp() PlanApprovalDialogCmp {
 	return &planApprovalDialogCmp{
-		contentViewport: viewport.New(0, 0),
+		contentViewport: viewport.New(),
 	}
 }
 

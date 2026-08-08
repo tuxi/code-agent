@@ -4,10 +4,10 @@ import (
 	"testing"
 	"time"
 
+	tea "charm.land/bubbletea/v2"
 	"code-agent/cmd/codeagent/tui/components/dialog"
 	"code-agent/internal/agent"
 	"code-agent/internal/session"
-	tea "github.com/charmbracelet/bubbletea"
 )
 
 func twoSessions() []session.Meta {
@@ -28,7 +28,7 @@ func TestResumeViaSessionDialogSwaps(t *testing.T) {
 	m.src.events = func(id string) []agent.Event { return nil }
 
 	// ctrl+s opens the session dialog.
-	tm, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
+	tm, _ := m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
 	m = asModel(t, tm)
 	if m.dialog == nil {
 		t.Fatal("ctrl+s should open the session dialog")
@@ -38,9 +38,9 @@ func TestResumeViaSessionDialogSwaps(t *testing.T) {
 	}
 
 	// ↓ moves the selection to the second session; enter selects it.
-	tm, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	tm, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
 	m = asModel(t, tm)
-	tm, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	tm, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = asModel(t, tm)
 	sel, ok := cmd().(dialog.SessionSelectedMsg)
 	if !ok {
@@ -71,12 +71,12 @@ func TestResumeViaSessionDialogSwaps(t *testing.T) {
 func TestResumeDialogEscCancels(t *testing.T) {
 	m := readyModel(t)
 	m.src.list = twoSessions
-	tm, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
+	tm, _ := m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
 	m = asModel(t, tm)
 	if m.dialog == nil {
 		t.Fatal("ctrl+s should open the session dialog")
 	}
-	tm, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	tm, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
 	m = asModel(t, tm)
 	if m.dialog != nil {
 		t.Fatal("esc should close the session dialog")

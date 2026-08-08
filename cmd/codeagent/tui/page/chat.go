@@ -10,8 +10,8 @@
 package page
 
 import (
-	"github.com/charmbracelet/bubbles/key"
-	tea "github.com/charmbracelet/bubbletea"
+	"charm.land/bubbles/v2/key"
+	tea "charm.land/bubbletea/v2"
 
 	"code-agent/cmd/codeagent/tui/components/chat"
 	"code-agent/cmd/codeagent/tui/layout"
@@ -94,7 +94,7 @@ func (p *chatPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return p, tea.Batch(cmds...)
 }
 
-func (p *chatPage) View() string {
+func (p *chatPage) View() tea.View {
 	return p.layout.View()
 }
 

@@ -1,9 +1,9 @@
 package layout
 
 import (
-	"github.com/charmbracelet/bubbles/key"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/key"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"code-agent/cmd/codeagent/tui/theme"
 )
 
@@ -41,7 +41,7 @@ func (c *container) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return c, cmd
 }
 
-func (c *container) View() string {
+func (c *container) View() tea.View {
 	t := theme.CurrentTheme()
 	style := lipgloss.NewStyle()
 	width := c.width
@@ -75,7 +75,7 @@ func (c *container) View() string {
 		PaddingBottom(c.paddingBottom).
 		PaddingLeft(c.paddingLeft)
 
-	return style.Render(c.content.View())
+	return tea.NewView(style.Render(c.content.View().Content))
 }
 
 func (c *container) SetSize(width, height int) tea.Cmd {

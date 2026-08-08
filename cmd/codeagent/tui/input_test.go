@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 )
 
 // mouseProbe is a minimal tea.Model that records every message it receives.
@@ -21,7 +21,11 @@ func (m *mouseProbe) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	m.got = append(m.got, msg)
 	return m, nil
 }
-func (m *mouseProbe) View() string { return "" }
+func (m *mouseProbe) View() tea.View {
+	v := tea.NewView("")
+	v.MouseMode = tea.MouseModeCellMotion
+	return v
+}
 
 // readAllFilter drains the filter until EOF and returns the filtered bytes.
 func readAllFilter(t *testing.T, f *sgrMouseFilter) []byte {
@@ -233,7 +237,7 @@ func TestSGRFilterThroughProgram(t *testing.T) {
 	}
 	w.Close()
 
-	p := tea.NewProgram(probe, tea.WithInput(newSGRMouseFilter(r)), tea.WithoutRenderer(), tea.WithMouseCellMotion())
+	p := tea.NewProgram(probe, tea.WithInput(newSGRMouseFilter(r)), tea.WithoutRenderer())
 	go func() {
 		time.Sleep(1500 * time.Millisecond)
 		p.Quit()
@@ -242,20 +246,24 @@ func TestSGRFilterThroughProgram(t *testing.T) {
 		t.Fatalf("program run: %v", err)
 	}
 
-	var first tea.Msg
+	// v2 sends lifecycle messages (ColorProfileMsg, WindowSizeMsg,
+	// EnvironmentMsg) at startup before input is processed; find the first
+	// mouse event in the stream rather than assuming it is message #1.
+	var mouse tea.MouseWheelMsg
+	var ok bool
 	for _, m := range probe.got {
-		first = m
-		break
+		if mouse, ok = m.(tea.MouseWheelMsg); ok {
+			break
+		}
 	}
-	mouse, ok := first.(tea.MouseMsg)
 	if !ok {
 		var got []string
 		for _, m := range probe.got {
 			got = append(got, fmt.Sprintf("%s %q", m, m))
 		}
-		t.Fatalf("first message = %#v (got %v), want MouseMsg; all: %s", first, first, strings.Join(got, "; "))
+		t.Fatalf("no MouseWheelMsg received; all: %s", strings.Join(got, "; "))
 	}
-	if mouse.Button != tea.MouseButtonWheelUp {
+	if mouse.Button != tea.MouseWheelUp {
 		t.Fatalf("button = %d, want WheelUp", mouse.Button)
 	}
 	if mouse.X != 57 || mouse.Y != 5 {
@@ -432,7 +440,7 @@ func TestSGRFilterThroughProgramBurst(t *testing.T) {
 	}
 	w.Close()
 
-	p := tea.NewProgram(probe, tea.WithInput(newSGRMouseFilter(r)), tea.WithoutRenderer(), tea.WithMouseCellMotion())
+	p := tea.NewProgram(probe, tea.WithInput(newSGRMouseFilter(r)), tea.WithoutRenderer())
 	go func() {
 		time.Sleep(1500 * time.Millisecond)
 		p.Quit()
@@ -441,25 +449,25 @@ func TestSGRFilterThroughProgramBurst(t *testing.T) {
 		t.Fatalf("program run: %v", err)
 	}
 
-	var mice []tea.MouseMsg
+	var mice []tea.MouseWheelMsg
 	for _, m := range probe.got {
 		switch msg := m.(type) {
-		case tea.MouseMsg:
+		case tea.MouseWheelMsg:
 			mice = append(mice, msg)
-		case tea.KeyMsg:
+		case tea.KeyPressMsg:
 			t.Fatalf("keypress leaked into the program: %s %q", msg, msg)
 		default:
 			// WindowSizeMsg and other lifecycle messages are expected.
 		}
 	}
 	if len(mice) != len(events) {
-		t.Fatalf("got %d MouseMsg, want %d (all: %v)", len(mice), len(events), probe.got)
+		t.Fatalf("got %d MouseWheelMsg, want %d (all: %v)", len(mice), len(events), probe.got)
 	}
 	for i, m := range mice {
 		want := events[i]
-		wantBtn := tea.MouseButtonWheelUp
+		wantBtn := tea.MouseWheelUp
 		if want.btn == 65 {
-			wantBtn = tea.MouseButtonWheelDown
+			wantBtn = tea.MouseWheelDown
 		}
 		if m.Button != wantBtn || m.X != want.x-1 || m.Y != want.y-1 {
 			t.Fatalf("mouse[%d] = (btn %d, %d,%d), want (btn %d, %d,%d)",

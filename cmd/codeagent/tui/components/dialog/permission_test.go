@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"testing"
 
+	tea "charm.land/bubbletea/v2"
 	"code-agent/internal/agent"
-	tea "github.com/charmbracelet/bubbletea"
 )
 
 type stubGranter struct{ tool string }
@@ -24,8 +24,8 @@ func newPermissionDialog(t *testing.T, granter PermissionGranter) (PermissionDia
 	return d, reply
 }
 
-func keyRune(r rune) tea.KeyMsg {
-	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}}
+func keyRune(r rune) tea.KeyPressMsg {
+	return tea.KeyPressMsg{Code: r}
 }
 
 func expectResponse(t *testing.T, cmd tea.Cmd, want PermissionAction) {
@@ -65,7 +65,7 @@ func TestDenyKeyDenies(t *testing.T) {
 
 func TestEscDenies(t *testing.T) {
 	d, reply := newPermissionDialog(t, nil)
-	_, cmd := d.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	_, cmd := d.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
 	if <-reply != agent.VerdictDeny {
 		t.Fatal("esc should deny the tool")
 	}
@@ -74,7 +74,7 @@ func TestEscDenies(t *testing.T) {
 
 func TestEnterConfirmsSelectedAllow(t *testing.T) {
 	d, reply := newPermissionDialog(t, nil)
-	_, cmd := d.Update(tea.KeyMsg{Type: tea.KeyEnter}) // selection starts at Allow
+	_, cmd := d.Update(tea.KeyPressMsg{Code: tea.KeyEnter}) // selection starts at Allow
 	if <-reply != agent.VerdictAllow {
 		t.Fatal("enter on the default selection should allow")
 	}
@@ -109,11 +109,11 @@ func TestAllowForSessionWithoutGranterIsNoop(t *testing.T) {
 
 func TestTabMovesSelectionToDeny(t *testing.T) {
 	d, reply := newPermissionDialog(t, nil)
-	u, cmd := d.Update(tea.KeyMsg{Type: tea.KeyTab})
+	u, cmd := d.Update(tea.KeyPressMsg{Code: tea.KeyTab})
 	if cmd != nil {
 		t.Fatal("tab should only move the selection")
 	}
-	_, cmd = u.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	_, cmd = u.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if <-reply != agent.VerdictDeny {
 		t.Fatal("after one tab the selection should be deny (2 options, no granter)")
 	}

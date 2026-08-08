@@ -3,8 +3,8 @@ package dialog
 import (
 	"testing"
 
+	tea "charm.land/bubbletea/v2"
 	"code-agent/internal/agent"
-	tea "github.com/charmbracelet/bubbletea"
 )
 
 func newPlanApprovalDialog(t *testing.T) (PlanApprovalDialogCmp, chan agent.PlanDecision) {
@@ -36,7 +36,7 @@ func TestPlanApproveKeyApproves(t *testing.T) {
 
 func TestPlanEnterApproves(t *testing.T) {
 	d, reply := newPlanApprovalDialog(t)
-	_, cmd := d.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	_, cmd := d.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if <-reply != agent.PlanApproved {
 		t.Fatal("enter should approve the plan")
 	}
@@ -54,7 +54,7 @@ func TestPlanRejectKeyRejects(t *testing.T) {
 
 func TestPlanEscRejects(t *testing.T) {
 	d, reply := newPlanApprovalDialog(t)
-	_, cmd := d.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	_, cmd := d.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
 	if <-reply != agent.PlanRejected {
 		t.Fatal("esc should reject the plan")
 	}

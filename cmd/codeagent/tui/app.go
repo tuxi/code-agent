@@ -21,15 +21,16 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/key"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/key"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 
 	"code-agent/cmd/codeagent/tui/components/chat"
 	"code-agent/cmd/codeagent/tui/components/core"
 	"code-agent/cmd/codeagent/tui/components/dialog"
 	"code-agent/cmd/codeagent/tui/layout"
 	"code-agent/cmd/codeagent/tui/page"
+	"code-agent/cmd/codeagent/tui/styles"
 	"code-agent/cmd/codeagent/tui/util"
 	"code-agent/internal/agent"
 )
@@ -245,7 +246,10 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case dialog.ThemeChangedMsg:
 		// The dialog already applied theme.SetTheme; the layout rerenders on
 		// this message (List drops its cache, editor re-creates its textarea).
-		return m, m.closeDialog()
+		styles.ClearMarkdownRendererCache()
+		u, cmd := m.layout.Update(msg)
+		m.layout = u.(layout.SplitPaneLayout)
+		return m, tea.Batch(cmd, m.closeDialog())
 	case dialog.CommandSelectedMsg:
 		m.dialog = nil
 		m.blocking = false
@@ -648,14 +652,20 @@ func (m *model) system(content string) tea.Cmd {
 
 // View renders the layout, then places the active dialog on top, centered,
 // with a drop shadow (the same overlay technique as the permission dialog).
-func (m *model) View() string {
+func (m *model) View() tea.View {
 	base := m.layout.View()
 	if m.dialog == nil {
+		base.AltScreen = true
+		base.MouseMode = tea.MouseModeCellMotion
 		return base
 	}
-	content := m.dialog.View()
+	content := m.dialog.View().Content
 	dw, dh := lipgloss.Width(content), lipgloss.Height(content)
 	x := util.Clamp((m.width-dw)/2, 0, max(0, m.width-dw))
 	y := util.Clamp((m.height-dh)/2, 0, max(0, m.height-dh))
-	return layout.PlaceOverlay(x, y, content, base, true)
+	v := layout.PlaceOverlay(x, y, content, base.Content, true)
+	vw := tea.NewView(v)
+	vw.AltScreen = true
+	vw.MouseMode = tea.MouseModeCellMotion
+	return vw
 }

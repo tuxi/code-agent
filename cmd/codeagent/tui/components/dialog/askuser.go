@@ -3,10 +3,10 @@ package dialog
 import (
 	"strings"
 
-	"github.com/charmbracelet/bubbles/key"
-	"github.com/charmbracelet/bubbles/viewport"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/key"
+	"charm.land/bubbles/v2/viewport"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/mattn/go-runewidth"
 
 	"code-agent/cmd/codeagent/tui/layout"
@@ -191,8 +191,8 @@ func (a *askUserDialogCmp) render() string {
 	}
 	lines := renderAskUserCard(a.req.Question, a.selected, a.multi, innerW)
 
-	a.contentViewport.Width = innerW
-	a.contentViewport.Height = max(1, a.height-lipgloss.Height(title)-5)
+	a.contentViewport.SetWidth(innerW)
+	a.contentViewport.SetHeight(max(1, a.height-lipgloss.Height(title)-5))
 	a.contentViewport.SetContent(strings.Join(lines, "\n"))
 
 	content := lipgloss.JoinVertical(
@@ -217,8 +217,8 @@ func (a *askUserDialogCmp) styleViewport() string {
 	return lipgloss.NewStyle().Background(t.Background()).Render(a.contentViewport.View())
 }
 
-func (a *askUserDialogCmp) View() string {
-	return a.render()
+func (a *askUserDialogCmp) View() tea.View {
+	return tea.NewView(a.render())
 }
 
 func (a *askUserDialogCmp) BindingKeys() []key.Binding {
@@ -245,7 +245,7 @@ func (a *askUserDialogCmp) SetQuestion(req AskUserRequest) tea.Cmd {
 
 func NewAskUserDialogCmp() AskUserDialogCmp {
 	return &askUserDialogCmp{
-		contentViewport: viewport.New(0, 0),
+		contentViewport: viewport.New(),
 	}
 }
 

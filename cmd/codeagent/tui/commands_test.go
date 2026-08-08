@@ -3,8 +3,8 @@ package tui
 import (
 	"testing"
 
+	tea "charm.land/bubbletea/v2"
 	"code-agent/internal/session"
-	tea "github.com/charmbracelet/bubbletea"
 )
 
 func TestCommandToken(t *testing.T) {
@@ -80,12 +80,12 @@ func TestSlashCommandIsNotSentAsMessage(t *testing.T) {
 // Quitting goes through the ctrl+c confirm dialog: 'y' answers yes.
 func TestExitCommandQuits(t *testing.T) {
 	m := readyModel(t)
-	tm, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	tm, _ := m.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
 	m = asModel(t, tm)
 	if m.dialog == nil {
 		t.Fatal("ctrl+c should open the quit dialog")
 	}
-	tm, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	tm, cmd := m.Update(tea.KeyPressMsg{Code: 'y'})
 	m = asModel(t, tm)
 	if cmd == nil {
 		t.Fatal("'y' on the quit dialog should return a command")
