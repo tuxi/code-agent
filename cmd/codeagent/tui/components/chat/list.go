@@ -371,7 +371,14 @@ func (m *List) View() tea.View {
 	// — a lipgloss.JoinVertical pass would re-measure every line's width over
 	// the whole visible window (~300µs per frame) for no effect.
 	vp := m.viewportString()
-	w := m.working()
+	w := ""
+	if len(m.messages) > 0 {
+		lastKind := m.messages[len(m.messages)-1].Kind
+		if lastKind == KindThinking || lastKind == KindTool {
+			w = m.working()
+		}
+	}
+
 	if w == "" {
 		return tea.NewView(vp)
 	}
@@ -415,6 +422,12 @@ func (m *List) renderView() {
 		blocks, ok := m.renderMessage(msg, pos)
 		if msg.Fold != nil {
 			m.foldRows[msg.Fold.ID] = pos
+			// Expanded folds render member blocks; tag them with the fold ID so
+			// clicking a member collapses the group again (the summary row is
+			// tagged in renderFoldSummary already).
+			for i := range blocks {
+				blocks[i].foldID = msg.Fold.ID
+			}
 		}
 		for i := range blocks {
 			// Cached blocks are re-tagged each pass: position depends only on
@@ -583,8 +596,8 @@ func (m *List) scrollToFocus() {
 }
 
 // handleClick maps a terminal click onto the transcript and toggles the fold
-// summary row it landed on, if any. screenX/screenY anchor the List's top-left
-// corner (set by the chat page from the layout).
+// whose summary or expanded member block it landed on, if any. screenX/screenY
+// anchor the List's top-left corner (set by the chat page from the layout).
 func (m *List) handleClick(x, y int) {
 	lx := x - m.screenX
 	ly := y - m.screenY
@@ -593,11 +606,13 @@ func (m *List) handleClick(x, y int) {
 	}
 	row := ly + m.viewport.YOffset()
 	for _, u := range m.ui {
-		if u.messageType != foldSummaryMessageType || u.ID == "" {
+		// Both the collapsed summary row and the expanded member blocks belong
+		// to a fold; clicking either toggles it (running tool groups refuse).
+		if u.foldID == "" || u.messageType == foldSummaryMessageType && u.ID == "" {
 			continue
 		}
 		if row >= u.position && row < u.position+u.height {
-			m.toggleFold(u.ID)
+			m.toggleFold(u.foldID)
 			return
 		}
 	}

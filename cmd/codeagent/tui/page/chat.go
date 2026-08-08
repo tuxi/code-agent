@@ -65,6 +65,7 @@ func (p *chatPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmd := p.layout.SetSize(msg.Width, msg.Height)
 		p.syncScreenOrigin()
 		cmds = append(cmds, cmd)
+		return p, tea.Batch(cmds...)
 
 	case chat.SendMsg:
 		if p.onSubmit != nil {
@@ -100,6 +101,11 @@ func (p *chatPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (p *chatPage) View() tea.View {
+	// Re-sync before every render. The split pane above consumes
+	// tea.WindowSizeMsg without forwarding it to the page, so relying on the
+	// WindowSizeMsg case alone would leave the transcript's screen origin at
+	// (0,0) and mis-map every click by the container's top padding.
+	p.syncScreenOrigin()
 	return p.layout.View()
 }
 

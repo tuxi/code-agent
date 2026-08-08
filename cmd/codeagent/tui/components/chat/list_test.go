@@ -124,6 +124,43 @@ func TestFoldToggleByClick(t *testing.T) {
 	}
 }
 
+// TestFoldToggleByClickOnExpandedMember verifies that clicking a fold's
+// expanded member block collapses it again (issue: expanded tool/thinking
+// blocks had no fold target, so only the gap between them collapsed the fold).
+func TestFoldToggleByClickOnExpandedMember(t *testing.T) {
+	m := NewList()
+	m.SetSize(80, 20)
+	m.SetScreenOrigin(1, 1)
+	msg := foldMessage("g1", KindTool, &Fold{
+		Title: "read", Count: 1,
+		ToolCalls: []ToolCall{
+			{CallID: "c1", Name: "read_file", Params: []Param{{Key: "", Value: "a.go"}}, Status: ToolCompleted, Result: "package x"},
+		},
+	})
+	m.Update(NewMessageMsg{Message: msg})
+
+	// Expand the fold (as the user would by clicking the summary).
+	m.toggleFold("g1")
+	if !m.isOpen(msg.Fold) {
+		t.Fatal("fold should be expanded after toggle")
+	}
+	if len(m.ui) != 1 || m.ui[0].messageType != toolMessageType {
+		t.Fatalf("expanded tool fold should render its member block, got %d blocks", len(m.ui))
+	}
+
+	// Click the member block itself: screen y = block row + origin offset.
+	memberRow := m.ui[0].position
+	y := memberRow + 1
+	m.Update(tea.MouseClickMsg{X: 1, Y: y, Button: tea.MouseLeft})
+	if m.isOpen(msg.Fold) {
+		t.Fatal("clicking the expanded member block should collapse the fold")
+	}
+	// It should render the summary again.
+	if len(m.ui) != 1 || m.ui[0].messageType != foldSummaryMessageType {
+		t.Fatalf("collapsed fold should render the summary, got %d blocks", len(m.ui))
+	}
+}
+
 func TestFocusNavigationCyclesFoldRows(t *testing.T) {
 	m := NewList()
 	m.SetSize(80, 10)

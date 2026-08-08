@@ -193,6 +193,10 @@ type uiMessage struct {
 	position    int
 	height      int
 	content     string
+	// foldID marks blocks belonging to a fold group: the collapsed summary row
+	// and, when the fold is expanded, its member blocks. Clicking any of them
+	// toggles the fold.
+	foldID string
 }
 
 // toMarkdown renders markdown source with the current theme's glamour
@@ -342,6 +346,7 @@ func renderFoldSummary(f *Fold, focused bool, width int) uiMessage {
 		messageType: foldSummaryMessageType,
 		height:      1,
 		content:     style.Render(summary),
+		foldID:      f.ID,
 	}
 }
 
