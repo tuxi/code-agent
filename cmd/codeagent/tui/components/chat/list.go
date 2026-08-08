@@ -84,6 +84,12 @@ type List struct {
 	// composer is empty (the chat page decides this and forwards the keys).
 	allowUpDown bool
 
+	// pinned reports whether the viewport should follow streaming output. It
+	// starts true; any user scroll away from the bottom clears it, and scrolling
+	// back to the bottom re-enables it. Streaming auto-scroll only fires while
+	// pinned, so reading history mid-stream is not yanked back to the bottom.
+	pinned bool
+
 	// vpCache memoizes the viewport's rendered string. The viewport's View()
 	// output depends only on (width, height, yOffset, xOffset, content), so a
 	// no-op wheel event at the top/bottom edge — which cannot change any of
@@ -177,10 +183,10 @@ func (m *List) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// spinner-tick throttle (renderThrottle) so per-token updates stay
 			// cheap no matter how long the transcript grows. Keep the view
 			// pinned to the bottom meanwhile.
-			m.viewport.GotoBottom()
+			m.scrollToBottomIfPinned()
 		} else {
 			m.renderView()
-			m.viewport.GotoBottom()
+			m.scrollToBottomIfPinned()
 		}
 		return m, nil
 
@@ -193,7 +199,7 @@ func (m *List) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if len(m.messages) > 0 {
 				last := m.messages[len(m.messages)-1]
 				if last.ID == msg.Message.ID {
-					m.viewport.GotoBottom()
+					m.scrollToBottomIfPinned()
 				}
 			}
 		} else {
@@ -202,7 +208,7 @@ func (m *List) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if len(m.messages) > 0 {
 				last := m.messages[len(m.messages)-1]
 				if last.ID == msg.Message.ID {
-					m.viewport.GotoBottom()
+					m.scrollToBottomIfPinned()
 				}
 			}
 		}
@@ -217,6 +223,7 @@ func (m *List) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.foldRows = make(map[string]int)
 		m.foldState = make(map[string]bool)
 		m.cachedContent = make(map[string]cacheItem)
+		m.pinned = true
 		m.renderView()
 		return m, nil
 
@@ -232,6 +239,7 @@ func (m *List) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.foldRows = make(map[string]int)
 		m.foldState = make(map[string]bool)
 		m.cachedContent = make(map[string]cacheItem)
+		m.pinned = true
 		for _, msg := range msg.Messages {
 			m.upsert(msg)
 		}
@@ -251,10 +259,10 @@ func (m *List) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if last.Kind == KindAssistant && !last.Finished {
 				// Streaming assistant text: defer the full re-render to the
 				// spinner-tick throttle; keep the view pinned to the bottom.
-				m.viewport.GotoBottom()
+				m.scrollToBottomIfPinned()
 			} else {
 				m.renderView()
-				m.viewport.GotoBottom()
+				m.scrollToBottomIfPinned()
 			}
 		}
 		return m, nil
@@ -270,6 +278,7 @@ func (m *List) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			u, cmd := m.viewport.Update(msg)
 			m.viewport = u
 			cmds = append(cmds, cmd)
+			m.onUserScroll()
 		case m.allowUpDown && key.Matches(msg, messageKeys.Toggle):
 			// Enter toggles the focused fold row. Guarded by allowUpDown so
 			// Enter never fights the composer's send (the split broadcasts keys
@@ -286,6 +295,7 @@ func (m *List) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				u, cmd := m.viewport.Update(msg)
 				m.viewport = u
 				cmds = append(cmds, cmd)
+				m.onUserScroll()
 			}
 		}
 
@@ -304,6 +314,7 @@ func (m *List) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		u, cmd := m.viewport.Update(msg)
 		m.viewport = u
 		cmds = append(cmds, cmd)
+		m.onUserScroll()
 	case spinner.TickMsg:
 		// Stream throttling: only re-render while a streaming message is live,
 		// and at most once per renderThrottle.
@@ -311,7 +322,7 @@ func (m *List) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			lastStreamRender = time.Now()
 			m.renderView()
 			if len(m.messages) > 0 && m.messages[len(m.messages)-1].ID == m.workingID {
-				m.viewport.GotoBottom()
+				m.scrollToBottomIfPinned()
 			}
 		}
 	}
@@ -453,6 +464,24 @@ func (m *List) renderView() {
 	)
 }
 
+// scrollToBottomIfPinned pins the viewport to the bottom while new content
+// streams in, but only while the user is already at the bottom. Once the user
+// scrolls up to read history the follow stops; scrolling back to the bottom
+// re-enables it. Every auto-scroll call site goes through this, so streaming
+// text, tool cards and the stream throttle all obey the same policy.
+func (m *List) scrollToBottomIfPinned() {
+	if m.pinned {
+		m.viewport.GotoBottom()
+	}
+}
+
+// onUserScroll re-evaluates the follow-scroll state after the user moves the
+// viewport themselves (mouse wheel, page keys, line scroll, fold focus).
+// Streaming keeps following only while the viewport stays at the bottom.
+func (m *List) onUserScroll() {
+	m.pinned = m.viewport.AtBottom()
+}
+
 // renderMessage renders one Message into uiMessage blocks, using the
 // per-ID cache when the cached width matches. Fold groups render either their
 // one-line summary (collapsed) or their members (expanded); the cached block
@@ -586,6 +615,7 @@ func (m *List) moveFocus(up bool) {
 	delete(m.cachedContent, m.focusID)
 	m.renderView()
 	m.scrollToFocus()
+	m.onUserScroll()
 }
 
 // scrollToFocus keeps the focused fold row inside the viewport.
@@ -707,5 +737,6 @@ func NewList() *List {
 		foldRows:      make(map[string]int),
 		viewport:      vp,
 		spinner:       s,
+		pinned:        true,
 	}
 }

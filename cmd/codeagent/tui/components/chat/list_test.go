@@ -55,6 +55,86 @@ func TestListMouseWheelScrolls(t *testing.T) {
 	}
 }
 
+// Streaming follows the viewport to the bottom only while the user is already
+// at the bottom. After the user scrolls up to read history, new streaming
+// content must not yank the view back down; scrolling back to the bottom
+// re-enables follow-scroll.
+func TestStreamFollowStopsAfterUserScroll(t *testing.T) {
+	m := NewList()
+	m.SetSize(80, 10)
+
+	// Overflow the viewport so there is scrollable history.
+	for i := 0; i < 30; i++ {
+		m.Update(NewMessageMsg{Message: Message{ID: fmt.Sprintf("m%d", i), Kind: KindUser, Content: fmt.Sprintf("line %d", i)}})
+	}
+	if !m.viewport.AtBottom() {
+		t.Fatal("viewport should be at the bottom after seeding")
+	}
+
+	// New finished content while pinned follows to the new bottom.
+	u, _ := m.Update(BatchMessagesMsg{Messages: []Message{{ID: "a1", Kind: KindAssistant, Content: "answer one", Finished: true}}})
+	m = u.(*List)
+	if !m.viewport.AtBottom() {
+		t.Fatal("new content while pinned should keep the view at the bottom")
+	}
+
+	// Scroll up into history: follow must stop.
+	m.Update(tea.MouseWheelMsg{Button: tea.MouseWheelUp})
+	u, _ = m.Update(tea.MouseWheelMsg{Button: tea.MouseWheelUp})
+	m = u.(*List)
+	if m.viewport.AtBottom() {
+		t.Fatal("wheel up should move away from the bottom")
+	}
+	if m.pinned {
+		t.Fatal("scrolling away from the bottom should clear follow-scroll")
+	}
+	scrolled := m.viewport.YOffset()
+
+	// New content while scrolled up: the view must stay put.
+	u, _ = m.Update(BatchMessagesMsg{Messages: []Message{{ID: "a2", Kind: KindAssistant, Content: "answer two", Finished: true}}})
+	m = u.(*List)
+	if m.viewport.YOffset() != scrolled {
+		t.Fatalf("streaming must not follow while the user is scrolled up: offset %d -> %d", scrolled, m.viewport.YOffset())
+	}
+
+	// Scroll back to the bottom: follow resumes.
+	for !m.viewport.AtBottom() {
+		u, _ = m.Update(tea.MouseWheelMsg{Button: tea.MouseWheelDown})
+		m = u.(*List)
+	}
+	if !m.pinned {
+		t.Fatal("scrolling back to the bottom should re-enable follow")
+	}
+
+	// New content again follows.
+	u, _ = m.Update(BatchMessagesMsg{Messages: []Message{{ID: "a3", Kind: KindAssistant, Content: "answer three", Finished: true}}})
+	m = u.(*List)
+	if !m.viewport.AtBottom() {
+		t.Fatal("new content after returning to the bottom should follow")
+	}
+}
+
+// Keyboard scrolling (page up) also clears follow-scroll, so reading history
+// with the keyboard is not interrupted by streaming auto-scroll either.
+func TestStreamFollowStopsAfterPageUp(t *testing.T) {
+	m := NewList()
+	m.SetSize(80, 10)
+	for i := 0; i < 30; i++ {
+		m.Update(NewMessageMsg{Message: Message{ID: fmt.Sprintf("m%d", i), Kind: KindUser, Content: fmt.Sprintf("line %d", i)}})
+	}
+	if !m.viewport.AtBottom() {
+		t.Fatal("viewport should be at the bottom after seeding")
+	}
+	u, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyPgUp})
+	m = u.(*List)
+	if m.pinned {
+		t.Fatal("page up should clear follow-scroll")
+	}
+	if m.viewport.AtBottom() {
+		t.Fatal("page up should move away from the bottom")
+	}
+}
+
 // --- folding ---
 
 // foldMessage builds a fold-representative message of the given kind.
