@@ -25,6 +25,9 @@ func (h *fakeHook) PostToolUse(_ context.Context, tool string, _ json.RawMessage
 	h.postCalled, h.postTool = true, tool
 	return nil
 }
+func (h *fakeHook) PostToolResult(_ context.Context, _ string, _ json.RawMessage, content string, isError bool, output json.RawMessage) (string, bool, json.RawMessage, error) {
+	return content, isError, output, nil
+}
 
 func TestPreHookBlocksExecution(t *testing.T) {
 	hook := &fakeHook{block: true}

@@ -292,9 +292,11 @@ func (r *Runner) runToolCall(ctx context.Context, p toolCallPlan) toolCallResult
 			res.usage = toolResult.Usage
 			res.nestedUsage = toolResult.NestedUsages
 			res.modelUsage = toolResult.ModelUsage
-			// Post-tool hook (8.5): react to the change (format/lint). It runs the
-			// configured command but does not alter the result in v1.
+			// Post-tool hook (8.5): fire-and-forget side effect (format/lint).
 			r.postHook(ctx, p.call.Function.Name, p.wireInput, observation)
+			// Post-tool-result hook: chained transform that CAN modify the
+			// observation before it is committed to history.
+			observation, _, output = r.postToolResultHook(ctx, p.call.Function.Name, p.wireInput, observation, false, output)
 			// Mark git cache dirty so the next model call re-reads workspace
 			// state. Only side-effecting tools (bash, file writes) can change
 			// the repo; read-only tools (read_file, grep, list_files) should

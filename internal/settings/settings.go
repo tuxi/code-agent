@@ -328,144 +328,194 @@ func Load(root, home string, warn io.Writer) Settings {
 	}
 	var s Settings
 	for _, path := range []string{UserPath(home), ProjectSharedPath(root), ProjectLocalPath(root)} {
-		if path == "" {
-			continue
-		}
-		f, err := LoadFile(path)
-		if err != nil {
-			fmt.Fprintf(warn, "[settings] ignoring malformed %s: %v\n", path, err)
-			continue
-		}
-		s.Permissions.Allow = appendUnique(s.Permissions.Allow, f.Permissions.Allow...)
-		s.Permissions.Deny = appendUnique(s.Permissions.Deny, f.Permissions.Deny...)
-		s.Permissions.ProtectedPaths = appendUnique(s.Permissions.ProtectedPaths, f.Permissions.ProtectedPaths...)
-		// Verify overrides: iterating low → high, the last layer to set a block wins.
-		if f.Verify != nil {
-			s.Verify = f.Verify
-		}
-		// Hooks concatenate: every layer's hooks run, in layer order.
-		s.Hooks = append(s.Hooks, f.Hooks...)
-
-		// Infrastructure blocks merge per-field: iterating low → high, the last
-		// layer to set a field wins (else the lower layer's value is inherited).
-		// This preserves the config.yaml user → project semantics.
-		if f.DefaultModel != "" {
-			s.DefaultModel = f.DefaultModel
-		}
-		if f.SubagentModel != "" {
-			s.SubagentModel = f.SubagentModel
-		}
-		if s.Models == nil {
-			s.Models = map[string]ModelConfig{}
-		}
-		for name, mc := range f.Models {
-			s.Models[name] = mc
-		}
-		if s.Providers == nil {
-			s.Providers = map[string]ServiceConfig{}
-		}
-		for id, pc := range f.Providers {
-			// Provider-level: the highest layer that sets a provider id wins
-			// wholesale (models array is replaced, not merged per model).
-			s.Providers[id] = pc
-		}
-		if s.Credentials == nil {
-			s.Credentials = map[string]map[string]CredentialConfig{}
-		}
-		for ns, entries := range f.Credentials {
-			if s.Credentials[ns] == nil {
-				s.Credentials[ns] = map[string]CredentialConfig{}
-			}
-			for name, cc := range entries {
-				s.Credentials[ns][name] = cc
-			}
-		}
-		if f.Agent.MaxSteps != 0 {
-			s.Agent.MaxSteps = f.Agent.MaxSteps
-		}
-		if f.Agent.MaxParallelTools != 0 {
-			s.Agent.MaxParallelTools = f.Agent.MaxParallelTools
-		}
-		if f.Agent.CompactRatio > 0 && f.Agent.CompactRatio < 1 {
-			s.Agent.CompactRatio = f.Agent.CompactRatio
-		}
-		if f.Agent.CompactKeepRatio > 0 && f.Agent.CompactKeepRatio < 1 {
-			s.Agent.CompactKeepRatio = f.Agent.CompactKeepRatio
-		}
-		if f.Agent.ClientToolTimeoutSeconds != 0 {
-			s.Agent.ClientToolTimeoutSeconds = f.Agent.ClientToolTimeoutSeconds
-		}
-		if f.Agent.SubagentModel != "" {
-			s.Agent.SubagentModel = f.Agent.SubagentModel
-		}
-		if f.Provider.RequestTimeoutSeconds != 0 {
-			s.Provider.RequestTimeoutSeconds = f.Provider.RequestTimeoutSeconds
-		}
-		if f.Provider.MaxRetries != 0 {
-			s.Provider.MaxRetries = f.Provider.MaxRetries
-		}
-		if f.Provider.BackoffMillis != 0 {
-			s.Provider.BackoffMillis = f.Provider.BackoffMillis
-		}
-		if f.Provider.MaxBackoffSeconds != 0 {
-			s.Provider.MaxBackoffSeconds = f.Provider.MaxBackoffSeconds
-		}
-		if f.Web.Search.Provider != "" {
-			s.Web.Search.Provider = f.Web.Search.Provider
-		}
-		if f.Web.Search.FallbackProvider != "" {
-			s.Web.Search.FallbackProvider = f.Web.Search.FallbackProvider
-		}
-		if f.Web.Search.GatewayBaseURL != "" {
-			s.Web.Search.GatewayBaseURL = f.Web.Search.GatewayBaseURL
-		}
-		if f.Web.Search.TopK != 0 {
-			s.Web.Search.TopK = f.Web.Search.TopK
-		}
-		if f.Web.Search.TimeoutSeconds != 0 {
-			s.Web.Search.TimeoutSeconds = f.Web.Search.TimeoutSeconds
-		}
-		if f.Web.Search.TavilyAPIKeyEnv != "" {
-			s.Web.Search.TavilyAPIKeyEnv = f.Web.Search.TavilyAPIKeyEnv
-		}
-		if f.Web.Search.BraveAPIKeyEnv != "" {
-			s.Web.Search.BraveAPIKeyEnv = f.Web.Search.BraveAPIKeyEnv
-		}
-		if f.Web.Fetch.TimeoutSeconds != 0 {
-			s.Web.Fetch.TimeoutSeconds = f.Web.Fetch.TimeoutSeconds
-		}
-		if f.Web.Fetch.CacheTTLSeconds != 0 {
-			s.Web.Fetch.CacheTTLSeconds = f.Web.Fetch.CacheTTLSeconds
-		}
-		if f.Runtime.MaxConcurrentTurns != 0 {
-			s.Runtime.MaxConcurrentTurns = f.Runtime.MaxConcurrentTurns
-		}
-		if f.Server.DisplayName != "" {
-			s.Server.DisplayName = f.Server.DisplayName
-		}
-		if f.Server.Authentication != "" {
-			s.Server.Authentication = f.Server.Authentication
-		}
-		if f.Server.AccessTokenEnv != "" {
-			s.Server.AccessTokenEnv = f.Server.AccessTokenEnv
-		}
-		if f.Server.AccessToken != "" {
-			s.Server.AccessToken = f.Server.AccessToken
-		}
-		if f.Server.PublicHealthz {
-			s.Server.PublicHealthz = true
-		}
-		if f.Server.TLSCertificate != "" {
-			s.Server.TLSCertificate = f.Server.TLSCertificate
-		}
-		if f.Server.TLSPrivateKey != "" {
-			s.Server.TLSPrivateKey = f.Server.TLSPrivateKey
-		}
-		if f.Currency != "" {
-			s.Currency = f.Currency
-		}
+		mergeFileIntoSettings(&s, path, warn)
 	}
 	return s
+}
+
+// LoadUserOnly loads only the user-scope settings file. Used before trust
+// resolution so project_trust hooks (defined in user settings) are available
+// before project files are loaded.
+func LoadUserOnly(home string, warn io.Writer) Settings {
+	if warn == nil {
+		warn = os.Stderr
+	}
+	up := UserPath(home)
+	if up != "" {
+		if _, err := os.Stat(up); errors.Is(err, os.ErrNotExist) {
+			bootstrapUserSettings(up)
+		}
+	}
+	var s Settings
+	mergeFileIntoSettings(&s, up, warn)
+	return s
+}
+
+// LoadProjectSettings loads only the project-scoped settings files (shared +
+// local). Called conditionally after trust resolution passes.
+func LoadProjectSettings(root string, warn io.Writer) Settings {
+	if warn == nil {
+		warn = os.Stderr
+	}
+	var s Settings
+	mergeFileIntoSettings(&s, ProjectSharedPath(root), warn)
+	mergeFileIntoSettings(&s, ProjectLocalPath(root), warn)
+	return s
+}
+
+// MergeSettings merges overlay settings into base using the same per-field
+// rules as Load (permissions union, hooks concatenate, verify override,
+// infrastructure per-field). Used to combine staged loads.
+func MergeSettings(base *Settings, overlay Settings) {
+	base.Permissions.Allow = appendUnique(base.Permissions.Allow, overlay.Permissions.Allow...)
+	base.Permissions.Deny = appendUnique(base.Permissions.Deny, overlay.Permissions.Deny...)
+	base.Permissions.ProtectedPaths = appendUnique(base.Permissions.ProtectedPaths, overlay.Permissions.ProtectedPaths...)
+	if overlay.Verify != nil {
+		base.Verify = overlay.Verify
+	}
+	base.Hooks = append(base.Hooks, overlay.Hooks...)
+	if overlay.DefaultModel != "" {
+		base.DefaultModel = overlay.DefaultModel
+	}
+	if overlay.SubagentModel != "" {
+		base.SubagentModel = overlay.SubagentModel
+	}
+	if base.Models == nil {
+		base.Models = map[string]ModelConfig{}
+	}
+	for name, mc := range overlay.Models {
+		base.Models[name] = mc
+	}
+	if base.Providers == nil {
+		base.Providers = map[string]ServiceConfig{}
+	}
+	for id, pc := range overlay.Providers {
+		base.Providers[id] = pc
+	}
+	if base.Credentials == nil {
+		base.Credentials = map[string]map[string]CredentialConfig{}
+	}
+	for ns, entries := range overlay.Credentials {
+		if base.Credentials[ns] == nil {
+			base.Credentials[ns] = map[string]CredentialConfig{}
+		}
+		for name, cc := range entries {
+			base.Credentials[ns][name] = cc
+		}
+	}
+	if overlay.Agent.MaxSteps != 0 {
+		base.Agent.MaxSteps = overlay.Agent.MaxSteps
+	}
+	if overlay.Agent.MaxParallelTools != 0 {
+		base.Agent.MaxParallelTools = overlay.Agent.MaxParallelTools
+	}
+	if overlay.Agent.CompactRatio > 0 && overlay.Agent.CompactRatio < 1 {
+		base.Agent.CompactRatio = overlay.Agent.CompactRatio
+	}
+	if overlay.Agent.CompactKeepRatio > 0 && overlay.Agent.CompactKeepRatio < 1 {
+		base.Agent.CompactKeepRatio = overlay.Agent.CompactKeepRatio
+	}
+	if overlay.Agent.ClientToolTimeoutSeconds != 0 {
+		base.Agent.ClientToolTimeoutSeconds = overlay.Agent.ClientToolTimeoutSeconds
+	}
+	if overlay.Agent.SubagentModel != "" {
+		base.Agent.SubagentModel = overlay.Agent.SubagentModel
+	}
+	if overlay.Provider.RequestTimeoutSeconds != 0 {
+		base.Provider.RequestTimeoutSeconds = overlay.Provider.RequestTimeoutSeconds
+	}
+	if overlay.Provider.MaxRetries != 0 {
+		base.Provider.MaxRetries = overlay.Provider.MaxRetries
+	}
+	if overlay.Provider.BackoffMillis != 0 {
+		base.Provider.BackoffMillis = overlay.Provider.BackoffMillis
+	}
+	if overlay.Provider.MaxBackoffSeconds != 0 {
+		base.Provider.MaxBackoffSeconds = overlay.Provider.MaxBackoffSeconds
+	}
+	if overlay.Web.Search.Provider != "" {
+		base.Web.Search.Provider = overlay.Web.Search.Provider
+	}
+	if overlay.Web.Search.FallbackProvider != "" {
+		base.Web.Search.FallbackProvider = overlay.Web.Search.FallbackProvider
+	}
+	if overlay.Web.Search.GatewayBaseURL != "" {
+		base.Web.Search.GatewayBaseURL = overlay.Web.Search.GatewayBaseURL
+	}
+	if overlay.Web.Search.TopK != 0 {
+		base.Web.Search.TopK = overlay.Web.Search.TopK
+	}
+	if overlay.Web.Search.TimeoutSeconds != 0 {
+		base.Web.Search.TimeoutSeconds = overlay.Web.Search.TimeoutSeconds
+	}
+	if overlay.Web.Search.TavilyAPIKeyEnv != "" {
+		base.Web.Search.TavilyAPIKeyEnv = overlay.Web.Search.TavilyAPIKeyEnv
+	}
+	if overlay.Web.Search.BraveAPIKeyEnv != "" {
+		base.Web.Search.BraveAPIKeyEnv = overlay.Web.Search.BraveAPIKeyEnv
+	}
+	if overlay.Web.Fetch.TimeoutSeconds != 0 {
+		base.Web.Fetch.TimeoutSeconds = overlay.Web.Fetch.TimeoutSeconds
+	}
+	if overlay.Web.Fetch.CacheTTLSeconds != 0 {
+		base.Web.Fetch.CacheTTLSeconds = overlay.Web.Fetch.CacheTTLSeconds
+	}
+	if overlay.Runtime.MaxConcurrentTurns != 0 {
+		base.Runtime.MaxConcurrentTurns = overlay.Runtime.MaxConcurrentTurns
+	}
+	if overlay.Server.DisplayName != "" {
+		base.Server.DisplayName = overlay.Server.DisplayName
+	}
+	if overlay.Server.Authentication != "" {
+		base.Server.Authentication = overlay.Server.Authentication
+	}
+	if overlay.Server.AccessTokenEnv != "" {
+		base.Server.AccessTokenEnv = overlay.Server.AccessTokenEnv
+	}
+	if overlay.Server.AccessToken != "" {
+		base.Server.AccessToken = overlay.Server.AccessToken
+	}
+	if overlay.Server.PublicHealthz {
+		base.Server.PublicHealthz = true
+	}
+	if overlay.Server.TLSCertificate != "" {
+		base.Server.TLSCertificate = overlay.Server.TLSCertificate
+	}
+	if overlay.Server.TLSPrivateKey != "" {
+		base.Server.TLSPrivateKey = overlay.Server.TLSPrivateKey
+	}
+	if overlay.Currency != "" {
+		base.Currency = overlay.Currency
+	}
+}
+
+// mergeFileIntoSettings loads one settings file and merges it into s using the
+// per-field rules. Missing or malformed files are logged and skipped.
+func mergeFileIntoSettings(s *Settings, path string, warn io.Writer) {
+	if path == "" {
+		return
+	}
+	f, err := LoadFile(path)
+	if err != nil {
+		fmt.Fprintf(warn, "[settings] ignoring malformed %s: %v\n", path, err)
+		return
+	}
+	MergeSettings(s, Settings{
+		Permissions: f.Permissions,
+		Verify:      f.Verify,
+		Hooks:       f.Hooks,
+		Models:      f.Models,
+		Providers:   f.Providers,
+		Credentials: f.Credentials,
+		Agent:       f.Agent,
+		Provider:    f.Provider,
+		Web:         f.Web,
+		Runtime:     f.Runtime,
+		Server:      f.Server,
+		DefaultModel: f.DefaultModel,
+		SubagentModel: f.SubagentModel,
+		Currency:    f.Currency,
+	})
 }
 
 // bootstrapUserSettings writes a minimal-but-valid user settings.json template

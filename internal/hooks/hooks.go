@@ -27,6 +27,20 @@ const (
 	// operator configures a hook that owns the stop decision, REPLACING the
 	// harness's built-in default policy.
 	AfterTurn Event = "after_turn"
+	// ProjectTrust fires during trust resolution, BEFORE project settings are
+	// loaded. The hook receives the project path and whether it contains
+	// trust-requiring resources. First-responder wins; undecided falls through.
+	// Match is ignored (project trust is not tool-scoped).
+	ProjectTrust Event = "project_trust"
+	// ContextPreRequest fires before every LLM call and can transform the message
+	// list. Handlers are CHAINED: each handler sees the previous handler's output.
+	// Match is ignored (context transform is not tool-scoped).
+	ContextPreRequest Event = "context"
+	// PostToolResult fires after a tool executes successfully and its result is
+	// ready. Handlers are CHAINED: each handler sees the previous handler's output.
+	// Unlike PostToolUse (fire-and-forget), PostToolResult CAN modify the result
+	// before it is committed to history. Match is honored per tool-name glob.
+	PostToolResult Event = "post_tool_result"
 )
 
 // Hook is one configured command. Match is a tool name, or "*"/"" for any tool.
@@ -188,4 +202,227 @@ func (r *Runner) StopDecide(ctx context.Context, in StopHookInput) StopHookVerdi
 		return StopHookVerdict{Continue: true, Message: "[after_turn hook] invalid JSON on stdout: " + jerr.Error()}
 	}
 	return v
+}
+
+// ---- project_trust event ------------------------------------------------
+
+// ProjectTrustInput is the JSON a project_trust hook receives on stdin.
+type ProjectTrustInput struct {
+	CWD          string `json:"cwd"`
+	HasResources bool   `json:"hasResources"`
+}
+
+// ProjectTrustVerdict is the JSON a project_trust hook writes to stdout.
+type ProjectTrustVerdict struct {
+	Decided bool   `json:"-"`     // false when hook was undecided (non-zero exit, empty, or missing "trusted")
+	Trusted bool   `json:"trusted"`
+	Reason  string `json:"reason"`
+}
+
+// projectTrustHooks returns the configured project_trust hooks. Match is
+// ignored: project trust is not tool-scoped.
+func (r *Runner) projectTrustHooks() []Hook {
+	if r == nil {
+		return nil
+	}
+	var out []Hook
+	for _, h := range r.hooks {
+		if h.Event == ProjectTrust {
+			out = append(out, h)
+		}
+	}
+	return out
+}
+
+// HasProjectTrustHook reports whether a project_trust hook is configured.
+func (r *Runner) HasProjectTrustHook() bool {
+	if r == nil {
+		return false
+	}
+	return len(r.projectTrustHooks()) > 0
+}
+
+// ProjectTrustDecide consults the first project_trust hook. First-responder
+// wins: exit 0 with valid JSON → decided; non-zero exit, empty stdout, or
+// invalid JSON → undecided (falls through to the next chain link).
+func (r *Runner) ProjectTrustDecide(ctx context.Context, cwd string, hasResources bool) (ProjectTrustVerdict, error) {
+	hs := r.projectTrustHooks()
+	if len(hs) == 0 {
+		return ProjectTrustVerdict{}, nil
+	}
+	h := hs[0]
+	payload, _ := json.Marshal(ProjectTrustInput{CWD: cwd, HasResources: hasResources})
+	out, err := r.run(ctx, h, "project_trust", payload)
+	if err != nil {
+		// Non-zero exit or execution error: hook is undecided.
+		return ProjectTrustVerdict{}, nil
+	}
+	out = strings.TrimSpace(out)
+	if out == "" {
+		return ProjectTrustVerdict{}, nil
+	}
+	var v ProjectTrustVerdict
+	if jerr := json.Unmarshal([]byte(out), &v); jerr != nil {
+		fmt.Fprintf(r.log, "[hook] project_trust %q: invalid JSON: %v\n", h.Command, jerr)
+		return ProjectTrustVerdict{}, nil
+	}
+	v.Decided = true
+	return v, nil
+}
+
+// ---- context event ------------------------------------------------------
+
+// ContextHookMessage mirrors a generic chat message for context hooks.
+type ContextHookMessage struct {
+	Role    string                `json:"role"`
+	Content string                `json:"content,omitempty"`
+	// ToolCalls present on assistant messages with pending tool calls.
+	ToolCalls []ContextHookToolCall `json:"tool_calls,omitempty"`
+	// ToolCallID present on tool result messages.
+	ToolCallID string `json:"tool_call_id,omitempty"`
+}
+
+// ContextHookToolCall mirrors a tool call within a message.
+type ContextHookToolCall struct {
+	ID       string                  `json:"id"`
+	Type     string                  `json:"type"`
+	Function ContextHookFunctionCall `json:"function"`
+}
+
+// ContextHookFunctionCall mirrors the function call within a tool call.
+type ContextHookFunctionCall struct {
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
+}
+
+// ContextHookInput is the JSON a context hook receives on stdin.
+type ContextHookInput struct {
+	Messages  []ContextHookMessage `json:"messages"`
+	SessionID string               `json:"session_id"`
+	TurnID    string               `json:"turn_id"`
+}
+
+// ContextHookOutput is the JSON a context hook writes to stdout.
+type ContextHookOutput struct {
+	Messages []ContextHookMessage `json:"messages"`
+}
+
+// contextHooks returns the configured context hooks. Match is ignored.
+func (r *Runner) contextHooks() []Hook {
+	if r == nil {
+		return nil
+	}
+	var out []Hook
+	for _, h := range r.hooks {
+		if h.Event == ContextPreRequest {
+			out = append(out, h)
+		}
+	}
+	return out
+}
+
+// HasContextHook reports whether any context hook is configured.
+func (r *Runner) HasContextHook() bool {
+	if r == nil {
+		return false
+	}
+	return len(r.contextHooks()) > 0
+}
+
+// RunContextHooks fires all context hooks in order, chaining their outputs.
+// Each hook receives the previous hook's output. On error, the current state
+// is preserved and execution continues. Returns the final message list.
+func (r *Runner) RunContextHooks(ctx context.Context, messages []ContextHookMessage, sessionID, turnID string) []ContextHookMessage {
+	current := messages
+	for _, h := range r.contextHooks() {
+		in := ContextHookInput{
+			Messages:  current,
+			SessionID: sessionID,
+			TurnID:    turnID,
+		}
+		payload, err := json.Marshal(in)
+		if err != nil {
+			continue
+		}
+		out, runErr := r.run(ctx, h, "context", payload)
+		if runErr != nil {
+			fmt.Fprintf(r.log, "[hook] context %q failed: %v\n%s\n", h.Command, runErr, strings.TrimSpace(out))
+			continue
+		}
+		out = strings.TrimSpace(out)
+		if out == "" {
+			continue
+		}
+		var result ContextHookOutput
+		if jerr := json.Unmarshal([]byte(out), &result); jerr != nil {
+			fmt.Fprintf(r.log, "[hook] context %q: invalid JSON: %v\n", h.Command, jerr)
+			continue
+		}
+		if result.Messages != nil {
+			current = result.Messages
+		}
+	}
+	return current
+}
+
+// ---- post_tool_result event ---------------------------------------------
+
+// ToolResultInput is the JSON a tool_result hook receives on stdin.
+type ToolResultInput struct {
+	Tool   string          `json:"tool"`
+	Input  json.RawMessage `json:"input"`
+	Result ToolResultPayload `json:"result"`
+}
+
+// ToolResultPayload mirrors the mutable portion of a tool result.
+type ToolResultPayload struct {
+	Content string          `json:"content"`
+	IsError bool            `json:"isError"`
+	Output  json.RawMessage `json:"output,omitempty"`
+}
+
+// ToolResultOutput is the JSON a tool_result hook writes to stdout.
+type ToolResultOutput struct {
+	Result ToolResultPayload `json:"result"`
+}
+
+// PostToolResult implements agent.ToolHook. It fires post_tool_result hooks in
+// order, chaining their outputs. Each hook receives the previous hook's output.
+// On error, the current state is preserved and execution continues.
+func (r *Runner) PostToolResult(
+	ctx context.Context,
+	tool string,
+	input json.RawMessage,
+	content string,
+	isError bool,
+	output json.RawMessage,
+) (string, bool, json.RawMessage, error) {
+	current := ToolResultPayload{
+		Content: content,
+		IsError: isError,
+		Output:  output,
+	}
+	for _, h := range r.matched(PostToolResult, tool) {
+		in := ToolResultInput{Tool: tool, Input: input, Result: current}
+		payload, err := json.Marshal(in)
+		if err != nil {
+			continue
+		}
+		out, runErr := r.run(ctx, h, tool, payload)
+		if runErr != nil {
+			fmt.Fprintf(r.log, "[hook] post_tool_result %q after %s failed: %v\n%s\n", h.Command, tool, runErr, strings.TrimSpace(out))
+			continue
+		}
+		out = strings.TrimSpace(out)
+		if out == "" {
+			continue
+		}
+		var result ToolResultOutput
+		if jerr := json.Unmarshal([]byte(out), &result); jerr != nil {
+			fmt.Fprintf(r.log, "[hook] post_tool_result %q after %s: invalid JSON: %v\n", h.Command, tool, jerr)
+			continue
+		}
+		current = result.Result
+	}
+	return current.Content, current.IsError, current.Output, nil
 }

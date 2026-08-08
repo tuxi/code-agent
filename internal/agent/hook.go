@@ -22,6 +22,12 @@ type ToolHook interface {
 	// is best-effort: a failure is logged but does not undo the tool or alter its
 	// result (v1 does not amend results).
 	PostToolUse(ctx context.Context, tool string, input json.RawMessage, result string) error
+	// PostToolResult fires after a tool executes and its result is ready. Unlike
+	// PostToolUse (fire-and-forget side effect), PostToolResult CAN modify the
+	// observation — content, isError flag, structured output — before the result
+	// is committed to history and sent to the LLM. Best-effort: a hook error
+	// leaves the original result unchanged.
+	PostToolResult(ctx context.Context, tool string, input json.RawMessage, content string, isError bool, output json.RawMessage) (newContent string, newIsError bool, newOutput json.RawMessage, err error)
 }
 
 // preHookBlock consults the PreToolUse hook, returning a non-empty reason when the
@@ -42,4 +48,17 @@ func (r *Runner) postHook(ctx context.Context, tool string, input json.RawMessag
 		return
 	}
 	_ = r.Hook.PostToolUse(ctx, tool, input, result)
+}
+
+// postToolResultHook lets hooks transform the tool result before commit.
+// Nil-safe: no hook means the result is used unchanged.
+func (r *Runner) postToolResultHook(ctx context.Context, tool string, input json.RawMessage, content string, isError bool, output json.RawMessage) (string, bool, json.RawMessage) {
+	if r.Hook == nil {
+		return content, isError, output
+	}
+	newContent, newIsError, newOutput, err := r.Hook.PostToolResult(ctx, tool, input, content, isError, output)
+	if err != nil {
+		return content, isError, output
+	}
+	return newContent, newIsError, newOutput
 }

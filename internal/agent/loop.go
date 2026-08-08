@@ -2,6 +2,7 @@ package agent
 
 import (
 	"code-agent/internal/assetref"
+	"code-agent/internal/hooks"
 	"code-agent/internal/model"
 	"code-agent/internal/observation"
 	"code-agent/internal/reflection"
@@ -80,6 +81,11 @@ type Runner struct {
 	// tools run exactly as before.
 	Hook ToolHook
 
+	// HookRunner is the full hook runner for turn-level events: context
+	// transforms (before each LLM call) and stop decisions (after_turn).
+	// Nil-safe: when unset, these events are silent no-ops.
+	HookRunner *hooks.Runner
+
 	// StopPolicy is the finalize decision point (8.5): consulted when the model
 	// returns a text-only message and wants to finish. Nil-safe: nil selects the
 	// built-in default policy (build verify + change review + todo gate),
@@ -87,6 +93,11 @@ type Runner struct {
 	// REPLACES the default — the operator owns the stop decision. The step
 	// budget remains the hard backstop behind any policy.
 	StopPolicy StopPolicy
+
+	// TrustPolicy resolves project trust. Nil means the project is trusted
+	// unconditionally (backward compatible — existing deployments have no
+	// trust gating).
+	TrustPolicy TrustPolicy
 
 	// Stream, when true AND the provider supports it, streams final-answer text
 	// and provider-visible reasoning via their distinct delta events. The returned
@@ -1586,6 +1597,13 @@ func (r *Runner) complete(ctx context.Context, req model.Request, streamedText, 
 		cp := make([]model.Message, len(req.Messages))
 		copy(cp, req.Messages)
 		req.Messages = r.TransformContext(cp)
+	}
+
+	// Context hooks (shell): fired before every LLM call. Chained: each
+	// hook sees the previous hook's output. Runs after TransformContext so
+	// programmatic transforms happen first, shell hooks refine second.
+	if r.HookRunner != nil && r.HookRunner.HasContextHook() {
+		req.Messages = ctxHookToModel(r.HookRunner.RunContextHooks(ctx, ctxHookFromModel(req.Messages), r.emitSessionID, r.emitTurnID))
 	}
 
 	// Every model call goes through here, so this is the one place the current

@@ -84,6 +84,7 @@ func BuildRunner(cfg app.Config, set settings.Settings, mc app.ModelConfig, prov
 		// VerifyGate and assign it to runner.StopPolicy.
 		PlanTools: tools.Subset(registry, PlanModeToolNames...),
 		Hook:          hook,
+		HookRunner:    hookRunner,
 		Compactor:     BuildCompactor(cfg, mc, provider),
 		ContextEditor: &session.ContextEditor{KeepTurns: 3},
 		// Tier-0 pruning shares the compactor's verbatim-tail budget (P12.c).
