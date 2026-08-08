@@ -5,9 +5,9 @@ import (
 	"encoding/json"
 	"sync"
 
+	tea "charm.land/bubbletea/v2"
 	"code-agent/internal/agent"
 	"code-agent/internal/session"
-	tea "github.com/charmbracelet/bubbletea"
 )
 
 // Backend is the channel seam between the agent runner (which runs on a

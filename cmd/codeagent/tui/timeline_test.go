@@ -172,16 +172,19 @@ func TestItemIDsAndDuration(t *testing.T) {
 	}
 }
 
-// EventThinking installs the step's authoritative thinking snapshot.
+// EventThinking appends the step's authoritative thinking snapshot.
 func TestTranscriptCapturesThinking(t *testing.T) {
-	var tr transcript
-	tr.render(agent.Event{Kind: agent.EventModelStarted}, 80)
-	tr.render(agent.Event{Kind: agent.EventThinking, Text: "I think the bug is in loop.go"}, 80)
-	tr.render(agent.Event{Kind: agent.EventModelFinished, Elapsed: 3 * time.Second}, 80)
+	var tl Timeline
+	tl.Apply(agent.Event{Kind: agent.EventModelStarted})
+	tl.Apply(agent.Event{Kind: agent.EventThinking, Text: "I think the bug is in loop.go"})
+	tl.Apply(agent.Event{Kind: agent.EventModelFinished})
 
-	if !strings.Contains(tr.step.thinking, "loop.go") {
-		t.Fatalf("step should capture thinking text, got %q", tr.step.thinking)
+	for _, it := range tl.Items {
+		if it.Kind == ItemThinking && strings.Contains(it.Text, "loop.go") {
+			return
+		}
 	}
+	t.Fatalf("thinking event should append a thinking item, got %+v", tl.Items)
 }
 
 // Different tools don't collapse together.

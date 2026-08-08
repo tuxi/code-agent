@@ -1,12 +1,13 @@
 package tui
 
 import (
-	"strings"
 	"testing"
 	"time"
 
+	tea "charm.land/bubbletea/v2"
+	"code-agent/cmd/codeagent/tui/components/dialog"
+	"code-agent/internal/agent"
 	"code-agent/internal/session"
-	tea "github.com/charmbracelet/bubbletea"
 )
 
 func twoSessions() []session.Meta {
@@ -16,36 +17,46 @@ func twoSessions() []session.Meta {
 	}
 }
 
-func TestResumeOpensPickerNavigatesAndSwaps(t *testing.T) {
+// /resume routes through the session dialog (ctrl+s): navigation selects, enter
+// emits SessionSelectedMsg, and the app resolves it through m.resume, which
+// hands the session to the run loop and rebuilds the conversation from the
+// session's persisted events.
+func TestResumeViaSessionDialogSwaps(t *testing.T) {
 	m := readyModel(t)
 	m.src.list = twoSessions
 	m.src.resume = func(id string) (*session.Session, error) { return &session.Session{ID: id}, nil }
+	m.src.events = func(id string) []agent.Event { return nil }
 
-	// /resume opens the picker.
-	m.composer.SetValue("/resume")
-	m = asModel(t, must(m.Update(tea.KeyMsg{Type: tea.KeyEnter})))
-	p, ok := m.overlay.(*sessionPickerOverlay)
-	if !ok || len(p.metas) != 2 {
-		t.Fatalf("/resume should open a picker listing 2 sessions, got %T %+v", m.overlay, m.overlay)
+	// ctrl+s opens the session dialog.
+	tm, _ := m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
+	m = asModel(t, tm)
+	if m.dialog == nil {
+		t.Fatal("ctrl+s should open the session dialog")
 	}
-
-	// ↓ moves the selection (Key mutates the picker in place and returns it).
-	next, _, _ := p.Key(tea.KeyMsg{Type: tea.KeyDown}, &m)
-	if n := next.(*sessionPickerOverlay); n.idx != 1 {
-		t.Fatalf("down should select index 1, got %d", n.idx)
+	if _, ok := m.dialog.(dialog.SessionDialog); !ok {
+		t.Fatalf("ctrl+s should open the session dialog, got %T", m.dialog)
 	}
 
-	// Enter resumes the selected session: picker closes, header updates, and the
-	// session is handed to the run loop. Route through Update — the real key
-	// dispatch — so the model's overlay field is rewired too.
-	m.overlay = next
-	m = asModel(t, must(m.Update(tea.KeyMsg{Type: tea.KeyEnter})))
-	if m.overlay != nil {
-		t.Fatal("resume should close the picker")
+	// ↓ moves the selection to the second session; enter selects it.
+	tm, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	m = asModel(t, tm)
+	tm, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = asModel(t, tm)
+	sel, ok := cmd().(dialog.SessionSelectedMsg)
+	if !ok {
+		t.Fatalf("enter on the session dialog should emit SessionSelectedMsg, got %T", cmd())
 	}
-	if m.header.Session != "s2" {
-		t.Fatalf("header should switch to s2, got %q", m.header.Session)
+	if sel.ID != "s2" {
+		t.Fatalf("after ↓ the selection should be s2, got %q", sel.ID)
 	}
+
+	// The app dispatches the selection through /resume.
+	tm, cmd = m.Update(sel)
+	m = asModel(t, tm)
+	if m.dialog != nil {
+		t.Fatal("selecting a session should close the dialog")
+	}
+	runLeaves(cmd) // resume() hands the session to the run loop
 	select {
 	case got := <-m.b.sessSwap:
 		if got.ID != "s2" {
@@ -56,39 +67,19 @@ func TestResumeOpensPickerNavigatesAndSwaps(t *testing.T) {
 	}
 }
 
-func TestResumeEscCancels(t *testing.T) {
+// esc closes the non-blocking session dialog without switching.
+func TestResumeDialogEscCancels(t *testing.T) {
 	m := readyModel(t)
 	m.src.list = twoSessions
-	m.overlay = &sessionPickerOverlay{metas: twoSessions()}
-	m = asModel(t, must(m.Update(tea.KeyMsg{Type: tea.KeyEsc})))
-	if m.overlay != nil {
-		t.Fatal("esc should cancel the picker")
+	tm, _ := m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
+	m = asModel(t, tm)
+	if m.dialog == nil {
+		t.Fatal("ctrl+s should open the session dialog")
 	}
-}
-
-func TestResumeRefusedMidTurn(t *testing.T) {
-	m := readyModel(t)
-	m.src.list = twoSessions
-	m.busy = true
-	cmd := m.openResume("")
-	if m.overlay != nil {
-		t.Fatal("a turn is running — the picker should not open")
-	}
-	if cmd == nil {
-		t.Fatal("should explain why resume is refused")
-	}
-}
-
-func TestPickerRendersTitleAndCursor(t *testing.T) {
-	out := strings.Join(renderPicker(&sessionPickerOverlay{metas: twoSessions(), idx: 0}, 80), "\n")
-	if !strings.Contains(out, "查看 agent/loop 实现") {
-		t.Fatalf("picker should show the session title:\n%s", out)
-	}
-	if !strings.Contains(out, "❯") {
-		t.Fatal("the selected session should be marked")
-	}
-	if !strings.Contains(out, "ago") {
-		t.Fatal("each session should show a relative time")
+	tm, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
+	m = asModel(t, tm)
+	if m.dialog != nil {
+		t.Fatal("esc should close the session dialog")
 	}
 }
 

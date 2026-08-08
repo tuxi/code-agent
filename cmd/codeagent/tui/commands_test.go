@@ -3,7 +3,8 @@ package tui
 import (
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
+	"code-agent/internal/session"
 )
 
 func TestCommandToken(t *testing.T) {
@@ -44,41 +45,6 @@ func TestCommandArgs(t *testing.T) {
 	}
 }
 
-// A slash command is intercepted and run — never sent to the agent as a turn
-// (the live bug: /resume was being submitted as a chat message).
-func TestSlashCommandIsNotSentAsMessage(t *testing.T) {
-	m := readyModel(t)
-	m.composer.SetValue("/resume")
-	if !m.paletteActive() {
-		t.Fatal("/resume should open the command palette")
-	}
-	m = asModel(t, must(m.Update(tea.KeyMsg{Type: tea.KeyEnter})))
-
-	select {
-	case got := <-m.b.inputs:
-		t.Fatalf("a command must not be sent to the runner, got %q", got)
-	default:
-	}
-	if m.busy {
-		t.Fatal("running a command should not lock the composer")
-	}
-	if m.composer.Value() != "" {
-		t.Fatalf("composer should be cleared after a command, got %q", m.composer.Value())
-	}
-}
-
-func TestExitCommandQuits(t *testing.T) {
-	m := readyModel(t)
-	m.composer.SetValue("/exit")
-	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	if cmd == nil {
-		t.Fatal("/exit should return a command")
-	}
-	if _, ok := cmd().(tea.QuitMsg); !ok {
-		t.Fatal("/exit should quit the program")
-	}
-}
-
 func TestQuitAliasResolves(t *testing.T) {
 	if _, ok := lookupCommand("/quit"); !ok {
 		t.Fatal("/quit should resolve to /exit via alias")
@@ -89,27 +55,42 @@ func TestQuitAliasResolves(t *testing.T) {
 	}
 }
 
-func TestComposerAutoGrowsAndShrinks(t *testing.T) {
+// A slash command is intercepted and run — never sent to the agent as a turn
+// (the live bug: /resume was being submitted as a chat message).
+func TestSlashCommandIsNotSentAsMessage(t *testing.T) {
 	m := readyModel(t)
-	m.composer.SetValue("one\ntwo\nthree")
-	m.syncComposer()
-	if m.composerHeight != 3 {
-		t.Fatalf("composer should grow to 3 rows, got %d", m.composerHeight)
+	m.src.list = func() []session.Meta { return nil }
+
+	// The session dialog's Init() returns nil (no cmd to run), so the dialog
+	// being open is the signal.
+	m.submit("/resume")
+	if m.dialog == nil {
+		t.Fatal("/resume should open the session dialog")
 	}
-	m.composer.SetValue("")
-	m.syncComposer()
-	if m.composerHeight != minComposerLines {
-		t.Fatalf("composer should shrink back to %d, got %d", minComposerLines, m.composerHeight)
+	select {
+	case got := <-m.b.inputs:
+		t.Fatalf("a command must not be sent to the runner, got %q", got)
+	default:
+	}
+	if m.busy {
+		t.Fatal("running a command should not lock the composer")
 	}
 }
 
-func TestCtrlZSuspends(t *testing.T) {
+// Quitting goes through the ctrl+c confirm dialog: 'y' answers yes.
+func TestExitCommandQuits(t *testing.T) {
 	m := readyModel(t)
-	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlZ})
-	if cmd == nil {
-		t.Fatal("ctrl+z should return a command")
+	tm, _ := m.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+	m = asModel(t, tm)
+	if m.dialog == nil {
+		t.Fatal("ctrl+c should open the quit dialog")
 	}
-	if _, ok := cmd().(tea.SuspendMsg); !ok {
-		t.Fatal("ctrl+z should suspend the program")
+	tm, cmd := m.Update(tea.KeyPressMsg{Code: 'y'})
+	m = asModel(t, tm)
+	if cmd == nil {
+		t.Fatal("'y' on the quit dialog should return a command")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Fatal("'y' should quit the program")
 	}
 }

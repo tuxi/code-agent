@@ -6,14 +6,14 @@
 package tui
 
 import (
+	"code-agent/internal/agent"
+	"code-agent/internal/session"
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 
-	"code-agent/internal/agent"
-	"code-agent/internal/session"
-
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 )
 
 // Store is the slice of the session store the TUI needs: persist after each turn,
@@ -73,6 +73,16 @@ type GoalOps interface {
 	// Finalize applies the end-of-pursuit policy (achieved → archive + auto-clear).
 	// Called after a pursuit returns; a no-op for resumable terminals.
 	Finalize(ctx context.Context, sess *session.Session)
+}
+
+// HeaderInfo is the "where am I" content. The live context gauge needs the
+// threshold (the prompt-token count comes off the event stream).
+type HeaderInfo struct {
+	Model            string
+	Workspace        string
+	Session          string
+	CompactThreshold int
+	SubagentBudget   int // the subagent's iteration cap, for the "step N/M" heartbeat
 }
 
 // ModelSwapFunc switches the runner to a new model by name, rebuilding the
@@ -243,7 +253,10 @@ func Run(ctx context.Context, b *Backend, runner *agent.Runner, sess *session.Se
 	p := tea.NewProgram(
 		newModel(b, header, src),
 		tea.WithContext(ctx),
-		tea.WithAltScreen(),
+		// Some terminals pad SGR mouse sequences with spaces that bubbletea's
+		// parser rejects; the filter normalizes them before parsing (see
+		// input.go). It embeds os.Stdin so raw-mode setup still applies.
+		tea.WithInput(newSGRMouseFilter(os.Stdin)),
 	)
 	_, err := p.Run()
 	close(b.inputs) // stop the turn loop; in-flight turn is cancelled via ctx

@@ -56,7 +56,8 @@ type Item struct {
 	EndedAt   time.Time
 
 	Kind    ItemKind
-	Step    int    // tool correlation key (ItemTool)
+	Step    int    // tool correlation key (ItemTool); fallback when CallID is empty
+	CallID  string // tool_call id — stable identity across started→observed→finished (§8.7)
 	Name    string // tool or skill name
 	Args    string // tool arguments (ItemTool)
 	Text    string // body: user input / thinking / tool result / reflection / reply
@@ -128,6 +129,7 @@ func (t *Timeline) Apply(ev agent.Event) {
 		t.add(Item{
 			Kind:   ItemTool,
 			Step:   ev.Step,
+			CallID: ev.CallID,
 			Name:   ev.ToolName,
 			Args:   ev.ToolArgs,
 			Status: StatusPending,

@@ -4,15 +4,16 @@ import (
 	"strings"
 	"testing"
 
+	tea "charm.land/bubbletea/v2"
 	"code-agent/internal/agent"
-	tea "github.com/charmbracelet/bubbletea"
 )
 
 // readyModel builds a sized model and plays the given events through Update, so
 // the model state is populated as it would be live.
-func readyModel(t *testing.T, events ...agent.Event) model {
+func readyModel(t *testing.T, events ...agent.Event) *model {
 	t.Helper()
 	m := asModel(t, must(newTestModel().Update(tea.WindowSizeMsg{Width: 80, Height: 24})))
+	t.Helper()
 	for _, ev := range events {
 		m = asModel(t, must(m.Update(eventMsg(ev))))
 	}
