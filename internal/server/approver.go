@@ -60,12 +60,16 @@ type RemoteApprover struct {
 	closed  bool
 
 	// ask_user clarification requests use an independent map and mutex so the
-	// different HITL mechanisms don't share data structures. Unlike tool approvals
-	// (deny by default), ask_user has a dedicated timeout (default 5 min) after
-	// which it returns a fallback message rather than waiting forever.
-	askUserMu      sync.Mutex
-	askUserPending map[string]*askUserReq
-	askUserTimeout time.Duration
+	// different HITL mechanisms don't share data structures. When a client is
+	// connected there is no fixed timeout — the turn waits for the user to
+	// answer, which can be hours later. If every client disconnects a grace
+	// period starts; the user can reconnect within it. Headless retains a
+	// short fallback timeout.
+	askUserMu          sync.Mutex
+	askUserPending     map[string]*askUserReq
+	askUserTimeout     time.Duration // headless fallback deadline (default 5m)
+	askUserPoll        time.Duration // sink-presence poll interval (default 15s)
+	askUserGracePeriod time.Duration // reconnection grace after last sink drops (default 10m)
 }
 
 var _ agent.Approver = (*RemoteApprover)(nil)
@@ -79,8 +83,10 @@ func NewRemoteApprover(timeout time.Duration, granter PermissionGranter) *Remote
 		timeout: timeout, granter: granter,
 		sinks:          make(map[uint64]FrameSink),
 		pending:        make(map[string]*pendingReq),
-		askUserPending: make(map[string]*askUserReq),
-		askUserTimeout: 5 * time.Minute,
+		askUserPending:     make(map[string]*askUserReq),
+		askUserTimeout:     5 * time.Minute,
+		askUserPoll:        15 * time.Second,
+		askUserGracePeriod: 10 * time.Minute,
 	}
 }
 
@@ -229,11 +235,12 @@ func (a *RemoteApprover) ApproveExternalPath(absolutePath string, operation stri
 // stored in RemoteApprover.askUserPending (a separate map from pending) so the
 // two HITL mechanisms — permission gates and task clarification — never share
 // data structures. outcome (approved/always/scope) has no meaning here.
-// question is a value copy so re-send in UpdateSink is safe without pointer
-// lifetime concerns.
+// question is a value copy and deadlineMS is frozen at creation so re-send in
+// AddSink can replay the original wire form without recomputing.
 type askUserReq struct {
-	ch       chan askUserResult
-	question agent.AskUserQuestion
+	ch         chan askUserResult
+	question   agent.AskUserQuestion
+	deadlineMS int64 // frozen at creation; used by AddSink re-send
 }
 
 type askUserResult struct {
@@ -242,15 +249,48 @@ type askUserResult struct {
 }
 
 // AskUser implements agent.AskUserApprover. It sends an ask_user_request frame
-// and blocks until the client responds or the timeout elapses.
+// and blocks until the client responds or the session is closed. When at least
+// one client is connected there is no fixed timeout — the turn waits until the
+// user answers, which can be hours later. If every client disconnects, a grace
+// period starts; the user can reconnect and answer within it. Headless (no
+// sinks at all) retains a short fallback timeout so the process does not hang.
 //
 // Lock ordering: askUserMu (pending map), then mu (sink/closed). Close() takes
 // mu then askUserMu — serial, not nested, so no deadlock.
 func (a *RemoteApprover) AskUser(q agent.AskUserQuestion) (agent.AskUserAnswer, error) {
 	id := newApprovalID()
+
+	// Compute timeout once — shared by wire message and both wait paths.
+	timeout := a.askUserTimeout
+	if timeout <= 0 {
+		timeout = 5 * time.Minute
+	}
+
+	// Read sinks and closed under their own lock — they are written under mu,
+	// not askUserMu. The wire deadline is derived from sink presence and
+	// frozen into req BEFORE it is registered, so an AddSink re-send can
+	// replay it without a data race (req becomes visible to AddSink only once
+	// it is in askUserPending).
+	a.mu.Lock()
+	sinks := make([]FrameSink, 0, len(a.sinks))
+	for _, s := range a.sinks {
+		sinks = append(sinks, s)
+	}
+	a.mu.Unlock()
+
+	// Wire deadline: omitted (0) when clients are connected (protocol says
+	// "missing deadline_ms = no deadline"), present for headless fallback.
+	// Frozen on req so an AddSink re-send replays an identical frame — no
+	// disagreement between what the client sees and what the server enforces.
+	deadlineMS := int64(0)
+	if len(sinks) == 0 {
+		deadlineMS = timeout.Milliseconds()
+	}
+
 	req := &askUserReq{
-		ch:       make(chan askUserResult, 1),
-		question: q,
+		ch:         make(chan askUserResult, 1),
+		question:   q,
+		deadlineMS: deadlineMS,
 	}
 
 	a.askUserMu.Lock()
@@ -260,16 +300,13 @@ func (a *RemoteApprover) AskUser(q agent.AskUserQuestion) (agent.AskUserAnswer, 
 	a.askUserPending[id] = req
 	a.askUserMu.Unlock()
 
-	// Read sinks and closed under their own lock — they are written under mu,
-	// not askUserMu.
+	// Re-check closed AFTER registration: Close() may have run since the
+	// snapshot above and drained the map, in which case our request would
+	// never receive its timedOut signal — detect it here and bail instead of
+	// blocking on a request nobody can resolve.
 	a.mu.Lock()
 	closed := a.closed
-	sinks := make([]FrameSink, 0, len(a.sinks))
-	for _, s := range a.sinks {
-		sinks = append(sinks, s)
-	}
 	a.mu.Unlock()
-
 	if closed {
 		a.askUserMu.Lock()
 		delete(a.askUserPending, id)
@@ -283,15 +320,11 @@ func (a *RemoteApprover) AskUser(q agent.AskUserQuestion) (agent.AskUserAnswer, 
 		a.askUserMu.Unlock()
 	}()
 
-	timeout := a.askUserTimeout
-	if timeout <= 0 {
-		timeout = 5 * time.Minute
-	}
 	r := AskUserRequest{
 		Type:       "ask_user_request",
 		ID:         id,
 		Question:   q,
-		DeadlineMS: timeout.Milliseconds(),
+		DeadlineMS: deadlineMS,
 	}
 	frame, err := json.Marshal(r)
 	if err != nil {
@@ -303,10 +336,11 @@ func (a *RemoteApprover) AskUser(q agent.AskUserQuestion) (agent.AskUserAnswer, 
 		}
 	}
 
-	timeout = a.askUserTimeout
-	if timeout <= 0 {
-		timeout = 5 * time.Minute
+	if len(sinks) > 0 {
+		return a.waitWithGracePeriod(req)
 	}
+
+	// Headless: wait with a short fallback timeout so the agent can move on.
 	deadline := time.NewTimer(timeout)
 	defer deadline.Stop()
 
@@ -318,6 +352,54 @@ func (a *RemoteApprover) AskUser(q agent.AskUserQuestion) (agent.AskUserAnswer, 
 		return res.answer, nil
 	case <-deadline.C:
 		return agent.AskUserAnswer{}, fmt.Errorf("ask_user timed out")
+	}
+}
+
+// waitWithGracePeriod blocks until the user answers or the session is closed.
+// While at least one client is connected there is no deadline — the user can
+// return hours later and answer. If every client disconnects, a grace period
+// starts; the user can reconnect within it. If the grace period expires
+// without a reconnection the request times out, preventing a permanent hang.
+func (a *RemoteApprover) waitWithGracePeriod(req *askUserReq) (agent.AskUserAnswer, error) {
+	pollTicker := time.NewTicker(a.askUserPoll)
+	defer pollTicker.Stop()
+
+	var graceTimer *time.Timer
+	var graceCh <-chan time.Time // nil channel blocks forever in select
+
+	for {
+		select {
+		case res := <-req.ch:
+			if graceTimer != nil {
+				graceTimer.Stop()
+			}
+			if res.timedOut {
+				return agent.AskUserAnswer{}, fmt.Errorf("approver closed")
+			}
+			return res.answer, nil
+
+		case <-pollTicker.C:
+			a.mu.Lock()
+			sinksExist := len(a.sinks) > 0
+			a.mu.Unlock()
+
+			if sinksExist {
+				// Client is connected — cancel any grace deadline.
+				if graceTimer != nil {
+					graceTimer.Stop()
+					graceTimer = nil
+					graceCh = nil
+				}
+			} else if graceTimer == nil {
+				// Last client just disconnected — start grace period.
+				graceTimer = time.NewTimer(a.askUserGracePeriod)
+				graceCh = graceTimer.C
+			}
+			// If sinks are gone and grace timer is already running, let it tick.
+
+		case <-graceCh:
+			return agent.AskUserAnswer{}, fmt.Errorf("ask_user: no client reconnected within grace period")
+		}
 	}
 }
 
@@ -516,10 +598,6 @@ func (a *RemoteApprover) AddSink(revision uint64, sink FrameSink) {
 
 	a.mu.Lock()
 	snk := a.sinks[revision]
-	timeout := a.askUserTimeout
-	if timeout <= 0 {
-		timeout = 5 * time.Minute
-	}
 	a.mu.Unlock()
 
 	for _, req := range askPending {
@@ -536,11 +614,14 @@ func (a *RemoteApprover) AddSink(revision uint64, sink FrameSink) {
 		if reqID == "" || snk == nil {
 			continue
 		}
+		// Re-use the deadline frozen at creation so the re-sent frame is
+		// identical to the original — no disagreement between what the
+		// client sees (DeadlineMS) and what the server enforces.
 		r := AskUserRequest{
 			Type:       "ask_user_request",
 			ID:         reqID,
 			Question:   req.question,
-			DeadlineMS: timeout.Milliseconds(),
+			DeadlineMS: req.deadlineMS,
 		}
 		if frame, err := json.Marshal(r); err == nil {
 			if err := snk.Send(frame); err != nil {

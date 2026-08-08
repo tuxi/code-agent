@@ -2,12 +2,31 @@ package server
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
 	"code-agent/internal/agent"
 	"code-agent/internal/approve"
 )
+
+// waitAskUserFrame polls the sink for an ask_user_request frame and returns its
+// decoded form.
+func waitAskUserFrame(t *testing.T, s *syncSink) map[string]any {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		for i := 0; i < s.count(); i++ {
+			var req map[string]any
+			if err := json.Unmarshal(s.at(i), &req); err == nil && req["type"] == "ask_user_request" {
+				return req
+			}
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("no ask_user_request frame was sent")
+	return nil
+}
 
 // waitApprovalID polls the sink for the approval_request frame and returns its id.
 func waitApprovalID(t *testing.T, s *syncSink) string {
@@ -297,4 +316,169 @@ func TestRemoteApproverUnknownResolveIsNoop(t *testing.T) {
 	a := NewRemoteApprover(time.Second, nil)
 	a.AddSink(1, &syncSink{})
 	a.Resolve("appr_missing", true) // must not panic
+}
+
+func TestRemoteApproverAskUserConnectedNoDeadline(t *testing.T) {
+	sink := &syncSink{}
+	a := NewRemoteApprover(time.Second, nil)
+	a.AddSink(1, sink)
+
+	got := make(chan agent.AskUserAnswer, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		ans, err := a.AskUser(agent.AskUserQuestion{Question: "q", Options: []agent.AskOption{{Label: "a"}, {Label: "b"}}})
+		errCh <- err
+		got <- ans
+	}()
+
+	frame := waitAskUserFrame(t, sink)
+	if _, present := frame["deadline_ms"]; present {
+		t.Error("connected ask_user_request must not carry deadline_ms (no deadline)")
+	}
+	id, _ := frame["id"].(string)
+
+	a.ResolveAskUser(id, agent.AskUserAnswer{Selected: []string{"a"}})
+
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("AskUser error = %v, want nil", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("AskUser did not return after ResolveAskUser")
+	}
+	if ans := <-got; len(ans.Selected) != 1 || ans.Selected[0] != "a" {
+		t.Fatalf("answer = %+v, want selected=[a]", ans)
+	}
+}
+
+func TestRemoteApproverAskUserHeadlessTimesOut(t *testing.T) {
+	a := NewRemoteApprover(time.Second, nil)
+	a.askUserTimeout = 50 * time.Millisecond
+
+	_, err := a.AskUser(agent.AskUserQuestion{Question: "q", Options: []agent.AskOption{{Label: "a"}, {Label: "b"}}})
+	if err == nil || !strings.Contains(err.Error(), "timed out") {
+		t.Fatalf("headless AskUser error = %v, want timeout", err)
+	}
+}
+
+func TestRemoteApproverAskUserGracePeriodExpires(t *testing.T) {
+	sink := &syncSink{}
+	a := NewRemoteApprover(time.Second, nil)
+	a.askUserPoll = 10 * time.Millisecond
+	a.askUserGracePeriod = 50 * time.Millisecond
+	a.AddSink(1, sink)
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := a.AskUser(agent.AskUserQuestion{Question: "q", Options: []agent.AskOption{{Label: "a"}, {Label: "b"}}})
+		done <- err
+	}()
+	waitAskUserFrame(t, sink)
+
+	// The client disconnects and never reconnects — the grace period must
+	// expire instead of hanging the turn forever.
+	a.RemoveSink(1)
+
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "grace period") {
+			t.Fatalf("AskUser error = %v, want grace-period expiry", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("AskUser did not return after grace period expired")
+	}
+}
+
+func TestRemoteApproverAskUserReconnectWithinGraceResumes(t *testing.T) {
+	sink := &syncSink{}
+	a := NewRemoteApprover(time.Second, nil)
+	a.askUserPoll = 10 * time.Millisecond
+	a.askUserGracePeriod = 2 * time.Second
+	a.AddSink(1, sink)
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := a.AskUser(agent.AskUserQuestion{Question: "q", Options: []agent.AskOption{{Label: "a"}, {Label: "b"}}})
+		done <- err
+	}()
+	waitAskUserFrame(t, sink)
+
+	// Disconnect, then reconnect within the grace period — the pending ask is
+	// re-sent and can still be answered.
+	a.RemoveSink(1)
+	time.Sleep(30 * time.Millisecond) // let the poll notice the disconnect and start grace
+	a.AddSink(2, sink)
+
+	frame := waitAskUserFrame(t, sink)
+	id, _ := frame["id"].(string)
+	a.ResolveAskUser(id, agent.AskUserAnswer{Selected: []string{"b"}})
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("AskUser error after reconnect = %v, want nil", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("AskUser did not return after reconnect + answer")
+	}
+}
+
+func TestRemoteApproverAskUserResendKeepsFrozenDeadline(t *testing.T) {
+	// A headless ask freezes its fallback deadline; when a client connects
+	// later and AddSink re-sends it, the frame must carry the same deadline_ms
+	// the original would have — not a fresh recomputation.
+	a := NewRemoteApprover(time.Second, nil)
+	a.askUserTimeout = 42 * time.Second
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := a.AskUser(agent.AskUserQuestion{Question: "q", Options: []agent.AskOption{{Label: "a"}, {Label: "b"}}})
+		done <- err
+	}()
+	time.Sleep(20 * time.Millisecond) // let AskUser register the pending ask
+
+	sink := &syncSink{}
+	a.AddSink(1, sink)
+
+	frame := waitAskUserFrame(t, sink)
+	got, ok := frame["deadline_ms"].(float64)
+	if !ok || int64(got) != 42*1000 {
+		t.Fatalf("re-sent deadline_ms = %v (present=%v), want 42000", got, ok)
+	}
+	id, _ := frame["id"].(string)
+	a.ResolveAskUser(id, agent.AskUserAnswer{Selected: []string{"a"}})
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("AskUser error = %v, want nil", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("AskUser did not return after resolve")
+	}
+}
+
+func TestRemoteApproverCloseResolvesBlockedAskUser(t *testing.T) {
+	sink := &syncSink{}
+	a := NewRemoteApprover(time.Second, nil)
+	a.AddSink(1, sink)
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := a.AskUser(agent.AskUserQuestion{Question: "q", Options: []agent.AskOption{{Label: "a"}, {Label: "b"}}})
+		done <- err
+	}()
+	waitAskUserFrame(t, sink)
+
+	a.Close()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("AskUser returned nil error after Close")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("AskUser did not return after Close")
+	}
 }
