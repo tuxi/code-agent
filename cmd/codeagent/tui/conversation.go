@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"code-agent/cmd/codeagent/tui/components/chat"
 	"code-agent/internal/agent"
@@ -21,8 +22,9 @@ import (
 //   - Feed events in order: for _, m := range c.Apply(ev) { ... }. Apply
 //     returns the messages to show: a brand-new entry, or an update to one
 //     already on screen. The chat List upserts (matching by message ID, and by
-//     Tool.CallID for tool cards), so dispatching every returned message as a
-//     chat.NewMessageMsg is sufficient — no UpdateMessageMsg needed.
+//     Tool.CallID for tool cards). app.go sends each event's returned messages
+//     as one chat.BatchMessagesMsg, applied in slice order — no per-message
+//     UpdateMessageMsg needed.
 //   - Replaying a session's persisted events (resume) produces the same
 //     transcript as the live run, because Apply is a pure fold over the events.
 //
@@ -30,11 +32,30 @@ import (
 // agent.Event.CallID, so the card is created once and updated in place. The
 // streamed assistant reply keeps one message ID for its whole life, from the
 // first token_delta until turn_finished marks it finished.
+//
+// Folding: thinking, tool calls, and low-signal system notices are folded into
+// collapsible groups (chat.Fold) so the transcript reads as blocks, not a flat
+// line per event. Consecutive same-name tool calls merge into one group card;
+// consecutive low-signal notices (reflections, verify, job output…) merge into
+// one system group. The List owns the open/close state; Apply only decides
+// grouping and default state.
 type Conversation struct {
 	seq int // backs stable message IDs
 
 	msgs        []chat.Message // the transcript as folded so far
 	assistantID string         // ID of the in-flight streaming assistant message, if any
+	thinkingID  string         // ID of the in-flight streaming thinking block, if any
+
+	// Current tool group: consecutive same-name tool calls fold together while
+	// the group stays the transcript tail.
+	toolGroupID   string
+	toolGroupName string
+
+	sysGroupID string // current system-notice group, while it is the transcript tail
+
+	// Turn footer accumulation, reset at each turn boundary.
+	turnTokens  int
+	turnElapsed time.Duration
 }
 
 // Messages returns the current transcript (useful for a full re-render).
@@ -62,68 +83,119 @@ func (c *Conversation) openAssistant() *chat.Message {
 func (c *Conversation) Apply(ev agent.Event) []chat.Message {
 	switch ev.Kind {
 	case agent.EventTurnStarted:
-		c.finalizeStreaming()
+		// A new turn closes any leftovers from the previous one: the streaming
+		// assistant preview is finalized and an abandoned thinking block is
+		// marked finished so it stops spinning.
+		var out []chat.Message
+		out = append(out, c.finalizeStreaming()...)
+		out = append(out, c.closeThinking()...)
+		c.turnTokens, c.turnElapsed = 0, 0
 		if ev.Text == "" {
-			return nil
+			return out
 		}
-		return c.append(chat.Message{Kind: chat.KindUser, Content: ev.Text})
+		return append(out, c.append(chat.Message{Kind: chat.KindUser, Content: ev.Text})...)
+
+	case agent.EventReasoningDelta:
+		return c.streamThinking(ev.Text)
 
 	case agent.EventThinking:
 		if ev.Text == "" {
 			return nil
 		}
-		return c.append(chat.Message{Kind: chat.KindThinking, Content: ev.Text})
+		// The authoritative reasoning snapshot closes the streaming block,
+		// replacing its incremental content in place.
+		if m := c.openThinking(); m != nil {
+			m.Content = ev.Text
+			m.Finished = true
+			m.Fold.Running = false
+			c.thinkingID = ""
+			return []chat.Message{*m}
+		}
+		f := &chat.Fold{Title: "Thought", Count: 1, Running: false, Open: false}
+		return c.appendFold(chat.Message{
+			Kind: chat.KindThinking, Content: ev.Text, Finished: true,
+		}, f)
 
 	case agent.EventTokenDelta:
 		return c.stream(ev.Text)
 
 	case agent.EventTurnFinished:
-		out := c.finalizeStreaming()
-		if ev.Text == "" {
-			return out
-		}
+		var out []chat.Message
+		out = append(out, c.closeThinking()...)
+		// turn_finished carries the authoritative final answer; it replaces the
+		// streamed preview in place so a streaming turn yields one assistant
+		// message, not a preview plus a duplicate.
 		if m := c.openAssistant(); m != nil {
-			// turn_finished carries the authoritative final answer; the streamed
-			// preview may have been cut short.
-			m.Content = ev.Text
+			if ev.Text != "" {
+				m.Content = ev.Text
+			}
 			m.Finished = true
 			c.assistantID = ""
-			return append(out, *m)
+			out = append(out, *m)
+		} else if ev.Text != "" {
+			out = append(out, c.new(chat.Message{
+				Kind: chat.KindAssistant, Content: ev.Text, Finished: true,
+			}))
 		}
-		return append(out, c.new(chat.Message{
-			Kind: chat.KindAssistant, Content: ev.Text, Finished: true,
-		}))
+		if c.turnTokens > 0 || c.turnElapsed > 0 {
+			out = append(out, c.new(chat.Message{
+				Kind: chat.KindSystem,
+				Content: fmt.Sprintf("⤷ %s · %s",
+					formatElapsed(c.turnElapsed), formatTokens(c.turnTokens)),
+			}))
+		}
+		c.turnTokens, c.turnElapsed = 0, 0
+		return out
 
 	case agent.EventToolStarted:
 		if ev.ToolName == loadSkillTool {
 			return nil // the skill card stands in for the load_skill tool line (see timeline)
 		}
-		return c.append(chat.Message{
-			Kind: chat.KindTool,
-			Tool: &chat.ToolCall{
-				CallID:   toolCallID(ev),
-				Name:     ev.ToolName,
-				Params:   toolParams(ev.ToolArgs),
-				Status:   chat.ToolRunning,
-				IsDiff:   diffTools[ev.ToolName],
-				Language: toolLanguage(ev.ToolName),
-			},
-		})
+		call := chat.ToolCall{
+			CallID:   toolCallID(ev),
+			Name:     ev.ToolName,
+			Params:   toolParams(ev.ToolArgs),
+			Status:   chat.ToolRunning,
+			IsDiff:   diffTools[ev.ToolName],
+			Language: toolLanguage(ev.ToolName),
+		}
+		// Same-name tool calls that are still the transcript tail fold into one
+		// group card ("Run ×3"); anything in between starts a new group.
+		if g := c.openToolGroup(ev.ToolName); g != nil {
+			g.Fold.ToolCalls = append(g.Fold.ToolCalls, call)
+			g.Fold.Count++
+			g.Fold.Running = true
+			return []chat.Message{*g}
+		}
+		f := &chat.Fold{
+			Title: chat.ToolDisplayName(ev.ToolName), Count: 1,
+			// Running tool groups force-expand in the list (work in flight stays
+			// visible); the collapsed default means a finished group folds back
+			// to its one-line summary.
+			Running: true, Open: false,
+		}
+		out := c.appendFold(chat.Message{Kind: chat.KindTool}, f)
+		out[0].Fold.ToolCalls = append(out[0].Fold.ToolCalls, call)
+		c.toolGroupID = out[0].ID
+		c.toolGroupName = ev.ToolName
+		return out
 
 	case agent.EventObserved:
 		if ev.ToolName == loadSkillTool {
 			return nil
 		}
-		if card := c.openTool(ev.CallID, ev.Step); card != nil {
+		if m, j := c.findTool(ev.CallID, ev.Step); m != nil {
+			tc := c.memberTool(m, j)
 			// The observed classification decides the status; the result body is
 			// still filled by tool_finished below.
 			if isFailure(ev.Failure) {
-				card.Tool.Status = chat.ToolFailed
-				card.Tool.Result = ev.Observation
+				tc.Status = chat.ToolFailed
+				tc.Result = ev.Observation
 			} else {
-				card.Tool.Status = chat.ToolCompleted
+				tc.Status = chat.ToolCompleted
 			}
-			return []chat.Message{*card}
+			c.syncGroupRunning(m)
+			return []chat.Message{*m}
 		}
 		return nil
 
@@ -131,14 +203,16 @@ func (c *Conversation) Apply(ev agent.Event) []chat.Message {
 		if ev.ToolName == loadSkillTool {
 			return nil
 		}
-		if card := c.openTool(ev.CallID, ev.Step); card != nil {
-			card.Tool.Result = ev.Observation
+		if m, j := c.findTool(ev.CallID, ev.Step); m != nil {
+			tc := c.memberTool(m, j)
+			tc.Result = ev.Observation
 			if ev.Err != "" {
-				card.Tool.Status = chat.ToolFailed
-			} else if card.Tool.Status == chat.ToolRunning {
-				card.Tool.Status = chat.ToolCompleted
+				tc.Status = chat.ToolFailed
+			} else if tc.Status == chat.ToolRunning {
+				tc.Status = chat.ToolCompleted
 			}
-			return []chat.Message{*card}
+			c.syncGroupRunning(m)
+			return []chat.Message{*m}
 		}
 		return nil
 
@@ -160,14 +234,14 @@ func (c *Conversation) Apply(ev agent.Event) []chat.Message {
 		})
 
 	case agent.EventReflected, agent.EventPreMutation:
-		return c.append(chat.Message{Kind: chat.KindSystem, Content: "↻ " + ev.Text})
+		return c.systemNotice(chat.Message{Kind: chat.KindSystem, Content: "↻ " + ev.Text})
 
 	case agent.EventVerified:
 		txt := ev.Text
 		if txt == "" {
 			txt = "verification passed"
 		}
-		return c.append(chat.Message{Kind: chat.KindSystem, Content: "↻ verify: " + txt})
+		return c.systemNotice(chat.Message{Kind: chat.KindSystem, Content: "↻ verify: " + txt})
 
 	case agent.EventCompacted:
 		return c.append(chat.Message{
@@ -227,7 +301,7 @@ func (c *Conversation) Apply(ev agent.Event) []chat.Message {
 		if ev.Chunk == "" {
 			return nil
 		}
-		return c.append(chat.Message{Kind: chat.KindSystem, Content: ev.Chunk})
+		return c.systemNotice(chat.Message{Kind: chat.KindSystem, Content: ev.Chunk})
 
 	case agent.EventJobFinished:
 		return c.append(chat.Message{Kind: chat.KindSystem, Content: "■ job finished: " + ev.Text})
@@ -239,16 +313,20 @@ func (c *Conversation) Apply(ev agent.Event) []chat.Message {
 		return c.append(chat.Message{Kind: chat.KindSystem, Content: "⏸ paused"})
 
 	case agent.EventTurnFailed:
+		var out []chat.Message
+		out = append(out, c.finalizeStreaming()...)
 		msg := "✗ turn failed"
 		if ev.Err != "" {
 			msg += ": " + ev.Err
 		} else if ev.ErrorCode != "" {
 			msg += " (" + ev.ErrorCode + ")"
 		}
-		return c.append(chat.Message{Kind: chat.KindSystem, Content: msg})
+		return append(out, c.append(chat.Message{Kind: chat.KindSystem, Content: msg})...)
 
 	case agent.EventTurnCancelled:
-		return c.append(chat.Message{Kind: chat.KindSystem, Content: "✕ turn cancelled"})
+		var out []chat.Message
+		out = append(out, c.finalizeStreaming()...)
+		return append(out, c.append(chat.Message{Kind: chat.KindSystem, Content: "✕ turn cancelled"})...)
 
 	case agent.EventTaskStarted:
 		return c.append(chat.Message{Kind: chat.KindSystem, Content: "⇶ task: " + ev.Text})
@@ -257,28 +335,37 @@ func (c *Conversation) Apply(ev agent.Event) []chat.Message {
 		return c.append(chat.Message{Kind: chat.KindSystem, Content: "⇶ task finished"})
 
 	case agent.EventTodoUpdated:
-		return c.append(chat.Message{
+		return c.systemNotice(chat.Message{
 			Kind:    chat.KindSystem,
 			Content: fmt.Sprintf("▤ todo updated — %d items", len(ev.Todos)),
 		})
 
 	case agent.EventPlanStateChanged:
-		return c.append(chat.Message{
+		return c.systemNotice(chat.Message{
 			Kind:    chat.KindSystem,
 			Content: "📋 plan mode: " + ev.PlanState.String(),
 		})
 
 	case agent.EventAutoApproved:
-		return c.append(chat.Message{Kind: chat.KindSystem, Content: "⚡ auto-approved " + ev.ToolName})
+		return c.systemNotice(chat.Message{Kind: chat.KindSystem, Content: "⚡ auto-approved " + ev.ToolName})
 
-	// No transcript presence — explicitly consumed elsewhere:
-	// ModelStarted/ModelFinished drive the status bar spinner, ReasoningDelta is
-	// the ephemeral preview that EventThinking supersedes, ToolStdout/Stderr are
-	// live chunk streams, and the turn_accepted/turn_queued/workflow_*/
-	// session_repaired events have no line in a single-session chat.
-	case agent.EventModelStarted, agent.EventModelFinished, agent.EventReasoningDelta,
-		agent.EventToolStdout, agent.EventToolStderr, agent.EventTurnAccepted,
+	case agent.EventModelStarted:
+		// A new model call begins a new step, so the previous step's streamed
+		// text is complete. Finalizing here gives one assistant block per model
+		// invocation (text → tools → text → tools → final) instead of one giant
+		// merged block. If no text was streamed (model went straight to tools),
+		// finalizeStreaming returns nothing.
+		return c.finalizeStreaming()
+
+	case agent.EventToolStdout, agent.EventToolStderr, agent.EventTurnAccepted,
 		agent.EventTurnQueued, agent.EventSessionRepaired:
+		return nil
+
+	case agent.EventModelFinished:
+		// Accumulate the current turn's cost for the footer emitted at the next
+		// turn_finished boundary. The status bar spinner is driven in app.go.
+		c.turnTokens += ev.TotalTokens
+		c.turnElapsed += ev.Elapsed
 		return nil
 	}
 	return nil
@@ -332,17 +419,171 @@ func (c *Conversation) new(m chat.Message) chat.Message {
 	return m
 }
 
-// openTool returns the stored tool card for the given call, or nil. The card
-// keys on CallID (the model's stable tool_call id); Step is the fallback when a
-// provider omitted the id (the loop fills one, so this is defensive).
-func (c *Conversation) openTool(callID string, step int) *chat.Message {
+// findTool returns the message holding the tool call with the given identity
+// and the member index within it: j >= 0 for a fold-group member (use
+// memberTool), -1 for a standalone card. Returns nil when the call is unknown.
+func (c *Conversation) findTool(callID string, step int) (*chat.Message, int) {
 	key := toolCallID(agent.Event{CallID: callID, Step: step})
 	for i := range c.msgs {
-		if c.msgs[i].Kind == chat.KindTool && c.msgs[i].Tool != nil && c.msgs[i].Tool.CallID == key {
+		m := &c.msgs[i]
+		if m.Kind != chat.KindTool {
+			continue
+		}
+		if m.Tool != nil && m.Tool.CallID == key {
+			return m, -1
+		}
+		if m.Fold != nil {
+			for j := range m.Fold.ToolCalls {
+				if m.Fold.ToolCalls[j].CallID == key {
+					return m, j
+				}
+			}
+		}
+	}
+	return nil, -1
+}
+
+// memberTool dereferences a findTool result to the card it identified.
+func (c *Conversation) memberTool(m *chat.Message, j int) *chat.ToolCall {
+	if j >= 0 {
+		return &m.Fold.ToolCalls[j]
+	}
+	return m.Tool
+}
+
+// syncGroupRunning refreshes a tool group's Running flag from its members, so
+// the list can auto-expand while work is in flight and auto-collapse on
+// completion.
+func (c *Conversation) syncGroupRunning(m *chat.Message) {
+	if m.Fold == nil {
+		return
+	}
+	m.Fold.Running = false
+	for _, tc := range m.Fold.ToolCalls {
+		if tc.Status == chat.ToolRunning {
+			m.Fold.Running = true
+			break
+		}
+	}
+}
+
+// openToolGroup returns the current tool group if it is still the transcript
+// tail and matches the tool name; otherwise nil (a new group must start).
+func (c *Conversation) openToolGroup(name string) *chat.Message {
+	if c.toolGroupID == "" || c.toolGroupName != name {
+		return nil
+	}
+	if n := len(c.msgs); n > 0 && c.msgs[n-1].ID == c.toolGroupID {
+		return &c.msgs[n-1]
+	}
+	return nil
+}
+
+// openThinking returns the in-flight streaming thinking block, or nil.
+func (c *Conversation) openThinking() *chat.Message {
+	if c.thinkingID == "" {
+		return nil
+	}
+	for i := range c.msgs {
+		if c.msgs[i].ID == c.thinkingID {
 			return &c.msgs[i]
 		}
 	}
+	c.thinkingID = ""
 	return nil
+}
+
+// streamThinking appends a reasoning delta to the in-flight thinking block,
+// creating it on first use. The block is folded by default; only its summary
+// line is visible while it streams.
+func (c *Conversation) streamThinking(text string) []chat.Message {
+	if text == "" {
+		return nil
+	}
+	if m := c.openThinking(); m != nil {
+		m.Content += text
+		return []chat.Message{*m}
+	}
+	f := &chat.Fold{Title: "Thought", Count: 1, Running: true, Open: false}
+	out := c.appendFold(chat.Message{Kind: chat.KindThinking, Content: text}, f)
+	c.thinkingID = out[0].ID
+	return out
+}
+
+// closeThinking marks any in-flight thinking block finished (dropped or
+// cancelled turn, new turn boundary). A block left open would show a spinner
+// forever.
+func (c *Conversation) closeThinking() []chat.Message {
+	m := c.openThinking()
+	if m == nil {
+		return nil
+	}
+	m.Finished = true
+	m.Fold.Running = false
+	c.thinkingID = ""
+	return []chat.Message{*m}
+}
+
+// appendFold appends a group-representative message, binding the fold's ID to
+// the message ID — the List keys open/close state on that identity.
+func (c *Conversation) appendFold(m chat.Message, f *chat.Fold) []chat.Message {
+	c.seq++
+	m.ID = fmt.Sprintf("m%d", c.seq)
+	f.ID = m.ID
+	m.Fold = f
+	c.msgs = append(c.msgs, m)
+	return []chat.Message{m}
+}
+
+// systemNotice folds a low-signal system line into the open system-notice
+// group when that group is still the transcript tail; otherwise it starts a
+// new group. High-signal events (plan/askuser/job/task/failed…) bypass this
+// and stay flat lines.
+func (c *Conversation) systemNotice(m chat.Message) []chat.Message {
+	if m.Content == "" {
+		return nil
+	}
+	if g := c.openSystemGroup(); g != nil {
+		g.Fold.Lines = append(g.Fold.Lines, m.Content)
+		g.Fold.Count++
+		return []chat.Message{*g}
+	}
+	f := &chat.Fold{Title: "ℹ", Count: 1, Open: false}
+	out := c.appendFold(m, f)
+	out[0].Fold.Lines = append(out[0].Fold.Lines, m.Content)
+	c.sysGroupID = out[0].ID
+	return out
+}
+
+// openSystemGroup returns the current system-notice group if it is still the
+// transcript tail, else nil.
+func (c *Conversation) openSystemGroup() *chat.Message {
+	if c.sysGroupID == "" {
+		return nil
+	}
+	if n := len(c.msgs); n > 0 && c.msgs[n-1].ID == c.sysGroupID {
+		return &c.msgs[n-1]
+	}
+	return nil
+}
+
+// formatElapsed renders a turn's accumulated model time, e.g. "12.4s" or "2m3s".
+func formatElapsed(d time.Duration) string {
+	if d < time.Second {
+		return fmt.Sprintf("%dms", d.Milliseconds())
+	}
+	if d < time.Minute {
+		return fmt.Sprintf("%.1fs", d.Seconds())
+	}
+	return fmt.Sprintf("%dm%ds", int(d.Minutes()), int(d.Seconds())%60)
+}
+
+// formatTokens renders a token count compactly: "1.2k", "3.4k", "12k".
+func formatTokens(n int) string {
+	if n < 1000 {
+		return fmt.Sprintf("%d tokens", n)
+	}
+	return fmt.Sprintf("%.1fk tokens", float64(n)/1000)
 }
 
 // toolCallID normalizes a tool call's identity: the model's call id, or a

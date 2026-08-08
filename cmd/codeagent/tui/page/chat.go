@@ -27,6 +27,10 @@ type chatPage struct {
 	messages layout.Container
 	layout   layout.SplitPaneLayout
 
+	// list is the transcript component inside messages; kept separately so the
+	// page can feed it its screen origin (click hit-testing) on resize.
+	list *chat.List
+
 	// onSubmit is called with the composed text. The conversation adapter
 	// installs it; when nil the text is silently discarded.
 	onSubmit func(text string) tea.Cmd
@@ -59,6 +63,7 @@ func (p *chatPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		cmd := p.layout.SetSize(msg.Width, msg.Height)
+		p.syncScreenOrigin()
 		cmds = append(cmds, cmd)
 
 	case chat.SendMsg:
@@ -118,6 +123,14 @@ func (p *chatPage) SetOnSubmit(fn func(text string) tea.Cmd) {
 	p.onSubmit = fn
 }
 
+// syncScreenOrigin tells the transcript where its top-left corner sits on the
+// terminal, so mouse clicks map to rows. The page is the app's top-left panel
+// (origin 0,0) and the messages container adds its top/left padding (1,1) —
+// the editor and status bar sit below the list, never above or beside it.
+func (p *chatPage) syncScreenOrigin() {
+	p.list.SetScreenOrigin(1, 1)
+}
+
 // NewChatPage creates the chat page: transcript on top, composer at the bottom.
 func NewChatPage() *chatPage {
 	msgList := chat.NewList()
@@ -141,6 +154,7 @@ func NewChatPage() *chatPage {
 	return &chatPage{
 		editor:   editorContainer,
 		messages: messagesContainer,
+		list:     msgList,
 		layout: layout.NewSplitPane(
 			layout.WithLeftPanel(messagesContainer),
 			layout.WithBottomPanel(editorContainer),

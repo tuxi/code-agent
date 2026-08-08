@@ -143,6 +143,30 @@ type Message struct {
 	// Finished marks a finalized assistant message. Streaming messages have
 	// Finished=false and are throttled by the list (see list.go).
 	Finished bool
+	// Fold is non-nil when this message is a collapsible group representative:
+	// a thinking block, a tool group, or a system-notice group. Collapsed it
+	// renders one summary line; expanded it renders the members.
+	Fold *Fold
+}
+
+// Fold describes a collapsible transcript group. When non-nil the Message is a
+// group representative; the List owns the open/close state keyed by Fold.ID.
+type Fold struct {
+	// ID is the group's stable identity, bound to Message.ID at creation.
+	ID string
+	// Title is the summary label ("Thought", "ℹ", or a tool display name).
+	Title string
+	// Count is the member count, shown as "Run ×3" / "ℹ 3 notices".
+	Count int
+	// Running reports whether any member is still in flight (a running tool, a
+	// streaming thought). Running groups auto-expand; completion auto-collapses.
+	Running bool
+	// Open is the default expanded state the first time the List sees the group.
+	Open bool
+	// ToolCalls are the member cards of a tool group (KindTool).
+	ToolCalls []ToolCall
+	// Lines are the member lines of a system-notice group (KindSystem).
+	Lines []string
 }
 
 // --- rendering -------------------------------------------------------------
@@ -156,6 +180,7 @@ const (
 	thinkingMessageType
 	systemMessageType
 	compactMessageType
+	foldSummaryMessageType
 
 	// maxResultHeight caps the tool result body before the truncation marker.
 	maxResultHeight = 10
@@ -264,6 +289,59 @@ func renderSystemMessage(msg Message, width int) uiMessage {
 		messageType: systemMessageType,
 		height:      lipgloss.Height(content),
 		content:     content,
+	}
+}
+
+// renderFoldSummary renders the collapsed one-line summary of a foldable group:
+// "▸ Thought" (thinking, completed), "▸ Thinking…" (still streaming),
+// "▸ Run ×3" / "▸ Read main.go" (tool group), "▸ ℹ 3 notices" (system group).
+// A focused row highlights in the primary color for keyboard navigation.
+func renderFoldSummary(f *Fold, focused bool, width int) uiMessage {
+	t := theme.CurrentTheme()
+	style := styles.BaseStyle().
+		Width(width).
+		Foreground(t.TextMuted())
+	if focused {
+		style = styles.BaseStyle().
+			Width(width).
+			Foreground(t.Primary()).
+			Bold(true)
+	}
+
+	var summary string
+	switch {
+	case len(f.ToolCalls) > 0:
+		// Tool group: "▸ Run ×3" or "▸ Read path" for a lone call.
+		title := ToolDisplayName(f.ToolCalls[0].Name)
+		switch {
+		case f.Count > 1:
+			summary = fmt.Sprintf("▸ %s ×%d", title, f.Count)
+		case len(f.ToolCalls[0].Params) > 0:
+			main := chAnsi.Truncate(
+				f.ToolCalls[0].Params[0].Value,
+				max(0, width-lipgloss.Width("▸ "+title)-4), "…")
+			summary = fmt.Sprintf("▸ %s %s", title, main)
+		default:
+			summary = "▸ " + title
+		}
+	case len(f.Lines) > 0 && f.Count > 1:
+		summary = fmt.Sprintf("▸ %s %d notices", f.Title, f.Count)
+	case len(f.Lines) > 0:
+		// Single notice stays informative; the chevron shows it is foldable.
+		summary = "▸ " + chAnsi.Truncate(f.Lines[0], max(0, width-3), "…")
+	default:
+		// Thinking block.
+		label := f.Title
+		if f.Title == "Thought" && f.Running {
+			label = "Thinking…"
+		}
+		summary = "▸ " + label
+	}
+	return uiMessage{
+		ID:          f.ID,
+		messageType: foldSummaryMessageType,
+		height:      1,
+		content:     style.Render(summary),
 	}
 }
 

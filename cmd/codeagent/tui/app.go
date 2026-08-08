@@ -201,7 +201,13 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.busy = false
 		m.status.SetBusy(false)
 		if msg.err != nil {
-			return m, tea.Batch(waitForDone(m.b.done), util.ReportError(msg.err))
+			cmds := []tea.Cmd{waitForDone(m.b.done), util.ReportError(msg.err)}
+			// No EventTurnFinished on the error path: finalize any in-flight
+			// streaming block so it stops spinning.
+			if msgs := m.conversation.finalizeStreaming(); len(msgs) > 0 {
+				cmds = append(cmds, util.CmdHandler(chat.BatchMessagesMsg{Messages: msgs}))
+			}
+			return m, tea.Batch(cmds...)
 		}
 		return m, waitForDone(m.b.done)
 	case goalDoneMsg:
@@ -257,6 +263,16 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, msg.Command.Handler(msg.Command)
 		}
 		return m, nil
+
+	case tea.MouseMsg:
+		// An open overlay owns the pointer: swallowing mouse keeps stray clicks
+		// under a dialog from toggling transcript folds behind it.
+		if m.dialog != nil {
+			return m, nil
+		}
+		u, cmd := m.layout.Update(msg)
+		m.layout = u.(layout.SplitPaneLayout)
+		return m, cmd
 	}
 
 	// Default: everything else goes to the layout (chat page / list / editor /
@@ -390,10 +406,13 @@ func (m *model) handleEvent(ev agent.Event) tea.Cmd {
 			m.status.SetTokens(int64(ev.PromptTokens))
 		}
 	}
-	for _, msg := range m.conversation.Apply(ev) {
-		// The List upserts (by message ID and by Tool.CallID), so a single
-		// NewMessageMsg covers both new entries and in-place updates.
-		cmds = append(cmds, util.CmdHandler(chat.NewMessageMsg{Message: msg}))
+	// One event's messages travel as a single ordered batch. The old path sent
+	// each message as its own command via tea.Batch, which runs commands
+	// concurrently with no delivery-order guarantees — the List could receive
+	// messages from one event in any order. A single BatchMessagesMsg applies
+	// them in Apply order by construction.
+	if msgs := m.conversation.Apply(ev); len(msgs) > 0 {
+		cmds = append(cmds, util.CmdHandler(chat.BatchMessagesMsg{Messages: msgs}))
 	}
 	cmds = append(cmds, waitForEvent(m.b.events))
 	return tea.Batch(cmds...)
@@ -554,18 +573,26 @@ func (m *model) resume(id string) tea.Cmd {
 	m.busy = false
 	m.status.SetBusy(false)
 
-	var cmds []tea.Cmd
-	cmds = append(cmds, util.CmdHandler(chat.ClearMessagesMsg{}))
+	// Fold every persisted event in order into a fresh conversation, then
+	// deliver the whole transcript as ONE message. The old path sent each
+	// message as its own command through tea.Batch, which runs commands
+	// concurrently with no ordering guarantees — the displayed transcript
+	// ended up scrambled (a later turn's prompt could land above an earlier
+	// turn's reply). A single SetMessagesMsg rebuilds the List in slice order.
+	var msgs []chat.Message
 	for _, ev := range m.src.events(id) {
-		for _, msg := range m.conversation.Apply(ev) {
-			cmds = append(cmds, util.CmdHandler(chat.NewMessageMsg{Message: msg}))
-		}
+		msgs = append(msgs, m.conversation.Apply(ev)...)
 	}
-	cmds = append(cmds, func() tea.Msg {
+	swap := func() tea.Msg {
+		// Swap the session into the run loop and deliver the full transcript
+		// as ONE ordered message. Live events from the swapped session are
+		// folded into this same conversation before the snapshot, so they are
+		// included in the delivered transcript — nothing can scramble the
+		// display order, because the transcript is a single ordered snapshot.
 		m.b.sessSwap <- sess
-		return nil
-	})
-	return tea.Batch(cmds...)
+		return chat.SetMessagesMsg{Messages: msgs}
+	}
+	return swap
 }
 
 func (m *model) goalDispatch(args string) tea.Cmd {
