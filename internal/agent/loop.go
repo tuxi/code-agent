@@ -897,10 +897,10 @@ func (r *Runner) drive(ctx context.Context, sess *session.Session) (TurnResult, 
 	// Stop policy (8.5): the finalize decision point. The configured policy wins;
 	// nil selects the built-in default — one instance per turn, so its one-shot
 	// flags reset here.
+	// StopPolicy is nil by default: the model controls when to stop. A
+	// configured policy (VerifyGate, TodoGate, after_turn hook, etc.) replaces
+	// this trust-the-model default. The step budget remains the hard backstop.
 	stopPol := r.StopPolicy
-	if stopPol == nil {
-		stopPol = &finalizePolicy{r: r}
-	}
 
 	// Pre-mutation self-check (P4.3-R Move 3) per-turn state: at most one
 	// hypothesis nudge before an edit that follows a failure, and the ephemeral
@@ -1083,40 +1083,34 @@ func (r *Runner) drive(ctx context.Context, sess *session.Session) (TurnResult, 
 				r.emit(Event{Kind: EventReflected, Text: pendingHarness})
 				continue
 			}
-			// Snapshot the turn for the stop policy. The Reflector computes which
-			// verifiable code changed this turn; the default policy's deterministic
-			// verify consumes the same signal, and an external hook receives it.
-			if r.Reflector != nil {
-				r.mutatedVerifiableCode = len(r.Reflector.Reflect(turn.Steps).CodeFilesMutated) > 0
-			}
-			sc := StopContext{
-				LastText:    resp.Content,
-				Todos:       r.todos,
-				Steps:       turn.Steps,
-				PlanState:   r.PlanState,
-				CodeMutated: r.mutatedVerifiableCode,
-				ToolCalls:   turn.ExecutedToolCalls,
-				MaxSteps:    r.MaxSteps,
-			}
-			// Stop policy (8.5): the finalize decision point. The policy owns the
-			// judgment (build verify, change review, todo gate in the default); the
-			// loop owns only the mechanism. A Continue verdict re-prompts with an
-			// ephemeral nudge — never persisted — so a premature "done" is
-			// retracted, not left in history. The plan-state gate above stays in
-			// the loop because it is a protocol invariant, not a judgment.
-			verdict, err := stopPol.Decide(ctx, sc)
-			if err != nil {
-				// A stop policy that errors must not silently accept the finish
-				// (fail-closed): that is exactly the "stopped anyway" failure this
-				// gate exists to prevent. The step budget backstops the delay.
-				verdict = StopVerdict{Continue: true, Message: "[policy] The stop policy could not decide: " + err.Error()}
-			}
-			if verdict.Continue {
-				if verdict.Message != "" {
-					pendingHarness = verdict.Message
-					r.emit(Event{Kind: EventReflected, Text: verdict.Message})
+			// Stop policy (8.5): an optional finalize decision point. When nil
+			// (the default), the model controls when to stop — its first "done"
+			// is accepted immediately. A configured policy (VerifyGate, TodoGate,
+			// after_turn hook, etc.) owns the judgment and may re-prompt with
+			// an ephemeral nudge. The plan-state gate above stays in the loop
+			// because it is a protocol invariant, not a judgment.
+			if stopPol != nil {
+				sc := StopContext{
+					LastText:    resp.Content,
+					Todos:       r.todos,
+					Steps:       turn.Steps,
+					PlanState:   r.PlanState,
+					ToolCalls:   turn.ExecutedToolCalls,
+					MaxSteps:    r.MaxSteps,
 				}
-				continue
+				verdict, err := stopPol.Decide(ctx, sc)
+				if err != nil {
+					// Fail-closed: a policy that errors must not silently
+					// accept the finish. The step budget backstops the delay.
+					verdict = StopVerdict{Continue: true, Message: "[policy] The stop policy could not decide: " + err.Error()}
+				}
+				if verdict.Continue {
+					if verdict.Message != "" {
+						pendingHarness = verdict.Message
+						r.emit(Event{Kind: EventReflected, Text: verdict.Message})
+					}
+					continue
+				}
 			}
 			sess.Messages = append(sess.Messages, resp.AssistantMessage())
 			sess.UpdatedAt = time.Now()
@@ -1286,12 +1280,12 @@ const (
 // failure. Guards keep it safe — it declines (reporting Passed, i.e. "no
 // objection") when run_command is unavailable or the command would mutate the
 // workspace, so it never auto-runs a side-effecting command outside approval.
-func (r *Runner) runFinalizeVerify(ctx context.Context) (VerifyStatus, string) {
+func (r *Runner) runFinalizeVerify(ctx context.Context, command string) (VerifyStatus, string) {
 	tool, ok := r.Tools.Get("run_command")
 	if !ok {
 		return VerifyPassed, ""
 	}
-	input, err := json.Marshal(map[string]string{"command": r.VerifyCommand})
+	input, err := json.Marshal(map[string]string{"command": command})
 	if err != nil {
 		return VerifyPassed, ""
 	}
@@ -1558,7 +1552,6 @@ func (r *Runner) maybeCompact(ctx context.Context, sess *session.Session) error 
 		return nil // nothing was folded
 	}
 	sess.RecordCompaction(before, len(sess.Summary))
-	r.emit(Event{Kind: EventCompacted, BeforeTokens: before, SummaryChars: len(sess.Summary)})
 	return nil
 }
 

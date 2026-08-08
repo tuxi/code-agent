@@ -76,15 +76,13 @@ func BuildRunner(cfg app.Config, set settings.Settings, mc app.ModelConfig, prov
 		MaxParallelTools: cfg.Agent.MaxParallelTools,
 		Approver:         approver,
 		Observer:         observation.DefaultObserver{},
-		Reflector:        agent.DefaultReflector{},
 		RemindSkills:     skillReg.Len() > 0,
 		RemindParallel:   cfg.Agent.MaxParallelTools > 1,
 		RemindHypothesis: true,
-		// Verify command resolution (P11.b): the settings layer's verify block
-		// wins; "auto" detects from the workspace. Config no longer carries a
-		// legacy verify_command.
-		VerifyCommand: settings.ResolveVerifyFrom(set, root, ""),
-		PlanTools:     tools.Subset(registry, PlanModeToolNames...),
+		// Reflector and VerifyCommand are no longer set by default. To enable
+		// deterministic build verification at the stop boundary, construct a
+		// VerifyGate and assign it to runner.StopPolicy.
+		PlanTools: tools.Subset(registry, PlanModeToolNames...),
 		Hook:          hook,
 		Compactor:     BuildCompactor(cfg, mc, provider),
 		ContextEditor: &session.ContextEditor{KeepTurns: 3},

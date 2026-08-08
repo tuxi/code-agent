@@ -68,6 +68,7 @@ func TestTodoGateReconcile(t *testing.T) {
 	}}
 	em := &capturingEmitter{}
 	runner := &Runner{Model: provider, Tools: reg, MaxSteps: 10, Emitter: em}
+	runner.StopPolicy = &TodoGate{}
 	sess := newSession()
 
 	res, err := runner.RunTurn(context.Background(), sess, "do the steps")
@@ -165,6 +166,7 @@ func TestTodoGateSkipsWhenCleared(t *testing.T) {
 	}}
 	em := &capturingEmitter{}
 	runner := &Runner{Model: provider, Tools: reg, MaxSteps: 10, Emitter: em}
+	runner.StopPolicy = &TodoGate{}
 
 	res, err := runner.RunTurn(context.Background(), newSession(), "go")
 	if err != nil {

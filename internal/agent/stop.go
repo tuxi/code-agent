@@ -52,97 +52,91 @@ func (f StopPolicyFunc) Decide(ctx context.Context, sc StopContext) (StopVerdict
 	return f(ctx, sc)
 }
 
-// finalizePolicy is the default stop policy: the finalize gate sequence that
-// used to be inlined in drive(). One instance per turn (created at the top of
-// drive()), so its one-shot flags reset naturally. Extracted so the stop
-// decision is replaceable — the harness keeps the point, the policy keeps the
-// judgment.
-type finalizePolicy struct {
-	r                *Runner
-	reflected        bool // one self-check pass per turn
-	verified         bool // the deterministic verify runs at most once
-	todoGateFired    bool // the todo gate re-prompts at most once
-	mutatedFileCount int  // captured from reflector for proportional review
+// VerifyGate is an opt-in StopPolicy that runs a build/test command when the
+// turn changed verifiable code without verifying it. A pass confirms the
+// change; a failure re-prompts with the real result. The command runs at most
+// once per gate instance (one turn). Set VerifyGate as Runner.StopPolicy to
+// enable; leave Runner.StopPolicy nil for the trust-the-model default.
+type VerifyGate struct {
+	Command string  // e.g. "go build ./... && go test ./..."
+	runner  *Runner // for runFinalizeVerify + emit
+
+	reflector Reflector // defaults to DefaultReflector
+	verified  bool
 }
 
-const changeReviewPrompt = "[review] Plan execution changed the workspace. Delegate task with kind " +
-	"change_review containing the original requirement, changed files, and verification results. " +
-	"Require VERDICT: PASS or REQUEST_CHANGES as the first line."
+// NewVerifyGate creates a VerifyGate wired to the given runner's
+// runFinalizeVerify and emit hooks. The Command field must be set before
+// the gate is consulted (typically the same value that was previously
+// configured as Runner.VerifyCommand).
+func NewVerifyGate(runner *Runner, command string) *VerifyGate {
+	return &VerifyGate{runner: runner, Command: command}
+}
 
-const lightReviewNudge = "[review] This is a small change. Self-verify: check the diff is what " +
-	"you intended and run the build. A full independent review is not required for single-file changes."
+// Decide implements StopPolicy.
+func (g *VerifyGate) Decide(ctx context.Context, sc StopContext) (StopVerdict, error) {
+	if g.verified {
+		return StopVerdict{}, nil
+	}
+	if g.reflector == nil {
+		g.reflector = DefaultReflector{}
+	}
+	rc := g.reflector.Reflect(sc.Steps)
+	if !rc.UnverifiedMutation || g.Command == "" {
+		return StopVerdict{}, nil
+	}
 
-// Decide implements StopPolicy. It is consulted only after the plan-state
-// machine gate, which is a protocol invariant and stays in the loop.
-func (p *finalizePolicy) Decide(ctx context.Context, sc StopContext) (StopVerdict, error) {
-	// Deterministic build verify (P4.3-R Move 2, option 2a): a turn that changed
-	// verifiable code without verifying it and a real verify command is
-	// configured — run it once, deterministically, and feed back the TRUTH
-	// instead of guessing. A pass confirms the change; a failure re-prompts with
-	// the real error so the model fixes the actual cause. With no VerifyCommand
-	// this block is skipped entirely (2b silence: the runtime never asserts
-	// "unverified").
-	if p.r.Reflector != nil && !p.reflected {
-		rc := p.r.Reflector.Reflect(sc.Steps)
-		p.r.mutatedVerifiableCode = len(rc.CodeFilesMutated) > 0
-		p.mutatedFileCount = len(rc.CodeFilesMutated)
-		if rc.UnverifiedMutation && p.r.VerifyCommand != "" && !p.verified {
-			p.verified = true
-			status, summary := p.r.runFinalizeVerify(ctx)
-			p.r.emit(Event{Kind: EventVerified, Text: summary})
-			switch status {
-			case VerifyFailed:
-				p.reflected = true // don't also stack another nudge this pass
-				return StopVerdict{Continue: true, Message: "[reflection] The verification `" + p.r.VerifyCommand +
-					"` was run against your change to " + strings.Join(rc.CodeFilesMutated, ", ") +
-					" and it FAILED:\n" + summary +
-					"\nThis is the real result, not a guess. Fix the cause, then finish."}, nil
-			case VerifyCouldNotRun:
-				p.reflected = true
-				if summary == "" {
-					summary = "command could not run (exit -1)"
-				}
-				return StopVerdict{Continue: true, Message: "[reflection] The verification `" + p.r.VerifyCommand +
-					"` could not run: " + summary +
-					"\nThis is an environment problem (e.g. the toolchain is not on PATH), not a verdict on your change." +
-					"\nRetry with an explicit toolchain path, or finish without it."}, nil
+	g.verified = true
+	status, summary := g.runner.runFinalizeVerify(ctx, g.Command)
+	g.runner.emit(Event{Kind: EventVerified, Text: summary})
+
+	switch status {
+	case VerifyFailed:
+		return StopVerdict{Continue: true, Message: "[reflection] The verification `" + g.Command +
+			"` was run against your change to " + strings.Join(rc.CodeFilesMutated, ", ") +
+			" and it FAILED:\n" + summary +
+			"\nThis is the real result, not a guess. Fix the cause, then finish."}, nil
+	case VerifyCouldNotRun:
+		if summary == "" {
+			summary = "command could not run (exit -1)"
+		}
+		return StopVerdict{Continue: true, Message: "[reflection] The verification `" + g.Command +
+			"` could not run: " + summary +
+			"\nThis is an environment problem (e.g. the toolchain is not on PATH), not a verdict on your change." +
+			"\nRetry with an explicit toolchain path, or finish without it."}, nil
+	default:
+		return StopVerdict{}, nil
+	}
+}
+
+// TodoGate is an opt-in StopPolicy that checks the model's own task checklist
+// before accepting a finish. When the model wants to stop with uncompleted
+// items, it fires a one-shot reconciliation nudge — the model must either mark
+// items done, clear aspirational ones, or state why it is stopping anyway.
+type TodoGate struct {
+	fired bool
+}
+
+// Decide implements StopPolicy.
+func (g *TodoGate) Decide(_ context.Context, sc StopContext) (StopVerdict, error) {
+	if g.fired || !hasPendingTodos(sc.Todos) {
+		return StopVerdict{}, nil
+	}
+	g.fired = true
+	return StopVerdict{Continue: true, Message: todoReconcileNudge(sc.Todos)}, nil
+}
+
+// ComposeStopPolicy chains multiple policies in order. The first one that
+// returns Continue=true short-circuits; later policies are not consulted.
+// An empty verdict from all policies accepts the finish.
+func ComposeStopPolicy(policies ...StopPolicy) StopPolicy {
+	return StopPolicyFunc(func(ctx context.Context, sc StopContext) (StopVerdict, error) {
+		for _, p := range policies {
+			v, err := p.Decide(ctx, sc)
+			if err != nil || v.Continue {
+				return v, err
 			}
-			// Passed: the change is genuinely verified. Fall through.
 		}
-		// The TestEditedAfterFailure fact-question (rc.Nudge) is retired: per
-		// sign-off the reflective nudge was removed from the default policy as
-		// per-turn noise. The deterministic verify above is the surviving rail.
-	}
-
-	// Collect all pending gates into a single combined message so the model
-	// reconciles in one round instead of being hit with sequential re-prompts.
-	var parts []string
-
-	// Change review: plan-mode changes get one independent review per mutation.
-	// Proportional: single-file changes self-verify; multi-file changes need a
-	// subagent review. The count increments only when a review completes, so
-	// the model ignoring the harness re-triggers on the next done.
-	if p.r.PlanState == PlanStatusExecuting && p.r.independentTaskAvailable() &&
-		p.r.plannedMutation && !p.r.independentReviewPassed && p.r.changeReviewCount < 1 {
-		if p.mutatedFileCount <= 1 {
-			parts = append(parts, lightReviewNudge)
-		} else {
-			parts = append(parts, changeReviewPrompt)
-		}
-	}
-
-	// Todo gate: the model declared checklist work it has not completed.
-	// One-shot per turn — force a reconcile (mark done, clear aspirational
-	// items, or state explicitly why it is stopping with these pending) before
-	// accepting the finish. It only guards a voluntary finish, not the step-limit
-	// backstop.
-	if !p.todoGateFired && hasPendingTodos(sc.Todos) {
-		p.todoGateFired = true
-		parts = append(parts, todoReconcileNudge(sc.Todos))
-	}
-
-	if len(parts) > 0 {
-		return StopVerdict{Continue: true, Message: strings.Join(parts, "\n\n")}, nil
-	}
-	return StopVerdict{}, nil
+		return StopVerdict{}, nil
+	})
 }

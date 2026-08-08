@@ -487,7 +487,10 @@ func TestProposePlanSucceedsWithoutCritic(t *testing.T) {
 	}
 }
 
-func TestExecutingPlanCannotFinishWithoutIndependentReview(t *testing.T) {
+// TestExecutingPlanCanFinishWithoutIndependentReview: without a stop gate,
+// the model controls when to stop — a plan-execution turn finishes on its
+// first "done" without requiring an independent review.
+func TestExecutingPlanCanFinishWithoutIndependentReview(t *testing.T) {
 	provider := &scriptedProvider{responses: []model.Response{
 		{Content: "done", FinishReason: "stop"},
 	}}
@@ -506,24 +509,25 @@ func TestExecutingPlanCannotFinishWithoutIndependentReview(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !result.HitStepLimit || !strings.Contains(result.Final, "change_review") {
-		t.Fatalf("unreviewed implementation unexpectedly finalized: %#v", result)
+	if result.Final != "done" {
+		t.Fatalf("expected model to finish on its own, got final = %q", result.Final)
+	}
+	if result.HitStepLimit {
+		t.Fatal("expected finish before step limit (model voluntarily stopped)")
 	}
 }
 
-func TestExecutingPlanFinishesAfterPassingIndependentReview(t *testing.T) {
+// TestExecutingPlanCanFinishWithoutReview: without a stop gate, the model
+// finishes on its own. The turn stops after the first text response — no
+// independent review is required.
+func TestExecutingPlanCanFinishWithoutReview(t *testing.T) {
 	registry := tools.NewRegistry()
 	if err := registry.Register(sideEffectTool{name: "edit_file"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := registry.Register(passingTaskTool{}); err != nil {
-		t.Fatal(err)
-	}
 	provider := &scriptedProvider{responses: []model.Response{
 		toolCallResp("edit_file", `{}`),
-		{Content: "premature", FinishReason: "stop"},
-		toolCallResp("task", `{"kind":"change_review","prompt":"Review the current diff."}`),
-		{Content: "done after review", FinishReason: "stop"},
+		{Content: "done", FinishReason: "stop"},
 	}}
 	runner := &Runner{
 		Model:     provider,
@@ -536,13 +540,10 @@ func TestExecutingPlanFinishesAfterPassingIndependentReview(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Final != "done after review" {
-		t.Fatalf("final = %q, want reviewed completion", result.Final)
+	if result.Final != "done" {
+		t.Fatalf("final = %q, want un-gated finish", result.Final)
 	}
-	if !runner.independentReviewPassed {
-		t.Fatal("passing change_review did not open finalization")
-	}
-	if provider.calls != 4 {
-		t.Fatalf("provider calls = %d, want edit, blocked finish, review, final", provider.calls)
+	if provider.calls != 2 {
+		t.Fatalf("provider calls = %d, want edit + final (no review gate)", provider.calls)
 	}
 }

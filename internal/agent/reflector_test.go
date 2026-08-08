@@ -258,9 +258,8 @@ func TestFinalizeVerifyPassAcceptsFinish(t *testing.T) {
 	runner := &Runner{
 		Model: provider, Tools: reg, MaxSteps: 10, Emitter: em,
 		Observer:      observation.DefaultObserver{},
-		Reflector:     DefaultReflector{},
-		VerifyCommand: "go test ./...",
 	}
+	runner.StopPolicy = NewVerifyGate(runner, "go test ./...")
 	res, err := runner.RunTurn(context.Background(), newSession(), "change config")
 	if err != nil {
 		t.Fatal(err)
@@ -293,9 +292,8 @@ func TestFinalizeVerifyFailReprompts(t *testing.T) {
 	runner := &Runner{
 		Model: provider, Tools: reg, MaxSteps: 10, Emitter: em,
 		Observer:      observation.DefaultObserver{},
-		Reflector:     DefaultReflector{},
-		VerifyCommand: "go test ./...",
 	}
+	runner.StopPolicy = NewVerifyGate(runner, "go test ./...")
 	res, err := runner.RunTurn(context.Background(), newSession(), "change config")
 	if err != nil {
 		t.Fatal(err)
@@ -336,9 +334,8 @@ func TestFinalizeVerifyCouldNotRunIsNotAFailure(t *testing.T) {
 	runner := &Runner{
 		Model: provider, Tools: reg, MaxSteps: 10, Emitter: em,
 		Observer:      observation.DefaultObserver{},
-		Reflector:     DefaultReflector{},
-		VerifyCommand: "go test ./...",
 	}
+	runner.StopPolicy = NewVerifyGate(runner, "go test ./...")
 	res, err := runner.RunTurn(context.Background(), newSession(), "change config")
 	if err != nil {
 		t.Fatal(err)
