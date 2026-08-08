@@ -4,9 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"syscall"
 
@@ -55,9 +55,12 @@ func LoadTrustStore(home string) (*TrustStore, error) {
 	return ts, nil
 }
 
-// Lookup checks the store for a trust decision on cwd, walking up to the root
-// (parent directory inheritance). Returns (trusted, found). When found is
-// false, no entry (or only null entries) were found in the ancestor chain.
+// Lookup checks the store for a trust decision on cwd, walking up to the root.
+// Positive decisions (trusted) inherit to subdirectories — trust a parent
+// and all children are trusted. Negative decisions (untrusted) are exact-
+// match only — untrusting a parent does NOT block subdirectories, which
+// get their own prompt. Returns (trusted, found). When found is false, no
+// entry was found and the caller should fall through to interactive resolution.
 func (s *TrustStore) Lookup(cwd string) (bool, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -67,17 +70,27 @@ func (s *TrustStore) Lookup(cwd string) (bool, bool) {
 		return false, false
 	}
 	abs = filepath.Clean(abs)
+	original := abs
 
 	for {
 		v, ok := s.cache[abs]
 		if ok && v != nil {
-			return *v, true
+			// Untrusted is exact-match only — a parent "no" does not
+			// block subdirectories. Walk up continues searching for a
+			// positive (trusted) ancestor.
+			if *v {
+				return true, true
+			}
+			// Negative match: only return if it is the exact directory.
+			if abs == original {
+				return false, true
+			}
 		}
 		parent := filepath.Dir(abs)
 		if parent == abs {
 			break // reached root
 		}
-		abs = parent
+				abs = parent
 	}
 	return false, false
 }
@@ -209,15 +222,19 @@ func ResolveTrust(
 	defaultTrust *bool,
 	policy agent.TrustPolicy,
 ) (bool, string, error) {
-	// If there are no trust-requiring resources, implicitly trust.
-	if !hasResources {
-		return true, "no project resources", nil
-	}
-
-	// 1. CLI flag overrides everything.
+	// 1. CLI flag overrides everything. When the user explicitly passes
+	// --trust or --no-trust, persist the decision so subsequent runs
+	// without the flag also respect it — otherwise a one-time `n` at the
+	// prompt becomes a permanent block that --trust only bypasses once.
 	if cliOverride != nil {
 		if *cliOverride {
+			if store != nil {
+				_ = store.Store(cwd, true)
+			}
 			return true, "CLI flag --trust", nil
+		}
+		if store != nil {
+			_ = store.Store(cwd, false)
 		}
 		return false, "CLI flag --no-trust", nil
 	}
@@ -275,17 +292,18 @@ func ResolveTrust(
 //  2. Check if project has trust-requiring resources.
 //  3. Resolve trust.
 //  4. If trusted, merge project settings; otherwise use user settings only.
+//
+// Returns the resolved settings and whether the project was trusted.
 func LoadSettingsWithTrust(
+	ctx context.Context,
 	root, home string,
 	cliOverride *bool,
 	policy agent.TrustPolicy,
-	warnWriter interface{ Write([]byte) (int, error) },
-) settings.Settings {
-	// We need io.Writer for settings.Load* functions.
-	type writer interface{ Write([]byte) (int, error) }
-	var warn writer = os.Stderr
-	if ww, ok := warnWriter.(writer); ok && warnWriter != nil {
-		warn = ww
+	warnWriter io.Writer,
+) (settings.Settings, bool) {
+	warn := warnWriter
+	if warn == nil {
+		warn = os.Stderr
 	}
 
 	// Step 1: Load user settings.
@@ -304,7 +322,10 @@ func LoadSettingsWithTrust(
 	store, _ := LoadTrustStore(home)
 
 	// Step 4: Resolve trust.
-	trusted, _, _ := ResolveTrust(context.Background(), root, hasResources, cliOverride, hookRunner, store, nil, policy)
+	trusted, reason, _ := ResolveTrust(ctx, root, hasResources, cliOverride, hookRunner, store, nil, policy)
+	if !trusted {
+		fmt.Fprintf(warn, "Project trust: %s — project settings skipped.\n", reason)
+	}
 
 	// Step 5: Conditionally load project settings.
 	if trusted {
@@ -312,7 +333,7 @@ func LoadSettingsWithTrust(
 		settings.MergeSettings(&base, overlay)
 	}
 
-	return base
+	return base, trusted
 }
 
 // filterHooksByEvent returns hooks matching the given event type.
@@ -325,6 +346,3 @@ func filterHooksByEvent(hs []hooks.Hook, ev hooks.Event) []hooks.Hook {
 	}
 	return out
 }
-
-// Ensure strings import is used.
-var _ = strings.TrimSpace

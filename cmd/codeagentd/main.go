@@ -74,7 +74,7 @@ func run() error {
 
 	root, _ := os.Getwd()
 	home, _ := os.UserHomeDir()
-	set := settings.Load(root, home, os.Stderr)
+	set, _ := runtime.LoadSettingsWithTrust(context.Background(), root, home, nil, runtime.TrustAlways, os.Stderr)
 	cfg := app.LoadConfigFromSettings(set)
 	// Mutable injected resolver (A2): POST /v1/secrets updates it, and every
 	// credential chain (catalog probing + actual calls) reads it — so a host

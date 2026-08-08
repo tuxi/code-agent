@@ -47,3 +47,23 @@ func ExtractNoContextFilesFlag(args []string) (bool, []string) {
 	}
 	return false, args
 }
+
+// ExtractTrustFlag pulls --trust or --no-trust out of args from any position,
+// returning a tri-state pointer (nil = not specified, true = --trust, false = --no-trust)
+// and the remaining args. The trust flag is a security boundary — it must come from the
+// CLI (a trusted source the agent cannot write), never from config files in the workspace.
+func ExtractTrustFlag(args []string) (*bool, []string) {
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--trust":
+			t := true
+			rest := append(append([]string{}, args[:i]...), args[i+1:]...)
+			return &t, rest
+		case "--no-trust":
+			f := false
+			rest := append(append([]string{}, args[:i]...), args[i+1:]...)
+			return &f, rest
+		}
+	}
+	return nil, args
+}

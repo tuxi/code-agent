@@ -65,7 +65,7 @@ type lineReader func(prompt string) (string, error)
 // mode mishandles wide CJK characters (a backspace erases one display column, so
 // half a character lingers) and can drive some terminals into buggy wide-char
 // wrap rendering.
-func repl(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider model.Provider, resumeID string, auto bool, noContextFiles bool) error {
+func repl(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider model.Provider, resumeID string, auto bool, noContextFiles bool, set settings.Settings) error {
 	root, _ := os.Getwd()
 
 	// Shared credential file: the host app writes Keychain provider keys to
@@ -127,8 +127,6 @@ func repl(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider mode
 	// Permission rules (config + settings files + interactive "always allow")
 	// live in one store, shared between the terminal approver (which grants into
 	// it) and the loop's allowlist (which reads from it).
-	home, _ := os.UserHomeDir()
-	set := settings.Load(root, home, os.Stderr)
 	rules := approve.NewRuleStore(root, set.Permissions.Allow, set.Permissions.Deny)
 
 	// The AutoApprover wraps the terminal approver and starts disabled unless --auto

@@ -53,13 +53,27 @@ func run() error {
 	modelName, args := runtime.ExtractModelFlag(args)
 	autoMode, args := runtime.ExtractAutoFlag(args)
 	noContextFiles, args := runtime.ExtractNoContextFilesFlag(args)
+	trustOverride, args := runtime.ExtractTrustFlag(args)
 
-	// Load the merged settings (user + project shared + project local). This is
-	// the single config source post-merge: infrastructure (models/credentials/
-	// agent/provider/web) AND behavior (permissions/verify/hooks) come from
-	// settings.json layers, not config.yaml.
+	// Load settings with trust gating: user settings first, then trust
+	// resolution (CLI flag → hooks → trust store → interactive prompt),
+	// then conditionally merge project settings if trusted.
 	home, _ := os.UserHomeDir()
-	set := settings.Load(root, home, os.Stderr)
+	trustStore, _ := runtime.LoadTrustStore(home)
+	set, trusted := runtime.LoadSettingsWithTrust(
+		context.Background(), root, home, trustOverride,
+		&runtime.TerminalTrustPolicy{Store: trustStore},
+		os.Stderr,
+	)
+	_ = trusted
+
+	// Trust denied — refuse to run agent in an untrusted directory.
+	// Read-only commands (sessions, stats, etc.) and serve (TrustAlways) are
+	// handled above and don't reach this point. Interactive commands (TUI,
+	// REPL, run, goal) require trust. Use --trust to override.
+	if !trusted {
+		return fmt.Errorf("project not trusted; use --trust to override")
+	}
 	cfg := app.LoadConfigFromSettings(set)
 	var err error
 
@@ -178,7 +192,7 @@ func run() error {
 	}
 
 	if len(args) == 0 {
-		return runTUI(ctx, cfg, mc, provider, secretsResolver, autoMode, noContextFiles)
+		return runTUI(ctx, cfg, mc, provider, secretsResolver, autoMode, noContextFiles, set)
 	}
 
 	command := args[0]
@@ -188,18 +202,18 @@ func run() error {
 	case "ask":
 		return runAsk(ctx, mc, provider, goal)
 	case "run":
-		return runAgent(ctx, cfg, mc, provider, goal, autoMode, noContextFiles)
+		return runAgent(ctx, cfg, mc, provider, goal, autoMode, noContextFiles, set)
 	case "goal":
-		return runGoal(ctx, cfg, mc, provider, goal, autoMode, noContextFiles)
+		return runGoal(ctx, cfg, mc, provider, goal, autoMode, noContextFiles, set)
 	case "tui":
-		return runTUI(ctx, cfg, mc, provider, secretsResolver, autoMode, noContextFiles)
+		return runTUI(ctx, cfg, mc, provider, secretsResolver, autoMode, noContextFiles, set)
 	case "repl":
-		return repl(ctx, cfg, mc, provider, "", autoMode, noContextFiles)
+		return repl(ctx, cfg, mc, provider, "", autoMode, noContextFiles, set)
 	case "resume":
 		if len(args) < 2 {
 			return fmt.Errorf("usage: codeagent resume <session-id>  (see 'codeagent sessions')")
 		}
-		return repl(ctx, cfg, mc, provider, args[1], autoMode, noContextFiles)
+		return repl(ctx, cfg, mc, provider, args[1], autoMode, noContextFiles, set)
 	default:
 		printUsage()
 		return fmt.Errorf("unknown command: %s", command)
@@ -595,7 +609,7 @@ func runAsk(ctx context.Context, mc app.ModelConfig, provider model.Provider, qu
 	return nil
 }
 
-func runAgent(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider model.Provider, goal string, autoMode bool, noContextFiles bool) error {
+func runAgent(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider model.Provider, goal string, autoMode bool, noContextFiles bool, set settings.Settings) error {
 	root, _ := os.Getwd()
 
 	store, err := runtime.OpenStore(root)
@@ -617,8 +631,6 @@ func runAgent(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider 
 	// The AutoApprover wraps the human approver; --auto seeds it on, otherwise it is
 	// a transparent pass-through (identical to before). Auto-grants are audited by
 	// the loop (correlated EventAutoApproved), so the approver itself takes no emitter.
-	home, _ := os.UserHomeDir()
-	set := settings.Load(root, home, os.Stderr)
 	rules := approve.NewRuleStore(root, set.Permissions.Allow, set.Permissions.Deny)
 	approver := approve.NewAutoApprover(root, ui.ConfirmApprover{}, autoMode)
 	runner := runtime.BuildRunner(cfg, set, mc, provider, registry, skillReg, approver, runtime.WithEventStore(buildEmitter(), store, ctx), rules, root)
@@ -657,7 +669,7 @@ func runAgent(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider 
 // with a code reflecting the result (achieved=0; blocked/errored/budget/paused
 // distinct) so CI can branch on it. Same setup as runAgent; the pursuit and the
 // exit-code mapping live in pursueHeadless.
-func runGoal(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider model.Provider, objective string, autoMode bool, noContextFiles bool) error {
+func runGoal(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider model.Provider, objective string, autoMode bool, noContextFiles bool, set settings.Settings) error {
 	if strings.TrimSpace(objective) == "" {
 		return fmt.Errorf(`usage: codeagent [--auto] goal "<objective>"`)
 	}
@@ -682,8 +694,6 @@ func runGoal(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider m
 		fmt.Fprintln(os.Stderr, "note: auto mode OFF — non-interactive, so confirm-tier tools (mutating commands, edits) will be denied; pass --auto for hands-off.")
 	}
 
-	home, _ := os.UserHomeDir()
-	set := settings.Load(root, home, os.Stderr)
 	rules := approve.NewRuleStore(root, set.Permissions.Allow, set.Permissions.Deny)
 	approver := approve.NewAutoApprover(root, ui.ConfirmApprover{}, autoMode)
 	runner := runtime.BuildRunner(cfg, set, mc, provider, registry, skillReg, approver, runtime.WithEventStore(buildEmitter(), store, ctx), rules, root)
@@ -720,7 +730,7 @@ func (o mcpPromptOps) Render(command string, args []string) (string, error) {
 // as `run`/`repl` (buildRunner) but with channel-backed Emitter/Approver, so the
 // loop runs on a background goroutine while the program owns the terminal. The
 // agent is unchanged; only the renderer differs.
-func runTUI(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider model.Provider, secretsResolver credential.Resolver, autoMode bool, noContextFiles bool) error {
+func runTUI(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider model.Provider, secretsResolver credential.Resolver, autoMode bool, noContextFiles bool, set settings.Settings) error {
 	root, _ := os.Getwd()
 
 	store, err := runtime.OpenStore(root)
@@ -760,8 +770,6 @@ func runTUI(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider mo
 	// hands-off auto mode as repl/run: --auto seeds it on; /auto flips it per session.
 	// The permission store is shared into the loop's allowlist; the TUI card's
 	// interactive "always allow" grant into it is a later step.
-	home, _ := os.UserHomeDir()
-	set := settings.Load(root, home, os.Stderr)
 	rules := approve.NewRuleStore(root, set.Permissions.Allow, set.Permissions.Deny)
 	approver := approve.NewAutoApprover(root, backend.Approver, autoMode)
 	runner := runtime.BuildRunner(cfg, set, mc, provider, registry, skillReg, approver, runtime.WithEventStore(backend.Emitter, store, ctx), rules, root)

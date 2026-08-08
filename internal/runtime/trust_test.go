@@ -78,6 +78,9 @@ func TestTrustStoreLookupParentInheritance(t *testing.T) {
 }
 
 func TestTrustStoreLookupMostSpecificWins(t *testing.T) {
+	// Positive inheritance beats negative exact-match-only: when a parent
+	// is untrusted, children are NOT blocked — they inherit from the
+	// nearest trusted ancestor.
 	grandparent := t.TempDir()
 	parent := filepath.Join(grandparent, "a")
 	child := filepath.Join(parent, "b")
@@ -88,8 +91,13 @@ func TestTrustStoreLookupMostSpecificWins(t *testing.T) {
 		parent:      &parentFalse,
 	}}
 	got, found := ts.Lookup(child)
-	if !found || got {
-		t.Fatalf("Lookup(%q) = (%v, %v), want (false, true) — parent is more specific and should win over grandparent", child, got, found)
+	if !found || !got {
+		t.Fatalf("Lookup(%q) = (%v, %v), want (true, true) — negative parent is exact-match only, grandparent trust inherits to child", child, got, found)
+	}
+	// The parent itself should still be rejected (exact negative match).
+	got2, found2 := ts.Lookup(parent)
+	if !found2 || got2 {
+		t.Fatalf("Lookup(%q) = (%v, %v), want (false, true) — exact match on parent should be untrusted", parent, got2, found2)
 	}
 }
 
@@ -164,12 +172,14 @@ func TestTrustHasRequiringResources(t *testing.T) {
 
 func TestResolveTrustNoResources(t *testing.T) {
 	dir := t.TempDir()
+	// Trust is now universal — even without resources, the full chain runs.
+	// With no policy, no CLI, no store → fail-closed.
 	trusted, reason, err := ResolveTrust(t.Context(), dir, false, nil, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !trusted || reason != "no project resources" {
-		t.Fatalf("(%v, %q), want (true, 'no project resources')", trusted, reason)
+	if trusted {
+		t.Fatalf("(%v, %q), want fail-closed without any decision source", trusted, reason)
 	}
 }
 
