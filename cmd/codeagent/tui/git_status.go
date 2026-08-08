@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+
+	"github.com/charmbracelet/lipgloss"
 )
 
 // gitStatus returns a compact workspace summary: branch + changed files, like
@@ -48,7 +50,7 @@ func gitSummaryLine() string {
 	if s == "" {
 		return ""
 	}
-	return theme.Default.Meta.Render("── " + s + " ──")
+	return lipgloss.NewStyle().Foreground(theme.CurrentTheme().TextMuted()).Render("── " + s + " ──")
 }
 
 func runGit(args ...string) (string, error) {

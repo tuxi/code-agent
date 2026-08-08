@@ -2,16 +2,17 @@ package tui
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
+	"code-agent/cmd/codeagent/tui/components/chat"
+	"code-agent/cmd/codeagent/tui/components/dialog"
 	"code-agent/internal/agent"
-	"code-agent/internal/session"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/mattn/go-runewidth"
 )
 
-func newTestModel() model {
-	return newModel(NewBackend(), HeaderInfo{}, sessionSource{})
+func newTestModel() *model {
+	return newModel(NewBackend(), HeaderInfo{}, sessionSource{}).(*model)
 }
 
 // fakePromptOps records the Render call for the MCP prompt submit path.
@@ -28,24 +29,36 @@ func (f *fakePromptOps) Render(command string, args []string) (string, error) {
 	return f.text, f.err
 }
 
-func asModel(t *testing.T, tm tea.Model) model {
+func asModel(t *testing.T, tm tea.Model) *model {
 	t.Helper()
-	m, ok := tm.(model)
+	m, ok := tm.(*model)
 	if !ok {
 		t.Fatalf("Update returned %T, want model", tm)
 	}
 	return m
 }
 
-func TestModelStartFinishTogglesThinking(t *testing.T) {
+func TestApprovalApprove(t *testing.T) {
 	m := newTestModel()
-	m = asModel(t, must(m.Update(eventMsg(agent.Event{Kind: agent.EventModelStarted}))))
-	if !m.thinking {
-		t.Fatal("EventModelStarted should set thinking")
+	reply := make(chan agent.Verdict, 1)
+	tm, _ := m.Update(approvalMsg{tool: "create_file", input: json.RawMessage(`{"path":"x"}`), reply: reply})
+	m = asModel(t, tm)
+
+	// 'a' = allow: the dialog answers the request and emits its close message.
+	tm, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	m = asModel(t, tm)
+	if <-reply != agent.VerdictAllow {
+		t.Fatal("'a' should approve the tool")
 	}
-	m = asModel(t, must(m.Update(eventMsg(agent.Event{Kind: agent.EventModelFinished}))))
-	if m.thinking {
-		t.Fatal("EventModelFinished should clear thinking")
+	resp, ok := cmd().(dialog.PermissionResponseMsg)
+	if !ok {
+		t.Fatalf("'a' should yield the dialog response, got %T", cmd())
+	}
+	// The app closes the dialog on the response.
+	tm, _ = m.Update(resp)
+	m = asModel(t, tm)
+	if m.dialog != nil {
+		t.Fatal("answering should close the dialog")
 	}
 }
 
@@ -58,42 +71,6 @@ func TestDoneClearsBusy(t *testing.T) {
 	}
 }
 
-func TestApprovalApprove(t *testing.T) {
-	m := newTestModel()
-	reply := make(chan agent.Verdict, 1)
-	req := approvalReq{tool: "create_file", input: json.RawMessage(`{"path":"x"}`), reply: reply}
-
-	m = asModel(t, must(m.Update(approvalMsg(req))))
-	o, ok := m.overlay.(*approvalOverlay)
-	if !ok {
-		t.Fatalf("approvalMsg should open an approvalOverlay, got %T", m.overlay)
-	}
-	next, handled, _ := o.Key(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}}, &m)
-	if !handled {
-		t.Fatal("'y' should be handled by the approval card")
-	}
-	if next != nil {
-		t.Fatal("answering should close the overlay")
-	}
-	if <-reply != agent.VerdictAllow {
-		t.Fatal("'y' should approve the tool")
-	}
-}
-
-func TestApprovalDeny(t *testing.T) {
-	m := newTestModel()
-	reply := make(chan agent.Verdict, 1)
-	m.overlay = &approvalOverlay{req: approvalReq{tool: "run_command", reply: reply}}
-	o := m.overlay.(*approvalOverlay)
-	next, _, _ := o.Key(tea.KeyMsg{Type: tea.KeyEsc}, &m)
-	if next != nil {
-		t.Fatal("esc should close the overlay")
-	}
-	if <-reply == agent.VerdictAllow {
-		t.Fatal("esc should deny the tool")
-	}
-}
-
 // fakeGranter records the AllowAlways call for the card's "always allow" choice.
 type fakeGranter struct{ tool string }
 
@@ -102,23 +79,36 @@ func (g *fakeGranter) AllowAlways(tool string) (string, error) {
 	return tool, nil
 }
 
+func TestApprovalDeny(t *testing.T) {
+	m := newTestModel()
+	reply := make(chan agent.Verdict, 1)
+	tm, _ := m.Update(approvalMsg{tool: "run_command", reply: reply})
+	m = asModel(t, tm)
+
+	tm, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = asModel(t, tm)
+	if <-reply == agent.VerdictAllow {
+		t.Fatal("esc should deny the tool")
+	}
+	if _, ok := cmd().(dialog.PermissionResponseMsg); !ok {
+		t.Fatalf("esc should yield the dialog response, got %T", cmd())
+	}
+}
+
 // Submitting /mcp__server__prompt renders via PromptOps (off-UI), then feeds the
-// rendered text into the turn path.
 func TestSubmitMCPPromptRendersAndRuns(t *testing.T) {
 	m := newTestModel()
 	f := &fakePromptOps{text: "rendered prompt body"}
 	m.src.promptOps = f
-	m.composer.SetValue("/mcp__gh__pr_review 456 deep")
 
-	tm, cmd := m.submit()
-	m = asModel(t, tm)
-	if !m.busy || cmd == nil {
-		t.Fatalf("submit should lock busy and return a render cmd (busy=%v cmd=%v)", m.busy, cmd != nil)
+	cmd := m.submit("/mcp__gh__pr_review 456 deep")
+	if cmd == nil {
+		t.Fatal("submit should return a render cmd")
 	}
 	// The render cmd calls PromptOps.Render with the parsed command + positional args.
 	rendered, ok := cmd().(promptRenderedMsg)
 	if !ok {
-		t.Fatalf("render cmd should yield promptRenderedMsg")
+		t.Fatalf("render cmd should yield promptRenderedMsg, got %T", cmd())
 	}
 	if f.command != "mcp__gh__pr_review" || len(f.args) != 2 || f.args[0] != "456" || f.args[1] != "deep" {
 		t.Fatalf("Render got command=%q args=%v", f.command, f.args)
@@ -126,102 +116,89 @@ func TestSubmitMCPPromptRendersAndRuns(t *testing.T) {
 	if rendered.text != "rendered prompt body" {
 		t.Fatalf("rendered text = %q", rendered.text)
 	}
-	// Update feeds the rendered text into b.inputs (buffered, cap 1).
-	_, cmd2 := m.Update(rendered)
-	if cmd2 == nil {
-		t.Fatal("promptRenderedMsg should return a cmd feeding inputs")
+	// Update starts the turn with the rendered text.
+	tm, _ := m.Update(rendered)
+	m = asModel(t, tm)
+	if !m.busy {
+		t.Fatal("promptRenderedMsg should start a turn (busy=true)")
 	}
-	cmd2()
 	if got := <-m.b.inputs; got != "rendered prompt body" {
 		t.Fatalf("inputs got %q", got)
 	}
 }
 
-// A render error unlocks busy and reports; no MCP wired shows a notice.
-func TestSubmitMCPPromptErrorAndUnavailable(t *testing.T) {
+// No MCP wired routes /mcp__ through the slash-command fallback (an
+// unknown-command notice) instead of starting a turn.
+func TestSubmitMCPPromptUnavailable(t *testing.T) {
 	m := newTestModel() // promptOps nil
-	m.composer.SetValue("/mcp__x__y")
-	tm, _ := m.submit()
-	if asModel(t, tm).busy {
-		t.Fatal("no promptOps: submit must not leave the composer busy")
+	cmd := m.submit("/mcp__x__y")
+	if m.busy {
+		t.Fatal("no promptOps: submit must not start a turn")
 	}
-	if m.promptHelp() != "(no MCP prompts available)" {
-		t.Fatalf("nil promptOps help = %q", m.promptHelp())
+	msgs := runLeaves(cmd)
+	for _, msg := range msgs {
+		if n, ok := msg.(chat.NewMessageMsg); ok && strings.Contains(n.Message.Content, "unknown command") {
+			return
+		}
 	}
+	t.Fatalf("no promptOps: /mcp__ should fall back to an unknown-command notice, got %v", msgs)
 }
 
+// 's' = allow for session: approves the call AND persists a rule via the granter.
 func TestApprovalAlwaysGrants(t *testing.T) {
 	m := newTestModel()
 	g := &fakeGranter{}
 	m.src.granter = g
+	// newModel built the permission dialog before src.granter was set — rewire it
+	// so the dialog's 's' (allow-for-session) key path sees the granter.
+	m.permission = dialog.NewPermissionDialogCmp(g)
 	reply := make(chan agent.Verdict, 1)
-	m.overlay = &approvalOverlay{req: approvalReq{tool: "mcp__github__list_issues", reply: reply}, granter: g}
+	tm, _ := m.Update(approvalMsg{tool: "mcp__github__list_issues", reply: reply})
+	m = asModel(t, tm)
 
-	// 'a' = always allow: approves this call AND persists a rule via the granter.
-	o := m.overlay.(*approvalOverlay)
-	next, _, _ := o.Key(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}}, &m)
-	if next != nil {
-		t.Fatal("'a' should close the overlay")
-	}
+	tm, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
+	m = asModel(t, tm)
 	if <-reply != agent.VerdictAllow {
-		t.Fatal("'a' should approve the tool")
+		t.Fatal("'s' should approve the tool")
 	}
 	if g.tool != "mcp__github__list_issues" {
-		t.Fatalf("'a' should persist an always-allow rule, granter saw %q", g.tool)
+		t.Fatalf("'s' should persist an always-allow rule, granter saw %q", g.tool)
+	}
+	if _, ok := cmd().(dialog.PermissionResponseMsg); !ok {
+		t.Fatalf("'s' should yield the dialog response, got %T", cmd())
 	}
 }
 
-// TestApprovalSwallowsCtrlC: the approval card is modal — ctrl+c denies AND
-// quits, never falls through to the global quit handler.
+// The approval card is modal — ctrl+c denies AND quits, never falls through to
+// the global quit handler.
 func TestApprovalSwallowsCtrlC(t *testing.T) {
 	m := newTestModel()
 	reply := make(chan agent.Verdict, 1)
-	m.overlay = &approvalOverlay{req: approvalReq{tool: "run_command", reply: reply}}
+	tm, _ := m.Update(approvalMsg{tool: "run_command", reply: reply})
+	m = asModel(t, tm)
 
 	tm, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
 	m = asModel(t, tm)
-	if _, ok := m.overlay.(*approvalOverlay); ok {
-		t.Fatal("ctrl+c on the approval card should close the overlay")
-	}
-	if cmd == nil {
-		t.Fatal("ctrl+c on the approval card should return the quit command")
-	}
-	if _, ok := cmd().(tea.QuitMsg); !ok {
-		t.Fatalf("ctrl+c on the approval card should quit, got %v", cmd())
-	}
 	if <-reply == agent.VerdictAllow {
 		t.Fatal("ctrl+c on the approval card should deny")
 	}
-}
-
-// TestPickerPassesCtrlC: the /resume picker yields ctrl+c to the global handler
-// (quit when idle), matching the pre-refactor routing.
-func TestPickerPassesCtrlC(t *testing.T) {
-	m := newTestModel()
-	m.overlay = &sessionPickerOverlay{metas: []session.Meta{{ID: "s1"}}}
-
-	tm, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
-	m = asModel(t, tm)
-	if _, ok := m.overlay.(*sessionPickerOverlay); !ok {
-		t.Fatal("ctrl+c should leave the picker open (yields to the global quit)")
+	for _, msg := range runLeaves(cmd) {
+		if _, ok := msg.(tea.QuitMsg); ok {
+			return
+		}
 	}
-	if cmd == nil {
-		t.Fatal("ctrl+c while idle should quit")
-	}
+	t.Fatal("ctrl+c on the approval card should quit")
 }
 
 func TestSubmitLocksBusyAndDeliversInput(t *testing.T) {
 	m := newTestModel()
-	m.composer.SetValue("  fix the test  ")
-	tm, cmd := m.submit()
-	m = asModel(t, tm)
+	cmd := m.submit("  fix the test  ")
+	if cmd == nil {
+		t.Fatal("submit should return waitForDone")
+	}
 	if !m.busy {
 		t.Fatal("submit should lock the composer")
 	}
-	if cmd == nil {
-		t.Fatal("submit should return a cmd that delivers the input")
-	}
-	cmd() // delivers to the (buffered) inputs channel
 	select {
 	case got := <-m.b.inputs:
 		if got != "fix the test" {
@@ -232,44 +209,17 @@ func TestSubmitLocksBusyAndDeliversInput(t *testing.T) {
 	}
 }
 
-func TestSubmitNoopWhenBusy(t *testing.T) {
+func TestSubmitWhileBusySkipsDelivery(t *testing.T) {
 	m := newTestModel()
 	m.busy = true
-	m.composer.SetValue("ignored")
-	_, cmd := m.submit()
-	if cmd != nil {
-		t.Fatal("submit while a turn is running should be a no-op")
+	m.submit("ignored")
+	if !m.busy {
+		t.Fatal("busy should stay set")
 	}
-}
-
-func TestComposerPromptHasStableWidth(t *testing.T) {
-	if got, want := runewidth.StringWidth(composerPrompt), len(composerPrompt); got != want {
-		t.Fatalf("composerPrompt display width = %d, want byte/rune width %d for stable IME placement", got, want)
-	}
-}
-
-func TestComposerWidthLeavesRightPaddingOnly(t *testing.T) {
-	if got := composerWidth(80); got != 79 {
-		t.Fatalf("composerWidth(80) = %d, want 79", got)
-	}
-	if got := composerWidth(1); got != 1 {
-		t.Fatalf("composerWidth(1) = %d, want 1", got)
-	}
-}
-
-func TestComposerCursorColumnUsesCJKDisplayWidth(t *testing.T) {
-	m := readyModel(t)
-	m.composer.SetValue("你好啊,")
-	if got, want := m.composerCursorColumn(), 10; got != want {
-		t.Fatalf("composerCursorColumn() = %d, want %d", got, want)
-	}
-}
-
-func TestComposerCursorColumnUsesLastLine(t *testing.T) {
-	m := readyModel(t)
-	m.composer.SetValue("first\n好")
-	if got, want := m.composerCursorColumn(), 5; got != want {
-		t.Fatalf("composerCursorColumn() = %d, want %d", got, want)
+	select {
+	case got := <-m.b.inputs:
+		t.Fatalf("busy submit should not deliver input, got %q", got)
+	default:
 	}
 }
 

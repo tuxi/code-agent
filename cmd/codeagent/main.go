@@ -10,8 +10,8 @@ import (
 	"code-agent/internal/model"
 	"code-agent/internal/plugins"
 	"code-agent/internal/runtime"
-	"code-agent/internal/settings"
 	"code-agent/internal/session"
+	"code-agent/internal/settings"
 	"code-agent/internal/ui"
 	"context"
 	"encoding/json"
@@ -21,7 +21,14 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/mattn/go-runewidth"
 )
+
+func init() {
+	// 强制启用东亚字符双倍宽度计算
+	runewidth.DefaultCondition.EastAsianWidth = true
+}
 
 func main() {
 	if err := run(); err != nil {
@@ -610,7 +617,8 @@ func runAgent(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider 
 	// The AutoApprover wraps the human approver; --auto seeds it on, otherwise it is
 	// a transparent pass-through (identical to before). Auto-grants are audited by
 	// the loop (correlated EventAutoApproved), so the approver itself takes no emitter.
-	home, _ := os.UserHomeDir(); set := settings.Load(root, home, os.Stderr)
+	home, _ := os.UserHomeDir()
+	set := settings.Load(root, home, os.Stderr)
 	rules := approve.NewRuleStore(root, set.Permissions.Allow, set.Permissions.Deny)
 	approver := approve.NewAutoApprover(root, ui.ConfirmApprover{}, autoMode)
 	runner := runtime.BuildRunner(cfg, set, mc, provider, registry, skillReg, approver, runtime.WithEventStore(buildEmitter(), store, ctx), rules, root)
@@ -674,7 +682,8 @@ func runGoal(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider m
 		fmt.Fprintln(os.Stderr, "note: auto mode OFF — non-interactive, so confirm-tier tools (mutating commands, edits) will be denied; pass --auto for hands-off.")
 	}
 
-	home, _ := os.UserHomeDir(); set := settings.Load(root, home, os.Stderr)
+	home, _ := os.UserHomeDir()
+	set := settings.Load(root, home, os.Stderr)
 	rules := approve.NewRuleStore(root, set.Permissions.Allow, set.Permissions.Deny)
 	approver := approve.NewAutoApprover(root, ui.ConfirmApprover{}, autoMode)
 	runner := runtime.BuildRunner(cfg, set, mc, provider, registry, skillReg, approver, runtime.WithEventStore(buildEmitter(), store, ctx), rules, root)
@@ -751,7 +760,8 @@ func runTUI(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider mo
 	// hands-off auto mode as repl/run: --auto seeds it on; /auto flips it per session.
 	// The permission store is shared into the loop's allowlist; the TUI card's
 	// interactive "always allow" grant into it is a later step.
-	home, _ := os.UserHomeDir(); set := settings.Load(root, home, os.Stderr)
+	home, _ := os.UserHomeDir()
+	set := settings.Load(root, home, os.Stderr)
 	rules := approve.NewRuleStore(root, set.Permissions.Allow, set.Permissions.Deny)
 	approver := approve.NewAutoApprover(root, backend.Approver, autoMode)
 	runner := runtime.BuildRunner(cfg, set, mc, provider, registry, skillReg, approver, runtime.WithEventStore(backend.Emitter, store, ctx), rules, root)

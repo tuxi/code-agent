@@ -49,8 +49,7 @@ func hasEvent(msgs []tea.Msg, kind agent.EventKind) bool {
 // short-circuits, or returning only a print command, breaks this.
 func TestEventListenerKeepsFiring(t *testing.T) {
 	b := NewBackend()
-	m := newModel(b, HeaderInfo{}, sessionSource{})
-	m.width, m.ready = 80, true
+	m := asModel(t, newModel(b, HeaderInfo{}, sessionSource{}))
 
 	_, cmd := m.Update(eventMsg(agent.Event{Kind: agent.EventTurnStarted, Text: "hi"}))
 
@@ -66,8 +65,7 @@ func TestEventListenerKeepsFiring(t *testing.T) {
 // listener — otherwise the stream dies mid-turn on a silent event.
 func TestSilentEventStillReissuesListener(t *testing.T) {
 	b := NewBackend()
-	m := newModel(b, HeaderInfo{}, sessionSource{})
-	m.width, m.ready = 80, true
+	m := asModel(t, newModel(b, HeaderInfo{}, sessionSource{}))
 
 	_, cmd := m.Update(eventMsg(agent.Event{Kind: agent.EventModelStarted}))
 	b.events <- agent.Event{Kind: agent.EventTurnFinished, Text: "done"}
@@ -79,8 +77,8 @@ func TestSilentEventStillReissuesListener(t *testing.T) {
 
 func TestDoneListenerKeepsFiring(t *testing.T) {
 	b := NewBackend()
-	m := newModel(b, HeaderInfo{}, sessionSource{})
-	m.width, m.ready, m.busy = 80, true, true
+	m := asModel(t, newModel(b, HeaderInfo{}, sessionSource{}))
+	m.busy = true
 
 	_, cmd := m.Update(doneMsg{})
 	b.done <- nil
@@ -98,8 +96,7 @@ func TestDoneListenerKeepsFiring(t *testing.T) {
 
 func TestApprovalListenerKeepsFiring(t *testing.T) {
 	b := NewBackend()
-	m := newModel(b, HeaderInfo{}, sessionSource{})
-	m.width, m.ready = 80, true
+	m := asModel(t, newModel(b, HeaderInfo{}, sessionSource{}))
 
 	_, cmd := m.Update(approvalMsg{tool: "edit_file", reply: make(chan agent.Verdict, 1)})
 	// b.approvals is unbuffered (the runner blocks for an answer), so send async —
