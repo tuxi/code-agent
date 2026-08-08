@@ -293,6 +293,34 @@ func TestIsErrorLineBoundaryFalsePositives(t *testing.T) {
 	}
 }
 
+func TestCountCodeMarkersNonGoLanguages(t *testing.T) {
+	// Declaration keywords from Python/JS/TS/Rust/Swift/C must count as code
+	// markers so large file reads in mixed-language repos are preserved.
+	cases := []struct {
+		name    string
+		content string
+		want    int
+	}{
+		{"python", "def parse(args):\n\treturn args\n", 2},
+		{"python indented def", "class Parser:\n\tdef run(self):\n\t\tpass\n", 4},
+		{"python import", "import os\nfrom pathlib import Path\n", 4},
+		{"rust", "use std::fmt;\nfn main() {}\nstruct Config {}\nimpl Config {\n\ttrait Display {}\n}", 10},
+		{"swift", "struct App {}\nprotocol Renderable {}\nextension App: Renderable {}\nenum State {}\n", 8},
+		{"typescript", "export function main() {}\ninterface Store {}\ntype ID = string;\n", 6},
+		{"js", "import { readFile } from 'fs';\nconst x = 1;\nvar y = 2;\nexport default x;\n", 8},
+		{"c", "#include <stdio.h>\nint main() { return 0; }\n", 2},
+		{"go unchanged", "package main\n\nfunc main() {}\n", 4},
+		{"build noise", "Starting build...\nRunning tests\nAll checks passed\n", 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := countCodeMarkers(tc.content); got != tc.want {
+				t.Errorf("countCodeMarkers(%q) = %d, want %d", tc.content, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestSkeletonExtractsSymbolsFromCode(t *testing.T) {
 	code := "package theme\n\n" +
 		"type Theme interface {\n\tTextMuted() string\n\tApproveBox(msg string) string\n}\n\n" +
@@ -419,6 +447,45 @@ func TestContextEditorRaisesBashCodeMarkerThreshold(t *testing.T) {
 	if isSkeleton(sess.Messages[3].Content) {
 		// If skeletonized, that's the aggressive path (working).
 		t.Logf("stack trace skeletonized: %s", sess.Messages[3].Content)
+	}
+}
+
+func TestContextEditorPreservesHITLUserDecisions(t *testing.T) {
+	// ask_user and propose_plan results carry the user's explicit intent —
+	// the highest-signal content in the conversation. They are short and
+	// have no code markers, so the default heuristic would clear them.
+	// Losing these causes the agent to forget user decisions and re-ask
+	// questions that were already answered (the compaction-amnesia bug).
+	sess := &Session{
+		Messages: []model.Message{
+			{Role: model.RoleSystem, Content: "You are a test agent."},
+			{Role: model.RoleUser, Content: "task"},
+			{Role: model.RoleAssistant, Content: "Turn 1", ToolCalls: []model.ToolCall{
+				{ID: "ask1", Function: model.FunctionCall{Name: "ask_user", Arguments: `{"question":"which approach?","header":"choice","options":[{"label":"A","description":"foo"},{"label":"B","description":"bar"}]}`}},
+				{ID: "ask2", Function: model.FunctionCall{Name: "ask_user", Arguments: `{"question":"confirm?","header":"ok","options":[{"label":"yes","description":""},{"label":"no","description":""}]}`}},
+				{ID: "plan1", Function: model.FunctionCall{Name: "propose_plan", Arguments: `{"plan_path":"plan.md"}`}},
+			}},
+			{Role: model.RoleTool, Content: "User selected: A (Recommended)", ToolCallID: "ask1"},
+			{Role: model.RoleTool, Content: "ask_user: selected [yes]", ToolCallID: "ask2"},
+			{Role: model.RoleTool, Content: "Plan rejected. Please revise the plan and call propose_plan again when ready.", ToolCallID: "plan1"},
+			{Role: model.RoleAssistant, Content: "Turn 2"},
+		},
+	}
+
+	editor := ContextEditor{KeepTurns: 1} // keep only Turn 2
+	editor.Edit(sess)
+
+	// ask_user: user selected (formatAnswer path).
+	if isSkeleton(sess.Messages[3].Content) {
+		t.Errorf("ask_user selection must be preserved, got skeleton: %q", sess.Messages[3].Content)
+	}
+	// ask_user: user selected (formatAskUserResolved path).
+	if isSkeleton(sess.Messages[4].Content) {
+		t.Errorf("ask_user selection must be preserved, got skeleton: %q", sess.Messages[4].Content)
+	}
+	// propose_plan: plan rejected.
+	if isSkeleton(sess.Messages[5].Content) {
+		t.Errorf("plan rejection must be preserved, got skeleton: %q", sess.Messages[5].Content)
 	}
 }
 

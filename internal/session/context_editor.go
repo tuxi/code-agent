@@ -212,6 +212,21 @@ func isHighValue(content string, info toolCallInfo) bool {
 		if len(content) > 2048 {
 			return countCodeMarkers(content) >= 5
 		}
+
+	case "ask_user":
+		// HITL clarification: the user's answer to a design question.
+		// Results are short (~45 bytes "User selected: ...") but carry
+		// the highest signal in the conversation — the user's explicit
+		// intent. Losing these forces the agent to re-ask, wasting
+		// turns and user time.
+		return true
+
+	case "propose_plan":
+		// Plan approval/rejection: the user's decision on the proposed
+		// plan. Rejection results are short (~90 bytes) but critical —
+		// losing a "Plan rejected" makes the agent believe its plan was
+		// accepted.
+		return true
 	}
 
 	// Default content-based heuristic for tools without type-specific
@@ -267,7 +282,10 @@ func looksLikeHelp(content string) bool {
 }
 
 // countCodeMarkers scans the first 4 KB of content for structural patterns
-// that distinguish code/API surfaces from build noise.
+// that distinguish code/API surfaces from build noise. Strong markers are
+// line-start declaration keywords for Go plus the common languages an agent
+// actually reads (Python, JS/TS, Rust, Swift, C/C++), so large file reads in
+// mixed-language repos keep their API surface.
 func countCodeMarkers(content string) int {
 	scan := content
 	if len(scan) > 4096 {
@@ -277,14 +295,31 @@ func countCodeMarkers(content string) int {
 	for _, line := range strings.Split(scan, "\n") {
 		trimmed := strings.TrimSpace(line)
 		switch {
-		case strings.HasPrefix(trimmed, "func "),
-			strings.HasPrefix(trimmed, "type "),
+		case strings.HasPrefix(trimmed, "func "), // Go, Swift
+			strings.HasPrefix(trimmed, "type "), // Go, TypeScript
 			strings.HasPrefix(trimmed, "import ("),
-			strings.HasPrefix(trimmed, "package "),
+			strings.HasPrefix(trimmed, "package "), // Go, Java
 			strings.HasPrefix(trimmed, "var ("),
 			strings.HasPrefix(trimmed, "const ("),
-			strings.HasPrefix(trimmed, "interface {"),
-			strings.HasPrefix(trimmed, "struct {"):
+			strings.HasPrefix(trimmed, "interface "), // Go, TypeScript
+			strings.HasPrefix(trimmed, "struct "),    // Go, Rust, Swift
+			// Other languages
+			strings.HasPrefix(trimmed, "def "),       // Python
+			strings.HasPrefix(trimmed, "class "),     // Python/JS/Java/C++/Swift
+			strings.HasPrefix(trimmed, "function "),  // JS/TS
+			strings.HasPrefix(trimmed, "export "),    // JS/TS
+			strings.HasPrefix(trimmed, "enum "),      // Rust/Swift/TS/C++
+			strings.HasPrefix(trimmed, "protocol "),  // Swift
+			strings.HasPrefix(trimmed, "extension "), // Swift
+			strings.HasPrefix(trimmed, "trait "),     // Rust
+			strings.HasPrefix(trimmed, "impl "),      // Rust
+			strings.HasPrefix(trimmed, "fn "),        // Rust
+			strings.HasPrefix(trimmed, "import "),    // Python/JS/Swift/Go single
+			strings.HasPrefix(trimmed, "from "),      // Python
+			strings.HasPrefix(trimmed, "use "),       // Rust
+			strings.HasPrefix(trimmed, "var "),       // JS, Go single
+			strings.HasPrefix(trimmed, "const "),     // JS, Go single
+			strings.HasPrefix(trimmed, "#include"):   // C/C++
 			markers += 2 // strong signal — nearly certainly code
 		case matchFileLine(trimmed):
 			markers++ // file:line — grep/search evidence
