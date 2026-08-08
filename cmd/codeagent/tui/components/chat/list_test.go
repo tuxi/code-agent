@@ -187,18 +187,25 @@ func TestFoldToggleByClick(t *testing.T) {
 	msg := foldMessage("think1", KindThinking, &Fold{Title: "Thought", Count: 1})
 	m.Update(NewMessageMsg{Message: msg})
 
+	// A click is press + release on the same cell (no drag); a drag would
+	// select text instead. Only the release-without-drag toggles the fold.
+	press := func(x, y int) {
+		m.Update(tea.MouseClickMsg{X: x, Y: y, Button: tea.MouseLeft})
+		m.Update(tea.MouseReleaseMsg{X: x, Y: y, Button: tea.MouseLeft})
+	}
+
 	// The summary is the first content row: screen (1,1) is list row 0.
-	m.Update(tea.MouseClickMsg{X: 1, Y: 1, Button: tea.MouseLeft})
+	press(1, 1)
 	if !m.isOpen(msg.Fold) {
 		t.Fatal("clicking the summary row should expand the fold")
 	}
 	// A click off the row (below the viewport top, but beyond the fold) is a no-op.
-	m.Update(tea.MouseClickMsg{X: 1, Y: 5, Button: tea.MouseLeft})
+	press(1, 5)
 	if !m.isOpen(msg.Fold) {
 		t.Fatal("a click not on the fold row must not toggle")
 	}
 	// A click outside the list bounds (left of origin) is a no-op.
-	m.Update(tea.MouseClickMsg{X: 0, Y: 1, Button: tea.MouseLeft})
+	press(0, 1)
 	if !m.isOpen(msg.Fold) {
 		t.Fatal("a click left of the list must not toggle")
 	}
@@ -232,6 +239,7 @@ func TestFoldToggleByClickOnExpandedMember(t *testing.T) {
 	memberRow := m.ui[0].position
 	y := memberRow + 1
 	m.Update(tea.MouseClickMsg{X: 1, Y: y, Button: tea.MouseLeft})
+	m.Update(tea.MouseReleaseMsg{X: 1, Y: y, Button: tea.MouseLeft})
 	if m.isOpen(msg.Fold) {
 		t.Fatal("clicking the expanded member block should collapse the fold")
 	}
@@ -353,6 +361,7 @@ func TestFoldToggleByClickWithScrolledViewport(t *testing.T) {
 	}
 	y := row - m.viewport.YOffset() + 1 // +1: screen origin offset
 	m.Update(tea.MouseClickMsg{X: 1, Y: y, Button: tea.MouseLeft})
+	m.Update(tea.MouseReleaseMsg{X: 1, Y: y, Button: tea.MouseLeft})
 	if !m.isOpen(msg.Fold) {
 		t.Fatalf("click at content row %d (screen y=%d) should expand the fold", row, y)
 	}

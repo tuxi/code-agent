@@ -35,22 +35,23 @@ func appWithFold(t *testing.T, w, h int) (*model, int) {
 // screenY stayed 0 — every click landed one row off (the container's top
 // padding was mis-mapped onto the first content row).
 func TestAppClickToggleAtSummaryRow(t *testing.T) {
-	// Collapsed model: click at terminal row 0, the container's top padding
-	// (the list starts at screenY=1), must be a no-op — it maps to a negative
-	// list row.
 	m, summaryRow := appWithFold(t, 80, 30)
 	if summaryRow < 0 {
 		t.Fatal("no fold summary rendered")
 	}
-	m0, _ := m.Update(tea.MouseClickMsg{X: 1, Y: 0, Button: tea.MouseLeft})
-	mm0 := m0.(*model)
-	if !strings.Contains(mm0.View().Content, "▸") {
+	click := func(x, y int) *model {
+		m2, _ := m.Update(tea.MouseClickMsg{X: x, Y: y, Button: tea.MouseLeft})
+		m = m2.(*model)
+		m3, _ := m.Update(tea.MouseReleaseMsg{X: x, Y: y, Button: tea.MouseLeft})
+		return m3.(*model)
+	}
+	// Click at terminal row 0 (container padding above the list) is a no-op —
+	// it maps to a negative list row.
+	if mm := click(1, 0); !strings.Contains(mm.View().Content, "▸") {
 		t.Fatal("click at row 0 (padding above the list) must not toggle")
 	}
 	// Click exactly at the rendered summary row.
-	m1, _ := mm0.Update(tea.MouseClickMsg{X: 1, Y: summaryRow, Button: tea.MouseLeft})
-	mm1 := m1.(*model)
-	if strings.Contains(mm1.View().Content, "▸") {
+	if mm := click(1, summaryRow); strings.Contains(mm.View().Content, "▸") {
 		t.Fatalf("click at the summary's terminal row %d should expand the fold", summaryRow)
 	}
 }

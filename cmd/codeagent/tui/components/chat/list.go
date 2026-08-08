@@ -17,6 +17,7 @@ import (
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/atotto/clipboard"
 
 	"code-agent/cmd/codeagent/tui/components/dialog"
 	"code-agent/cmd/codeagent/tui/styles"
@@ -89,6 +90,19 @@ type List struct {
 	// back to the bottom re-enables it. Streaming auto-scroll only fires while
 	// pinned, so reading history mid-stream is not yanked back to the bottom.
 	pinned bool
+
+	// Text selection (left-drag). selStart/selCur are content-space cells;
+	// selecting is true while the left button is held; dragged distinguishes a
+	// drag (copied to the clipboard on release) from a click (toggles the fold
+	// under the cursor). lineTable/contentLines mirror the viewport content —
+	// the raw rendered lines and their ANSI-stripped text — rebuilt by
+	// renderView. copyText is the clipboard writer (tests override it).
+	selStart, selCur cellPos
+	selecting       bool
+	dragged         bool
+	lineTable       []string
+	contentLines    []string
+	copyText        func(string) error
 
 	// vpCache memoizes the viewport's rendered string. The viewport's View()
 	// output depends only on (width, height, yOffset, xOffset, content), so a
@@ -224,6 +238,9 @@ func (m *List) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.foldState = make(map[string]bool)
 		m.cachedContent = make(map[string]cacheItem)
 		m.pinned = true
+		m.selecting = false
+		m.dragged = false
+		m.selStart, m.selCur = cellPos{}, cellPos{}
 		m.renderView()
 		return m, nil
 
@@ -240,6 +257,9 @@ func (m *List) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.foldState = make(map[string]bool)
 		m.cachedContent = make(map[string]cacheItem)
 		m.pinned = true
+		m.selecting = false
+		m.dragged = false
+		m.selStart, m.selCur = cellPos{}, cellPos{}
 		for _, msg := range msg.Messages {
 			m.upsert(msg)
 		}
@@ -301,20 +321,59 @@ func (m *List) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.MouseMsg:
 		// Mouse wheel over the transcript scrolls the viewport (the bubbles
-		// viewport handles WheelUp/WheelDown natively). Clicks are consumed here:
-		// the v2 viewport ignores them, so a left click on a fold summary toggles
-		// it. Program-level mouse capture is enabled in run.go so wheel events
-		// reach the app instead of the terminal's scrollback.
-		if click, ok := msg.(tea.MouseClickMsg); ok {
-			if click.Mouse().Button == tea.MouseLeft {
-				m.handleClick(click.X, click.Y)
+		// viewport handles WheelUp/WheelDown natively). A left-drag selects text
+		// (reverse-video highlight, copied to the clipboard on release); a left
+		// click without drag toggles the fold under the cursor. Program-level
+		// mouse capture is enabled in run.go so wheel events reach the app
+		// instead of the terminal's scrollback.
+		switch ev := msg.(type) {
+		case tea.MouseClickMsg:
+			// Press: remember the anchor. Whether this becomes a click or a drag
+			// is decided on release.
+			if ev.Mouse().Button == tea.MouseLeft {
+				if p, ok := m.screenToContent(ev.X, ev.Y); ok {
+					m.selStart, m.selCur = p, p
+					m.selecting = true
+					m.dragged = false
+				}
 			}
-			break
+		case tea.MouseMotionMsg:
+			if m.selecting {
+				if p, ok := m.screenToContent(ev.X, ev.Y); ok {
+					m.selCur = p
+					if p != m.selStart {
+						m.dragged = true
+					}
+					m.applySelection()
+				}
+				break
+			}
+			u, cmd := m.viewport.Update(msg)
+			m.viewport = u
+			cmds = append(cmds, cmd)
+			m.onUserScroll()
+		case tea.MouseReleaseMsg:
+			if m.selecting && ev.Mouse().Button == tea.MouseLeft {
+				if m.dragged {
+					m.copySelection()
+				} else {
+					m.handleClick(ev.X, ev.Y)
+				}
+				m.selecting = false
+				m.dragged = false
+				m.renderView() // drop the selection highlight
+				break
+			}
+			u, cmd := m.viewport.Update(msg)
+			m.viewport = u
+			cmds = append(cmds, cmd)
+			m.onUserScroll()
+		default:
+			u, cmd := m.viewport.Update(msg)
+			m.viewport = u
+			cmds = append(cmds, cmd)
+			m.onUserScroll()
 		}
-		u, cmd := m.viewport.Update(msg)
-		m.viewport = u
-		cmds = append(cmds, cmd)
-		m.onUserScroll()
 	case spinner.TickMsg:
 		// Stream throttling: only re-render while a streaming message is live,
 		// and at most once per renderThrottle.
@@ -457,7 +516,7 @@ func (m *List) renderView() {
 		messages = append(messages, lipgloss.JoinVertical(lipgloss.Left, v.content))
 		messages = append(messages, styles.BaseStyle().Width(m.width).Render(""))
 	}
-	m.viewport.SetContent(
+	m.setContent(
 		styles.BaseStyle().
 			Width(m.width).
 			Render(lipgloss.JoinVertical(lipgloss.Top, messages...)),
@@ -470,6 +529,11 @@ func (m *List) renderView() {
 // re-enables it. Every auto-scroll call site goes through this, so streaming
 // text, tool cards and the stream throttle all obey the same policy.
 func (m *List) scrollToBottomIfPinned() {
+	// A drag in progress owns the pointer: don't yank the content while the
+	// user is selecting.
+	if m.selecting {
+		return
+	}
 	if m.pinned {
 		m.viewport.GotoBottom()
 	}
@@ -738,5 +802,6 @@ func NewList() *List {
 		viewport:      vp,
 		spinner:       s,
 		pinned:        true,
+		copyText:      clipboard.WriteAll,
 	}
 }
