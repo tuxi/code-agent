@@ -3,6 +3,7 @@ package chat
 import (
 	"testing"
 
+	tea "charm.land/bubbletea/v2"
 	"github.com/mattn/go-runewidth"
 )
 
@@ -41,5 +42,31 @@ func TestComposerWidthLeavesRightPaddingOnly(t *testing.T) {
 	}
 	if got := composerWidth(1); got != 1 {
 		t.Fatalf("composerWidth(1) = %d, want 1", got)
+	}
+}
+
+// Shift+Enter inserts a newline at the cursor without sending; plain Enter
+// still sends. The trailing-backslash + Enter escape hatch remains.
+func TestShiftEnterInsertsNewline(t *testing.T) {
+	e := NewEditor()
+	e.SetSize(80, 5)
+	e.textarea.SetValue("hello")
+	e.textarea.CursorEnd()
+
+	// Shift+Enter: newline inserted, message NOT sent.
+	u, cmd := e.Update(tea.KeyPressMsg{Code: tea.KeyEnter, Mod: tea.ModShift})
+	e = u.(*Editor)
+	if cmd != nil {
+		t.Fatal("shift+enter must not send the message")
+	}
+	if e.textarea.Value() != "hello\n" {
+		t.Fatalf("shift+enter should insert a newline, got %q", e.textarea.Value())
+	}
+
+	// Plain Enter: sends.
+	u, cmd = e.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	e = u.(*Editor)
+	if cmd == nil {
+		t.Fatal("plain enter must send the message")
 	}
 }

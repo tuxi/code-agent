@@ -43,8 +43,10 @@ const (
 
 // EditorKeyMaps are the composer bindings.
 type EditorKeyMaps struct {
-	Send       key.Binding
-	OpenEditor key.Binding
+	Send             key.Binding
+	OpenEditor       key.Binding
+	InsertNewline    key.Binding
+	BackslashNewline key.Binding // help-only: \ + Enter works on any terminal
 }
 
 var editorMaps = EditorKeyMaps{
@@ -55,6 +57,14 @@ var editorMaps = EditorKeyMaps{
 	OpenEditor: key.NewBinding(
 		key.WithKeys("ctrl+e"),
 		key.WithHelp("ctrl+e", "open editor"),
+	),
+	InsertNewline: key.NewBinding(
+		key.WithKeys("shift+enter"),
+		key.WithHelp("shift+enter", "insert newline"),
+	),
+	BackslashNewline: key.NewBinding(
+		key.WithKeys("\\+enter"),
+		key.WithHelp("\\+enter", "insert newline (any terminal)"),
 	),
 }
 
@@ -173,6 +183,17 @@ func (m *Editor) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		if key.Matches(msg, editorMaps.OpenEditor) {
 			return m, m.openEditor()
+		}
+
+		// Shift+Enter inserts a newline at the cursor (the IME-friendly multi-line
+		// composer). Plain Enter sends — checked below. Terminal-dependent: only
+		// terminals with keyboard enhancement (kitty protocol) report Shift+Enter
+		// as a distinct key; without it the modifier is lost and Shift+Enter falls
+		// through to the Send path.
+		if m.textarea.Focused() && key.Matches(msg, editorMaps.InsertNewline) {
+			m.textarea.InsertString("\n")
+			m.syncComposer()
+			return m, nil
 		}
 
 		// Enter sends; a trailing backslash + Enter inserts a newline.
