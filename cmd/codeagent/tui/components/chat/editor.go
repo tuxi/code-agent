@@ -47,6 +47,7 @@ type EditorKeyMaps struct {
 	OpenEditor       key.Binding
 	InsertNewline    key.Binding
 	BackslashNewline key.Binding // help-only: \ + Enter works on any terminal
+	Escape           key.Binding // close the slash-command menu
 }
 
 var editorMaps = EditorKeyMaps{
@@ -66,6 +67,10 @@ var editorMaps = EditorKeyMaps{
 		key.WithKeys("\\+enter"),
 		key.WithHelp("\\+enter", "insert newline (any terminal)"),
 	),
+	Escape: key.NewBinding(
+		key.WithKeys("esc"),
+		key.WithHelp("esc", "close menu"),
+	),
 }
 
 // Editor is the message composer component. It implements tea.Model and the
@@ -80,6 +85,25 @@ type Editor struct {
 	deleteMode    bool
 	attachments   []Attachment
 	onEmptyChange func(bool) // notified when the composer becomes empty/non-empty
+
+	// Slash-command completion. Typing "/" opens an inline menu above the
+	// composer listing the available commands, filtered by the prefix typed so
+	// far; up/down select, enter runs, esc closes.
+	commands   []Command
+	completion bool     // the inline command menu is open
+	selIndex   int      // selected menu row
+}
+
+// Command is one slash command offered by the composer's inline menu. The app
+// installs the list via SetCommands; each carries the display text and a short
+// description so the user does not have to guess what /foo does. NeedsArg
+// commands (e.g. /goal) do not fire on selection — the menu instead fills the
+// composer with "/cmd " and waits for the user to type the argument.
+type Command struct {
+	ID          string
+	Title       string
+	Description string
+	NeedsArg    bool
 }
 
 // Attachment is a local stand-in for opencode's message.Attachment. The
@@ -185,6 +209,48 @@ func (m *Editor) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.openEditor()
 		}
 
+		// Slash-command menu is open: up/down move the selection, enter runs the
+		// selected command, esc closes the menu. All other keys fall through to
+		// the textarea (continuing to type filters the list).
+		if m.completion {
+			switch {
+			case key.Matches(msg, messageKeys.Up):
+				m.selIndex = (m.selIndex - 1 + len(m.matchedCommands())) % max(1, len(m.matchedCommands()))
+				return m, nil
+			case key.Matches(msg, messageKeys.Down):
+				m.selIndex = (m.selIndex + 1) % max(1, len(m.matchedCommands()))
+				return m, nil
+			case key.Matches(msg, editorMaps.Send):
+				if len(m.matchedCommands()) > 0 {
+					sel := m.matchedCommands()[min(m.selIndex, len(m.matchedCommands())-1)]
+					m.completion = false
+					m.selIndex = 0
+					if sel.NeedsArg {
+						// Argument commands: fill the composer with "/cmd " so the
+						// user types the argument, then Enter sends it (the textarea
+						// keeps the focus for typing). Not executed yet.
+						m.textarea.SetValue(sel.Title + " ")
+						m.textarea.CursorEnd()
+						m.syncComposer()
+						return m, nil
+					}
+					// Fire-and-forget commands execute immediately.
+					m.textarea.SetValue(sel.Title)
+					m.syncComposer()
+					return m, m.send()
+				}
+				// No match: send the typed text as-is (e.g. a plain message that
+				// happens to start with "/").
+				m.completion = false
+				m.selIndex = 0
+				return m, m.send()
+			case key.Matches(msg, editorMaps.Escape):
+				m.completion = false
+				m.selIndex = 0
+				return m, nil
+			}
+		}
+
 		// Shift+Enter inserts a newline at the cursor (the IME-friendly multi-line
 		// composer). Plain Enter sends — checked below. Terminal-dependent: only
 		// terminals with keyboard enhancement (kitty protocol) report Shift+Enter
@@ -209,11 +275,55 @@ func (m *Editor) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	m.textarea, cmd = m.textarea.Update(msg)
+	// Slash-command completion: typing "/" (or continuing to type after it)
+	// opens the filtered command menu; deleting back past "/" closes it.
+	m.refreshCompletion()
 	// IME sync: keep the composer height matched to its content on every
 	// keystroke and on forwarded cursor/blink messages (see syncComposer).
 	m.syncComposer()
 	m.notifyEmptyChange()
 	return m, cmd
+}
+
+// refreshCompletion opens or closes the slash-command menu based on the
+// composer's current value: "/" plus any prefix filters the available commands;
+// anything else (or an empty value) hides it.
+func (m *Editor) refreshCompletion() {
+	value := m.textarea.Value()
+	open := strings.HasPrefix(value, "/")
+	if open == m.completion {
+		if open {
+			m.selIndex = min(m.selIndex, max(0, len(m.matchedCommands())-1))
+		}
+		return
+	}
+	m.completion = open
+	m.selIndex = 0
+}
+
+// matchedCommands returns the commands whose title starts with the typed slash
+// prefix. "/" alone matches everything; "/re" narrows to /resume etc.
+func (m *Editor) matchedCommands() []Command {
+	value := m.textarea.Value()
+	prefix := strings.ToLower(strings.TrimPrefix(value, "/"))
+	if !strings.HasPrefix(value, "/") || len(m.commands) == 0 {
+		return nil
+	}
+	out := make([]Command, 0, len(m.commands))
+	for _, c := range m.commands {
+		if strings.HasPrefix(strings.ToLower(c.Title), "/"+prefix) {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// SetCommands installs the slash commands offered by the inline completion
+// menu. The app supplies them at startup; empty disables the menu.
+func (m *Editor) SetCommands(cmds []Command) {
+	m.commands = cmds
+	m.completion = false
+	m.selIndex = 0
 }
 
 // SetOnEmptyChange registers a callback fired when the composer transitions
@@ -237,14 +347,47 @@ func (m *Editor) View() tea.View {
 		Padding(0, 0, 0, 1).
 		Bold(true).
 		Foreground(t.Primary())
-	if len(m.attachments) == 0 {
-		return tea.NewView(lipgloss.JoinHorizontal(lipgloss.Top, style.Render(">"), m.textarea.View()))
+
+	composer := lipgloss.JoinHorizontal(lipgloss.Top, style.Render(">"), m.textarea.View())
+	if len(m.attachments) > 0 {
+		m.textarea.SetHeight(m.height - 1)
+		composer = lipgloss.JoinVertical(lipgloss.Top,
+			m.attachmentsContent(),
+			lipgloss.JoinHorizontal(lipgloss.Top, style.Render(">"), m.textarea.View()),
+		)
 	}
-	m.textarea.SetHeight(m.height - 1)
-	return tea.NewView(lipgloss.JoinVertical(lipgloss.Top,
-		m.attachmentsContent(),
-		lipgloss.JoinHorizontal(lipgloss.Top, style.Render(">"), m.textarea.View()),
-	))
+
+	// Inline slash-command menu above the composer.
+	menu := m.completionView()
+	if menu == "" {
+		return tea.NewView(composer)
+	}
+	return tea.NewView(lipgloss.JoinVertical(lipgloss.Top, menu, composer))
+}
+
+// completionView renders the filtered slash-command menu (empty when closed or
+// no commands match). The selected row is highlighted.
+func (m *Editor) completionView() string {
+	if !m.completion {
+		return ""
+	}
+	matches := m.matchedCommands()
+	if len(matches) == 0 {
+		return ""
+	}
+	t := theme.CurrentTheme()
+	base := styles.BaseStyle()
+	var rows []string
+	for i, c := range matches {
+		title := base.Foreground(t.Text()).Render(c.Title)
+		desc := base.Foreground(t.TextMuted()).Render("  " + c.Description)
+		if i == m.selIndex {
+			title = base.Background(t.Primary()).Foreground(t.Background()).Bold(true).Render(c.Title)
+			desc = base.Background(t.Primary()).Foreground(t.Background()).Render("  " + c.Description)
+		}
+		rows = append(rows, lipgloss.JoinHorizontal(lipgloss.Left, title, desc))
+	}
+	return lipgloss.JoinVertical(lipgloss.Left, rows...)
 }
 
 func (m *Editor) SetSize(width, height int) tea.Cmd {

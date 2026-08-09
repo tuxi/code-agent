@@ -31,6 +31,10 @@ type chatPage struct {
 	// page can feed it its screen origin (click hit-testing) on resize.
 	list *chat.List
 
+	// editorCmp is the composer inside the editor container; the page forwards
+	// SetCommands to it so typing "/" shows the command menu.
+	editorCmp *chat.Editor
+
 	// onSubmit is called with the composed text. The conversation adapter
 	// installs it; when nil the text is silently discarded.
 	onSubmit func(text string) tea.Cmd
@@ -135,6 +139,11 @@ func (p *chatPage) SetHeader(h string) {
 	p.list.SetHeader(h)
 }
 
+// SetCommands installs the slash commands for the composer's inline menu.
+func (p *chatPage) SetCommands(cmds []chat.Command) {
+	p.editorCmp.SetCommands(cmds)
+}
+
 // syncScreenOrigin tells the transcript where its top-left corner sits on the
 // terminal, so mouse clicks map to rows. The page is the app's top-left panel
 // (origin 0,0) and the messages container adds its top/left padding (1,1) —
@@ -167,6 +176,7 @@ func NewChatPage() *chatPage {
 		editor:   editorContainer,
 		messages: messagesContainer,
 		list:     msgList,
+		editorCmp: editor,
 		layout: layout.NewSplitPane(
 			layout.WithLeftPanel(messagesContainer),
 			layout.WithBottomPanel(editorContainer),

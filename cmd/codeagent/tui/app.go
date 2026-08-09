@@ -140,6 +140,11 @@ func newModel(b *Backend, header HeaderInfo, src sessionSource) tea.Model {
 	chatPage.SetOnSubmit(func(text string) tea.Cmd { return m.submit(text) })
 	m.command.SetCommands(m.commandList())
 
+	// Feed the composer's inline slash-command menu the same commands the
+	// ctrl+k dialog offers, so typing "/" shows what is available instead of
+	// leaving the user to guess.
+	chatPage.SetCommands(chatCommands(m.commandList()))
+
 	// Brand header above the first transcript message: CodeAgent + version +
 	// model + workspace. It scrolls with the conversation, so a fresh session
 	// still shows who and where you are instead of a blank pane.
@@ -161,6 +166,23 @@ func modelOptions(infos []modelInfo) []dialog.ModelOption {
 		opts = append(opts, dialog.ModelOption{Name: mi.name, Display: mi.display})
 	}
 	return opts
+}
+
+// chatCommands converts the dialog command list into the chat package's
+// Command shape so the composer's inline slash menu shows the same commands as
+// the ctrl+k dialog. Commands that need an argument (e.g. /goal) are marked so
+// the menu fills the composer with "/cmd " instead of firing immediately.
+func chatCommands(cmds []dialog.Command) []chat.Command {
+	out := make([]chat.Command, 0, len(cmds))
+	for _, c := range cmds {
+		out = append(out, chat.Command{
+			ID:          c.ID,
+			Title:       c.Title,
+			Description: c.Description,
+			NeedsArg:    c.ID == "goal",
+		})
+	}
+	return out
 }
 
 func (m *model) Init() tea.Cmd {
