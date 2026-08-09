@@ -18,6 +18,7 @@ import (
 	"code-agent/internal/credential"
 	"code-agent/internal/managedworktree"
 	"code-agent/internal/mcp"
+	"code-agent/internal/model"
 	"code-agent/internal/repos"
 	runtime "code-agent/internal/runtime"
 	"code-agent/internal/session"
@@ -209,6 +210,138 @@ type ConversationDetail struct {
 	BaseWorkspaceID string              `json:"base_workspace_id,omitempty"`
 	Worktree        *ManagedWorktreeDTO `json:"worktree,omitempty"`
 	Warnings        []APIWarning        `json:"warnings,omitempty"`
+}
+
+// ContextSnapshot is GET /v1/conversations/{id}/context. It is a point-in-time
+// aggregate of everything the client needs to render a context-usage panel:
+// current token consumption, compaction history, and structural breakdown.
+type ContextSnapshot struct {
+	Model      ContextModel    `json:"model"`
+	Current    ContextCurrent  `json:"current"`
+	Compaction ContextCompact  `json:"compaction"`
+	Structure  ContextStructure `json:"structure"`
+}
+
+// ContextModel is the static budget: how much headroom the model provides and
+// at what point compaction kicks in. Both values are in tokens.
+type ContextModel struct {
+	Name             string  `json:"name"`
+	ContextWindow    int     `json:"context_window"`
+	CompactThreshold int     `json:"compact_threshold"`
+	CompactRatio     float64 `json:"compact_ratio"`
+}
+
+// ContextCurrent is the live measurement: where the session's prompt size sits
+// relative to the model's budget. PromptTokens is the value reported by the
+// last model call (provider-measured, not an estimate).
+type ContextCurrent struct {
+	PromptTokens int     `json:"prompt_tokens"`
+	UsagePct     float64 `json:"usage_pct"`    // PromptTokens / ContextWindow * 100
+	ThresholdPct float64 `json:"threshold_pct"` // CompactThreshold / ContextWindow * 100
+}
+
+// ContextCompact summarises the compaction log so the client can show a
+// progress-style history: how many times the session compacted, how many
+// tokens were reclaimed, and the outcome of the most recent compaction.
+type ContextCompact struct {
+	TotalCount       int              `json:"total_count"`
+	TotalSavedTokens int              `json:"total_saved_tokens"`
+	Last             *CompactEntry    `json:"last,omitempty"`
+}
+
+// CompactEntry is one row of the compaction log, frozen for the wire.
+type CompactEntry struct {
+	BeforeTokens int     `json:"before_tokens"`
+	AfterTokens  int     `json:"after_tokens"`
+	SavedTokens  int     `json:"saved_tokens"`
+	Ratio        float64 `json:"ratio"`
+	SummaryChars int     `json:"summary_chars"`
+	Ineffective  bool    `json:"ineffective"`
+	At           string  `json:"at"`
+}
+
+// ContextStructure is a rough breakdown of what consumes the context window,
+// so the user can see why the prompt is the size it is.
+type ContextStructure struct {
+	MessageCount    int  `json:"message_count"`
+	EstimatedTokens int  `json:"estimated_tokens"`
+	HasSummary      bool `json:"has_summary"`
+	SummaryChars    int  `json:"summary_chars,omitempty"`
+}
+
+func contextSnapshotFromSession(s *session.Session) ContextSnapshot {
+	// Model budget: what the provider declared, and where compaction triggers.
+	cw := s.ContextWindow
+	if cw <= 0 {
+		cw = 128000 // sensible default when unset
+	}
+	ct := s.CompactThreshold
+	if ct <= 0 {
+		ct = int(float64(cw) * 0.75) // typical default
+	}
+	ratio := float64(ct) / float64(cw)
+
+	snap := ContextSnapshot{
+		Model: ContextModel{
+			Name:             s.Model,
+			ContextWindow:    cw,
+			CompactThreshold: ct,
+			CompactRatio:     ratio,
+		},
+		Current: ContextCurrent{
+			PromptTokens: s.PromptTokens,
+			UsagePct:     safePct(s.PromptTokens, cw),
+			ThresholdPct: safePct(ct, cw),
+		},
+	}
+
+	// Compaction log.
+	cc := ContextCompact{TotalCount: len(s.Compactions)}
+	for _, c := range s.Compactions {
+		cc.TotalSavedTokens += c.SavedTokens
+	}
+	if len(s.Compactions) > 0 {
+		last := s.Compactions[len(s.Compactions)-1]
+		ineffective := last.AfterTokens >= 0 && last.SavedTokens <= 0
+		cc.Last = &CompactEntry{
+			BeforeTokens: last.BeforeTokens,
+			AfterTokens:  last.AfterTokens,
+			SavedTokens:  last.SavedTokens,
+			Ratio:        last.CompressionRatio,
+			SummaryChars: last.SummaryChars,
+			Ineffective:  ineffective,
+			At:           last.CompactedAt.UTC().Format(rfc3339Millis),
+		}
+	}
+	snap.Compaction = cc
+
+	// Structural breakdown.
+	snap.Structure = ContextStructure{
+		MessageCount:    len(s.Messages),
+		EstimatedTokens: estimateMessageTokens(s.Messages),
+		HasSummary:      s.Summary != "",
+		SummaryChars:    len(s.Summary),
+	}
+	return snap
+}
+
+func safePct(part, whole int) float64 {
+	if whole <= 0 {
+		return 0
+	}
+	return float64(part) / float64(whole) * 100
+}
+
+func estimateMessageTokens(msgs []model.Message) int {
+	total := 0
+	for _, m := range msgs {
+		total += len(m.Content) // rough: ~1 token per UTF-8 byte for CJK, ~0.25 for ASCII; this is a coarse estimate
+	}
+	// 4 chars ≈ 1 token is widely used for English-centric estimates
+	if total > 0 {
+		total = total / 4
+	}
+	return total
 }
 
 // MessageView is one entry of GET /v1/conversations/{id}/messages. v1 reconstructs
@@ -887,6 +1020,17 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 			}
 		}
 		writeJSON(w, r, http.StatusOK, detail)
+	})
+
+	mux.HandleFunc("GET /v1/conversations/{id}/context", func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+		s, err := repo.Load(r.Context(), id)
+		if err != nil {
+			http.Error(w, "conversation not found", http.StatusNotFound)
+			return
+		}
+		snap := contextSnapshotFromSession(s)
+		writeJSON(w, r, http.StatusOK, snap)
 	})
 
 	mux.HandleFunc("GET /v1/conversations/{id}/messages", func(w http.ResponseWriter, r *http.Request) {
