@@ -2,9 +2,7 @@ package styles
 
 import (
 	"fmt"
-	"os"
 
-	"charm.land/lipgloss/v2"
 	compat "charm.land/lipgloss/v2/compat"
 	"code-agent/cmd/codeagent/tui/theme"
 	"github.com/charmbracelet/glamour"
@@ -12,6 +10,15 @@ import (
 )
 
 const defaultMargin = 1
+
+// darkBackground is the cached terminal background classification used by
+// adaptiveColorToString. It must NEVER be probed by blocking I/O from inside a
+// Bubble Tea program: lipgloss.HasDarkBackground reads stdin synchronously,
+// which deadlocks against bubbletea's TerminalReader (both fight for the same
+// fd) and freezes the event loop. The app instead listens for
+// tea.BackgroundColorMsg and calls SetDarkBackground. Defaults to dark, which
+// matches the shipped themes.
+var darkBackground = true
 
 // Helper functions for style pointers
 func boolPtr(b bool) *bool       { return &b }
@@ -293,11 +300,24 @@ func generateMarkdownStyleConfig() ansi.StyleConfig {
 	}
 }
 
+// SetDarkBackground records the terminal background classification reported by
+// tea.BackgroundColorMsg and drops cached markdown renderers so the next render
+// picks up the correct adaptive colors.
+func SetDarkBackground(dark bool) {
+	if darkBackground == dark {
+		return
+	}
+	darkBackground = dark
+	ClearMarkdownRendererCache()
+}
+
 // adaptiveColorToString converts a compat.AdaptiveColor to the appropriate
-// hex color string based on the current terminal background
+// hex color string based on the terminal background. It uses the cached value
+// set by SetDarkBackground — never a live terminal query, which would block on
+// stdin and deadlock the Bubble Tea event loop.
 func adaptiveColorToString(color compat.AdaptiveColor) string {
 	c := color.Light
-	if lipgloss.HasDarkBackground(os.Stdin, os.Stdout) {
+	if darkBackground {
 		c = color.Dark
 	}
 	r, g, b, a := c.RGBA()

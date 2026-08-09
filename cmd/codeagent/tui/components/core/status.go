@@ -37,17 +37,22 @@ type statusCmp struct {
 }
 
 // clearMessageCmd is a command that clears status messages after a timeout
-func (m statusCmp) clearMessageCmd(ttl time.Duration) tea.Cmd {
+func (m *statusCmp) clearMessageCmd(ttl time.Duration) tea.Cmd {
 	return tea.Tick(ttl, func(time.Time) tea.Msg {
 		return util.ClearStatusMsg{}
 	})
 }
 
-func (m statusCmp) Init() tea.Cmd {
+func (m *statusCmp) Init() tea.Cmd {
 	return nil
 }
 
-func (m statusCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+// Update uses a pointer receiver so the component's mutated state (width,
+// info) lives on the same *statusCmp the app drives through its setters. A
+// value receiver would copy the struct through the layout's Model interface on
+// the first Update, after which SetModel/SetTokens/SetBusy would mutate a
+// different object than the one being rendered — freezing the status bar.
+func (m *statusCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
@@ -96,7 +101,7 @@ func formatTokens(tokens int64) string {
 	}
 }
 
-func (m statusCmp) View() tea.View {
+func (m *statusCmp) View() tea.View {
 	t := theme.CurrentTheme()
 
 	// Initialize the help widget

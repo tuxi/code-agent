@@ -99,6 +99,7 @@ type model struct {
 	keys keyMap
 
 	sysSeq int // backs stable IDs for app-generated system messages
+
 }
 
 // newModel builds the app. run.go calls it once per program; the signature is
@@ -137,6 +138,12 @@ func newModel(b *Backend, header HeaderInfo, src sessionSource) tea.Model {
 	m.help.SetBindings(layout.KeyMapToSlice(m.keys))
 	chatPage.SetOnSubmit(func(text string) tea.Cmd { return m.submit(text) })
 	m.command.SetCommands(m.commandList())
+
+	// Bubble Tea renders once before it delivers the terminal's initial
+	// WindowSizeMsg. Give that first frame a valid shape; the real size replaces
+	// it immediately afterwards.
+	m.layout.SetSize(80, 24)
+
 	return m
 }
 
@@ -152,6 +159,11 @@ func modelOptions(infos []modelInfo) []dialog.ModelOption {
 func (m *model) Init() tea.Cmd {
 	return tea.Batch(
 		m.layout.Init(),
+		// Ask the terminal for its background color. The response comes back as
+		// tea.BackgroundColorMsg, which feeds styles.SetDarkBackground — the
+		// markdown renderer must never query the terminal itself (blocking
+		// stdin read would deadlock against bubbletea's input reader).
+		func() tea.Msg { return tea.RequestBackgroundColor() },
 		waitForEvent(m.b.events),
 		waitForDone(m.b.done),
 		waitForApproval(m.b.approvals),
@@ -167,6 +179,9 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updateKey(msg)
 	case tea.WindowSizeMsg:
 		return m.updateWindowSize(msg)
+	case tea.BackgroundColorMsg:
+		styles.SetDarkBackground(msg.IsDark())
+		return m, nil
 
 	// --- runner channel dispatches ----------------------------------------
 	case eventMsg:

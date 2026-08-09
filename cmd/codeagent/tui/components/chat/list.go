@@ -56,6 +56,11 @@ type BatchMessagesMsg struct {
 	Messages []Message
 }
 
+// initialRefreshMsg asks the List to rebuild its viewport just after its first
+// transcript content is installed. Terminal.app can miss that first layout
+// pass; a subsequent mouse or key event currently happens to repair it.
+type initialRefreshMsg struct{}
+
 // List is the message transcript component. It implements tea.Model and the
 // layout.Sizeable/Bindings interfaces.
 type List struct {
@@ -91,6 +96,11 @@ type List struct {
 	// pinned, so reading history mid-stream is not yanked back to the bottom.
 	pinned bool
 
+	// initialRefreshQueued prevents a stream of first-turn events from queuing
+	// redundant rebuilds. ClearMessagesMsg and SetMessagesMsg reset it for the
+	// next transcript.
+	initialRefreshQueued bool
+
 	// Text selection (left-drag). selStart/selCur are content-space cells;
 	// selecting is true while the left button is held; dragged distinguishes a
 	// drag (copied to the clipboard on release) from a click (toggles the fold
@@ -98,28 +108,11 @@ type List struct {
 	// the raw rendered lines and their ANSI-stripped text — rebuilt by
 	// renderView. copyText is the clipboard writer (tests override it).
 	selStart, selCur cellPos
-	selecting       bool
-	dragged         bool
-	lineTable       []string
-	contentLines    []string
-	copyText        func(string) error
-
-	// vpCache memoizes the viewport's rendered string. The viewport's View()
-	// output depends only on (width, height, yOffset, xOffset, content), so a
-	// no-op wheel event at the top/bottom edge — which cannot change any of
-	// those — reuses the cached string instead of re-parsing the whole visible
-	// window. Bubble Tea's event loop runs model.View() after every message, so
-	// without this cache each edge event in a trackpad-momentum burst pays a
-	// full render and delays subsequent input. contentVer is bumped whenever
-	// SetContent replaces the viewport's lines.
-	vpCache    string
-	vpCacheKey vpKey
-	contentVer int
-}
-
-// vpKey is the set of inputs the viewport's View() output depends on.
-type vpKey struct {
-	width, height, yOffset, xOffset, ver int
+	selecting        bool
+	dragged          bool
+	lineTable        []string
+	contentLines     []string
+	copyText         func(string) error
 }
 
 // cacheItem is a cached rendered message block, valid only at one width.
@@ -202,7 +195,7 @@ func (m *List) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.renderView()
 			m.scrollToBottomIfPinned()
 		}
-		return m, nil
+		return m, m.scheduleInitialRefresh()
 
 	case UpdateMessageMsg:
 		m.upsert(msg.Message)
@@ -241,6 +234,7 @@ func (m *List) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.selecting = false
 		m.dragged = false
 		m.selStart, m.selCur = cellPos{}, cellPos{}
+		m.initialRefreshQueued = false
 		m.renderView()
 		return m, nil
 
@@ -260,12 +254,13 @@ func (m *List) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.selecting = false
 		m.dragged = false
 		m.selStart, m.selCur = cellPos{}, cellPos{}
+		m.initialRefreshQueued = false
 		for _, msg := range msg.Messages {
 			m.upsert(msg)
 		}
 		m.renderView()
 		m.viewport.GotoBottom()
-		return m, nil
+		return m, m.scheduleInitialRefresh()
 
 	case BatchMessagesMsg:
 		// Apply one event's messages in slice order. New entries append in
@@ -285,6 +280,15 @@ func (m *List) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.scrollToBottomIfPinned()
 			}
 		}
+		return m, m.scheduleInitialRefresh()
+
+	case initialRefreshMsg:
+		// Repeat the component-level layout after Bubble Tea has painted the
+		// first content frame. This is deliberately local to List: it refreshes
+		// both a live first message and a /resume snapshot without changing
+		// terminal dimensions or renderer state.
+		m.rerender()
+		m.scrollToBottomIfPinned()
 		return m, nil
 
 	case tea.KeyMsg:
@@ -393,6 +397,14 @@ func (m *List) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, tea.Batch(cmds...)
 }
 
+func (m *List) scheduleInitialRefresh() tea.Cmd {
+	if m.initialRefreshQueued || len(m.messages) == 0 {
+		return nil
+	}
+	m.initialRefreshQueued = true
+	return tea.Tick(20*time.Millisecond, func(time.Time) tea.Msg { return initialRefreshMsg{} })
+}
+
 // upsert adds a new message or updates an existing one. Tool cards are matched
 // by Tool.CallID (stable identity) so a re-sent card updates in place instead
 // of appending a duplicate.
@@ -455,26 +467,12 @@ func (m *List) View() tea.View {
 	return tea.NewView(vp + "\n" + w)
 }
 
-// viewportString returns the rendered viewport, reusing the memoized string
-// when nothing the viewport displays has changed. The event loop calls View()
-// after every message, so scroll events that clamp at an edge — a no-op for
-// the viewport — must not pay a full window re-render; otherwise a
-// trackpad-momentum burst of edge events keeps the loop busy and delays the
-// user's next scroll.
+// viewportString always reads the viewport's current state. A previous memoized
+// string could retain the empty startup frame until an unrelated input event
+// changed viewport state, leaving the first message or resumed transcript
+// visually blank in Terminal.app.
 func (m *List) viewportString() string {
-	key := vpKey{
-		width:   m.width,
-		height:  m.height,
-		yOffset: m.viewport.YOffset(),
-		xOffset: m.viewport.XOffset(),
-		ver:     m.contentVer,
-	}
-	if key == m.vpCacheKey {
-		return m.vpCache
-	}
-	m.vpCache = m.viewport.View()
-	m.vpCacheKey = key
-	return m.vpCache
+	return m.viewport.View()
 }
 
 // renderView re-computes the full uiMessage layout from m.messages, reusing
@@ -487,7 +485,6 @@ func (m *List) renderView() {
 	if m.width == 0 {
 		return
 	}
-	m.contentVer++
 	for _, msg := range m.messages {
 		blocks, ok := m.renderMessage(msg, pos)
 		if msg.Fold != nil {
