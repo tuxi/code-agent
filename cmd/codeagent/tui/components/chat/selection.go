@@ -89,7 +89,6 @@ func (m *List) applySelection() {
 			sliceCells(plain, c1, c2) + "\x1b[27m" +
 			sliceCells(plain, c2, cellWidth(plain))
 	}
-	m.contentVer++ // invalidate the viewport render cache
 	m.viewport.SetContent(strings.Join(lines, "\n"))
 }
 

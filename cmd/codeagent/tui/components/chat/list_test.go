@@ -397,6 +397,38 @@ func TestSetMessagesMsgReplacesInOrder(t *testing.T) {
 	}
 }
 
+// The first transcript paint gets a second component-level layout pass. This
+// mirrors the interaction that previously made Terminal.app reveal a blank
+// first message or /resume snapshot.
+func TestFirstTranscriptContentSchedulesRefresh(t *testing.T) {
+	m := NewList()
+	m.SetSize(80, 10)
+
+	u, cmd := m.Update(NewMessageMsg{Message: Message{ID: "u1", Kind: KindUser, Content: "hello"}})
+	m = u.(*List)
+	if cmd == nil || !m.initialRefreshQueued {
+		t.Fatal("first live message must schedule a component refresh")
+	}
+	if _, ok := cmd().(initialRefreshMsg); !ok {
+		t.Fatalf("first live refresh command returned %T, want initialRefreshMsg", cmd())
+	}
+
+	u, _ = m.Update(initialRefreshMsg{})
+	m = u.(*List)
+	if !strings.Contains(m.View().Content, "hello") {
+		t.Fatalf("refreshed live transcript missing content: %q", m.View().Content)
+	}
+
+	u, cmd = m.Update(SetMessagesMsg{Messages: []Message{{ID: "r1", Kind: KindUser, Content: "restored"}}})
+	m = u.(*List)
+	if cmd == nil || !m.initialRefreshQueued {
+		t.Fatal("/resume snapshot must schedule a component refresh")
+	}
+	if _, ok := cmd().(initialRefreshMsg); !ok {
+		t.Fatalf("resume refresh command returned %T, want initialRefreshMsg", cmd())
+	}
+}
+
 // BatchMessagesMsg applies one event's messages in slice order — a non-streamed
 // final answer followed by its cost footer must keep that order.
 func TestBatchMessagesMsgAppliesInSliceOrder(t *testing.T) {
