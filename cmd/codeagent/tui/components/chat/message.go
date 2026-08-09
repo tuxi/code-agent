@@ -181,6 +181,7 @@ const (
 	systemMessageType
 	compactMessageType
 	foldSummaryMessageType
+	headerMessageType // brand line above the first message (CodeAgent + version + model + workspace)
 
 	// maxResultHeight caps the tool result body before the truncation marker.
 	maxResultHeight = 10

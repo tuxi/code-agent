@@ -113,6 +113,11 @@ type List struct {
 	lineTable        []string
 	contentLines     []string
 	copyText         func(string) error
+
+	// header is the brand line rendered above the first message (CodeAgent +
+	// version + model + workspace). It scrolls with the transcript like any
+	// other row — never pinned. Empty disables it.
+	header string
 }
 
 // cacheItem is a cached rendered message block, valid only at one width.
@@ -485,6 +490,24 @@ func (m *List) renderView() {
 	if m.width == 0 {
 		return
 	}
+	// The brand header scrolls with the transcript: it is rendered as the
+	// first row, above every message, and moves off-screen as the user scrolls
+	// down (unlike a pinned title bar). It is not a transcript Message — no
+	// fold, no ID — so it never participates in click toggling.
+	if m.header != "" {
+		t := theme.CurrentTheme()
+		head := styles.BaseStyle().
+			Width(m.width).
+			Foreground(t.TextMuted()).
+			Render(m.header)
+		m.ui = append(m.ui, uiMessage{
+			messageType: headerMessageType,
+			position:    pos,
+			height:      lipgloss.Height(head),
+			content:     head,
+		})
+		pos += lipgloss.Height(head) + 1
+	}
 	for _, msg := range m.messages {
 		blocks, ok := m.renderMessage(msg, pos)
 		if msg.Fold != nil {
@@ -758,6 +781,18 @@ func (m *List) SetSize(width, height int) tea.Cmd {
 		m.rerender()
 	}
 	return nil
+}
+
+// SetHeader installs the brand line shown above the first message. It is
+// rendered as part of the transcript (scrolls away as the user scrolls down).
+func (m *List) SetHeader(h string) {
+	if m.header == h {
+		return
+	}
+	m.header = h
+	if len(m.messages) > 0 || m.header != "" {
+		m.renderView()
+	}
 }
 
 func (m *List) GetSize() (int, int) {

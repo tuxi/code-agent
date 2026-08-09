@@ -442,3 +442,53 @@ func TestBatchMessagesMsgAppliesInSliceOrder(t *testing.T) {
 		t.Fatalf("batch must apply in slice order: %+v", m.messages)
 	}
 }
+
+// TestHeaderRendersAboveMessages verifies the brand header appears as the
+// first row of the transcript (above every message) and scrolls with it —
+// it is part of the content, not a pinned title bar.
+func TestHeaderRendersAboveMessages(t *testing.T) {
+	m := NewList()
+	m.SetSize(80, 10)
+	m.Update(NewMessageMsg{Message: Message{ID: "u1", Kind: KindUser, Content: "hello"}})
+
+	// No header set: content is just the message.
+	if strings.Contains(m.View().Content, "CodeAgent") {
+		t.Fatal("header should not render before SetHeader")
+	}
+
+	// Install the header and render.
+	m.SetHeader("CodeAgent vdev  model  workspace")
+	v := m.View().Content
+	if !strings.Contains(v, "CodeAgent") {
+		t.Fatalf("header missing from view: %q", v)
+	}
+	// Header must be the first content row.
+	lines := strings.Split(chStrip(v), "\n")
+	if !strings.Contains(lines[0], "CodeAgent") {
+		t.Fatalf("header must be the first row, got %q", lines[0])
+	}
+
+	// The header is a uiMessage with headerMessageType, positioned at row 0.
+	if len(m.ui) == 0 || m.ui[0].messageType != headerMessageType || m.ui[0].position != 0 {
+		t.Fatalf("first uiMessage must be the header, got %+v", m.ui[:1])
+	}
+}
+
+// chStrip removes ANSI escapes for plain-text scanning.
+func chStrip(s string) string {
+	var b strings.Builder
+	esc := false
+	for _, r := range s {
+		switch {
+		case esc:
+			if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') {
+				esc = false
+			}
+		case r == '\x1b':
+			esc = true
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}

@@ -33,6 +33,7 @@ import (
 	"code-agent/cmd/codeagent/tui/styles"
 	"code-agent/cmd/codeagent/tui/util"
 	"code-agent/internal/agent"
+	"code-agent/internal/buildinfo"
 )
 
 // keyMap is the app-level key routing (§2). Composer keys (enter to send,
@@ -138,6 +139,12 @@ func newModel(b *Backend, header HeaderInfo, src sessionSource) tea.Model {
 	m.help.SetBindings(layout.KeyMapToSlice(m.keys))
 	chatPage.SetOnSubmit(func(text string) tea.Cmd { return m.submit(text) })
 	m.command.SetCommands(m.commandList())
+
+	// Brand header above the first transcript message: CodeAgent + version +
+	// model + workspace. It scrolls with the conversation, so a fresh session
+	// still shows who and where you are instead of a blank pane.
+	chatPage.SetHeader(fmt.Sprintf("%s v%s  %s  %s",
+		"CodeAgent", buildinfo.Version, header.Model, header.Workspace))
 
 	// Bubble Tea renders once before it delivers the terminal's initial
 	// WindowSizeMsg. Give that first frame a valid shape; the real size replaces

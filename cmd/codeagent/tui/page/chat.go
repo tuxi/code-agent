@@ -129,6 +129,12 @@ func (p *chatPage) SetOnSubmit(fn func(text string) tea.Cmd) {
 	p.onSubmit = fn
 }
 
+// SetHeader installs the brand line rendered above the first transcript
+// message (scrolls with the conversation, never pinned).
+func (p *chatPage) SetHeader(h string) {
+	p.list.SetHeader(h)
+}
+
 // syncScreenOrigin tells the transcript where its top-left corner sits on the
 // terminal, so mouse clicks map to rows. The page is the app's top-left panel
 // (origin 0,0) and the messages container adds its top/left padding (1,1) —

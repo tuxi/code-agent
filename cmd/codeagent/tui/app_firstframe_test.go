@@ -22,4 +22,8 @@ func TestFirstFrameRendersBeforeWindowSize(t *testing.T) {
 			t.Fatalf("first frame missing %q:\n%q", want, v)
 		}
 	}
+	// The brand header (CodeAgent + version) renders above the transcript.
+	if !strings.Contains(v, "CodeAgent") {
+		t.Fatalf("first frame missing brand header:\n%q", v)
+	}
 }
