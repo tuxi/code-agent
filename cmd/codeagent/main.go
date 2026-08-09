@@ -723,7 +723,8 @@ func (o mcpPromptOps) Render(command string, args []string) (string, error) {
 func runTUI(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider model.Provider, secretsResolver credential.Resolver, autoMode bool, noContextFiles bool) error {
 	root, _ := os.Getwd()
 
-	store, err := runtime.OpenStore(root)
+	home, _ := os.UserHomeDir()
+	store, err := runtime.OpenStore(home)
 	if err != nil {
 		return err
 	}
@@ -760,7 +761,6 @@ func runTUI(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider mo
 	// hands-off auto mode as repl/run: --auto seeds it on; /auto flips it per session.
 	// The permission store is shared into the loop's allowlist; the TUI card's
 	// interactive "always allow" grant into it is a later step.
-	home, _ := os.UserHomeDir()
 	set := settings.Load(root, home, os.Stderr)
 	rules := approve.NewRuleStore(root, set.Permissions.Allow, set.Permissions.Deny)
 	approver := approve.NewAutoApprover(root, backend.Approver, autoMode)
