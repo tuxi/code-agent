@@ -18,6 +18,11 @@ type SplitPaneLayout interface {
 	ClearLeftPanel() tea.Cmd
 	ClearRightPanel() tea.Cmd
 	ClearBottomPanel() tea.Cmd
+
+	// TopHeight returns the height of the top section — the y offset where the
+	// bottom panel begins. The chat page uses it to map terminal coordinates
+	// onto the composer for mouse selection.
+	TopHeight() int
 }
 
 type splitPaneLayout struct {
@@ -170,6 +175,15 @@ func (s *splitPaneLayout) SetSize(width, height int) tea.Cmd {
 
 func (s *splitPaneLayout) GetSize() (int, int) {
 	return s.width, s.height
+}
+
+// TopHeight returns the height of the top section. For a vertical split this
+// is where the bottom panel begins on screen.
+func (s *splitPaneLayout) TopHeight() int {
+	if s.bottomPanel == nil {
+		return s.height
+	}
+	return int(float64(s.height) * s.verticalRatio)
 }
 
 func (s *splitPaneLayout) SetLeftPanel(panel Container) tea.Cmd {

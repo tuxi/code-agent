@@ -68,6 +68,7 @@ func (p *chatPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		cmd := p.layout.SetSize(msg.Width, msg.Height)
 		p.syncScreenOrigin()
+		p.syncEditorOrigin()
 		cmds = append(cmds, cmd)
 		return p, tea.Batch(cmds...)
 
@@ -114,7 +115,15 @@ func (p *chatPage) View() tea.View {
 }
 
 func (p *chatPage) SetSize(width, height int) tea.Cmd {
-	return p.layout.SetSize(width, height)
+	cmd := p.layout.SetSize(width, height)
+	p.syncEditorOrigin()
+	return cmd
+}
+
+// syncEditorOrigin gives the composer its terminal origin (the top of the
+// bottom panel) so mouse selection maps clicks to text positions.
+func (p *chatPage) syncEditorOrigin() {
+	p.editorCmp.SetScreenOrigin(0, p.layout.TopHeight())
 }
 
 func (p *chatPage) GetSize() (int, int) {

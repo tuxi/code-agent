@@ -22,6 +22,8 @@ import (
 	"charm.land/bubbles/v2/textarea"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/atotto/clipboard"
+	chAnsi "github.com/charmbracelet/x/ansi"
 	"github.com/mattn/go-runewidth"
 
 	"code-agent/cmd/codeagent/tui/components/dialog"
@@ -92,6 +94,17 @@ type Editor struct {
 	commands   []Command
 	completion bool     // the inline command menu is open
 	selIndex   int      // selected menu row
+
+	// Mouse text selection. selStart/selCur are byte offsets into the textarea
+	// value; selecting is true while the left button is held, dragged separates
+	// a drag (copied on release) from a click (moves the textarea cursor).
+	// screenX/screenY anchor the editor's top-left corner; copyText is the
+	// clipboard writer (tests override it).
+	screenX, screenY int
+	selStart, selCur int
+	selecting        bool
+	dragged          bool
+	copyText         func(string) error
 }
 
 // Command is one slash command offered by the composer's inline menu. The app
@@ -198,13 +211,52 @@ func (m *Editor) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.syncComposer()
 		return m, nil
 
+	case tea.MouseMsg:
+		// Left-drag selects text in the composer and copies it on release; a
+		// click without drag moves the textarea cursor. Wheel events are not
+		// meaningful in a composer that auto-sizes, so they are ignored.
+		switch ev := msg.(type) {
+		case tea.MouseClickMsg:
+			if ev.Mouse().Button == tea.MouseLeft {
+				if off := m.posToOffset(ev.X, ev.Y); off >= 0 {
+					m.selStart, m.selCur = off, off
+					m.selecting = true
+					m.dragged = false
+				}
+			}
+		case tea.MouseMotionMsg:
+			if m.selecting {
+				if off := m.posToOffset(ev.X, ev.Y); off >= 0 {
+					m.selCur = off
+					if off != m.selStart {
+						m.dragged = true
+					}
+				}
+				return m, nil
+			}
+		case tea.MouseReleaseMsg:
+			if m.selecting && ev.Mouse().Button == tea.MouseLeft {
+				if m.dragged {
+					m.copySelected()
+				} else {
+					// A plain click: place the textarea cursor at the point.
+					if off := m.posToOffset(ev.X, ev.Y); off >= 0 {
+						m.textarea.SetCursorColumn(off)
+					}
+				}
+				m.selecting = false
+				m.dragged = false
+				return m, nil
+			}
+		}
+		return m, nil
+
 	case tea.KeyMsg:
 		if key.Matches(msg, messageKeys.PageUp) || key.Matches(msg, messageKeys.PageDown) ||
 			key.Matches(msg, messageKeys.HalfPageUp) || key.Matches(msg, messageKeys.HalfPageDown) {
 			// Transcript scroll keys never reach the composer.
 			return m, nil
 		}
-
 		if key.Matches(msg, editorMaps.OpenEditor) {
 			return m, m.openEditor()
 		}
@@ -357,12 +409,75 @@ func (m *Editor) View() tea.View {
 		)
 	}
 
+	// While a drag is in progress, overlay reverse-video on the selected text
+	// so the user sees what they will copy.
+	if m.selecting && m.dragged {
+		composer = m.highlightSelection(composer)
+	}
+
 	// Inline slash-command menu above the composer.
 	menu := m.completionView()
 	if menu == "" {
 		return tea.NewView(composer)
 	}
 	return tea.NewView(lipgloss.JoinVertical(lipgloss.Top, menu, composer))
+}
+
+// highlightSelection overlays reverse-video on the selected text inside the
+// rendered composer. The composer rows carry ANSI styling (prompt color,
+// textarea background), so each row is stripped to plain text first — slicing
+// runes out of the styled row would cut escape sequences into garbage. The
+// row's prefix ("> " / padding) is kept unstyled and only the text columns
+// covered by the selection are wrapped in reverse video.
+func (m *Editor) highlightSelection(composer string) string {
+	value := m.textarea.Value()
+	start, end := m.selectedRange()
+	if start == end {
+		return composer
+	}
+	rawLines := strings.Split(composer, "\n")
+	lines := make([]string, len(rawLines))
+	copy(lines, rawLines)
+	// Selection boundaries as rune offsets into the whole value.
+	startRune := len([]rune(value[:start]))
+	endRune := len([]rune(value[:end]))
+	rows := m.editorLines()
+	for i, row := range rows {
+		if i >= len(rawLines) {
+			break
+		}
+		plain := chAnsi.Strip(rawLines[i])
+		frag := value[row.start:row.end]
+		fragLen := len([]rune(frag))
+		// Selection overlap with this row, in rune offsets relative to the row.
+		c1 := max(0, startRune-row.runeStart)
+		c2 := min(fragLen, endRune-row.runeStart)
+		if c2 <= 0 || c1 >= fragLen {
+			continue
+		}
+		prs := []rune(plain)
+		pc := min(row.prefixCol, len(prs))
+		lines[i] = string(prs[:pc]) + insertReverse(string(prs[pc:]), c1, c2)
+	}
+	return strings.Join(lines, "\n")
+}
+
+// insertReverse wraps the rune range [a,b) of an ANSI-free text in reverse
+// video. The range is in rune offsets (callers convert selection byte offsets
+// to rune offsets, so CJK double-width runes stay whole — a 2-column char is
+// one rune and is either fully selected or not).
+func insertReverse(text string, a, b int) string {
+	rs := []rune(text)
+	if a < 0 {
+		a = 0
+	}
+	if b > len(rs) {
+		b = len(rs)
+	}
+	if a > b {
+		a, b = b, a
+	}
+	return string(rs[:a]) + "\x1b[7m" + string(rs[a:b]) + "\x1b[27m" + string(rs[b:])
 }
 
 // completionView renders the filtered slash-command menu (empty when closed or
@@ -515,5 +630,116 @@ func NewEditor() *Editor {
 	return &Editor{
 		textarea:  ta,
 		composerH: minComposerLines,
+		copyText:  clipboard.WriteAll,
 	}
+}
+
+// SetScreenOrigin records the terminal position of the editor's top-left
+// corner so mouse clicks can map to text positions. The chat page computes it
+// from the layout (the composer sits below the transcript pane).
+func (m *Editor) SetScreenOrigin(x, y int) {
+	m.screenX, m.screenY = x, y
+}
+
+// textLine is one visual row of the composer: the byte range of the textarea
+// value it displays (a logical line or a soft-wrapped fragment of one), the
+// rune offset of that fragment within the whole value, and the column at which
+// its text starts on screen.
+type textLine struct {
+	start, end int // byte range in the textarea value
+	runeStart  int // rune offset of the fragment in the value
+	prefixCol  int // screen columns before the text (" > " on row 0, " " after)
+}
+
+// editorLines maps the textarea's value to its visual rows, accounting for the
+// composer prompt on the first row and soft-wrapping at the textarea width
+// (same wrap width the textarea uses: its width minus the 1-column prompt).
+// Each row carries the byte range of the value it displays (start inclusive,
+// end exclusive) and the screen column where its text begins.
+func (m *Editor) editorLines() []textLine {
+	value := m.textarea.Value()
+	wrap := max(1, composerWidth(m.width)-1) // text columns per row
+	lines := strings.Split(value, "\n")
+	out := make([]textLine, 0, len(lines))
+	byteOff := 0
+	runeOff := 0
+	for _, line := range lines {
+		runes := []rune(line)
+		width := runewidth.StringWidth(line)
+		if len(runes) == 0 {
+			out = append(out, textLine{start: byteOff, end: byteOff, runeStart: runeOff, prefixCol: composerPrefixCols})
+			byteOff++
+			runeOff++
+			continue
+		}
+		off := 0
+		for width > 0 {
+			take := min(wrap, width)
+			n := 0
+			col := 0
+			for n < len(runes)-off && col < take {
+				col += runewidth.RuneWidth(runes[off+n])
+				n++
+			}
+			fragBytes := len(string(runes[off : off+n]))
+			out = append(out, textLine{start: byteOff, end: byteOff + fragBytes, runeStart: runeOff + off, prefixCol: composerPrefixCols})
+			byteOff += fragBytes
+			off += n
+			width -= take
+		}
+		byteOff++
+		runeOff += len(runes) + 1
+	}
+	return out
+}
+
+// composerPrefixCols is the screen columns before the composer's text on every
+// row: " >" (the padded prompt glyph, vertically filled across rows by
+// lipgloss's JoinHorizontal) plus the textarea's 1-column prompt.
+const composerPrefixCols = 3
+
+// posToOffset maps a terminal coordinate onto a byte offset into the textarea
+// value, or -1 when the point is outside the composer's text area.
+func (m *Editor) posToOffset(x, y int) int {
+	lx := x - m.screenX
+	ly := y - m.screenY - 1 // the composer container has a 1-row top border
+	if lx < 0 || ly < 0 {
+		return -1
+	}
+	rows := m.editorLines()
+	if ly >= len(rows) {
+		return -1
+	}
+	row := rows[ly]
+	if row.start == row.end {
+		return row.start
+	}
+	frag := m.textarea.Value()[row.start:row.end]
+	col := lx - row.prefixCol
+	if col <= 0 {
+		return row.start
+	}
+	ri := cellToRune(frag, col)
+	rs := []rune(frag)
+	if ri > len(rs) {
+		ri = len(rs)
+	}
+	return row.start + len(string(rs[:ri]))
+}
+
+// selectedRange returns the normalized byte range of the active selection.
+func (m *Editor) selectedRange() (int, int) {
+	if m.selStart <= m.selCur {
+		return m.selStart, m.selCur
+	}
+	return m.selCur, m.selStart
+}
+
+// copySelected writes the selected text to the clipboard through copyText.
+func (m *Editor) copySelected() {
+	start, end := m.selectedRange()
+	if start == end || m.copyText == nil {
+		return
+	}
+	_ = m.copyText(m.textarea.Value()[start:end])
 }

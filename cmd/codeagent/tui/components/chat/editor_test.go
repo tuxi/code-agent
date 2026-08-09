@@ -1,9 +1,11 @@
 package chat
 
 import (
+	"strings"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	chAnsi "github.com/charmbracelet/x/ansi"
 	"github.com/mattn/go-runewidth"
 )
 
@@ -166,5 +168,125 @@ func TestSlashCommandMenuNeedsArg(t *testing.T) {
 	msg := cmd()
 	if s, ok := msg.(SendMsg); !ok || s.Text != "/goal bug" {
 		t.Fatalf("expected SendMsg /goal bug, got %#v", msg)
+	}
+}
+
+// Dragging across the composer selects text and copies it to the clipboard on
+// release; a plain click moves the textarea cursor instead. The editor's top
+// border is row 0, so content starts at screen y=1 (origin 0,0).
+func TestComposerDragSelectCopies(t *testing.T) {
+	e := NewEditor()
+	e.SetSize(80, 5)
+	e.SetScreenOrigin(0, 0)
+	var copied string
+	e.copyText = func(s string) error { copied = s; return nil }
+	e.textarea.SetValue("hello world")
+	e.syncComposer()
+
+	// Press at column 0 of the value ("h"), drag to column 5 (" ").
+	e.Update(tea.MouseClickMsg{X: 3, Y: 1, Button: tea.MouseLeft}) // "> " + " " prefix = 3
+	e.Update(tea.MouseMotionMsg{X: 8, Y: 1, Button: tea.MouseLeft})
+	e.Update(tea.MouseReleaseMsg{X: 8, Y: 1, Button: tea.MouseLeft})
+	if copied != "hello" {
+		t.Fatalf("copied %q, want %q", copied, "hello")
+	}
+
+	// A plain click (no drag) moves the cursor, does not copy.
+	copied = ""
+	e.Update(tea.MouseClickMsg{X: 3, Y: 1, Button: tea.MouseLeft})
+	e.Update(tea.MouseReleaseMsg{X: 3, Y: 1, Button: tea.MouseLeft})
+	if copied != "" {
+		t.Fatalf("a click must not copy, got %q", copied)
+	}
+	if e.selecting || e.dragged {
+		t.Fatal("click should end the drag-selection state")
+	}
+}
+
+// posToOffset maps screen coordinates onto value byte offsets, handling the
+// composer prompt prefix and multi-line values.
+func TestComposerPosToOffset(t *testing.T) {
+	e := NewEditor()
+	e.SetSize(80, 5)
+	e.SetScreenOrigin(0, 0)
+	e.textarea.SetValue("abc\ndef")
+	e.syncComposer()
+
+	// "abc" starts at value offset 0: screen x = 3 ("> " + " "), y = 1.
+	if off := e.posToOffset(3, 1); off != 0 {
+		t.Fatalf("pos (3,1) should be offset 0, got %d", off)
+	}
+	// "b" is offset 1: screen x = 4.
+	if off := e.posToOffset(4, 1); off != 1 {
+		t.Fatalf("pos (4,1) should be offset 1, got %d", off)
+	}
+	// Second line "def" starts after "abc\n": offset 4, screen y = 2.
+	if off := e.posToOffset(3, 2); off != 4 {
+		t.Fatalf("pos (3,2) should be offset 4, got %d", off)
+	}
+	// Outside the editor (left of origin, or below content) is invalid.
+	if off := e.posToOffset(-1, 1); off != -1 {
+		t.Fatalf("negative x should be invalid, got %d", off)
+	}
+	if off := e.posToOffset(3, 99); off != -1 {
+		t.Fatalf("below-content y should be invalid, got %d", off)
+	}
+}
+
+// highlightSelection must not mangle the ANSI-styled composer: it strips each
+// row first, wraps the selected columns in reverse video, and preserves the
+// row prefixes ("> " / padding). Stripping the result must equal the original
+// plain text with no escape-sequence garbage.
+func TestComposerHighlightSelection(t *testing.T) {
+	e := NewEditor()
+	e.SetSize(80, 5)
+	e.SetScreenOrigin(0, 0)
+	e.textarea.SetValue("hello world")
+	e.syncComposer()
+
+	// Select "world" (value offsets 6..11).
+	e.selStart, e.selCur = 6, 11
+	e.selecting, e.dragged = true, true
+
+	view := e.View().Content
+	// The reverse-video markers must be present.
+	if !strings.Contains(view, "\x1b[7m") || !strings.Contains(view, "\x1b[27m") {
+		t.Fatalf("selection highlight missing reverse video: %q", view)
+	}
+	// Stripping the highlighted view must yield clean text: the value and the
+	// prompt intact, no escape-sequence fragments leaking into visible columns.
+	plain := chAnsi.Strip(view)
+	if !strings.Contains(plain, "> hello world") {
+		t.Fatalf("stripped highlight lost text: %q", plain)
+	}
+	for _, ln := range strings.Split(plain, "\n") {
+		if strings.HasPrefix(ln, "\x1b") || strings.Contains(ln, "[38") || strings.Contains(ln, "[48") {
+			t.Fatalf("highlight leaked escape fragments into text: %q", ln)
+		}
+	}
+}
+
+// CJK characters occupy two screen columns but one rune. Selecting two CJK
+// chars must highlight exactly those two runes (4 screen columns), not truncate
+// to one — the selection range is in rune offsets, never columns.
+func TestComposerHighlightSelectionCJK(t *testing.T) {
+	e := NewEditor()
+	e.SetSize(80, 5)
+	e.SetScreenOrigin(0, 0)
+	e.textarea.SetValue("你好世界")
+	e.syncComposer()
+
+	// Select the first two CJK chars "你好" (byte offsets 0..6).
+	e.selStart, e.selCur = 0, len([]byte("你好"))
+	e.selecting, e.dragged = true, true
+
+	view := e.View().Content
+	if !strings.Contains(view, "\x1b[7m你好\x1b[27m") {
+		t.Fatalf("CJK selection should wrap exactly two chars in reverse video: %q", view)
+	}
+	// Stripping must yield the intact value.
+	plain := chAnsi.Strip(view)
+	if !strings.Contains(plain, "> 你好世界") {
+		t.Fatalf("stripped highlight lost CJK text: %q", plain)
 	}
 }
