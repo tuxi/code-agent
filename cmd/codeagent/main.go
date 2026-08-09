@@ -766,6 +766,10 @@ func runTUI(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider mo
 		return err
 	}
 	sess.Model = mc.Model
+	// Record the workspace on the session so /resume can scope its list: the TUI
+	// store is keyed on $HOME (shared with the mac app) and holds sessions of
+	// every workspace, so attribution comes from workspace_path, not the store.
+	sess.WorkspacePath = root
 
 	// Wrap the card-backed approver with the AutoApprover so the TUI gets the same
 	// hands-off auto mode as repl/run: --auto seeds it on; /auto flips it per session.
@@ -793,7 +797,16 @@ func runTUI(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider mo
 	// /resume loads a stored session and re-budgets it to the current model — the
 	// same helper the REPL's /resume uses.
 	resume := func(id string) (*session.Session, error) {
-		return loadAndRebudget(ctx, cfg, mc, store, id)
+		sess, err := loadAndRebudget(ctx, cfg, mc, store, id)
+		if err != nil {
+			return nil, err
+		}
+		// Defense in depth: the picker is already scoped to the current workspace,
+		// but never load a session that belongs to another one.
+		if filepath.Clean(sess.WorkspacePath) != filepath.Clean(root) {
+			return nil, fmt.Errorf("session %s belongs to workspace %q, not the current %q", id, sess.WorkspacePath, root)
+		}
+		return sess, nil
 	}
 	// /use switches the runner to a new model between turns — the same logic as
 	// the REPL's /use, but inside the run-loop goroutine via modelSwap.
@@ -825,7 +838,7 @@ func runTUI(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider mo
 		}, nil
 	}
 	goalOps := buildGoalOps(cfg, mc, runner, store)
-	return tui.Run(ctx, backend, runner, sess, store, header, resume, modelSwap, cfg.AvailableModelNames(), cfg.DisplayModelName, approver, rules, mcpPromptOps{ctx: ctx, mgr: mcpMgr}, goalOps)
+	return tui.Run(ctx, backend, runner, sess, store, root, header, resume, modelSwap, cfg.AvailableModelNames(), cfg.DisplayModelName, approver, rules, mcpPromptOps{ctx: ctx, mgr: mcpMgr}, goalOps)
 }
 
 // runPlugin handles `codeagent plugin <subcommand> [args...]`.

@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"path/filepath"
 
 	tea "charm.land/bubbletea/v2"
 )
@@ -118,7 +119,11 @@ type sessionSource struct {
 // b.inputs, runs the turn, persists, and signals done — and handles
 // session/model swaps between turns. The BubbleTea program owns the terminal.
 // Run blocks until the user quits.
-func Run(ctx context.Context, b *Backend, runner *agent.Runner, sess *session.Session, store Store, header HeaderInfo, resume ResumeFunc, modelSwap ModelSwapFunc, modelNames []string, displayName func(string) string, auto AutoMode, granter PermissionGranter, promptOps PromptOps, goalOps GoalOps) error {
+//
+// workspaceRoot scopes the /resume and /sessions lists to the current workspace:
+// the store is keyed on $HOME (shared with the mac app) and therefore holds
+// sessions of every workspace the user has run.
+func Run(ctx context.Context, b *Backend, runner *agent.Runner, sess *session.Session, store Store, workspaceRoot string, header HeaderInfo, resume ResumeFunc, modelSwap ModelSwapFunc, modelNames []string, displayName func(string) string, auto AutoMode, granter PermissionGranter, promptOps PromptOps, goalOps GoalOps) error {
 	// Cancelling on quit stops an in-flight turn rather than orphaning it.
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -223,7 +228,7 @@ func Run(ctx context.Context, b *Backend, runner *agent.Runner, sess *session.Se
 			if err != nil {
 				return nil
 			}
-			return metas
+			return filterSessionsByWorkspace(metas, workspaceRoot)
 		},
 		resume: resume,
 		events: func(id string) []agent.Event {
@@ -261,4 +266,23 @@ func Run(ctx context.Context, b *Backend, runner *agent.Runner, sess *session.Se
 	_, err := p.Run()
 	close(b.inputs) // stop the turn loop; in-flight turn is cancelled via ctx
 	return err
+}
+
+// filterSessionsByWorkspace keeps only sessions whose workspace_path equals the
+// given root. The TUI store is keyed on $HOME (shared with the mac app), so it
+// holds sessions of every workspace the user has run; /resume and /sessions
+// must not offer conversations from other workspaces. Sessions without a
+// recorded workspace (empty path) cannot be attributed safely and are excluded.
+func filterSessionsByWorkspace(metas []session.Meta, root string) []session.Meta {
+	if root == "" {
+		return metas
+	}
+	root = filepath.Clean(root)
+	out := make([]session.Meta, 0, len(metas))
+	for _, m := range metas {
+		if m.WorkspacePath != "" && filepath.Clean(m.WorkspacePath) == root {
+			out = append(out, m)
+		}
+	}
+	return out
 }
