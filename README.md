@@ -37,6 +37,7 @@
 | **Generator-Critic pipeline** | The v2 template runs each implementation through an independent reviewer session that must reply with a strict `VERDICT: PASS` / `VERDICT: REQUEST_CHANGES`, wired to acceptance criteria per agent.                                                      |
 | **Typed tool contracts** | Session tools expose structured output schemas (`send_to_session` → `{accepted, delivery, session_id, turn_id, cursor}`), so workflow expressions reference real fields and a contract test enforces schema/output agreement.                             |
 | **Multi-surface** | TUI workspace, interactive REPL, one-shot `run`/`ask`/`goal`, runtime server with WebSocket agent-wire protocol, and [AgentKit](https://github.com/tuxi/AgentKit) — a native SwiftUI GUI for macOS and iOS that embeds CodeAgent as an on-device runtime. |
+| **Polished TUI workspace** | A full terminal UI on top of the agent loop: brand header (version / model / workspace), inline `/`-command menu with prefix filtering, multi-line composer (Shift+Enter), drag-to-copy with CJK-safe selection in both the transcript and the composer, foldable thinking/tool cards, user-scroll-aware streaming, and a live status bar. |
 
 ## Quick Start
 
@@ -71,6 +72,16 @@ codeagent --model deepseek repl
 # One-shot task
 codeagent run "explain this project"
 ```
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/tui-dark.png">
+  <img alt="CodeAgent TUI" src="docs/screenshots/tui.png" width="640">
+</picture>
+
+The TUI is the default surface: a brand header shows version, model and
+workspace; typing `/` opens a filtered command menu; Shift+Enter inserts a
+newline in the composer; and drag-to-copy works in both the transcript and
+the input field.
 
 Sessions persist per-project to `.codeagent/sessions.db`. List them with `codeagent sessions`, resume with `codeagent resume <id>`, or switch inside the REPL with `/resume`.
 
