@@ -121,7 +121,9 @@ func BuildRuntimeContract(cfg app.Config, root, displayName, profile string) (Ru
 
 func buildRuntimeModelCatalog(cfg app.Config, injected credential.Resolver) RuntimeModelCatalog {
 	type connectionBuilder struct {
-		connection RuntimeModelConnection
+		connection      RuntimeModelConnection
+		seenModels      map[string]struct{} // wireModelID → seen, for dedup across aliases
+		seenCanonical   map[string]string   // wireModelID → canonical alias
 	}
 	// Wire v2: real availability instead of the hardcoded true. Probe each
 	// model's credential through the configured resolver chain (env + the
@@ -133,9 +135,16 @@ func buildRuntimeModelCatalog(cfg app.Config, injected credential.Resolver) Runt
 	ctx := context.Background()
 	groups := make(map[string]*connectionBuilder)
 	included := make(map[string]struct{})
+	dedupTo := make(map[string]string) // deduped alias → canonical alias in the catalog
 	for _, alias := range cfg.ModelNames() {
 		mc := cfg.Models[alias]
 		if strings.TrimSpace(mc.Model) == "" {
+			continue
+		}
+		// Skip internal alias keys (provider.<b64>.model.<b64>) — only
+		// user-facing names ({pid}/{mid}, runtime_alias, provider shortcut)
+		// should appear in the runtime models catalog.
+		if strings.HasPrefix(alias, "provider.") {
 			continue
 		}
 		connectionID, _ := runtimeAliasComponents(alias)
@@ -158,7 +167,7 @@ func buildRuntimeModelCatalog(cfg app.Config, injected credential.Resolver) Runt
 			group = &connectionBuilder{connection: RuntimeModelConnection{
 				ID: connectionID, ProviderID: providerID, DisplayName: connectionName,
 				BillingSource: "server_managed", Models: []RuntimeModelDescriptor{},
-			}}
+			}, seenModels: make(map[string]struct{}), seenCanonical: make(map[string]string)}
 			groups[connectionID] = group
 		}
 		displayName := mc.Catalog.DisplayName
@@ -171,6 +180,16 @@ func buildRuntimeModelCatalog(cfg app.Config, injected credential.Resolver) Runt
 		}
 		modalities := normalizedModalities(mc.Catalog.InputModalities)
 		available, reason, credStatus, credSource := probeModelAvailability(cfg, mc, resolver, ctx)
+		// Deduplicate by wire model within each connection: multiple
+		// aliases (provider shortcut, runtime_alias, pid/mid) may point
+		// to the same model — only the first (alphabetically) is kept.
+		if _, seen := group.seenModels[mc.Model]; seen {
+			included[alias] = struct{}{}
+			dedupTo[alias] = group.seenCanonical[mc.Model]
+			continue
+		}
+		group.seenModels[mc.Model] = struct{}{}
+		group.seenCanonical[mc.Model] = alias // first alias wins as canonical
 		// First model in the connection determines the connection-level
 		// credential status (models in a connection share its credential).
 		if group.connection.Credential == nil {
@@ -202,7 +221,14 @@ func buildRuntimeModelCatalog(cfg app.Config, injected credential.Resolver) Runt
 		connections = append(connections, connection)
 	}
 	defaultAlias := cfg.DefaultModel
-	if _, ok := included[defaultAlias]; !ok {
+	if _, ok := included[defaultAlias]; ok {
+		// Resolve through dedup chain: if the configured default_model is an
+		// alias that was deduped away, use the canonical alias that appears
+		// in the models list instead.
+		if canon, deduped := dedupTo[defaultAlias]; deduped {
+			defaultAlias = canon
+		}
+	} else {
 		defaultAlias = ""
 	}
 	return RuntimeModelCatalog{

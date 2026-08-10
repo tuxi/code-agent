@@ -73,6 +73,18 @@ func validateFlatModelKey(name string) error {
 // catalog (a post-PRD work item) owns capability data; until then the generic
 // defaultContextWindow / unpriced defaults apply.
 
+type builtinModelTemplate struct {
+	ID                string   // wire model id
+	RuntimeAlias      string   // short friendly name (optional)
+	ContextWindow     int      // token limit
+	SupportsTools     bool     // tool calling
+	SupportsReasoning bool     // reasoning/thinking
+	InputModalities   []string // "text", "image", "audio"
+	WebSearch         bool     // supports web search tool
+	InputPricePerM    float64  // USD per million input tokens
+	OutputPricePerM   float64  // USD per million output tokens
+}
+
 type builtinConnection struct {
 	// BaseURL is the conventional endpoint. Empty means "injected or
 	// configured" (the gateway connection has no single built-in endpoint).
@@ -92,15 +104,58 @@ type builtinConnection struct {
 	// model.md: a known service id resolves to this api type; unknown services
 	// fall back to the generic openai/responses paths.
 	ProviderType string
+	// DisplayName is the human-readable service name for UI templates.
+	DisplayName string
+	// Summary is a one-line description for the template card.
+	Summary string
+	// Kind classifies the template: "api_key", "local", or "gateway".
+	Kind string
+	// Models are the suggested models for this provider template.
+	Models []builtinModelTemplate
 }
 
 var builtinConnections = map[string]builtinConnection{
-	"deepseek":   {BaseURL: "https://api.deepseek.com", Env: "DEEPSEEK_API_KEY", WireModel: "deepseek-v4-flash", ProviderType: "openai"},
-	"qwen":       {BaseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1", Env: "DASHSCOPE_API_KEY", WireModel: "qwen3-coder-plus", ProviderType: "openai"},
-	"glm":        {BaseURL: "https://open.bigmodel.cn/api/paas/v4", Env: "GLM_API_KEY", WireModel: "glm-4.7", ProviderType: "openai"},
-	"openrouter": {BaseURL: "https://openrouter.ai/api/v1", Env: "OPENROUTER_API_KEY", ProviderType: "openai"}, // model ids may contain "/" (e.g. deepseek/deepseek-chat)
-	"ollama":     {BaseURL: "http://localhost:11434/v1", ProviderType: "ollama"},                               // user declares a modelfile name in config
-	"gateway":    {ProviderType: "openai"},                                                                     // base_url/env/wire_model supplied by the host via injection
+	"deepseek": {
+		BaseURL: "https://api.deepseek.com", Env: "DEEPSEEK_API_KEY",
+		WireModel: "deepseek-v4-flash", ProviderType: "openai",
+		DisplayName: "DeepSeek", Summary: "使用 DeepSeek API 密钥连接", Kind: "api_key",
+		Models: []builtinModelTemplate{
+			{ID: "deepseek-v4-flash", RuntimeAlias: "deepseek", ContextWindow: 1_000_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text"}, WebSearch: true, InputPricePerM: 0.16, OutputPricePerM: 0.32},
+			{ID: "deepseek-v4-pro", RuntimeAlias: "deepseek-pro", ContextWindow: 1_000_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text"}, InputPricePerM: 0.45, OutputPricePerM: 0.90},
+		},
+	},
+	"qwen": {
+		BaseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1", Env: "DASHSCOPE_API_KEY",
+		WireModel: "qwen3-coder-plus", ProviderType: "openai",
+		DisplayName: "Alibaba Qwen", Summary: "使用阿里云百炼 OpenAI 兼容接口", Kind: "api_key",
+		Models: []builtinModelTemplate{
+			{ID: "qwen3-coder-plus", ContextWindow: 128_000, SupportsTools: true, InputModalities: []string{"text"}},
+		},
+	},
+	"glm": {
+		BaseURL: "https://open.bigmodel.cn/api/paas/v4", Env: "GLM_API_KEY",
+		WireModel: "glm-4.7", ProviderType: "openai",
+		DisplayName: "Zhipu GLM", Summary: "使用智谱 OpenAI 兼容接口", Kind: "api_key",
+		Models: []builtinModelTemplate{
+			{ID: "glm-4.7", ContextWindow: 128_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text"}},
+		},
+	},
+	"openrouter": {
+		BaseURL: "https://openrouter.ai/api/v1", Env: "OPENROUTER_API_KEY",
+		ProviderType: "openai",
+		DisplayName: "OpenRouter", Summary: "通过一个 API 密钥使用多个模型", Kind: "api_key",
+		Models: []builtinModelTemplate{
+			{ID: "openrouter/auto", RuntimeAlias: "openrouter", ContextWindow: 200_000, SupportsTools: true, InputModalities: []string{"text"}},
+		},
+	},
+	"ollama": {
+		BaseURL: "http://localhost:11434/v1", ProviderType: "ollama",
+		DisplayName: "Ollama", Summary: "连接本机或局域网中的 Ollama", Kind: "local",
+	},
+	"gateway": {
+		ProviderType: "openai",
+		DisplayName: "Talkify Gateway", Summary: "使用 Talkify 账户、订阅模型和云端能力", Kind: "gateway",
+	},
 }
 
 // applyRegistryDefaults fills unset BaseURL/APIKeyEnv from the built-in
@@ -150,5 +205,63 @@ func (c Config) AvailableModelNames() []string {
 		out = append(out, name)
 	}
 	sort.Strings(out)
+	return out
+}
+
+// BuiltinProviderTemplate is the exported shape of a built-in provider template,
+// consumed by the /v1/provider-templates endpoint.
+type BuiltinProviderTemplate struct {
+	ID          string
+	DisplayName string
+	Summary     string
+	Kind        string
+	BaseURL     string
+	API         string
+	Env         string
+	Models      []BuiltinProviderTemplateModel
+}
+
+// BuiltinProviderTemplateModel is one suggested model in a provider template.
+type BuiltinProviderTemplateModel struct {
+	ID                string
+	RuntimeAlias      string
+	ContextWindow     int
+	SupportsTools     bool
+	SupportsReasoning bool
+	InputModalities   []string
+	WebSearch         bool
+	InputPricePerM    float64
+	OutputPricePerM   float64
+}
+
+// BuiltinProviderTemplates returns the built-in provider templates derived from
+// the connection registry.
+func BuiltinProviderTemplates() []BuiltinProviderTemplate {
+	out := make([]BuiltinProviderTemplate, 0, len(builtinConnections))
+	for id, conn := range builtinConnections {
+		t := BuiltinProviderTemplate{
+			ID:          id,
+			DisplayName: conn.DisplayName,
+			Summary:     conn.Summary,
+			Kind:        conn.Kind,
+			BaseURL:     conn.BaseURL,
+			API:         conn.ProviderType,
+			Env:         conn.Env,
+		}
+		for _, m := range conn.Models {
+			t.Models = append(t.Models, BuiltinProviderTemplateModel{
+				ID:                m.ID,
+				RuntimeAlias:      m.RuntimeAlias,
+				ContextWindow:     m.ContextWindow,
+				SupportsTools:     m.SupportsTools,
+				SupportsReasoning: m.SupportsReasoning,
+				InputModalities:   m.InputModalities,
+				WebSearch:         m.WebSearch,
+				InputPricePerM:    m.InputPricePerM,
+				OutputPricePerM:   m.OutputPricePerM,
+			})
+		}
+		out = append(out, t)
+	}
 	return out
 }

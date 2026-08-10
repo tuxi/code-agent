@@ -67,14 +67,10 @@ type File struct {
 	DefaultModel string `json:"default_model,omitempty"`
 	// SubagentModel names the model a delegated read-only subagent runs on.
 	SubagentModel string `json:"subagent_model,omitempty"`
-	// Models is the friendly-name → model config map (config.yaml models:).
-	Models map[string]ModelConfig `json:"models,omitempty"`
-	// Providers is the grouped form (design-providers-grouped-config.md): a
-	// service id → {public config + models[]} map. Each model entry only carries
-	// per-model differences; base_url/api/credential/headers inherit from the
-	// service. FromSettings expands this into the flat Models map using the
-	// alias key (provider.<b64>.model.<b64>). Backward compatible: flat Models
-	// still works; a model must not appear in both.
+	// Providers is the canonical way to declare models (design-providers-
+	// grouped-config.md). A service id maps to its public config and models
+	// list; per-model fields inherit from the service. This is the ONLY model
+	// section — there is no flat "models" key.
 	Providers map[string]ServiceConfig `json:"providers,omitempty"`
 	// Credentials maps namespace → name → credential config (config.yaml
 	// credentials:). Values are references (env var names / injected / none),
@@ -147,16 +143,18 @@ type ServiceConfig struct {
 // string sent to the API. All other fields are optional overrides that inherit
 // from the provider when zero.
 type ProviderModel struct {
-	ID                  string  `json:"id"`
-	ContextWindow       int     `json:"context_window,omitempty"`
-	Temperature         float64 `json:"temperature,omitempty"`
-	InputPricePerM      float64 `json:"input_price_per_million,omitempty"`
-	OutputPricePerM     float64 `json:"output_price_per_million,omitempty"`
-	CacheInputPricePerM float64 `json:"cache_input_price_per_million,omitempty"`
-	SupportsTools       *bool   `json:"supports_tools,omitempty"`
-	SupportsReasoning   *bool   `json:"supports_reasoning,omitempty"`
+	ID                  string   `json:"id"`
+	RuntimeAlias        string   `json:"runtime_alias,omitempty"` // short friendly name usable as default_model
+	API                 string   `json:"api,omitempty"`           // per-model override of the provider's api type ("openai" | "responses" | "ollama")
+	ContextWindow       int      `json:"context_window,omitempty"`
+	Temperature         float64  `json:"temperature,omitempty"`
+	InputPricePerM      float64  `json:"input_price_per_million,omitempty"`
+	OutputPricePerM     float64  `json:"output_price_per_million,omitempty"`
+	CacheInputPricePerM float64  `json:"cache_input_price_per_million,omitempty"`
+	SupportsTools       *bool    `json:"supports_tools,omitempty"`
+	SupportsReasoning   *bool    `json:"supports_reasoning,omitempty"`
 	InputModalities     []string `json:"input_modalities,omitempty"`
-	WebSearch           bool    `json:"web_search,omitempty"`
+	WebSearch           bool     `json:"web_search,omitempty"`
 }
 
 // CredentialConfig describes how a named credential is obtained.
@@ -246,7 +244,6 @@ type ModelCatalogMetadata struct {
 type Settings struct {
 	DefaultModel  string
 	SubagentModel string
-	Models        map[string]ModelConfig
 	Providers     map[string]ServiceConfig
 	Credentials   map[string]map[string]CredentialConfig
 	Agent         AgentConfig
@@ -380,12 +377,6 @@ func MergeSettings(base *Settings, overlay Settings) {
 	if overlay.SubagentModel != "" {
 		base.SubagentModel = overlay.SubagentModel
 	}
-	if base.Models == nil {
-		base.Models = map[string]ModelConfig{}
-	}
-	for name, mc := range overlay.Models {
-		base.Models[name] = mc
-	}
 	if base.Providers == nil {
 		base.Providers = map[string]ServiceConfig{}
 	}
@@ -501,20 +492,19 @@ func mergeFileIntoSettings(s *Settings, path string, warn io.Writer) {
 		return
 	}
 	MergeSettings(s, Settings{
-		Permissions: f.Permissions,
-		Verify:      f.Verify,
-		Hooks:       f.Hooks,
-		Models:      f.Models,
-		Providers:   f.Providers,
-		Credentials: f.Credentials,
-		Agent:       f.Agent,
-		Provider:    f.Provider,
-		Web:         f.Web,
-		Runtime:     f.Runtime,
-		Server:      f.Server,
-		DefaultModel: f.DefaultModel,
+		Permissions:   f.Permissions,
+		Verify:        f.Verify,
+		Hooks:         f.Hooks,
+		Providers:     f.Providers,
+		Credentials:   f.Credentials,
+		Agent:         f.Agent,
+		Provider:      f.Provider,
+		Web:           f.Web,
+		Runtime:       f.Runtime,
+		Server:        f.Server,
+		DefaultModel:  f.DefaultModel,
 		SubagentModel: f.SubagentModel,
-		Currency:    f.Currency,
+		Currency:      f.Currency,
 	})
 }
 
@@ -530,23 +520,66 @@ func bootstrapUserSettings(path string) {
 		return
 	}
 	const template = `{
-  "default_model": "",
-  "subagent_model": "",
-  "models": {},
-  "credentials": {},
+  "default_model": "deepseek/deepseek-v4-flash",
+  "credentials": {
+    "llm": {
+      "deepseek": {
+        "source": "env",
+        "env": "DEEPSEEK_API_KEY"
+      }
+    }
+  },
   "agent": {
-    "max_steps": 0,
-    "max_parallel_tools": 0,
-    "compact_ratio": 0,
-    "compact_keep_ratio": 0,
-    "client_tool_timeout_seconds": 0,
-    "subagent_model": ""
+    "client_tool_timeout_seconds": 900,
+    "compact_ratio": 0.75,
+    "max_parallel_tools": 10,
+    "max_steps": 120
   },
   "provider": {
     "request_timeout_seconds": 0,
     "max_retries": 0,
     "backoff_millis": 0,
     "max_backoff_seconds": 0
+  },
+  "providers": {
+    "deepseek": {
+      "enabled": true,
+      "base_url": "https://api.deepseek.com",
+      "api": "openai",
+      "credential": {
+        "namespace": "llm",
+        "name": "deepseek"
+      },
+      "models": [
+        {
+          "id": "deepseek-v4-flash",
+          "context_window": 1000000,
+          "runtime_alias": "deepseek v4 flash",
+          "temperature": 0.2,
+          "input_price_per_million": 0.16,
+          "output_price_per_million": 0.32,
+          "cache_input_price_per_million": 0.003,
+          "web_search": true,
+          "supports_tools": true,
+          "input_modalities": [
+            "text"
+          ]
+        },
+        {
+          "id": "deepseek-v4-pro",
+          "context_window": 1000000,
+          "runtime_alias": "deepseek v4 pro",
+          "temperature": 0.2,
+          "input_price_per_million": 0.45,
+          "output_price_per_million": 0.9,
+          "cache_input_price_per_million": 0.0038,
+          "supports_tools": true,
+          "input_modalities": [
+            "text"
+          ]
+        }
+      ]
+    }
   },
   "web": {
     "search": {

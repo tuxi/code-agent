@@ -69,11 +69,11 @@ models:
 	if set.Agent.MaxSteps != 68 {
 		t.Errorf("max_steps = %d, want 68 (user agent inherited)", set.Agent.MaxSteps)
 	}
-	if _, ok := set.Models["deepseek"]; !ok {
-		t.Errorf("user model deepseek missing: %v", set.Models)
+	if ds, ok := set.Providers["deepseek"]; !ok || len(ds.Models) != 1 || ds.Models[0].ID != "deepseek-v4-flash" {
+		t.Errorf("user model deepseek missing or wrong: providers=%v", set.Providers)
 	}
-	if _, ok := set.Models["deepseek-pro"]; !ok {
-		t.Errorf("project model deepseek-pro missing: %v", set.Models)
+	if dsp, ok := set.Providers["deepseek-pro"]; !ok || len(dsp.Models) != 1 || dsp.Models[0].ID != "deepseek-v4-pro" {
+		t.Errorf("project model deepseek-pro missing or wrong: providers=%v", set.Providers)
 	}
 	if cc, ok := set.Credentials["llm"]["deepseek"]; !ok || cc.Source != "env" {
 		t.Errorf("credential llm/deepseek = %+v, want {env}", cc)

@@ -599,6 +599,12 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 		writeJSON(w, r, http.StatusOK, catalog)
 	})
 
+	// Provider templates: static built-in registry, no auth required.
+	mux.HandleFunc("GET /v1/provider-templates", func(w http.ResponseWriter, r *http.Request) {
+		templates := buildProviderTemplates()
+		writeJSON(w, r, http.StatusOK, map[string]any{"templates": templates})
+	})
+
 	registerProviderRoutes(mux, opts)
 	registerSecretsRoutes(mux, opts)
 

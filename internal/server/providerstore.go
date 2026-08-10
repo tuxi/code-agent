@@ -95,7 +95,20 @@ func (s *ProviderStore) Upsert(id string, spec ProviderSpec) (bool, error) {
 		Headers:    spec.Headers,
 	}
 	for _, m := range spec.Models {
-		pc.Models = append(pc.Models, settings.ProviderModel{ID: m.ID})
+		pc.Models = append(pc.Models, settings.ProviderModel{
+			ID:                  m.ID,
+			RuntimeAlias:        m.RuntimeAlias,
+			API:                 m.API,
+			ContextWindow:       m.ContextWindow,
+			Temperature:         m.Temperature,
+			InputPricePerM:      m.InputPricePerM,
+			OutputPricePerM:     m.OutputPricePerM,
+			CacheInputPricePerM: m.CacheInputPricePerM,
+			SupportsTools:       m.SupportsTools,
+			SupportsReasoning:   m.SupportsReasoning,
+			InputModalities:     m.InputModalities,
+			WebSearch:           m.WebSearch,
+		})
 	}
 
 	if err := s.writeProviders(func(doc map[string]any, providers map[string]settings.ServiceConfig) {
@@ -233,7 +246,20 @@ func toProviderDTO(id string, pc settings.ServiceConfig) ProviderDTO {
 		Credential: ProviderCred{Namespace: pc.Credential.Namespace, Name: pc.Credential.Name},
 	}
 	for _, m := range pc.Models {
-		dto.Models = append(dto.Models, ProviderModelDTO{ID: m.ID})
+		dto.Models = append(dto.Models, ProviderModelDTO{
+			ID:                  m.ID,
+			RuntimeAlias:        m.RuntimeAlias,
+			API:                 m.API,
+			ContextWindow:       m.ContextWindow,
+			Temperature:         m.Temperature,
+			InputPricePerM:      m.InputPricePerM,
+			OutputPricePerM:     m.OutputPricePerM,
+			CacheInputPricePerM: m.CacheInputPricePerM,
+			SupportsTools:       m.SupportsTools,
+			SupportsReasoning:   m.SupportsReasoning,
+			InputModalities:     m.InputModalities,
+			WebSearch:           m.WebSearch,
+		})
 	}
 	return dto
 }

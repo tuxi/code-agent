@@ -476,37 +476,15 @@ func FromSettings(set settings.Settings) Config {
 	cfg := Config{
 		DefaultModel: set.DefaultModel,
 		Currency:     set.Currency,
-		Models:       make(map[string]ModelConfig, len(set.Models)),
+		Models:       make(map[string]ModelConfig),
 		Credentials:  make(map[string]map[string]CredentialConfig, len(set.Credentials)),
-	}
-	// Models: friendly name → ModelConfig.
-	for name, mc := range set.Models {
-		cfg.Models[name] = ModelConfig{
-			Name:                name,
-			Provider:            mc.Provider,
-			BaseURL:             mc.BaseURL,
-			Model:               mc.Model,
-			APIKeyEnv:           mc.APIKeyEnv,
-			Temperature:         mc.Temperature,
-			ContextWindow:       mc.ContextWindow,
-			InputPricePerM:      mc.InputPricePerM,
-			OutputPricePerM:     mc.OutputPricePerM,
-			CacheInputPricePerM: mc.CacheInputPricePerM,
-			WebSearch:           mc.WebSearch,
-			Credential:          CredentialRef{Namespace: mc.Credential.Namespace, Name: mc.Credential.Name},
-			Catalog: ModelCatalogMetadata{
-				ConnectionID:          mc.Catalog.ConnectionID,
-				ProviderID:            mc.Catalog.ProviderID,
-				ConnectionDisplayName: mc.Catalog.ConnectionDisplayName,
-				DisplayName:           mc.Catalog.DisplayName,
-				SupportsTools:         mc.Catalog.SupportsTools,
-				SupportsReasoning:     mc.Catalog.SupportsReasoning,
-				InputModalities:       mc.Catalog.InputModalities,
-			},
-		}
 	}
 	// Providers: grouped form → flat ModelConfig using the alias key
 	// (provider.<b64>.model.<b64>, design-providers-grouped-config.md §3.3).
+	// Also registers user-friendly keys so default_model and SelectModel
+	// never need the raw alias: "{pid}/{mid}" for every model, plus the
+	// model's runtime_alias when set. A single-model provider also gets a
+	// bare "{pid}" shortcut.
 	// Fields inherit from the service; per-model differences override.
 	for pid, pc := range set.Providers {
 		if len(pc.Models) == 0 {
@@ -523,16 +501,28 @@ func FromSettings(set settings.Settings) Config {
 		}
 		cred := CredentialRef{Namespace: pc.Credential.Namespace, Name: pc.Credential.Name}
 		if cred.IsZero() {
-			cred = CredentialRef{Namespace: "llm", Name: pid}
+			if model.IsLocalBaseURL(pc.BaseURL) {
+				cred = CredentialRef{} // local service, no credential needed
+			} else {
+				cred = CredentialRef{Namespace: "llm", Name: pid}
+			}
 		}
+		valid := 0
+		var firstAlias string
 		for _, pm := range pc.Models {
 			if pm.ID == "" {
 				continue
 			}
+			// Per-model api override, otherwise inherit from the provider.
+			modelAPI := pm.API
+			if modelAPI == "" {
+				modelAPI = api
+			}
+			valid++
 			key := aliasKey(pid, pm.ID)
 			mc := ModelConfig{
 				Name:            key,
-				Provider:        api,
+				Provider:        modelAPI,
 				BaseURL:         pc.BaseURL,
 				Model:           pm.ID,
 				Temperature:     pm.Temperature,
@@ -553,6 +543,40 @@ func FromSettings(set settings.Settings) Config {
 				},
 			}
 			cfg.Models[key] = mc
+			if valid == 1 {
+				firstAlias = key
+			}
+
+			// Friendly name: "{pid}/{mid}" — always registered as a
+			// human-readable key.
+			friendly := pid + "/" + pm.ID
+			if _, taken := cfg.Models[friendly]; !taken {
+				c := mc
+				c.Name = friendly
+				cfg.Models[friendly] = c
+			}
+
+			// runtime_alias: a short name the user chose for this model.
+			if pm.RuntimeAlias != "" {
+				if _, taken := cfg.Models[pm.RuntimeAlias]; !taken {
+					c := mc
+					c.Name = pm.RuntimeAlias
+					cfg.Models[pm.RuntimeAlias] = c
+				}
+			}
+		}
+		// Provider shortcut: bare "{pid}" maps to the first model of the
+		// provider. For single-model providers this is the obvious mapping;
+		// for multi-model providers it picks the first model as the default
+		// (e.g. "deepseek" → the first model under providers.deepseek).
+		// An explicit runtime_alias on a model takes precedence over this
+		// shortcut (the !taken guard ensures the alias wins).
+		if valid >= 1 {
+			if _, taken := cfg.Models[pid]; !taken {
+				c := cfg.Models[firstAlias]
+				c.Name = pid
+				cfg.Models[pid] = c
+			}
 		}
 	}
 	// Credentials: namespace → name → config.

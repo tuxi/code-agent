@@ -45,10 +45,23 @@ type ProviderCred struct {
 	Name      string `json:"name,omitempty"`
 }
 
-// ProviderModelDTO is one model in a provider (no pricing/support details —
-// those are presentation data, fetched from /v1/runtime/models).
+// ProviderModelDTO mirrors settings.ProviderModel so the full model definition
+// can round-trip through the /v1/providers API. Presentation fields (pricing,
+// capabilities) may also be available from /v1/runtime/models, but the
+// canonical source is the settings file.
 type ProviderModelDTO struct {
-	ID string `json:"id"`
+	ID                  string   `json:"id"`
+	RuntimeAlias        string   `json:"runtime_alias,omitempty"`
+	API                 string   `json:"api,omitempty"`
+	ContextWindow       int      `json:"context_window,omitempty"`
+	Temperature         float64  `json:"temperature,omitempty"`
+	InputPricePerM      float64  `json:"input_price_per_million,omitempty"`
+	OutputPricePerM     float64  `json:"output_price_per_million,omitempty"`
+	CacheInputPricePerM float64  `json:"cache_input_price_per_million,omitempty"`
+	SupportsTools       *bool    `json:"supports_tools,omitempty"`
+	SupportsReasoning   *bool    `json:"supports_reasoning,omitempty"`
+	InputModalities     []string `json:"input_modalities,omitempty"`
+	WebSearch           bool     `json:"web_search,omitempty"`
 }
 
 // ProviderSpec is the write shape accepted by PUT (may carry headers as env

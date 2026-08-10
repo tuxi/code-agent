@@ -16,7 +16,7 @@ func TestRuntimeContractPersistsIdentityAndCatalogRevisionWithoutSecrets(t *test
 	runtimepkg.SetStoreBaseDir(t.TempDir())
 	t.Cleanup(func() { runtimepkg.SetStoreBaseDir(oldBase) })
 
-	alias := "provider.ZGVlcHNlZWstcHJvZA.model.ZGVlcHNlZWstY2hhdA"
+	alias := "deepseek/deepseek-chat"
 	cfg := app.Config{
 		DefaultModel: alias,
 		Models: map[string]app.ModelConfig{

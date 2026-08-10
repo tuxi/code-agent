@@ -103,12 +103,12 @@ func mergedSettings(userCfg Config, userErr error, projectCfg Config, projectErr
 	if proj.SubagentModel != "" {
 		out.SubagentModel = proj.SubagentModel
 	}
-	for name, mc := range proj.Models {
-		if out.Models == nil {
-			out.Models = map[string]settings.ModelConfig{}
+	if out.Providers == nil {
+			out.Providers = map[string]settings.ServiceConfig{}
 		}
-		out.Models[name] = mc
-	}
+		for id, pc := range proj.Providers {
+			out.Providers[id] = pc
+		}
 	for ns, entries := range proj.Credentials {
 		if out.Credentials == nil {
 			out.Credentials = map[string]map[string]settings.CredentialConfig{}
@@ -175,31 +175,48 @@ func settingsFileFrom(cfg Config) settings.File {
 		},
 	}
 	if len(cfg.Models) > 0 {
-		f.Models = make(map[string]settings.ModelConfig, len(cfg.Models))
+		// Convert flat models to grouped providers format.
+		// Group by Catalog.ProviderID when available; fall back to model name.
+		type group struct {
+			pid    string
+			first  ModelConfig
+			models []settings.ProviderModel
+		}
+		ordered := make([]*group, 0)
+		gg := map[string]*group{}
 		for name, mc := range cfg.Models {
-			f.Models[name] = settings.ModelConfig{
-				Provider:            mc.Provider,
-				BaseURL:             mc.BaseURL,
-				Model:               mc.Model,
-				APIKeyEnv:           mc.APIKeyEnv,
-				Temperature:         mc.Temperature,
+			pid := mc.Catalog.ProviderID
+			if pid == "" {
+				pid = name
+			}
+			g, ok := gg[pid]
+			if !ok {
+				g = &group{pid: pid, first: mc}
+				gg[pid] = g
+				ordered = append(ordered, g)
+			}
+			g.models = append(g.models, settings.ProviderModel{
+				ID:                  mc.Model,
 				ContextWindow:       mc.ContextWindow,
+				Temperature:         mc.Temperature,
 				InputPricePerM:      mc.InputPricePerM,
 				OutputPricePerM:     mc.OutputPricePerM,
 				CacheInputPricePerM: mc.CacheInputPricePerM,
-				WebSearch:           mc.WebSearch,
-				Credential:          settings.CredentialRef{Namespace: mc.Credential.Namespace, Name: mc.Credential.Name},
-				Catalog: settings.ModelCatalogMetadata{
-					ConnectionID:          mc.Catalog.ConnectionID,
-					ProviderID:            mc.Catalog.ProviderID,
-					ConnectionDisplayName: mc.Catalog.ConnectionDisplayName,
-					DisplayName:           mc.Catalog.DisplayName,
-					SupportsTools:         mc.Catalog.SupportsTools,
-					SupportsReasoning:     mc.Catalog.SupportsReasoning,
-					InputModalities:       mc.Catalog.InputModalities,
-				},
-			}
+			})
 		}
+		f.Providers = make(map[string]settings.ServiceConfig, len(ordered))
+		for _, g := range ordered {
+			sc := settings.ServiceConfig{
+				BaseURL: g.first.BaseURL,
+				API:     g.first.Provider,
+				Credential: settings.CredentialRef{
+					Namespace: g.first.Credential.Namespace,
+					Name:      g.first.Credential.Name,
+				},
+				Models: g.models,
+			}
+			f.Providers[g.pid] = sc
+			}
 	}
 	if len(cfg.Credentials) > 0 {
 		f.Credentials = make(map[string]map[string]settings.CredentialConfig, len(cfg.Credentials))
@@ -264,7 +281,7 @@ func pathJoin(parts ...string) string {
 // isEmptySettingsFile reports whether a settings.File carries no configurable
 // content — nothing worth writing as a migration artifact.
 func isEmptySettingsFile(f settings.File) bool {
-	return len(f.Models) == 0 && len(f.Credentials) == 0 &&
+	return len(f.Providers) == 0 && len(f.Credentials) == 0 &&
 		f.DefaultModel == "" && f.SubagentModel == "" &&
 		f.Agent.MaxSteps == 0 && f.Agent.MaxParallelTools == 0 &&
 		f.Agent.CompactRatio == 0 && f.Agent.CompactKeepRatio == 0 &&

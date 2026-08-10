@@ -591,7 +591,7 @@ func settingsHasInfrastructure(sf settings.File) bool {
 	if sf.DefaultModel != "" || sf.SubagentModel != "" || sf.Currency != "" {
 		return true
 	}
-	if len(sf.Models) > 0 || len(sf.Credentials) > 0 {
+	if len(sf.Providers) > 0 || len(sf.Credentials) > 0 {
 		return true
 	}
 	if sf.Agent.MaxSteps != 0 || sf.Agent.MaxParallelTools != 0 ||
@@ -649,7 +649,7 @@ func StartServer(ctx context.Context, opt Options) (*Handle, error) {
 		// behavior (no models/credentials), keep the ConfigYAML cfg and just
 		// merge the behavior into embeddedSettings.
 		if settingsHasInfrastructure(sf) {
-			cfg = app.FromSettings(settings.Settings{DefaultModel: sf.DefaultModel, SubagentModel: sf.SubagentModel, Models: sf.Models, Credentials: sf.Credentials, Agent: sf.Agent, Provider: sf.Provider, Web: sf.Web, Runtime: sf.Runtime, Currency: sf.Currency})
+			cfg = app.FromSettings(settings.Settings{DefaultModel: sf.DefaultModel, SubagentModel: sf.SubagentModel, Providers: sf.Providers, Credentials: sf.Credentials, Agent: sf.Agent, Provider: sf.Provider, Web: sf.Web, Runtime: sf.Runtime, Currency: sf.Currency})
 		}
 		embeddedSettings.Permissions = sf.Permissions
 		embeddedSettings.Hooks = sf.Hooks
