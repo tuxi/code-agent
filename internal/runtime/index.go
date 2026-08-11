@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -443,6 +444,168 @@ func (s *sessionIndexImpl) Read(ctx context.Context, id string) (*tools.SessionI
 		CreatedAt:     sess.CreatedAt.UTC().Format(time.RFC3339),
 		UpdatedAt:     sess.UpdatedAt.UTC().Format(time.RFC3339),
 	}, nil
+}
+
+// Search runs a keyword search across every session in the index, opening
+// each workspace's store read-only once and merging the LIKE hits. Store path
+// is the routing authority (see Read); legacy rows fall back to the workspace
+// root. Name matches rank above summary matches above message-content matches;
+// recency breaks ties.
+func (s *sessionIndexImpl) Search(ctx context.Context, query string, limit int) ([]tools.SessionSearchResult, error) {
+	if s.db == nil {
+		return nil, nil
+	}
+	if limit <= 0 {
+		limit = 10
+	}
+	fetch := limit * 4 // over-fetch so per-store LIMITs don't starve distinct sessions
+	if fetch < 50 {
+		fetch = 50
+	}
+
+	entries, err := s.ListAll()
+	if err != nil {
+		return nil, err
+	}
+	// store_path is the routing authority (see Read); fetch it directly so
+	// ListAllSessions' projection stays unchanged.
+	pathRows, err := s.db.Query(`SELECT id, workspace_path, COALESCE(store_path, '') FROM sessions`)
+	if err != nil {
+		return nil, err
+	}
+	routes := map[string][2]string{} // id -> {store_path, workspace_path}
+	for pathRows.Next() {
+		var id, workspace, store string
+		if err := pathRows.Scan(&id, &workspace, &store); err != nil {
+			pathRows.Close()
+			return nil, err
+		}
+		routes[id] = [2]string{store, workspace}
+	}
+	pathRows.Close()
+	if err := pathRows.Err(); err != nil {
+		return nil, err
+	}
+
+	type group struct {
+		store   session.Store
+		entries []tools.SessionIndexEntry
+	}
+	// SearchMessages is the optional per-store search capability (sqlite.Store).
+	// Stores that do not implement it simply contribute no hits.
+	type messageSearcher interface {
+		SearchMessages(ctx context.Context, query string, limit int) ([]session.MessageHit, error)
+	}
+	groups := map[string]*group{}
+	var order []string
+	for _, e := range entries {
+		if e.ArchivedAt != "" {
+			continue
+		}
+		r := routes[e.ID]
+		key := r[0] // store_path
+		if key == "" {
+			key = r[1] // workspace_path fallback
+		}
+		if key == "" {
+			continue
+		}
+		g := groups[key]
+		if g == nil {
+			var st session.Store
+			if r[0] != "" {
+				st, err = sessionsqlite.NewReadOnly(r[0])
+			} else {
+				st, err = OpenStore(r[1])
+			}
+			if err != nil {
+				continue // store gone (workspace deleted); skip its sessions
+			}
+			g = &group{store: st}
+			groups[key] = g
+			order = append(order, key)
+		}
+		g.entries = append(g.entries, e)
+	}
+	defer func() {
+		for _, key := range order {
+			_ = groups[key].store.Close()
+		}
+	}()
+
+	type merged struct {
+		entry   tools.SessionIndexEntry
+		best    int // 0 name, 1 summary, 2 content
+		snippet string
+		role    string
+	}
+	byID := map[string]*merged{}
+	for _, key := range order {
+		g := groups[key]
+		searcher, ok := g.store.(messageSearcher)
+		if !ok {
+			continue
+		}
+		hits, err := searcher.SearchMessages(ctx, query, fetch)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[search_session] store %s: %v\n", key, err)
+			continue
+		}
+		for _, h := range hits {
+			m := byID[h.SessionID]
+			if m == nil {
+				idx := -1
+				for i := range g.entries {
+					if g.entries[i].ID == h.SessionID {
+						idx = i
+						break
+					}
+				}
+				if idx < 0 {
+					continue // hit for a session not in the index
+				}
+				m = &merged{entry: g.entries[idx]}
+				byID[h.SessionID] = m
+			}
+			rank := 2
+			if h.Kind == "name" {
+				rank = 0
+			} else if h.Kind == "summary" {
+				rank = 1
+			}
+			if rank < m.best || m.snippet == "" {
+				m.best = rank
+				m.snippet = h.Snippet
+				m.role = h.Role
+			}
+		}
+	}
+
+	results := make([]tools.SessionSearchResult, 0, len(byID))
+	for _, m := range byID {
+		results = append(results, tools.SessionSearchResult{
+			ID:            m.entry.ID,
+			WorkspacePath: m.entry.WorkspacePath,
+			Name:          m.entry.Name,
+			Model:         m.entry.Model,
+			TurnStatus:    m.entry.TurnStatus,
+			MessageCount:  m.entry.MessageCount,
+			UpdatedAt:     m.entry.UpdatedAt,
+			Snippet:       truncateRunes(m.snippet, 400),
+			Role:          m.role,
+			Score:         m.best,
+		})
+	}
+	sort.SliceStable(results, func(i, j int) bool {
+		if results[i].Score != results[j].Score {
+			return results[i].Score < results[j].Score
+		}
+		return results[i].UpdatedAt > results[j].UpdatedAt // recency tiebreak
+	})
+	if len(results) > limit {
+		results = results[:limit]
+	}
+	return results, nil
 }
 
 func truncateRunes(value string, limit int) string {

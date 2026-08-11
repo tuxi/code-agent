@@ -68,7 +68,7 @@ func RegisterBuiltinTools(registry *tools.Registry, cfg app.Config, cred credent
 	if searchTool := websearch.NewTool(cfg.Web, cred); searchTool != nil {
 		toolList = append(toolList, searchTool)
 	}
-	toolList = append(toolList, webfetch.NewTool(cfg.Web), todo.NewTool(), &tools.AnalyzeSessionsTool{})
+	toolList = append(toolList, webfetch.NewTool(cfg.Web), todo.NewTool(), &sessions.AnalyzeSessionsTool{})
 
 	// Pure-Go git tools that work without a subprocess (go-git / go-gitdiff). On a
 	// sandboxed host (iOS) these replace the exec-backed git tools below and add what
@@ -221,6 +221,11 @@ func BuildBaseRegistry(ctx context.Context, cfg app.Config, mc app.ModelConfig, 
 	}
 	if cfg.Agent.ToolAllowed("check_turn") {
 		if err := registry.Register(&CheckTurnTool{}); err != nil {
+			return nil, nil, nil, nil, err
+		}
+	}
+	if cfg.Agent.ToolAllowed("search_session") {
+		if err := registry.Register(&sessions.SearchSession{}); err != nil {
 			return nil, nil, nil, nil, err
 		}
 	}

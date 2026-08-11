@@ -69,6 +69,10 @@ func (s stubSessionIndex) Read(context.Context, string) (*tools.SessionIndexDeta
 	return s.detail, nil
 }
 
+func (s stubSessionIndex) Search(context.Context, string, int) ([]tools.SessionSearchResult, error) {
+	return nil, nil
+}
+
 func TestListSessionsContentMatchesStructuredOutput(t *testing.T) {
 	index := stubSessionIndex{sessions: []tools.SessionIndexEntry{
 		{ID: "session-1", WorkspacePath: "/workspace/one", Name: "First"},

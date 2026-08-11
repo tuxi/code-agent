@@ -197,6 +197,17 @@ type LatencyBucket struct {
 	Count   int
 }
 
+// MessageHit is one keyword-search match inside a workspace session store.
+// Kind distinguishes message-content matches from session-level name/summary
+// matches; Role is the message role for content matches. Snippet is the
+// matched text excerpt. Search implementations rank and dedupe across stores.
+type MessageHit struct {
+	SessionID string
+	Kind      string // "content" | "name" | "summary"
+	Role      string // "user" / "assistant", or "" for name/summary
+	Snippet   string
+}
+
 // Meta is a one-line summary of a stored session, for listing. The compaction
 // fields are aggregated from the session's compactions, not stored separately.
 type Meta struct {

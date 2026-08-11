@@ -275,6 +275,9 @@ func (fluxSessionIndexStub) Read(_ context.Context, id string) (*tools.SessionIn
 		TurnStatus: "done", Summary: "summary for " + id, LastTurn: "completed " + id,
 	}, nil
 }
+func (fluxSessionIndexStub) Search(context.Context, string, int) ([]tools.SessionSearchResult, error) {
+	return nil, nil
+}
 
 type sessionToolNestedExecutor struct {
 	ec tools.ExecutionContext

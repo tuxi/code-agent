@@ -1,6 +1,7 @@
-package tools
+package sessions
 
 import (
+	"code-agent/internal/tools"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -18,12 +19,12 @@ type AnalyzeSessionsTool struct{}
 func (t *AnalyzeSessionsTool) Name() string        { return "analyze_sessions" }
 func (t *AnalyzeSessionsTool) Description() string { return analyzeSessionsDesc }
 func (t *AnalyzeSessionsTool) InputSchema() json.RawMessage {
-	return Object(map[string]Property{
+	return tools.Object(map[string]tools.Property{
 		"since_days": {Type: "integer", Description: "Only analyze sessions updated in the last N days. Omit for all sessions."},
 	}).JSON()
 }
 
-func (t *AnalyzeSessionsTool) Execute(_ context.Context, ec ExecutionContext, raw json.RawMessage) (ToolResult, error) {
+func (t *AnalyzeSessionsTool) Execute(_ context.Context, ec tools.ExecutionContext, raw json.RawMessage) (tools.ToolResult, error) {
 	var input struct {
 		SinceDays int `json:"since_days"`
 	}
@@ -62,7 +63,7 @@ func (t *AnalyzeSessionsTool) Execute(_ context.Context, ec ExecutionContext, ra
 	b.WriteString("PATTERN: <name>\nSTATUS: NEW|EXISTING\nTYPE: agents-md|skill|prompt-template\n")
 	b.WriteString("FREQUENCY: <N>\nEVIDENCE: \"<exact quotes>\"\nDRAFT: <ready-to-use content>\n---\n")
 
-	return ToolResult{Content: b.String()}, nil
+	return tools.ToolResult{Content: b.String()}, nil
 }
 
 func readAgentsContent(root string) string {

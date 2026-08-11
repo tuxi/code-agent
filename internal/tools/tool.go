@@ -159,8 +159,8 @@ type SessionWaitResult struct {
 }
 
 // SessionIndex is the cross-workspace session discovery interface consumed
-// by list_sessions and read_session. Implementations are backed by index.db
-// plus the per-workspace session stores.
+// by list_sessions, read_session, and search_session. Implementations are
+// backed by index.db plus the per-workspace session stores.
 type SessionIndex interface {
 	// ListAll returns every session recorded in the index, newest first.
 	ListAll() ([]SessionIndexEntry, error)
@@ -169,6 +169,29 @@ type SessionIndex interface {
 	// Read returns metadata and a last-turn summary for a session by loading
 	// it from its per-workspace store. Returns nil if not found.
 	Read(ctx context.Context, id string) (*SessionIndexDetail, error)
+	// Search runs a keyword search across every session reachable through the
+	// index, merging per-workspace LIKE matches from the session stores.
+	// Results are ranked (see SessionSearchResult.Score): id/name matches beat
+	// content matches, and fresh sessions win ties.
+	Search(ctx context.Context, query string, limit int) ([]SessionSearchResult, error)
+}
+
+// SessionSearchResult is one session that matched a search query. Snippet is
+// the best matching text (a message excerpt, or the session name/summary) and
+// Role is the message role for content matches; the model answers from these
+// and follows up with read_session for the full transcript. Score is a sort
+// key only: lower is better.
+type SessionSearchResult struct {
+	ID            string `json:"id"`
+	WorkspacePath string `json:"workspace_path"`
+	Name          string `json:"name"`
+	Model         string `json:"model"`
+	TurnStatus    string `json:"turn_status"`
+	MessageCount  int    `json:"message_count"`
+	UpdatedAt     string `json:"updated_at"`
+	Snippet       string `json:"snippet"`
+	Role          string `json:"role,omitempty"`
+	Score         int    `json:"-"`
 }
 
 // SessionIndexEntry is one row from the cross-workspace session index.
