@@ -810,25 +810,48 @@ func (r *Runner) RunPreparedTurn(ctx context.Context, sess *session.Session) (Tu
 
 func withLocalAssetManifests(messages []model.Message) []model.Message {
 	var out []model.Message
-	for i := range messages {
-		if len(messages[i].LocalAssets) == 0 {
+	for i, msg := range messages {
+		// 任一资产类型非空才处理（原来是len(messages[i].LocalAssets) == 0 直接跳过）
+		// 导致带 gatewayAssets的消息被完全跳过
+		if len(msg.LocalAssets) == 0 && len(msg.Assets) == 0 {
 			continue
 		}
 		if out == nil {
 			out = append([]model.Message(nil), messages...)
 		}
 		var manifest strings.Builder
-		manifest.WriteString("\n\n[Local attachment manifest]\n")
-		manifest.WriteString("The following files are stored in the workspace. Their contents are currently NOT visible to you. ")
-		manifest.WriteString("Do not guess their contents. Use an appropriate client-side local tool such as analyze_local_image, read_pdf, or render_pdf_pages to inspect them.\n")
-		for _, asset := range messages[i].LocalAssets {
-			fmt.Fprintf(&manifest, "- path=%q; filename=%q; kind=%q; mime_type=%q; size_bytes=%d\n",
-				asset.RelativePath, asset.Filename, asset.Kind, asset.MIMEType, asset.SizeBytes)
+		// 本地资产清单
+		if len(msg.LocalAssets) > 0 {
+			manifest.WriteString("\n\n[Local attachment manifest]\n")
+			manifest.WriteString("The following files are stored in the workspace. Their contents are currently NOT visible to you. ")
+			manifest.WriteString("Do not guess their contents. Use an appropriate client-side local tool such as analyze_local_image, read_pdf, or render_pdf_pages to inspect them.\n")
+			for _, asset := range messages[i].LocalAssets {
+				fmt.Fprintf(&manifest, "- path=%q; filename=%q; kind=%q; mime_type=%q; size_bytes=%d\n",
+					asset.RelativePath, asset.Filename, asset.Kind, asset.MIMEType, asset.SizeBytes)
+			}
+			// Defense in depth: a Provider inspecting Request directly receives no
+			// structured local attachment metadata.
+			out[i].LocalAssets = nil
+		}
+
+		// gateway 用户资产清单
+		// 模型不能直接看图（!UserAssetsSupported）时，必须用文字提示模型
+		// 模型不能直接看图（!UserAssetsSupported）时，必须用文字提示模型
+		// 有图 + asset_id + 用客户端工具查看。user_assets 本是给 Agent Gateway
+		// 的协议，DeepSeek 直连下模型看不到，只有 manifest 能告知。
+		if len(msg.Assets) > 0 {
+			manifest.WriteString("\n\n[User uploaded assets]\n")
+			manifest.WriteString("The user uploaded the following assets. Their contents are currently NOT visible to you. ")
+			manifest.WriteString("Do not guess their contents. Use the analyze_image client tool with the asset_id to inspect an image.\n")
+			for _, asset := range msg.Assets {
+				fmt.Fprintf(&manifest, "- asset_id=%d; kind=%s; mime_type=%s; filename=%s\n",
+					asset.AssetID, asset.Kind, asset.MIMEType, asset.Filename)
+			}
+			// defense in depth：Provider 直接读 Request 也拿不到结构化 gateway 引用
+			// （openai_compatible.go 本就忽略 Assets，这里双保险）。
+			out[i].Assets = nil
 		}
 		out[i].Content += manifest.String()
-		// Defense in depth: a Provider inspecting Request directly receives no
-		// structured local attachment metadata.
-		out[i].LocalAssets = nil
 	}
 	if out == nil {
 		return messages
@@ -1102,12 +1125,12 @@ func (r *Runner) drive(ctx context.Context, sess *session.Session) (TurnResult, 
 			// because it is a protocol invariant, not a judgment.
 			if stopPol != nil {
 				sc := StopContext{
-					LastText:    resp.Content,
-					Todos:       r.todos,
-					Steps:       turn.Steps,
-					PlanState:   r.PlanState,
-					ToolCalls:   turn.ExecutedToolCalls,
-					MaxSteps:    r.MaxSteps,
+					LastText:  resp.Content,
+					Todos:     r.todos,
+					Steps:     turn.Steps,
+					PlanState: r.PlanState,
+					ToolCalls: turn.ExecutedToolCalls,
+					MaxSteps:  r.MaxSteps,
 				}
 				verdict, err := stopPol.Decide(ctx, sc)
 				if err != nil {

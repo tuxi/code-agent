@@ -521,17 +521,17 @@ func FromSettings(set settings.Settings) Config {
 			valid++
 			key := aliasKey(pid, pm.ID)
 			mc := ModelConfig{
-				Name:            key,
-				Provider:        modelAPI,
-				BaseURL:         pc.BaseURL,
-				Model:           pm.ID,
-				Temperature:     pm.Temperature,
-				ContextWindow:   pm.ContextWindow,
-				InputPricePerM:  pm.InputPricePerM,
-				OutputPricePerM: pm.OutputPricePerM,
+				Name:                key,
+				Provider:            modelAPI,
+				BaseURL:             pc.BaseURL,
+				Model:               pm.ID,
+				Temperature:         pm.Temperature,
+				ContextWindow:       pm.ContextWindow,
+				InputPricePerM:      pm.InputPricePerM,
+				OutputPricePerM:     pm.OutputPricePerM,
 				CacheInputPricePerM: pm.CacheInputPricePerM,
-				Credential:      cred,
-				WebSearch:       pm.WebSearch,
+				Credential:          cred,
+				WebSearch:           pm.WebSearch,
 				Catalog: ModelCatalogMetadata{
 					ConnectionID:          pid,
 					ProviderID:            pid,
@@ -708,9 +708,9 @@ func normalizeConfig(cfg *Config) error {
 	for name, mc := range cfg.Models {
 		// design-providers-grouped-config.md §3.1: flat model keys must be
 		// slash-free (alias keys from providers expansion already are).
-		if err := validateFlatModelKey(name); err != nil {
-			return err
-		}
+		//if err := validateFlatModelKey(name); err != nil {
+		//	return err
+		//}
 		mc.Name = name
 		if mc.Provider == "" {
 			mc.Provider = "openai"

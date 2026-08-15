@@ -454,26 +454,8 @@ func MergeSettings(base *Settings, overlay Settings) {
 	if overlay.Runtime.MaxConcurrentTurns != 0 {
 		base.Runtime.MaxConcurrentTurns = overlay.Runtime.MaxConcurrentTurns
 	}
-	if overlay.Server.DisplayName != "" {
-		base.Server.DisplayName = overlay.Server.DisplayName
-	}
-	if overlay.Server.Authentication != "" {
-		base.Server.Authentication = overlay.Server.Authentication
-	}
-	if overlay.Server.AccessTokenEnv != "" {
-		base.Server.AccessTokenEnv = overlay.Server.AccessTokenEnv
-	}
-	if overlay.Server.AccessToken != "" {
-		base.Server.AccessToken = overlay.Server.AccessToken
-	}
-	if overlay.Server.PublicHealthz {
-		base.Server.PublicHealthz = true
-	}
-	if overlay.Server.TLSCertificate != "" {
-		base.Server.TLSCertificate = overlay.Server.TLSCertificate
-	}
-	if overlay.Server.TLSPrivateKey != "" {
-		base.Server.TLSPrivateKey = overlay.Server.TLSPrivateKey
+	if overlay.Server.DisplayName != "" && overlay.Server.Authentication != "" {
+		base.Server = overlay.Server
 	}
 	if overlay.Currency != "" {
 		base.Currency = overlay.Currency

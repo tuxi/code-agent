@@ -216,9 +216,9 @@ type ConversationDetail struct {
 // aggregate of everything the client needs to render a context-usage panel:
 // current token consumption, compaction history, and structural breakdown.
 type ContextSnapshot struct {
-	Model      ContextModel    `json:"model"`
-	Current    ContextCurrent  `json:"current"`
-	Compaction ContextCompact  `json:"compaction"`
+	Model      ContextModel     `json:"model"`
+	Current    ContextCurrent   `json:"current"`
+	Compaction ContextCompact   `json:"compaction"`
 	Structure  ContextStructure `json:"structure"`
 }
 
@@ -236,7 +236,7 @@ type ContextModel struct {
 // last model call (provider-measured, not an estimate).
 type ContextCurrent struct {
 	PromptTokens int     `json:"prompt_tokens"`
-	UsagePct     float64 `json:"usage_pct"`    // PromptTokens / ContextWindow * 100
+	UsagePct     float64 `json:"usage_pct"`     // PromptTokens / ContextWindow * 100
 	ThresholdPct float64 `json:"threshold_pct"` // CompactThreshold / ContextWindow * 100
 }
 
@@ -244,9 +244,9 @@ type ContextCurrent struct {
 // progress-style history: how many times the session compacted, how many
 // tokens were reclaimed, and the outcome of the most recent compaction.
 type ContextCompact struct {
-	TotalCount       int              `json:"total_count"`
-	TotalSavedTokens int              `json:"total_saved_tokens"`
-	Last             *CompactEntry    `json:"last,omitempty"`
+	TotalCount       int           `json:"total_count"`
+	TotalSavedTokens int           `json:"total_saved_tokens"`
+	Last             *CompactEntry `json:"last,omitempty"`
 }
 
 // CompactEntry is one row of the compaction log, frozen for the wire.
@@ -1115,6 +1115,60 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 
 	mux.HandleFunc("GET /v1/conversations/{id}/assets/{asset_id}/thumbnail", func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "asset thumbnails are not implemented", http.StatusNotImplemented)
+	})
+
+	mux.HandleFunc("POST /v1/conversations/{id}/credential", func(w http.ResponseWriter, r *http.Request) {
+		if executor == nil {
+			writeJSON(w, r, http.StatusNotImplemented, map[string]any{"error": "credential injection is not available"})
+			return
+		}
+		id := r.PathValue("id")
+
+		// 1. 校验 conversation	是否存在
+		if _, err := repo.Load(r.Context(), id); err != nil {
+			writeJSON(w, r, http.StatusNotFound, map[string]any{"error": fmt.Sprintf("conversation %q not found", id)})
+			return
+		}
+
+		// 2.解析 body
+		var body struct {
+			Namespace string `json:"namespace"`
+			Name      string `json:"name"`
+			Type      string `json:"type"`
+			Secret    string `json:"secret"`
+		}
+
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeJSON(w, r, http.StatusBadRequest, map[string]any{"error": "invalid body: " + err.Error()})
+			return
+		}
+
+		if body.Namespace == "" {
+			body.Namespace = "gateway" // 默认gateway
+		}
+		if body.Name == "" {
+			body.Name = "default"
+		}
+		if body.Secret == "" {
+			writeJSON(w, r, http.StatusBadRequest, map[string]any{"error": "invalid body: secret is required"})
+			return
+		}
+		ctype := body.Type
+		if ctype == "" {
+			ctype = "bearer"
+		}
+
+		// 3. 构造 StaticResolver 绑定 conversation 的 session credential
+		target := credential.Target{
+			Namespace: body.Namespace,
+			Name:      body.Name,
+		}
+		resolve := credential.StaticResolver{
+			target: credential.Credential{Type: credential.CredentialType(ctype), Secret: body.Secret},
+		}
+		executor.SetSessionCredential(id, resolve)
+
+		writeJSON(w, r, http.StatusOK, map[string]any{"injected": true, "conversation_id": id, "target": target.String()})
 	})
 
 	// ---- WebSocket: TransportSession backed by TurnExecutor ----
