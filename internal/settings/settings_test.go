@@ -55,6 +55,26 @@ func TestLoadMissingFilesAreSilent(t *testing.T) {
 	}
 }
 
+// The first load of a missing user settings file creates the template and
+// reports Bootstrapped; a second load finds the file and clears the flag.
+func TestLoadBootstrapsFirstRun(t *testing.T) {
+	home := t.TempDir()
+	root := t.TempDir()
+
+	first := Load(root, home, &bytes.Buffer{})
+	if !first.Bootstrapped {
+		t.Fatal("first load of a missing user file must report Bootstrapped")
+	}
+	if _, err := os.Stat(UserPath(home)); err != nil {
+		t.Fatalf("first load must create the settings template: %v", err)
+	}
+
+	second := Load(root, home, &bytes.Buffer{})
+	if second.Bootstrapped {
+		t.Fatal("second load must not report Bootstrapped (file now exists)")
+	}
+}
+
 // A malformed file is logged and skipped — it must not brick loading, and the
 // other layers still contribute.
 func TestLoadMalformedIsLoggedAndSkipped(t *testing.T) {

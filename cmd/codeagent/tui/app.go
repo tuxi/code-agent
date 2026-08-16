@@ -19,6 +19,8 @@ package tui
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"charm.land/bubbles/v2/key"
@@ -186,20 +188,25 @@ func chatCommands(cmds []dialog.Command) []chat.Command {
 }
 
 func (m *model) Init() tea.Cmd {
-	return tea.Batch(
+	cmds := []tea.Cmd{
 		m.layout.Init(),
-		// Ask the terminal for its background color. The response comes back as
-		// tea.BackgroundColorMsg, which feeds styles.SetDarkBackground — the
-		// markdown renderer must never query the terminal itself (blocking
-		// stdin read would deadlock against bubbletea's input reader).
-		func() tea.Msg { return tea.RequestBackgroundColor() },
 		waitForEvent(m.b.events),
 		waitForDone(m.b.done),
 		waitForApproval(m.b.approvals),
 		waitForPlanApproval(m.b.planApprovals),
 		waitForAskUser(m.b.askUsers),
 		waitForGoalDone(m.b.goalDone),
-	)
+	}
+	// First run: the user-scope settings.json was just created by this launch.
+	// Surface a one-time hint in the transcript so a new user knows where to
+	// configure models and credentials instead of guessing.
+	if m.header.FirstRun {
+		home, _ := os.UserHomeDir()
+		cmds = append(cmds, m.system(fmt.Sprintf(
+			"⚙ first run: created %s — edit it to set your model and API key, or run with --model to pick a different model",
+			filepath.Join(home, ".codeagent", "settings.json"))))
+	}
+	return tea.Batch(cmds...)
 }
 
 func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {

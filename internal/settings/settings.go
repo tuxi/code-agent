@@ -257,6 +257,11 @@ type Settings struct {
 	Permissions Permissions
 	Verify      *Verify      // highest-priority layer's block, nil if no layer set one
 	Hooks       []hooks.Hook // all layers' hooks, user → shared → local order
+
+	// Bootstrapped is true when the user-scope settings file did not exist and
+	// this load created the template. The TUI surfaces a first-run hint so a
+	// new user knows where to configure models and credentials.
+	Bootstrapped bool
 }
 
 // UserPath is the user-scope file, shared across all your projects. Empty home
@@ -317,14 +322,14 @@ func Load(root, home string, warn io.Writer) Settings {
 	if warn == nil {
 		warn = os.Stderr
 	}
+	var s Settings
 	// First start: write a minimal user settings.json template so the user knows
 	// the file exists and where to configure models/credentials. Best-effort.
 	if up := UserPath(home); up != "" {
-		if _, err := os.Stat(up); errors.Is(err, os.ErrNotExist) {
-			bootstrapUserSettings(up)
+		if _, err := os.Stat(up); err != nil && errors.Is(err, os.ErrNotExist) {
+			s.Bootstrapped = bootstrapUserSettings(up)
 		}
 	}
-	var s Settings
 	for _, path := range []string{UserPath(home), ProjectSharedPath(root), ProjectLocalPath(root)} {
 		mergeFileIntoSettings(&s, path, warn)
 	}
@@ -338,13 +343,13 @@ func LoadUserOnly(home string, warn io.Writer) Settings {
 	if warn == nil {
 		warn = os.Stderr
 	}
+	var s Settings
 	up := UserPath(home)
 	if up != "" {
-		if _, err := os.Stat(up); errors.Is(err, os.ErrNotExist) {
-			bootstrapUserSettings(up)
+		if _, err := os.Stat(up); err != nil && errors.Is(err, os.ErrNotExist) {
+			s.Bootstrapped = bootstrapUserSettings(up)
 		}
 	}
-	var s Settings
 	mergeFileIntoSettings(&s, up, warn)
 	return s
 }
@@ -497,10 +502,11 @@ func mergeFileIntoSettings(s *Settings, path string, warn io.Writer) {
 // fills them in (the registry already provides open-box models, so an empty
 // settings.json is fully functional). Best-effort: failure is silent, the
 // runtime stays usable via built-in defaults. The file is never overwritten
-// once it exists (the caller checks os.ErrNotExist first).
-func bootstrapUserSettings(path string) {
+// once it exists (the caller checks os.ErrNotExist first). Reports whether the
+// template was actually created (true = first run).
+func bootstrapUserSettings(path string) bool {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return
+		return false
 	}
 	const template = `{
   "default_model": "deepseek/deepseek-v4-flash",
@@ -586,7 +592,10 @@ func bootstrapUserSettings(path string) {
   "currency": "$"
 }
 `
-	os.WriteFile(path, []byte(template), 0o644)
+	if err := os.WriteFile(path, []byte(template), 0o644); err != nil {
+		return false
+	}
+	return true
 }
 
 // ResolveVerify returns the effective finalize-verify command for the workspace:

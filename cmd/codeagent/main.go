@@ -793,6 +793,7 @@ func runTUI(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider mo
 		Session:          sess.ID,
 		CompactThreshold: cfg.CompactThreshold(mc),
 		SubagentBudget:   runtime.SubAgentMaxSteps,
+		FirstRun:         set.Bootstrapped,
 	}
 	// /resume loads a stored session and re-budgets it to the current model — the
 	// same helper the REPL's /resume uses.

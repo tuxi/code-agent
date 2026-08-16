@@ -84,6 +84,11 @@ type HeaderInfo struct {
 	Session          string
 	CompactThreshold int
 	SubagentBudget   int // the subagent's iteration cap, for the "step N/M" heartbeat
+
+	// FirstRun is true when the user-scope settings.json was just created by
+	// this launch. The TUI shows a one-time hint pointing the user at the file
+	// so they know where to configure models and credentials.
+	FirstRun bool
 }
 
 // ModelSwapFunc switches the runner to a new model by name, rebuilding the
