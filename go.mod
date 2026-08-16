@@ -8,6 +8,7 @@ require (
 	charm.land/lipgloss/v2 v2.0.5
 	github.com/alecthomas/chroma/v2 v2.15.0
 	github.com/aliyun/aliyun-oss-go-sdk v3.0.2+incompatible
+	github.com/atotto/clipboard v0.1.4
 	github.com/bluekeyes/go-gitdiff v0.8.1
 	github.com/catppuccin/go v0.3.0
 	github.com/charmbracelet/glamour v0.9.1
@@ -23,9 +24,10 @@ require (
 	github.com/muesli/termenv v0.16.0
 	github.com/pmezard/go-difflib v1.0.0
 	github.com/tuxi/flux v1.0.8
-	github.com/tuxi/flux-workflow v1.0.5
+	github.com/tuxi/flux-workflow v1.0.6
 	golang.org/x/net v0.56.0
 	golang.org/x/sys v0.46.0
+	golang.org/x/term v0.44.0
 	gopkg.in/yaml.v3 v3.0.1
 	gorm.io/gorm v1.31.1
 	modernc.org/sqlite v1.52.0
@@ -36,7 +38,6 @@ require (
 	filippo.io/edwards25519 v1.1.0 // indirect
 	github.com/Microsoft/go-winio v0.6.2 // indirect
 	github.com/ProtonMail/go-crypto v1.1.6 // indirect
-	github.com/atotto/clipboard v0.1.4 // indirect
 	github.com/aymanbagabas/go-osc52/v2 v2.0.1 // indirect
 	github.com/aymerick/douceur v0.2.0 // indirect
 	github.com/bwmarrin/snowflake v0.3.0 // indirect
@@ -89,7 +90,6 @@ require (
 	golang.org/x/mod v0.37.0 // indirect
 	golang.org/x/oauth2 v0.35.0 // indirect
 	golang.org/x/sync v0.21.0 // indirect
-	golang.org/x/term v0.44.0 // indirect
 	golang.org/x/text v0.38.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
 	golang.org/x/tools v0.46.0 // indirect
