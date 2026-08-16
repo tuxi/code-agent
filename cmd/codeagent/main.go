@@ -787,9 +787,11 @@ func runTUI(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider mo
 	if autoMode {
 		fmt.Fprintln(os.Stderr, "auto mode: ON (in-workspace edits auto-approved; commands still confirmed) — /auto off to disable")
 	}
+
 	header := tui.HeaderInfo{
 		Model:            mc.Name,
 		Workspace:        filepath.Base(root),
+		SettingsPath:     settings.UserPath(home),
 		Session:          sess.ID,
 		CompactThreshold: cfg.CompactThreshold(mc),
 		SubagentBudget:   runtime.SubAgentMaxSteps,
@@ -834,6 +836,7 @@ func runTUI(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider mo
 		return tui.HeaderInfo{
 			Model:            newMC.Name,
 			Workspace:        filepath.Base(root),
+			SettingsPath:     settings.UserPath(home),
 			Session:          sess.ID,
 			CompactThreshold: cfg.CompactThreshold(newMC),
 		}, nil

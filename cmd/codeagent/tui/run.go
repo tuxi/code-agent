@@ -81,6 +81,7 @@ type GoalOps interface {
 type HeaderInfo struct {
 	Model            string
 	Workspace        string
+	SettingsPath     string
 	Session          string
 	CompactThreshold int
 	SubagentBudget   int // the subagent's iteration cap, for the "step N/M" heartbeat
