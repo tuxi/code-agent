@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 
 	"code-agent/internal/settings"
+
 	"gopkg.in/yaml.v3"
 )
 
@@ -104,11 +105,11 @@ func mergedSettings(userCfg Config, userErr error, projectCfg Config, projectErr
 		out.SubagentModel = proj.SubagentModel
 	}
 	if out.Providers == nil {
-			out.Providers = map[string]settings.ServiceConfig{}
-		}
-		for id, pc := range proj.Providers {
-			out.Providers[id] = pc
-		}
+		out.Providers = map[string]settings.ServiceConfig{}
+	}
+	for id, pc := range proj.Providers {
+		out.Providers[id] = pc
+	}
 	for ns, entries := range proj.Credentials {
 		if out.Credentials == nil {
 			out.Credentials = map[string]map[string]settings.CredentialConfig{}
@@ -195,6 +196,10 @@ func settingsFileFrom(cfg Config) settings.File {
 				gg[pid] = g
 				ordered = append(ordered, g)
 			}
+			compactRatio := cfg.Agent.CompactRatio
+			if mc.CompactRatio != 0 {
+				compactRatio = mc.CompactRatio
+			}
 			g.models = append(g.models, settings.ProviderModel{
 				ID:                  mc.Model,
 				ContextWindow:       mc.ContextWindow,
@@ -202,6 +207,7 @@ func settingsFileFrom(cfg Config) settings.File {
 				InputPricePerM:      mc.InputPricePerM,
 				OutputPricePerM:     mc.OutputPricePerM,
 				CacheInputPricePerM: mc.CacheInputPricePerM,
+				CompactRatio:        compactRatio,
 			})
 		}
 		f.Providers = make(map[string]settings.ServiceConfig, len(ordered))
@@ -216,7 +222,7 @@ func settingsFileFrom(cfg Config) settings.File {
 				Models: g.models,
 			}
 			f.Providers[g.pid] = sc
-			}
+		}
 	}
 	if len(cfg.Credentials) > 0 {
 		f.Credentials = make(map[string]map[string]settings.CredentialConfig, len(cfg.Credentials))

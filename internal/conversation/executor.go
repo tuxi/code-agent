@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"code-agent/internal/agent"
+	"code-agent/internal/app"
 	"code-agent/internal/credential"
 	"code-agent/internal/model"
 	"code-agent/internal/session"
@@ -723,15 +724,41 @@ func (e *TurnExecutor) driveTurn(
 	// so reconnecting clients see one complete lifecycle rather than a silent gap.
 	turnID := e.scheduler.ReserveTurnID()
 	pub := &sequencingEmitter{ctx: context.WithoutCancel(parentCtx), events: e.events, live: e.subs.Emitter(sess.ID)}
-	resolvedModel := wireModel
-	if preclaimed != nil {
-		resolvedModel = preclaimed.ResolvedModel
-	} else if resolver, ok := e.rb.(ModelResolver); ok {
-		var resolveErr error
-		resolvedModel, resolveErr = resolver.ResolveModel(wireModel)
+	resolver, ok := e.rb.(ModelResolver)
+	var resolvedModel app.ModelConfig
+	if ok {
+		rm, resolveErr := resolver.ResolveModel(wireModel)
 		if resolveErr != nil {
 			return agent.TurnResult{}, resolveErr
 		}
+		resolvedModel = *rm
+		// Refresh the session's model metadata from the resolved config so
+		// compaction thresholds stay model-aware even when the config changed
+		// since the session was created. CompactRatio/ContextWindow of 0 means
+		// the resolver returned no sizing info — keep the current values rather
+		// than overwriting them with a zero threshold.
+		modelChanged := sess.Model != resolvedModel.Name ||
+			(resolvedModel.ContextWindow > 0 && sess.ContextWindow != resolvedModel.ContextWindow)
+		compactThreshold := sess.CompactThreshold
+		if resolvedModel.ContextWindow > 0 && resolvedModel.CompactRatio > 0 {
+			compactThreshold = int(float64(resolvedModel.ContextWindow) * resolvedModel.CompactRatio)
+			modelChanged = modelChanged || sess.CompactThreshold != compactThreshold
+		}
+		if modelChanged {
+			if resolvedModel.ContextWindow > 0 {
+				sess.ContextWindow = resolvedModel.ContextWindow
+			}
+			sess.Model = resolvedModel.Name
+			sess.CompactThreshold = compactThreshold
+			sess.UpdatedAt = time.Now()
+			if serr := e.repo.Save(context.WithoutCancel(parentCtx), sess); serr != nil && e.OnSaveError != nil {
+				e.OnSaveError(serr)
+			}
+		}
+	} else {
+		// Legacy/custom run builders without a ModelResolver: the wire model is
+		// authoritative and session model metadata is left untouched.
+		resolvedModel = app.ModelConfig{Model: wireModel, Name: wireModel}
 	}
 	var claimed session.TurnInput
 	var duplicate bool
@@ -739,9 +766,14 @@ func (e *TurnExecutor) driveTurn(
 	if preclaimed != nil {
 		claimed = *preclaimed
 		turnID = claimed.TurnID
-		resolvedModel = claimed.ResolvedModel
+		// Recovered turn: keep executing with the model frozen at claim time
+		// (acceptance-time freeze, see ModelResolver). The resolve above only
+		// refreshed session metadata; it must not switch this turn mid-flight.
+		if claimed.ResolvedModel != "" {
+			resolvedModel.Model = claimed.ResolvedModel
+		}
 	} else {
-		claimed, duplicate, claimErr = e.claimRequest(parentCtx, sess.ID, requestID, turnID, inputText, wireModel, resolvedModel, assets, localAssets, provenance, pub)
+		claimed, duplicate, claimErr = e.claimRequest(parentCtx, sess.ID, requestID, turnID, inputText, wireModel, resolvedModel.Model, assets, localAssets, provenance, pub)
 	}
 	if claimErr != nil {
 		return agent.TurnResult{}, claimErr
@@ -852,7 +884,7 @@ func (e *TurnExecutor) driveTurn(
 		Session:         sess,
 		TurnID:          turnID,
 		Model:           wireModel,
-		ResolvedModel:   resolvedModel,
+		ResolvedModel:   resolvedModel.Model,
 		RequestID:       requestID,
 		Publisher:       pub,
 		Approver:        e.active.Approver(sess.ID),
@@ -943,10 +975,13 @@ func (e *TurnExecutor) claimRequest(ctx context.Context, sessionID, requestID, p
 	}
 	if turnRepo, ok := e.repo.(TurnInputRepository); ok {
 		input := session.TurnInput{
-			SessionID: sessionID, RequestID: requestID, TurnID: proposedTurnID,
+			SessionID:   sessionID,
+			RequestID:   requestID,
+			TurnID:      proposedTurnID,
 			PayloadHash: turnInputPayloadHashWithProvenance(text, wireModel, assets, localAssets, provenance), Text: text,
-			WireModel: wireModel, ResolvedModel: resolvedModel,
-			Assets: append([]model.GatewayAssetRef(nil), assets...), CreatedAt: time.Now().UTC(),
+			WireModel:     wireModel,
+			ResolvedModel: resolvedModel,
+			Assets:        append([]model.GatewayAssetRef(nil), assets...), CreatedAt: time.Now().UTC(),
 			LocalAssets: append([]model.LocalAssetRef(nil), localAssets...),
 			Provenance:  provenance,
 		}

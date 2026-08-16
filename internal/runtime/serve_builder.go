@@ -12,11 +12,11 @@ import (
 	"code-agent/internal/agent"
 	"code-agent/internal/app"
 	"code-agent/internal/approve"
-	"code-agent/internal/settings"
 	"code-agent/internal/conversation"
 	"code-agent/internal/credential"
 	"code-agent/internal/model"
 	"code-agent/internal/session"
+	"code-agent/internal/settings"
 	"code-agent/internal/skills"
 	"code-agent/internal/tools"
 	"code-agent/internal/tools/skill"
@@ -112,15 +112,15 @@ func (b *ServeRunBuilder) Reconfigure(mc app.ModelConfig, provider model.Provide
 	b.credential = cred
 }
 
-func (b *ServeRunBuilder) ResolveModel(wireModel string) (string, error) {
+func (b *ServeRunBuilder) ResolveModel(wireModel string) (*app.ModelConfig, error) {
 	b.mu.RLock()
 	defaultMC, cfg := b.mc, b.Cfg
 	b.mu.RUnlock()
 	selected, err := resolveTurnModel(cfg, defaultMC, wireModel)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	return selected.Model, nil
+	return &selected, nil
 }
 
 // ModelNotConfiguredError is returned before turn acceptance when an Embedded

@@ -37,6 +37,13 @@ Skills — load the relevant playbook BEFORE you start:
   lack. Loading a matching skill is reading the manual, not over-investigation.
   Do this even when the change looks obvious.
 
+Parallelism — batch independent tool calls:
+- Independent tool calls run in parallel: when several read-only calls (reads,
+  greps, web searches, task subagents) are independent of each other, issue them
+  in ONE message and they execute concurrently.
+- Do NOT batch dependent work (next call needs the previous result) or trivial
+  work (one small read — just do it). Parallelism is for breadth, not depth.
+
 Grounding:
 - Ground everything in real tool output. Never invent file contents, paths, or
   command results — if you need to know something about the workspace, call a

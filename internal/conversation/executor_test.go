@@ -1,6 +1,7 @@
 package conversation
 
 import (
+	"code-agent/internal/app"
 	"context"
 	"encoding/json"
 	"errors"
@@ -101,11 +102,18 @@ func (b *fakeRunBuilder) Build(ctx RuntimeContext) TurnRunner {
 
 type defaultOnlyRunBuilder struct{ fakeRunBuilder }
 
-func (b *defaultOnlyRunBuilder) ResolveModel(wireModel string) (string, error) {
-	if wireModel != "" {
-		return "", fmt.Errorf("unexpected wire model %q", wireModel)
+func (b *defaultOnlyRunBuilder) ResolveModel(wireModel string) (*app.ModelConfig, error) {
+	// Cross-session turns carry the target session's default model as the wire
+	// model (AcceptCrossSessionMessage falls back to sess.Model). Accept it and
+	// always resolve to the fixed target default.
+	if wireModel == "" {
+		return nil, fmt.Errorf("unexpected empty wire model: cross-session default should be present")
 	}
-	return "resolved-target-default", nil
+	mc := app.ModelConfig{
+		Model: "resolved-target-default",
+		Name:  "resolved-target-default",
+	}
+	return &mc, nil
 }
 
 // stubRunner is a minimal turnRunner that records the call.
@@ -156,7 +164,7 @@ func TestAcceptCrossSessionMessagePersistsProvenanceAndReturnsCursor(t *testing.
 		}
 		time.Sleep(time.Millisecond)
 	}
-	if builder.lastCtx.Model != "" || builder.lastCtx.ResolvedModel != "resolved-target-default" {
+	if builder.lastCtx.Model != "target-model" || builder.lastCtx.ResolvedModel != "resolved-target-default" {
 		t.Fatalf("target model routing used wire=%q resolved=%q", builder.lastCtx.Model, builder.lastCtx.ResolvedModel)
 	}
 	if input.AcceptedSeq != admission.Cursor || input.Provenance == nil || input.Provenance.SenderSessionID != "sender" || input.Provenance.SenderTurnID != "sender-turn" || input.Provenance.MessageID != "message-1" || input.Provenance.CorrelationID != "correlation-1" || input.Provenance.Intent != "request" {

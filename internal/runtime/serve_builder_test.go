@@ -121,8 +121,8 @@ func TestServeRunBuilderRuntimeAliasStrictness(t *testing.T) {
 	builder := NewServeRunBuilder(cfg, settings.Settings{}, direct, nil, nil, tools.NewRegistry(), NewWorkspaceRegistry(""), nil)
 
 	got, err := builder.ResolveModel(alias)
-	if err != nil || got != "deepseek-chat" {
-		t.Fatalf("ResolveModel(alias) = %q, %v", got, err)
+	if err != nil || got == nil || got.Model != "deepseek-chat" {
+		t.Fatalf("ResolveModel(alias) = %+v, %v", got, err)
 	}
 	if _, err := builder.ResolveModel("provider.bWlzc2luZw.model.bW9kZWw"); err == nil {
 		t.Fatal("unknown provider.* Runtime Alias must fail")
@@ -144,8 +144,8 @@ func TestServeRunBuilderRuntimeAliasStrictness(t *testing.T) {
 	gateway.Credential = app.CredentialRef{Namespace: "gateway", Name: "default"}
 	gatewayBuilder := NewServeRunBuilder(cfg, settings.Settings{}, gateway, nil, nil, tools.NewRegistry(), NewWorkspaceRegistry(""), nil)
 	got, err = gatewayBuilder.ResolveModel("legacy-gateway-model")
-	if err != nil || got != "legacy-gateway-model" {
-		t.Fatalf("legacy Gateway wire model = %q, %v", got, err)
+	if err != nil || got == nil || got.Model != "legacy-gateway-model" {
+		t.Fatalf("legacy Gateway wire model = %+v, %v", got, err)
 	}
 	if _, err := gatewayBuilder.ResolveModel("provider.bWlzc2luZw.model.bW9kZWw"); err == nil {
 		t.Fatal("unknown Runtime Alias must fail even on the Gateway compatibility path")

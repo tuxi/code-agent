@@ -1,6 +1,7 @@
 package controlplane
 
 import (
+	"code-agent/internal/app"
 	"context"
 	"sync"
 	"testing"
@@ -25,7 +26,10 @@ type workflowRunBuilder struct {
 	runs []workflowRun
 }
 
-func (b *workflowRunBuilder) ResolveModel(string) (string, error) { return "workflow-test-model", nil }
+func (b *workflowRunBuilder) ResolveModel(string) (*app.ModelConfig, error) {
+	m := app.ModelConfig{Model: "workflow-test-model"}
+	return &m, nil
+}
 
 func (b *workflowRunBuilder) Build(rc conversation.RuntimeContext) conversation.TurnRunner {
 	run := workflowRun{SessionID: rc.Session.ID, WorkspacePath: rc.Session.WorkspacePath, TurnID: rc.TurnID}

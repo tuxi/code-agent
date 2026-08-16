@@ -1,6 +1,7 @@
 package conversation
 
 import (
+	"code-agent/internal/app"
 	"context"
 
 	"code-agent/internal/agent"
@@ -35,7 +36,7 @@ type PreparedTurnRunner interface {
 
 // ModelResolver freezes the resolved wire model at acceptance time.
 type ModelResolver interface {
-	ResolveModel(wireModel string) (string, error)
+	ResolveModel(wireModel string) (*app.ModelConfig, error)
 }
 
 type AssetRefReleaseService interface {

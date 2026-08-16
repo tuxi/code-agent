@@ -104,19 +104,6 @@ type Runner struct {
 	// Response remains identical to the non-streamed one.
 	Stream bool
 
-	// RemindSkills, when true, injects a one-shot ephemeral reminder on the first
-	// model call of each turn to check the Skills list and load a matching skill
-	// (P6). It makes skill-loading consistent across models rather than depending
-	// on a model's agency. Set by the CLI when the project has skills.
-	RemindSkills bool
-
-	// RemindParallel, when true, injects a first-call reminder teaching the model
-	// WHEN to fan out independent work into concurrent tool/`task` calls vs. keep
-	// dependent work serial (P8.8 §7). Set only when MaxParallelTools > 1 — with
-	// parallelism off, fanning out just burns tokens with no speedup, so the
-	// guidance is withheld.
-	RemindParallel bool
-
 	// VerifyCommand is the project's real build/test command. When set, the
 	// finalize self-check runs it once (P4.3-R Move 2, option 2a) for a turn that
 	// changed verifiable code without verifying it: a pass confirms the change, a
@@ -993,19 +980,6 @@ func (r *Runner) drive(ctx context.Context, sess *session.Session) (TurnResult, 
 			msgs = appendEphemeralUser(msgs, pendingHypothesis)
 			pendingHypothesis = ""
 		}
-		// Skills reminder (P6): on the first model call of a turn, remind the model
-		// to load a matching skill. Ephemeral, and the model still decides — this
-		// makes skill-loading consistent across models instead of depending on a
-		// model's agency to act on the index unprompted.
-		if i == 0 && r.RemindSkills {
-			msgs = appendEphemeralUser(msgs, skillsReminder)
-		}
-		// Parallelism guidance (P8.8 §7): on the first call, teach the model to
-		// fan out independent-heavy work and keep dependent/trivial work serial.
-		// Only when parallel execution is actually enabled.
-		if i == 0 && r.RemindParallel {
-			msgs = appendEphemeralUser(msgs, parallelReminder)
-		}
 		// Plan mode (read-only): steer the model to produce a plan, not changes. The
 		// read-only toolset already prevents edits; this shapes the output.
 		// Plan mode: when in Planning state, inject the planning guidance prompt.
@@ -1253,26 +1227,6 @@ func (r *Runner) maxWebSearches() int {
 	}
 	return defaultMaxWebSearches
 }
-
-// skillsReminder is the ephemeral first-call nudge (P6). It is phrased to be
-// safe across turns ("not already loaded") so a skill loaded in an earlier turn
-// is not redundantly re-loaded.
-const skillsReminder = "[reminder] Before you act: check the Skills list in the system prompt. " +
-	"If this task matches a skill you have not already loaded, call load_skill(name) and follow " +
-	"it first — that is reading project guidance, not extra investigation."
-
-// parallelReminder is the first-call orchestration nudge (P8.8 §7), injected
-// only when parallel execution is enabled. It is the harder half of the
-// parallelism work: the mechanism is worthless if the model does not know WHEN
-// to fan out. Kept short — it is re-injected each turn.
-const parallelReminder = "[reminder] Independent tool calls run in parallel. When the work splits into " +
-	"INDEPENDENT subtasks that are each heavy (each would otherwise mean reading many files you " +
-	"won't reuse, or take real time), issue their calls TOGETHER in one message — delegate several " +
-	"`task` subagents at once, or read several files / run several searches at once. They run " +
-	"concurrently. But do NOT fan out when: (a) the work is trivial (one small read — just do it), " +
-	"or (b) a step DEPENDS on a previous step's result — for a dependent chain, do one call, use its " +
-	"result, then the next. Parallelism is for breadth, not for depth. Fanning out dependent or " +
-	"trivial work only multiplies cost."
 
 // hypothesisReminder is the pre-mutation self-check nudge (P4.3-R Move 3),
 // injected once when the model is about to edit code after a failure surfaced

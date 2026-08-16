@@ -190,6 +190,8 @@ type ModelConfig struct {
 	// only; ignored by other providers.
 	WebSearch bool `yaml:"web_search"`
 
+	CompactRatio float64 `yaml:"compact_ratio"`
+
 	// Resolved at load time, not read from YAML.
 	Name string `yaml:"-"` // the friendly name (the map key)
 }
@@ -757,6 +759,17 @@ func normalizeConfig(cfg *Config) error {
 	if cfg.Agent.CompactKeepRatio <= 0 || cfg.Agent.CompactKeepRatio >= 1 {
 		cfg.Agent.CompactKeepRatio = defaultCompactKeepRatio
 	}
+	// Default each model's compact ratio to the agent-level ratio unless the
+	// model declares its own (model-level wins, matching settingsFileFrom).
+	// Without this, the default-model path (resolveTurnModel with an empty
+	// request) never goes through SelectModel and would carry CompactRatio 0,
+	// zeroing every session's compaction threshold.
+	for name, mc := range cfg.Models {
+		if mc.CompactRatio <= 0 {
+			mc.CompactRatio = cfg.Agent.CompactRatio
+		}
+		cfg.Models[name] = mc
+	}
 
 	if cfg.Provider.RequestTimeoutSeconds <= 0 {
 		cfg.Provider.RequestTimeoutSeconds = defaultRequestTimeoutSeconds
@@ -858,6 +871,11 @@ func (c Config) SelectModel(name string) (ModelConfig, error) {
 		} else if conn.Env != "" {
 			mc.Credential = CredentialRef{Namespace: "llm", Name: name}
 		}
+	}
+	// Normalize already defaulted CompactRatio to the agent ratio; this only
+	// covers ModelConfigs that bypassed normalization (e.g. builtin connections).
+	if mc.CompactRatio <= 0 {
+		mc.CompactRatio = c.Agent.CompactRatio
 	}
 	if mc.APIKeyEnv == "" && !model.IsLocalBaseURL(mc.BaseURL) && mc.Credential.IsZero() {
 		return ModelConfig{}, fmt.Errorf("model %q has no credential configured; add a credential: section or set api_key_env", name)

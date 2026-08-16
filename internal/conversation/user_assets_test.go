@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"code-agent/internal/agent"
+	"code-agent/internal/app"
 	"code-agent/internal/credential"
 	"code-agent/internal/model"
 	"code-agent/internal/session"
@@ -27,8 +28,8 @@ func newDurableInputBuilder(model string) *durableInputBuilder {
 	b.resolved.Store(model)
 	return b
 }
-func (b *durableInputBuilder) ResolveModel(string) (string, error) {
-	return b.resolved.Load().(string), nil
+func (b *durableInputBuilder) ResolveModel(string) (*app.ModelConfig, error) {
+	return &app.ModelConfig{Model: b.resolved.Load().(string), Name: b.resolved.Load().(string)}, nil
 }
 func (b *durableInputBuilder) Build(ctx RuntimeContext) TurnRunner {
 	b.builds.Add(1)

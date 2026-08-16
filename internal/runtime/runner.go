@@ -76,13 +76,11 @@ func BuildRunner(cfg app.Config, set settings.Settings, mc app.ModelConfig, prov
 		MaxParallelTools: cfg.Agent.MaxParallelTools,
 		Approver:         approver,
 		Observer:         observation.DefaultObserver{},
-		RemindSkills:     skillReg.Len() > 0,
-		RemindParallel:   cfg.Agent.MaxParallelTools > 1,
 		RemindHypothesis: true,
 		// Reflector and VerifyCommand are no longer set by default. To enable
 		// deterministic build verification at the stop boundary, construct a
 		// VerifyGate and assign it to runner.StopPolicy.
-		PlanTools: tools.Subset(registry, PlanModeToolNames...),
+		PlanTools:     tools.Subset(registry, PlanModeToolNames...),
 		Hook:          hook,
 		HookRunner:    hookRunner,
 		Compactor:     BuildCompactor(cfg, mc, provider),

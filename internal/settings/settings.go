@@ -155,6 +155,7 @@ type ProviderModel struct {
 	SupportsReasoning   *bool    `json:"supports_reasoning,omitempty"`
 	InputModalities     []string `json:"input_modalities,omitempty"`
 	WebSearch           bool     `json:"web_search,omitempty"`
+	CompactRatio        float64  `json:"compact_ratio,omitempty"`
 }
 
 // CredentialConfig describes how a named credential is obtained.

@@ -3,6 +3,7 @@ package model
 import (
 	"bufio"
 	"bytes"
+	"code-agent/pkg"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -233,11 +234,10 @@ func IsLocalBaseURL(urlStr string) bool {
 		return false
 	}
 	host := u.Hostname()
-	switch host {
-	case "localhost", "127.0.0.1", "::1", "0.0.0.0":
+	if host == "localhost" {
 		return true
 	}
-	return false
+	return pkg.IsInnerIP(host)
 }
 
 // CompleteStream is the streaming form of Complete (StreamingProvider). It calls
