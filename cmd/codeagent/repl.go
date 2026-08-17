@@ -129,16 +129,21 @@ func repl(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider mode
 	// it) and the loop's allowlist (which reads from it).
 	rules := approve.NewRuleStore(root, set.Permissions.Allow, set.Permissions.Deny)
 
-	// The AutoApprover wraps the terminal approver and starts disabled unless --auto
-	// seeded it on; /auto on|off flips it per session. Auto-grants are audited by the
-	// loop (correlated EventAutoApproved), so the approver takes no emitter.
-	approver := approve.NewAutoApprover(root, ui.ConfirmApprover{Prompt: ask, Granter: rules}, auto)
+	// The ModeApprover wraps the terminal approver and starts at the workspace's
+	// persisted tier unless --auto seeds "auto"; /auto on|off and /mode flip it per
+	// session AND persist it (TUI and app share the same tier). Auto-grants are
+	// audited by the loop (correlated EventAutoApproved), so the approver takes no
+	// emitter.
+	approver := approve.NewModeApprover(approve.ModeFromSettings(set), root, ui.ConfirmApprover{Prompt: ask, Granter: rules}).WithPlanApprover(&replPlanApprover{ask: ask})
+	if auto {
+		approver.SetMode(approve.ModeAuto)
+	}
 	runner := runtime.BuildRunner(cfg, set, mc, provider, registry, skillReg, approver, runtime.WithEventStore(buildEmitter(), store, ctx), rules, root)
 	planRef.R = runner // wire plan tools to the runner (late binding)
-	runner.PlanApprover = &replPlanApprover{ask: ask}
+	runner.PlanApprover = approver
 	runner.AskUserApprover = &replAskUserApprover{ask: ask}
 	if auto {
-		fmt.Println("auto mode: ON (in-workspace edits auto-approved; commands still confirmed) — /auto off to disable")
+		fmt.Println("approval mode: auto (in-workspace edits/commands auto-approved; network + external still confirmed) — /auto off to disable")
 	}
 
 	var sess *session.Session
@@ -260,7 +265,7 @@ func repl(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider mode
 				runTurn(text)
 				continue
 			}
-			newSess, quit, cerr := handleCommand(line, cfg, &mc, runner, sess, store, ask, secretsResolver)
+			newSess, quit, cerr := handleCommand(line, cfg, &mc, runner, sess, store, ask, secretsResolver, root)
 			if cerr != nil {
 				fmt.Println("error:", cerr)
 			}
@@ -284,7 +289,7 @@ func repl(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider mode
 // usually the one passed in, but /resume swaps it for a different stored session
 // — plus quit=true for /exit and /quit. ask reads sub-prompts (e.g. /resume's
 // selection) through the shared readline instance.
-func handleCommand(line string, cfg app.Config, mc *app.ModelConfig, runner *agent.Runner, sess *session.Session, store session.Store, ask lineReader, secretsResolver credential.Resolver) (*session.Session, bool, error) {
+func handleCommand(line string, cfg app.Config, mc *app.ModelConfig, runner *agent.Runner, sess *session.Session, store session.Store, ask lineReader, secretsResolver credential.Resolver, root string) (*session.Session, bool, error) {
 	fields := strings.Fields(line)
 	switch fields[0] {
 	case "/exit", "/quit":
@@ -296,7 +301,8 @@ func handleCommand(line string, cfg app.Config, mc *app.ModelConfig, runner *age
   /models       list configured models
   /use NAME     switch to another configured model (keeps the conversation)
   /plan         toggle plan mode (read-only: research + plan, no edits)
-  /auto [on|off] auto-approve in-workspace edits (commands still confirmed); no arg shows state
+  /auto [on|off] switch approval mode between ask and auto (persisted); no arg shows state
+  /mode [ask|auto|full] set the approval tier (persisted); no arg shows state
   /goal [obj|resume|clear]  pursue an objective until a separate judge confirms done (/auto on for hands-off)
   /prompts      list MCP prompts; invoke one as /mcp__<server>__<prompt> [args]
   /session      show the current session id
@@ -364,31 +370,51 @@ func handleCommand(line string, cfg app.Config, mc *app.ModelConfig, runner *age
 		return sess, false, nil
 
 	case "/auto":
-		// Auto mode is the AutoApprover wrapping the terminal approver (possibly
-		// itself wrapped by a permission Allowlist). Unwrap to find it; if some other
-		// approver is wired (it shouldn't be in the REPL), say so rather than panic.
-		auto, ok := approve.AutoApproverFrom(runner.Approver)
+		// /auto is the ask↔auto flip of the approval tier, kept for muscle memory;
+		// the full three-way switch is /mode. It persists to settings.local.json so
+		// the TUI and the app share the same tier. Unwrap through the Allowlist.
+		ma, ok := approve.ModeFrom(runner.Approver)
 		if !ok {
-			return sess, false, fmt.Errorf("auto mode is not available in this session")
+			return sess, false, fmt.Errorf("approval mode is not available in this session")
 		}
 		if len(fields) < 2 {
-			state := "OFF"
-			if auto.Enabled() {
-				state = "ON"
+			state := "ask"
+			if ma.Mode() == approve.ModeAuto {
+				state = "auto"
 			}
-			fmt.Printf("auto mode is %s (usage: /auto on|off)\n", state)
+			fmt.Printf("approval mode is %s (usage: /auto on|off, or /mode ask|auto|full)\n", state)
 			return sess, false, nil
 		}
 		switch fields[1] {
 		case "on":
-			auto.SetEnabled(true)
-			fmt.Println("auto mode ON — in-workspace edits (edit_file/create_file) auto-approved; commands, patches, and commits still confirmed.")
+			ma.SetMode(approve.ModeAuto)
+			_ = settings.SetApprovalMode(settings.ProjectLocalPath(root), string(approve.ModeAuto))
+			fmt.Println("approval mode: auto — in-workspace edits/commands auto-approved; network commands and external paths still confirmed (/mode full for full access).")
 		case "off":
-			auto.SetEnabled(false)
-			fmt.Println("auto mode OFF — every side-effecting tool is confirmed again.")
+			ma.SetMode(approve.ModeAsk)
+			_ = settings.SetApprovalMode(settings.ProjectLocalPath(root), string(approve.ModeAsk))
+			fmt.Println("approval mode: ask — every side-effecting tool is confirmed again.")
 		default:
 			return sess, false, fmt.Errorf("usage: /auto [on|off]")
 		}
+		return sess, false, nil
+
+	case "/mode":
+		ma, ok := approve.ModeFrom(runner.Approver)
+		if !ok {
+			return sess, false, fmt.Errorf("approval mode is not available in this session")
+		}
+		if len(fields) < 2 {
+			fmt.Printf("approval mode is %s (usage: /mode ask|auto|full)\n", ma.Mode())
+			return sess, false, nil
+		}
+		m := fields[1]
+		if !approve.ValidMode(approve.Mode(m)) {
+			return sess, false, fmt.Errorf("usage: /mode ask|auto|full")
+		}
+		ma.SetMode(approve.Mode(m))
+		_ = settings.SetApprovalMode(settings.ProjectLocalPath(root), m)
+		fmt.Printf("approval mode: %s\n", m)
 		return sess, false, nil
 
 	case "/models":

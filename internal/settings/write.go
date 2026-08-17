@@ -130,6 +130,17 @@ func SetVerifyCommand(path, command string) error {
 	})
 }
 
+// SetApprovalMode writes the approval tier ("ask"/"auto"/"full") as a top-level
+// key, preserving every other key. This is the canonical writer behind the
+// /v1/permissions PUT and the /auto + /mode toggles — the mode is per-workspace
+// (settings.local.json) and independent of permissions.allow/deny, which stay
+// owned by approval-card grants.
+func SetApprovalMode(path, mode string) error {
+	return Persist(path, func(doc map[string]any) {
+		doc["approval_mode"] = mode
+	})
+}
+
 // EnsureGitignored best-effort appends entry to <root>/.gitignore when it is not
 // already listed, so machine-local settings the agent writes are never committed.
 func EnsureGitignored(root, entry string) error {

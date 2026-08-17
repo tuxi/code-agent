@@ -30,18 +30,19 @@ type Store interface {
 // (provided by the cmd layer, which owns the config). Used by /resume.
 type ResumeFunc func(id string) (*session.Session, error)
 
-// AutoMode is the cmd layer's auto-approval toggle, surfaced to the /auto command.
-// Satisfied by *approve.AutoApprover; kept as an interface so the tui package does
-// not import the approve package.
-type AutoMode interface {
-	Enabled() bool
-	SetEnabled(bool)
+// ApprovalMode is the cmd layer's approval-tier switch, surfaced to the /auto
+// and /mode commands. Satisfied by *approve.ModeApprover (or the cmd layer's
+// persisting adapter); kept as an interface so the tui package does not import
+// the approve package. Values are "ask" | "auto" | "full".
+type ApprovalMode interface {
+	Mode() string
+	SetMode(string)
 }
 
 // PermissionGranter persists an "always allow" grant made from the approval card,
 // so future matching calls skip the prompt. Satisfied by *approve.RuleStore; kept
 // as a local interface so the tui package does not import the approve package
-// (mirrors AutoMode). Nil means the card offers only allow-once / deny.
+// (mirrors ApprovalMode). Nil means the card offers only allow-once / deny.
 type PermissionGranter interface {
 	AllowAlways(toolName string) (rule string, err error)
 }
@@ -115,7 +116,7 @@ type sessionSource struct {
 	modelSwap    ModelSwapFunc        // switches the model between turns
 	modelSwapped chan modelSwappedMsg // the TUI awaits this after posting a model name
 
-	auto      AutoMode          // /auto toggle (nil if not wired)
+	auto      ApprovalMode    // /auto + /mode switch (nil if not wired)
 	granter   PermissionGranter // "always allow" from the approval card (nil if not wired)
 	promptOps PromptOps         // MCP prompt list/invoke (nil if not wired)
 }
@@ -129,7 +130,7 @@ type sessionSource struct {
 // workspaceRoot scopes the /resume and /sessions lists to the current workspace:
 // the store is keyed on $HOME (shared with the mac app) and therefore holds
 // sessions of every workspace the user has run.
-func Run(ctx context.Context, b *Backend, runner *agent.Runner, sess *session.Session, store Store, workspaceRoot string, header HeaderInfo, resume ResumeFunc, modelSwap ModelSwapFunc, modelNames []string, displayName func(string) string, auto AutoMode, granter PermissionGranter, promptOps PromptOps, goalOps GoalOps) error {
+func Run(ctx context.Context, b *Backend, runner *agent.Runner, sess *session.Session, store Store, workspaceRoot string, header HeaderInfo, resume ResumeFunc, modelSwap ModelSwapFunc, modelNames []string, displayName func(string) string, auto ApprovalMode, granter PermissionGranter, promptOps PromptOps, goalOps GoalOps) error {
 	// Cancelling on quit stops an in-flight turn rather than orphaning it.
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()

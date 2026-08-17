@@ -96,6 +96,12 @@ type File struct {
 	// to empty — the override merge needs that to know which layer "wins".
 	Verify *Verify      `json:"verify"`
 	Hooks  []hooks.Hook `json:"hooks"`
+	// ApprovalMode is the workspace approval tier: "ask" (default), "auto", or
+	// "full" (see internal/approve). It is a separate top-level key from
+	// permissions.allow/deny — those stay owned by the approval card's "always
+	// allow" grants; this key only selects the tier. Merges as an override, like
+	// verify: the highest layer that sets it wins. Absent = "ask".
+	ApprovalMode string `json:"approval_mode,omitempty"`
 }
 
 // ModelConfig is the on-disk model definition (mirrors app.ModelConfig's
@@ -258,6 +264,10 @@ type Settings struct {
 	Verify      *Verify      // highest-priority layer's block, nil if no layer set one
 	Hooks       []hooks.Hook // all layers' hooks, user → shared → local order
 
+	// ApprovalMode is the effective approval tier ("ask"/"auto"/"full"); the
+	// highest layer that set one wins, empty = "ask".
+	ApprovalMode string
+
 	// Bootstrapped is true when the user-scope settings file did not exist and
 	// this load created the template. The TUI surfaces a first-run hint so a
 	// new user knows where to configure models and credentials.
@@ -376,6 +386,11 @@ func MergeSettings(base *Settings, overlay Settings) {
 	if overlay.Verify != nil {
 		base.Verify = overlay.Verify
 	}
+	// ApprovalMode is an override scalar like verify: the highest layer that
+	// sets it wins (local > shared > user).
+	if overlay.ApprovalMode != "" {
+		base.ApprovalMode = overlay.ApprovalMode
+	}
 	base.Hooks = append(base.Hooks, overlay.Hooks...)
 	if overlay.DefaultModel != "" {
 		base.DefaultModel = overlay.DefaultModel
@@ -483,6 +498,7 @@ func mergeFileIntoSettings(s *Settings, path string, warn io.Writer) {
 		Permissions:   f.Permissions,
 		Verify:        f.Verify,
 		Hooks:         f.Hooks,
+		ApprovalMode:  f.ApprovalMode,
 		Providers:     f.Providers,
 		Credentials:   f.Credentials,
 		Agent:         f.Agent,

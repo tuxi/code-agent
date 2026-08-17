@@ -22,6 +22,13 @@ func (r *recordingApprover) Approve(string, json.RawMessage) agent.Verdict {
 	return r.verdict
 }
 
+// ApproveExternalPath makes the double a full PathAccessApprover so delegation
+// tests can assert the human path approver is consulted.
+func (r *recordingApprover) ApproveExternalPath(string, string) bool {
+	r.called = true
+	return true
+}
+
 // newTestStore builds a RuleStore with a hermetic home (so it never reads the
 // developer's real ~/.codeagent/settings.json) and no project settings file.
 func newTestStore(t *testing.T, allow, deny []string) *RuleStore {

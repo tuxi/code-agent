@@ -260,3 +260,57 @@ func TestLoadFileMissingVsMalformed(t *testing.T) {
 		t.Error("malformed file should error")
 	}
 }
+
+// ApprovalMode merges as an OVERRIDE like verify: the highest layer that sets
+// it wins; absent everywhere stays empty (the caller defaults to "ask").
+func TestApprovalModeOverrideHighestLayerWins(t *testing.T) {
+	home := t.TempDir()
+	root := t.TempDir()
+
+	writeJSON(t, UserPath(home), `{"approval_mode":"auto"}`)
+	writeJSON(t, ProjectSharedPath(root), `{"approval_mode":"full"}`)
+	writeJSON(t, ProjectLocalPath(root), `{"approval_mode":"ask"}`)
+
+	s := Load(root, home, &bytes.Buffer{})
+	if s.ApprovalMode != "ask" {
+		t.Errorf("ApprovalMode = %q, want %q (project-local wins)", s.ApprovalMode, "ask")
+	}
+
+	// Local absent → shared wins.
+	root2 := t.TempDir()
+	writeJSON(t, UserPath(home), `{"approval_mode":"auto"}`)
+	writeJSON(t, ProjectSharedPath(root2), `{"approval_mode":"full"}`)
+	s2 := Load(root2, home, &bytes.Buffer{})
+	if s2.ApprovalMode != "full" {
+		t.Errorf("ApprovalMode = %q, want %q (shared wins over user)", s2.ApprovalMode, "full")
+	}
+
+	// Nothing set anywhere → empty (caller defaults to ask).
+	s3 := Load(t.TempDir(), t.TempDir(), &bytes.Buffer{})
+	if s3.ApprovalMode != "" {
+		t.Errorf("ApprovalMode = %q, want empty when unset", s3.ApprovalMode)
+	}
+}
+
+// SetApprovalMode persists the tier as a top-level key, preserving other keys.
+func TestSetApprovalModePersistsAndPreserves(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".codeagent", "settings.local.json")
+	writeJSON(t, path, `{"permissions":{"allow":["run_command"]},"verify":{"command":"go build ./..."}}`)
+
+	if err := SetApprovalMode(path, "auto"); err != nil {
+		t.Fatalf("SetApprovalMode: %v", err)
+	}
+	f, err := LoadFile(path)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if f.ApprovalMode != "auto" {
+		t.Errorf("ApprovalMode = %q, want auto", f.ApprovalMode)
+	}
+	if len(f.Permissions.Allow) != 1 || f.Permissions.Allow[0] != "run_command" {
+		t.Errorf("permissions clobbered: %v", f.Permissions.Allow)
+	}
+	if f.Verify == nil || f.Verify.Command != "go build ./..." {
+		t.Errorf("verify clobbered: %+v", f.Verify)
+	}
+}

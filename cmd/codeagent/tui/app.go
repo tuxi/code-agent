@@ -685,12 +685,12 @@ func (m *model) toggleAuto() tea.Cmd {
 	if m.src.auto == nil {
 		return m.system("/auto is not available in this session")
 	}
-	enabled := !m.src.auto.Enabled()
-	m.src.auto.SetEnabled(enabled)
-	if enabled {
-		return m.system("⚡ auto-approval: on")
+	if m.src.auto.Mode() == "auto" {
+		m.src.auto.SetMode("ask")
+		return m.system("⚡ approval mode: ask (every side-effecting tool confirmed)")
 	}
-	return m.system("⚡ auto-approval: off")
+	m.src.auto.SetMode("auto")
+	return m.system("⚡ approval mode: auto (in-workspace edits/commands auto-approved)")
 }
 
 func (m *model) sessions() tea.Cmd {

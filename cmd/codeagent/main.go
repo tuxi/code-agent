@@ -628,13 +628,19 @@ func runAgent(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider 
 		fmt.Fprintln(os.Stderr, s)
 	}
 
-	// The AutoApprover wraps the human approver; --auto seeds it on, otherwise it is
-	// a transparent pass-through (identical to before). Auto-grants are audited by
-	// the loop (correlated EventAutoApproved), so the approver itself takes no emitter.
+	// The ModeApprover wraps the human approver; --auto seeds the "auto" tier,
+	// otherwise the workspace's settings.local.json tier applies (absent → ask,
+	// today's behavior). The tier is audited by the loop (correlated
+	// EventAutoApproved), so the approver itself takes no emitter. The wrap
+	// happens inside BuildRunner via the Allowlist, so no further decoration here.
 	rules := approve.NewRuleStore(root, set.Permissions.Allow, set.Permissions.Deny)
-	approver := approve.NewAutoApprover(root, ui.ConfirmApprover{}, autoMode)
+	approver := approve.NewModeApprover(approve.ModeFromSettings(set), root, ui.ConfirmApprover{})
+	if autoMode {
+		approver.SetMode(approve.ModeAuto)
+	}
 	runner := runtime.BuildRunner(cfg, set, mc, provider, registry, skillReg, approver, runtime.WithEventStore(buildEmitter(), store, ctx), rules, root)
 	planRef.R = runner
+	runner.PlanApprover = approver
 
 	sess, err := session.NewBuilder(root).
 		WithNoContextFiles(noContextFiles).
@@ -695,9 +701,13 @@ func runGoal(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider m
 	}
 
 	rules := approve.NewRuleStore(root, set.Permissions.Allow, set.Permissions.Deny)
-	approver := approve.NewAutoApprover(root, ui.ConfirmApprover{}, autoMode)
+	approver := approve.NewModeApprover(approve.ModeFromSettings(set), root, ui.ConfirmApprover{})
+	if autoMode {
+		approver.SetMode(approve.ModeAuto)
+	}
 	runner := runtime.BuildRunner(cfg, set, mc, provider, registry, skillReg, approver, runtime.WithEventStore(buildEmitter(), store, ctx), rules, root)
 	planRef.R = runner
+	runner.PlanApprover = approver
 
 	sess, err := session.NewBuilder(root).
 		WithNoContextFiles(noContextFiles).
@@ -715,10 +725,24 @@ func runGoal(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider m
 
 // mcpPromptOps adapts the MCP Manager to the TUI's PromptOps capability (Help +
 // Render), closing over the run context so the tui package stays decoupled from
-// mcp — the same injection pattern as GoalOps / AutoMode.
+// mcp — the same injection pattern as GoalOps / ApprovalMode.
 type mcpPromptOps struct {
 	ctx context.Context
 	mgr *mcp.Manager
+}
+
+// persistedMode is the ApprovalMode handed to the TUI: it flips the live
+// ModeApprover AND persists the tier to the workspace's settings.local.json, so
+// /auto and /mode agree with the app across restarts.
+type persistedMode struct {
+	*approve.ModeApprover
+	path string
+}
+
+func (p *persistedMode) Mode() string { return string(p.ModeApprover.Mode()) }
+func (p *persistedMode) SetMode(m string) {
+	p.ModeApprover.SetMode(approve.Mode(m))
+	_ = settings.SetApprovalMode(p.path, m)
 }
 
 func (o mcpPromptOps) Help() string { return o.mgr.PromptHelp() }
@@ -771,21 +795,24 @@ func runTUI(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider mo
 	// every workspace, so attribution comes from workspace_path, not the store.
 	sess.WorkspacePath = root
 
-	// Wrap the card-backed approver with the AutoApprover so the TUI gets the same
-	// hands-off auto mode as repl/run: --auto seeds it on; /auto flips it per session.
+	// Wrap the card-backed approver with the ModeApprover so the TUI gets the same
+	// approval tiers as repl/run: --auto seeds "auto"; /auto and /mode flip it per
+	// session AND persist it (via persistedMode) so the app agrees across restarts.
 	// The permission store is shared into the loop's allowlist; the TUI card's
 	// interactive "always allow" grant into it is a later step.
 
-	//set := settings.Load(root, home, os.Stderr)
 	rules := approve.NewRuleStore(root, set.Permissions.Allow, set.Permissions.Deny)
-	approver := approve.NewAutoApprover(root, backend.Approver, autoMode)
+	approver := approve.NewModeApprover(approve.ModeFromSettings(set), root, backend.Approver).WithPlanApprover(backend.PlanApprover)
+	if autoMode {
+		approver.SetMode(approve.ModeAuto)
+	}
 	runner := runtime.BuildRunner(cfg, set, mc, provider, registry, skillReg, approver, runtime.WithEventStore(backend.Emitter, store, ctx), rules, root)
 	planRef.R = runner
 	runner.Stream = true // 8.6: stream the model's text live (TUI only)
-	runner.PlanApprover = backend.PlanApprover
+	runner.PlanApprover = approver
 	runner.AskUserApprover = backend.AskUserApprover
 	if autoMode {
-		fmt.Fprintln(os.Stderr, "auto mode: ON (in-workspace edits auto-approved; commands still confirmed) — /auto off to disable")
+		fmt.Fprintln(os.Stderr, "approval mode: auto (in-workspace edits/commands auto-approved; network + external still confirmed) — /auto off to disable")
 	}
 
 	header := tui.HeaderInfo{
@@ -842,7 +869,7 @@ func runTUI(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider mo
 		}, nil
 	}
 	goalOps := buildGoalOps(cfg, mc, runner, store)
-	return tui.Run(ctx, backend, runner, sess, store, root, header, resume, modelSwap, cfg.AvailableModelNames(), cfg.DisplayModelName, approver, rules, mcpPromptOps{ctx: ctx, mgr: mcpMgr}, goalOps)
+	return tui.Run(ctx, backend, runner, sess, store, root, header, resume, modelSwap, cfg.AvailableModelNames(), cfg.DisplayModelName, &persistedMode{ModeApprover: approver, path: settings.ProjectLocalPath(root)}, rules, mcpPromptOps{ctx: ctx, mgr: mcpMgr}, goalOps)
 }
 
 // runPlugin handles `codeagent plugin <subcommand> [args...]`.

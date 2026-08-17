@@ -28,7 +28,6 @@ import (
 
 	"code-agent/internal/agent"
 	"code-agent/internal/sandbox"
-	"code-agent/internal/workspace"
 )
 
 // AutoApprover is the policy-driven agent.Approver. When disabled it delegates
@@ -141,12 +140,7 @@ func (a *AutoApprover) autoApprove(toolName string, input json.RawMessage) (stri
 // today). Tracked as Phase 2 hardening (§12.7); auto mode follows current tool
 // behavior for Phase 1.
 func (a *AutoApprover) insideWorkspace(path string) bool {
-	target := filepath.Join(a.root, filepath.Clean(path))
-	target, err := filepath.Abs(target)
-	if err != nil {
-		return false
-	}
-	return workspace.ValidatePath(a.root, target) == nil
+	return insideRoot(a.root, path)
 }
 
 // decodePath pulls the "path" field from a tool input. edit_file and create_file

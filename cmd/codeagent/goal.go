@@ -490,21 +490,22 @@ func reportGoal(g *goal.Goal, err error) {
 // offerAuto enables auto mode for the duration of one pursuit, with a single
 // explicit consent, when it is currently off — so /goal is hands-off without a
 // separate /auto on, but never silently. It returns a restore func (the caller
-// defers it) that puts auto mode back as it was. Already-on (or no AutoApprover)
+// defers it) that puts the tier back as it was. Already-auto (or no ModeApprover)
 // → no prompt, no-op: a user who wants auto to persist across goals just runs
 // /auto on once and is never asked again.
 func offerAuto(runner *agent.Runner, ask lineReader) func() {
-	a, ok := approve.AutoApproverFrom(runner.Approver)
-	if !ok || a.Enabled() {
+	ma, ok := approve.ModeFrom(runner.Approver)
+	if !ok || ma.Mode() == approve.ModeAuto {
 		return func() {}
 	}
-	line, err := ask("auto mode is OFF — enable it for this pursuit? in-workspace edits auto-approved, commands still confirmed [y/N]: ")
+	line, err := ask("auto mode is OFF — enable it for this pursuit? in-workspace edits and commands auto-approved, network still confirmed [y/N]: ")
 	if err != nil || !isYes(line) {
 		fmt.Println("keeping auto OFF — the worker will stop at y/N for each side-effecting tool (/auto on to keep it on across goals).")
 		return func() {}
 	}
-	a.SetEnabled(true)
-	return func() { a.SetEnabled(false) } // restore: this consent was for one pursuit only
+	prev := ma.Mode()
+	ma.SetMode(approve.ModeAuto)
+	return func() { ma.SetMode(prev) } // restore: this consent was for one pursuit only
 }
 
 func isYes(s string) bool {
@@ -514,7 +515,7 @@ func isYes(s string) bool {
 
 // autoState describes the worker's approval posture for the pursuit banner.
 func autoState(runner *agent.Runner) string {
-	if a, ok := approve.AutoApproverFrom(runner.Approver); ok && a.Enabled() {
+	if ma, ok := approve.ModeFrom(runner.Approver); ok && ma.Mode() == approve.ModeAuto {
 		return "ON — hands-off"
 	}
 	return "OFF — will stop at y/N per side-effecting tool; /auto on for hands-off"

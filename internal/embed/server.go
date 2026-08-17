@@ -129,6 +129,18 @@ type RuntimeServerOptions struct {
 	Profile     string
 	DisplayName string
 	Auth        server.ServerAuth
+
+	// Providers wires /v1/providers. Nil (zero value) disables the endpoints
+	// (404), matching the pre-existing embedded behavior and the CLI serve path.
+	Providers server.ProviderService
+
+	// InjectSecrets wires POST /v1/secrets. Nil disables the endpoint.
+	InjectSecrets func(targets map[credential.Target]credential.Credential) error
+
+	// RuntimeModelsBuilder, when set, rebuilds the model catalog on each
+	// GET /v1/runtime/models so a POST /v1/secrets makes models available
+	// without a restart. Nil serves the startup snapshot.
+	RuntimeModelsBuilder func() server.RuntimeModelCatalog
 }
 
 // Runtime is the set of live components Assemble builds that the lifecycle verbs
@@ -627,30 +639,59 @@ func StartServer(ctx context.Context, opt Options) (*Handle, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Merged settings view: parse any host-injected SettingsJSON early so
-	// permissions/verify/hooks flow through NewServeRunBuilder → BuildRunner.
-	// Desktop loads disk settings.json via settings.Load; embedded gets them
-	// from the host via opt.SettingsJSON (parse + merge below).
+
+	// Redirect the session store off $HOME (the read-only iOS container) to a
+	// writable host-supplied directory. The same directory owns the persistent
+	// settings.json — the embedded counterpart to codeagentd's
+	// ~/.codeagent/settings.json — so /v1/providers changes survive restart.
+	dataDir := opt.DataDir
+	if dataDir == "" {
+		dataDir = opt.WorkspaceDir
+	}
+	settingsPath := ""
+	if dataDir != "" {
+		runtime.SetStoreBaseDir(filepath.Join(dataDir, ".codeagent"))
+		cfg.GlobalSkillsDir = filepath.Join(dataDir, "skills")
+		cfg.GlobalPromptsDir = filepath.Join(dataDir, "prompts")
+		settingsPath = filepath.Join(dataDir, ".codeagent", "settings.json")
+	}
+
+	// Merged settings view. The persisted settings.json is the durable
+	// infrastructure source (providers/models/credentials): once it exists, the
+	// runtime and /v1/providers both read/write that single file (daemon parity).
+	// The host-injected SettingsJSON is a first-launch seed (persisted below) and
+	// a behavior overlay (permissions/verify/hooks) that wins over disk.
+	diskFile, hasDisk, err := loadDiskSettingsFile(settingsPath)
+	if err != nil {
+		return nil, err
+	}
+	if !hasDisk && opt.SettingsJSON != "" {
+		if err := persistSettingsSeed(settingsPath, opt.SettingsJSON); err != nil {
+			return nil, fmt.Errorf("persist embedded settings seed: %w", err)
+		}
+		diskFile, hasDisk, err = loadDiskSettingsFile(settingsPath)
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	var embeddedSettings settings.Settings
-	// design-config-settings-merge.md stage C: settings.json is the single
-	// config source. When the host injects SettingsJSON, it is authoritative —
-	// infrastructure (models/credentials/agent/provider/web) AND behavior
-	// (permissions/verify/hooks) come from it. A legacy ConfigYAML is still
-	// honored (compat): if SettingsJSON carries infrastructure we rebuild cfg
-	// from it; otherwise the ConfigYAML-parsed cfg stands and SettingsJSON only
-	// supplies behavior.
+	if hasDisk && settingsHasInfrastructure(diskFile) {
+		// Disk is authoritative for infrastructure.
+		cfg = app.FromSettings(settingsFileToSettings(diskFile))
+		embeddedSettings = settingsFileToSettings(diskFile)
+	}
 	if opt.SettingsJSON != "" {
 		sf, err := settings.ParseJSON([]byte(opt.SettingsJSON))
 		if err != nil {
 			return nil, err
 		}
-		// If the settings document declares infrastructure, it replaces the
-		// YAML-derived cfg entirely (single source). If it only carries
-		// behavior (no models/credentials), keep the ConfigYAML cfg and just
-		// merge the behavior into embeddedSettings.
-		if settingsHasInfrastructure(sf) {
-			cfg = app.FromSettings(settings.Settings{DefaultModel: sf.DefaultModel, SubagentModel: sf.SubagentModel, Providers: sf.Providers, Credentials: sf.Credentials, Agent: sf.Agent, Provider: sf.Provider, Web: sf.Web, Runtime: sf.Runtime, Currency: sf.Currency})
+		// Fallback for a migration/legacy host that never persisted a seed: the
+		// injected infrastructure is authoritative only when disk has none.
+		if settingsHasInfrastructure(sf) && (!hasDisk || !settingsHasInfrastructure(diskFile)) {
+			cfg = app.FromSettings(settingsFileToSettings(sf))
 		}
+		// Behavior (permissions/verify/hooks) is always host-injected.
 		embeddedSettings.Permissions = sf.Permissions
 		embeddedSettings.Hooks = sf.Hooks
 		if sf.Verify != nil {
@@ -678,22 +719,16 @@ func StartServer(ctx context.Context, opt Options) (*Handle, error) {
 		embeddedSettings.Hooks = nil // hooks run `sh -c`; disable them on a no-subprocess host
 	}
 
-	// Redirect the session store off $HOME (the read-only iOS container) to a
-	// writable host-supplied directory. Done before any store opens.
-	dataDir := opt.DataDir
-	if dataDir == "" {
-		dataDir = opt.WorkspaceDir
-	}
-	if dataDir != "" {
-		runtime.SetStoreBaseDir(filepath.Join(dataDir, ".codeagent"))
-		// User-level skills — shared across all workspaces. On iOS this is where
-		// bundled + user-imported skills live (Application Support/skills/).
-		cfg.GlobalSkillsDir = filepath.Join(dataDir, "skills")
-		cfg.GlobalPromptsDir = filepath.Join(dataDir, "prompts")
-	}
-
+	// A2 parity with codeagentd: seed a mutable resolver from the startup secrets
+	// and let POST /v1/secrets update it live. injectSecrets still performs the
+	// cfg mutation (credential ref alignment + web search keys); its entries are
+	// copied into the mutable resolver so the startup set is also HTTP-visible.
 	injectedResolver := injectSecrets(&cfg, opt.Secrets)
-	credChain := cfg.CredentialResolver(injectedResolver)
+	mutableResolver := credential.NewMutableResolver()
+	if sr, ok := injectedResolver.(credential.StaticResolver); ok {
+		mutableResolver.SetAll(map[credential.Target]credential.Credential(sr))
+	}
+	credChain := cfg.CredentialResolver(mutableResolver)
 
 	var mc app.ModelConfig
 	var provider model.Provider
@@ -741,7 +776,15 @@ func StartServer(ctx context.Context, opt Options) (*Handle, error) {
 	coreHandler, rt, closers, err := Assemble(
 		srvCtx, cfg, embeddedSettings, mc, provider, credChain, workspaceDir, cloneStateDir,
 		RuntimeServerOptions{
-			Profile: profile,
+			Profile:   profile,
+			Providers: server.NewProviderStore(settingsPath, nil),
+			InjectSecrets: func(targets map[credential.Target]credential.Credential) error {
+				mutableResolver.SetAll(targets)
+				return nil
+			},
+			RuntimeModelsBuilder: func() server.RuntimeModelCatalog {
+				return server.BuildRuntimeModelCatalog(cfg, mutableResolver)
+			},
 		},
 	)
 	if err != nil {
@@ -930,15 +973,19 @@ func Assemble(ctx context.Context, cfg app.Config, set settings.Settings, mc app
 		capabilities = append(capabilities, "public_git_clone_v1")
 	}
 	handler := server.NewMux(repo, eventStore, executor, server.MuxOptions{
-		ServerName:        buildinfo.ServerName(),
-		RuntimeInfo:       runtimeInfo,
-		RuntimeModels:     runtimeModels,
-		ServerAuth:        serverOptions.Auth,
-		Capabilities:      capabilities,
-		CloneService:      cloneService,
-		Granter:           rb.Rules(),
-		WorkspaceReloader: wsReg.ReloadWorkspace,
-		Prompts:           wsReg, // default workspace's MCP prompts; per-workspace needs a wire change
+		ServerName:           buildinfo.ServerName(),
+		RuntimeInfo:          runtimeInfo,
+		RuntimeModels:        runtimeModels,
+		Providers:            serverOptions.Providers,
+		InjectSecrets:        serverOptions.InjectSecrets,
+		RuntimeModelsBuilder: serverOptions.RuntimeModelsBuilder,
+		ServerAuth:           serverOptions.Auth,
+		Capabilities:         capabilities,
+		CloneService:         cloneService,
+		Granter:              rb.Rules(),
+		Permissions:          server.NewPermissionStore(homeDir()),
+		WorkspaceReloader:    wsReg.ReloadWorkspace,
+		Prompts:              wsReg, // default workspace's MCP prompts; per-workspace needs a wire change
 		CapabilityResolver: func(ctx context.Context) []string {
 			persistence, ok := repo.(conversation.UserAssetsPersistenceCapability)
 			if ok && persistence.SupportsUserAssetsPersistence() && rb.ImageInputCapability(ctx, cred) {
@@ -965,6 +1012,66 @@ func Assemble(ctx context.Context, cfg app.Config, set settings.Settings, mc app
 	})
 	rt := &Runtime{Executor: executor, Builder: rb, Repo: repo, Owner: owner}
 	return handler, rt, closers, nil
+}
+
+// homeDir resolves the user home for the settings layer. Best-effort: an
+// unresolvable home only disables the user-scope fallback file, never startup.
+func homeDir() string {
+	home, _ := os.UserHomeDir()
+	return home
+}
+
+// loadDiskSettingsFile reads the embedded runtime's persistent settings.json
+// (dataDir/.codeagent/settings.json). hasDisk is false when the file does not
+// exist yet — a missing file is the normal first-launch state, not an error.
+func loadDiskSettingsFile(path string) (settings.File, bool, error) {
+	if path == "" {
+		return settings.File{}, false, nil
+	}
+	if _, err := os.Stat(path); err != nil {
+		if os.IsNotExist(err) {
+			return settings.File{}, false, nil
+		}
+		return settings.File{}, false, err
+	}
+	f, err := settings.LoadFile(path)
+	return f, true, err
+}
+
+// persistSettingsSeed writes the host-injected settings document to disk on
+// first launch so /v1/providers has a durable file to manage thereafter. The
+// seed is the host's bundled template (Gateway + defaults); subsequent writes
+// go through /v1/providers (settings.Persist) and win over this template.
+func persistSettingsSeed(path, raw string) error {
+	if path == "" || raw == "" {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(path, []byte(raw), 0o644)
+}
+
+// settingsFileToSettings converts an on-disk settings document into the merged
+// Settings view the runtime consumes. It mirrors the field list of the legacy
+// explicit app.FromSettings call — infra blocks AND behavior blocks.
+func settingsFileToSettings(f settings.File) settings.Settings {
+	return settings.Settings{
+		DefaultModel:  f.DefaultModel,
+		SubagentModel: f.SubagentModel,
+		Providers:     f.Providers,
+		Credentials:   f.Credentials,
+		Agent:         f.Agent,
+		Provider:      f.Provider,
+		Web:           f.Web,
+		Runtime:       f.Runtime,
+		Server:        f.Server,
+		Currency:      f.Currency,
+		Permissions:   f.Permissions,
+		Verify:        f.Verify,
+		Hooks:         f.Hooks,
+		ApprovalMode:  f.ApprovalMode,
+	}
 }
 
 // parseConnectionsJSON decodes the connectionsJSON document (R3.4) into a map

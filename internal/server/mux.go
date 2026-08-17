@@ -378,6 +378,11 @@ type MuxOptions struct {
 	// disables the endpoints (404), matching the Granter pattern. The service is
 	// implemented by the assembler and owns the settings file + Reconfigure.
 	Providers ProviderService
+	// Permissions manages the per-workspace approval tier (/v1/workspaces/
+	// {path}/permissions). Nil disables the endpoints (404), matching the
+	// Providers pattern. Implemented by the assembler, which owns the settings
+	// paths.
+	Permissions PermissionService
 	// RuntimeModelsBuilder, when set, rebuilds the model catalog on each
 	// GET /v1/runtime/models with the latest injected credentials — so a
 	// POST /v1/secrets makes models available without a restart. When nil, the
@@ -607,6 +612,7 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 
 	registerProviderRoutes(mux, opts)
 	registerSecretsRoutes(mux, opts)
+	registerPermissionRoutes(mux, opts)
 
 	mux.HandleFunc("GET /v1/activity", func(w http.ResponseWriter, r *http.Request) {
 		generatedAt := time.Now().UTC()

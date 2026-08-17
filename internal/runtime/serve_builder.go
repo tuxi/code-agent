@@ -102,6 +102,24 @@ func (b *ServeRunBuilder) workspaceRules(root string) *approve.RuleStore {
 	return ws
 }
 
+// approvalMode resolves the effective approval tier for a workspace. The merged
+// settings view the builder holds (which covers the embedded SettingsJSON
+// injection) is the base layer; the workspace's own project files (shared +
+// local) override it, so a PUT to settings.local.json takes effect at the next
+// turn boundary without a restart. Empty root (server default) uses the base
+// view only. Absent/invalid → ask.
+func (b *ServeRunBuilder) approvalMode(root string) approve.Mode {
+	mode := approve.ModeFromSettings(b.Set)
+	if root == "" {
+		return mode
+	}
+	ws := settings.LoadProjectSettings(root, os.Stderr)
+	if ws.ApprovalMode != "" {
+		return approve.ModeFromSettings(ws)
+	}
+	return mode
+}
+
 // Reconfigure hot-swaps the model config and provider used by future turns
 // (v1.2 §3.3). It does not touch the listener or any in-flight turn.
 func (b *ServeRunBuilder) Reconfigure(mc app.ModelConfig, provider model.Provider, cred credential.Resolver) {
@@ -347,6 +365,15 @@ func (b *ServeRunBuilder) Build(ctx conversation.RuntimeContext) conversation.Tu
 	if ra, ok := ctx.Approver.(interface{ SetGranter(approve.Granter) }); ok {
 		ra.SetGranter(wsRules)
 	}
+
+	// Gate every human approval path — tool approvals, plan approval, and
+	// out-of-workspace path access — with the workspace's approval tier. The
+	// wrapper delegates everything in ask mode, so a workspace with no
+	// configured tier behaves exactly as before. The mode is re-read from disk
+	// every turn, so a /v1/permissions PUT lands at the next turn boundary.
+	wrapped := approve.NewModeApprover(b.approvalMode(workspacePath), workspacePath, ctx.Approver).WithPlanApprover(ctx.PlanApprover)
+	ctx.Approver = wrapped
+	ctx.PlanApprover = wrapped
 
 	runner := BuildRunner(b.Cfg, b.Set, mc, provider, turnTools, skillReg, ctx.Approver, ctx.Publisher, wsRules, workspacePath)
 	runner.ReservedTurnID = ctx.TurnID

@@ -4,11 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"code-agent/internal/app"
+	"code-agent/internal/credential"
 	"code-agent/internal/runtime"
 	"code-agent/internal/server"
 )
@@ -176,6 +180,169 @@ func TestStartServerRequiresHostGeneratedAccessToken(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "in-memory Server Access Token") {
 		t.Fatalf("StartServer error = %v, want embedded access-token requirement", err)
+	}
+}
+
+// TestEmbeddedProvidersPersistToDataDir verifies the embedded runtime exposes
+// the daemon-parity /v1/providers surface: PUT persists to
+// <DataDir>/.codeagent/settings.json (applied=false, restart required), GET
+// round-trips the definition, and a second StartServer over the same DataDir
+// loads the persisted provider back into the config.
+func TestEmbeddedProvidersPersistToDataDir(t *testing.T) {
+	const serverAccessToken = "0123456789abcdef0123456789abcdef"
+	dataDir := t.TempDir()
+	workspace := t.TempDir()
+
+	start := func() *Handle {
+		h, err := StartServer(context.Background(), Options{
+			WorkspaceDir: workspace,
+			DataDir:      dataDir,
+			ConfigYAML: `{
+				"default_model": "",
+				"models": {},
+				"credentials": {},
+				"web": {"fetch": {"timeout_seconds": 30}}
+			}`,
+			Sandboxed:         true,
+			ServerAccessToken: serverAccessToken,
+		})
+		if err != nil {
+			t.Fatalf("StartServer: %v", err)
+		}
+		return h
+	}
+	h := start()
+	defer h.Stop()
+	do := func(method, path, body string) (int, map[string]any) {
+		t.Helper()
+		baseURL := strings.Replace(h.LoopbackURL(), "ws://", "http://", 1)
+		var reader io.Reader
+		if body != "" {
+			reader = strings.NewReader(body)
+		}
+		req, err := http.NewRequest(method, baseURL+path, reader)
+		if err != nil {
+			t.Fatalf("new request %s %s: %v", method, path, err)
+		}
+		req.Header.Set("Authorization", "Bearer "+serverAccessToken)
+		if body != "" {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("%s %s: %v", method, path, err)
+		}
+		defer resp.Body.Close()
+		var envelope map[string]any
+		if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+			t.Fatalf("decode %s %s: %v", method, path, err)
+		}
+		return resp.StatusCode, envelope
+	}
+
+	status, envelope := do(http.MethodPut, "/v1/providers/dashscope", `{
+		"enabled": true,
+		"base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+		"api": "openai",
+		"credential": {"namespace": "llm", "name": "dashscope"},
+		"models": [{"id": "qwen3-coder-plus", "runtime_alias": "qwen3 coder plus"}]
+	}`)
+	if status != http.StatusOK {
+		t.Fatalf("PUT /v1/providers status = %d envelope=%+v", status, envelope)
+	}
+	data, _ := envelope["data"].(map[string]any)
+	if applied, _ := data["applied"].(bool); applied {
+		t.Fatalf("PUT applied = true, want false (restart required): %+v", envelope)
+	}
+
+	// GET /v1/providers — definition round-trips.
+	status, envelope = do(http.MethodGet, "/v1/providers", "")
+	if status != http.StatusOK {
+		t.Fatalf("GET /v1/providers status = %d envelope=%+v", status, envelope)
+	}
+	providers, _ := envelope["data"].(map[string]any)["providers"].([]any)
+	if len(providers) != 1 {
+		t.Fatalf("GET /v1/providers providers = %d, want 1: %+v", len(providers), envelope)
+	}
+
+	// The definition landed on disk under DataDir.
+	settingsPath := filepath.Join(dataDir, ".codeagent", "settings.json")
+	raw, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatalf("read persisted settings.json: %v", err)
+	}
+	if !strings.Contains(string(raw), "dashscope") {
+		t.Fatalf("persisted settings.json missing dashscope: %s", raw)
+	}
+
+	// Restart over the same DataDir: the persisted provider is loaded back.
+	h.Stop()
+	h = start()
+	defer h.Stop()
+	status, envelope = do(http.MethodGet, "/v1/providers", "")
+	if status != http.StatusOK {
+		t.Fatalf("GET /v1/providers after restart status = %d envelope=%+v", status, envelope)
+	}
+	providers, _ = envelope["data"].(map[string]any)["providers"].([]any)
+	if len(providers) != 1 {
+		t.Fatalf("GET /v1/providers after restart = %d, want 1: %+v", len(providers), envelope)
+	}
+}
+
+// TestEmbeddedSecretsInjection verifies POST /v1/secrets updates the mutable
+// resolver and the next GET /v1/runtime/models reflects the injected credential
+// (A2 parity with codeagentd).
+func TestEmbeddedSecretsInjection(t *testing.T) {
+	const serverAccessToken = "0123456789abcdef0123456789abcdef"
+	h, err := StartServer(context.Background(), Options{
+		WorkspaceDir: t.TempDir(),
+		DataDir:      t.TempDir(),
+		ConfigYAML: `{
+			"default_model": "",
+			"models": {},
+			"credentials": {},
+			"web": {"fetch": {"timeout_seconds": 30}}
+		}`,
+		Sandboxed:         true,
+		ServerAccessToken: serverAccessToken,
+	})
+	if err != nil {
+		t.Fatalf("StartServer: %v", err)
+	}
+	defer h.Stop()
+
+	baseURL := strings.Replace(h.LoopbackURL(), "ws://", "http://", 1)
+	post := func(path, body string) (int, map[string]any) {
+		t.Helper()
+		req, err := http.NewRequest(http.MethodPost, baseURL+path, strings.NewReader(body))
+		if err != nil {
+			t.Fatalf("new request: %v", err)
+		}
+		req.Header.Set("Authorization", "Bearer "+serverAccessToken)
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("POST %s: %v", path, err)
+		}
+		defer resp.Body.Close()
+		var envelope map[string]any
+		if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+			t.Fatalf("decode POST %s: %v", path, err)
+		}
+		return resp.StatusCode, envelope
+	}
+
+	status, envelope := post("/v1/secrets", `{"llm/dashscope": {"type": "bearer", "secret": "sk-test"}}`)
+	if status != http.StatusOK {
+		t.Fatalf("POST /v1/secrets status = %d envelope=%+v", status, envelope)
+	}
+	if injected, _ := envelope["data"].(map[string]any)["injected"].(float64); injected != 1 {
+		t.Fatalf("POST /v1/secrets injected = %v, want 1: %+v", injected, envelope)
+	}
+
+	// The mutable resolver now serves the injected credential.
+	if got, err := h.credential.Resolve(context.Background(), credential.Target{Namespace: "llm", Name: "dashscope"}); err != nil || got.Secret != "sk-test" {
+		t.Fatalf("resolved injected credential = %+v, %v; want secret sk-test", got, err)
 	}
 }
 
