@@ -70,6 +70,7 @@ func NewOllamaProvider(baseURL string) *OllamaProvider {
 // stores them as a JSON-encoded string (OpenAI wire format).
 type ollamaChatRequest struct {
 	Model     string           `json:"model"`
+	Think     string           `json:"think,omitempty"`
 	Messages  []ollamaMessage  `json:"messages"`
 	Stream    bool             `json:"stream"`
 	Tools     []ToolDefinition `json:"tools,omitempty"`
@@ -324,11 +325,13 @@ func parseOneQwenFunc(block string) ToolCall {
 func (p *OllamaProvider) Complete(ctx context.Context, req Request) (Response, error) {
 	body := ollamaChatRequest{
 		Model:     req.Model,
+		Think:     "low",
 		Messages:  toOllamaMessages(req.Messages),
 		Tools:     req.Tools,
 		KeepAlive: "5m",
 		Options: ollamaOptions{
 			Temperature: req.Temperature,
+			NumCtx:      8192,
 		},
 	}
 
@@ -409,12 +412,14 @@ func (p *OllamaProvider) Complete(ctx context.Context, req Request) (Response, e
 func (p *OllamaProvider) CompleteStream(ctx context.Context, req Request, onText, onReasoning func(string)) (Response, error) {
 	body := ollamaChatRequest{
 		Model:     req.Model,
+		Think:     "low",
 		Messages:  toOllamaMessages(req.Messages),
 		Stream:    true,
 		Tools:     req.Tools,
 		KeepAlive: "5m",
 		Options: ollamaOptions{
 			Temperature: req.Temperature,
+			NumCtx:      8192,
 		},
 	}
 
