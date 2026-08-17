@@ -91,7 +91,7 @@ models:
 		t.Errorf("AvailableModelNames missing deepseek: %v", names)
 	}
 	// Registry-only connections appear (open-box).
-	for _, want := range []string{"qwen", "glm", "ollama", "gateway"} {
+	for _, want := range []string{"qwen", "glm", "ollama", "gateway", "opencode-go"} {
 		if !seen[want] {
 			t.Errorf("AvailableModelNames missing registry connection %q: %v", want, names)
 		}
@@ -199,5 +199,124 @@ models:
 	}
 	if mc.BaseURL != "" {
 		t.Errorf("base_url = %q, want empty (host injected)", mc.BaseURL)
+	}
+}
+
+// opencode-go: known service with base_url/env, default model deepseek-v4-flash.
+func TestRegistryOpenCodeGoService(t *testing.T) {
+	cfg, err := LoadConfigBytes([]byte(`
+models:
+  opencode-go:
+    model: deepseek-v4-pro
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mc := cfg.Models["opencode-go"]
+	if mc.Provider != "openai" {
+		t.Errorf("provider = %q, want resolved openai", mc.Provider)
+	}
+	if mc.BaseURL != "https://opencode.ai/zen/go/v1" {
+		t.Errorf("base_url = %q, want opencode-go endpoint", mc.BaseURL)
+	}
+	if mc.APIKeyEnv != "OPENCODE_GO_API_KEY" {
+		t.Errorf("api_key_env = %q, want OPENCODE_GO_API_KEY", mc.APIKeyEnv)
+	}
+	if mc.Model != "deepseek-v4-pro" {
+		t.Errorf("model = %q, want explicit deepseek-v4-pro", mc.Model)
+	}
+}
+
+// opencode-go registry fallback resolves via SelectModel when not declared.
+func TestSelectModelOpenCodeGoRegistryFallback(t *testing.T) {
+	t.Setenv("OPENCODE_GO_API_KEY", "sk-opencode")
+
+	cfg, err := LoadConfig("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mc, err := cfg.SelectModel("opencode-go")
+	if err != nil {
+		t.Fatalf("SelectModel(opencode-go) via registry: %v", err)
+	}
+	if mc.BaseURL != "https://opencode.ai/zen/go/v1" {
+		t.Errorf("base_url = %q, want opencode-go endpoint", mc.BaseURL)
+	}
+	if mc.Model != "deepseek-v4-flash" {
+		t.Errorf("model = %q, want registry default deepseek-v4-flash", mc.Model)
+	}
+	if mc.Provider != "openai" {
+		t.Errorf("provider = %q, want openai", mc.Provider)
+	}
+}
+
+// Per-model temperature from registry: Kimi K3 requires temperature=1.
+func TestRegistryPerModelTemperature(t *testing.T) {
+	cfg, err := LoadConfigBytes([]byte(`
+models:
+  opencode-go:
+    model: kimi-k3
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mc := cfg.Models["opencode-go"]
+	if mc.Temperature != 1.0 {
+		t.Errorf("temperature = %v, want 1.0 (Kimi K3 template default)", mc.Temperature)
+	}
+}
+
+// Explicit temperature wins over the registry template default.
+func TestRegistryPerModelTemperatureNotOverridden(t *testing.T) {
+	cfg, err := LoadConfigBytes([]byte(`
+models:
+  opencode-go:
+    model: kimi-k3
+    temperature: 0.7
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mc := cfg.Models["opencode-go"]
+	if mc.Temperature != 0.7 {
+		t.Errorf("temperature = %v, want explicit 0.7 preserved", mc.Temperature)
+	}
+}
+
+// Models without a per-model temperature template still get the global default.
+func TestRegistryGlobalTemperatureDefault(t *testing.T) {
+	cfg, err := LoadConfigBytes([]byte(`
+models:
+  deepseek:
+    model: deepseek-v4-pro
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mc := cfg.Models["deepseek"]
+	if mc.Temperature != 0.2 {
+		t.Errorf("temperature = %v, want global default 0.2", mc.Temperature)
+	}
+}
+
+// ollama: a local provider with no env key needed.
+func TestRegistryOllamaLocalProvider(t *testing.T) {
+	cfg, err := LoadConfigBytes([]byte(`
+models:
+  ollama:
+    provider: ollama
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mc := cfg.Models["ollama"]
+	if mc.Provider != "ollama" {
+		t.Errorf("provider = %q, want ollama", mc.Provider)
+	}
+	if mc.BaseURL != "http://localhost:11434/v1" {
+		t.Errorf("base_url = %q, want ollama default", mc.BaseURL)
+	}
+	if !mc.Credential.IsZero() {
+		t.Errorf("credential = %+v, want zero (local provider)", mc.Credential)
 	}
 }

@@ -191,6 +191,122 @@ type applyFailedError struct{}
 
 func (e *applyFailedError) Error() string { return "reconfigure failed (test)" }
 
+// PUT of a known built-in api_key provider (opencode-go) auto-declares the
+// matching credentials entry {source:"env", env:OPENCODE_GO_API_KEY} so the
+// runtime resolver chain can resolve it without manual settings edits.
+func TestProviderStoreUpsertAutoDeclaresCredential(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "s.json")
+	store := NewProviderStore(path, nil)
+	handler := testProviderMux(t, store)
+
+	body := `{"base_url":"https://opencode.ai/zen/go/v1","api":"openai","models":[{"id":"deepseek-v4-flash"}]}`
+	req := httptest.NewRequest(http.MethodPut, "/v1/providers/opencode-go", bytes.NewBufferString(body))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PUT status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+
+	f, err := settings.ParseJSON(mustRead(t, path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cc, ok := f.Credentials["llm"]["opencode-go"]
+	if !ok {
+		t.Fatalf("credentials.llm.opencode-go missing; credentials=%+v", f.Credentials)
+	}
+	if cc.Source != "env" || cc.Env != "OPENCODE_GO_API_KEY" {
+		t.Errorf("credential = %+v, want {source:env, env:OPENCODE_GO_API_KEY}", cc)
+	}
+}
+
+// PUT never overwrites a pre-existing credentials entry: the user may have
+// pointed it at a keychain/injected source.
+func TestProviderStoreUpsertKeepsExistingCredential(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "s.json")
+	seed := `{"credentials":{"llm":{"opencode-go":{"source":"keychain"}}}}`
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(seed), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	store := NewProviderStore(path, nil)
+	handler := testProviderMux(t, store)
+
+	body := `{"base_url":"https://opencode.ai/zen/go/v1","api":"openai","models":[{"id":"deepseek-v4-flash"}]}`
+	req := httptest.NewRequest(http.MethodPut, "/v1/providers/opencode-go", bytes.NewBufferString(body))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PUT status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+
+	f, err := settings.ParseJSON(mustRead(t, path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cc := f.Credentials["llm"]["opencode-go"]
+	if cc.Source != "keychain" {
+		t.Errorf("credential source = %q, want pre-existing keychain preserved", cc.Source)
+	}
+}
+
+// Reconfigure failure rolls back the auto-declared credential along with the
+// provider, leaving no residue in the credentials section.
+func TestProviderStoreUpsertRollbackRemovesCredential(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "s.json")
+	store := NewProviderStore(path, func() error { return errProviderApplyFailed })
+	handler := testProviderMux(t, store)
+
+	body := `{"base_url":"https://opencode.ai/zen/go/v1","api":"openai","models":[{"id":"deepseek-v4-flash"}]}`
+	req := httptest.NewRequest(http.MethodPut, "/v1/providers/opencode-go", bytes.NewBufferString(body))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (reconfigure failed)", rec.Code)
+	}
+
+	f, err := settings.ParseJSON(mustRead(t, path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := f.Providers["opencode-go"]; ok {
+		t.Error("provider present after rollback")
+	}
+	if _, ok := f.Credentials["llm"]["opencode-go"]; ok {
+		t.Errorf("auto-declared credential not rolled back; credentials=%+v", f.Credentials)
+	}
+}
+
+// Custom (non-registry) providers get no auto-declared credential: their env
+// var name is unknown, so the user configures credentials manually.
+func TestProviderStoreUpsertCustomProviderNoCredential(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "s.json")
+	store := NewProviderStore(path, nil)
+	handler := testProviderMux(t, store)
+
+	body := `{"base_url":"http://x","api":"openai","models":[{"id":"m"}]}`
+	req := httptest.NewRequest(http.MethodPut, "/v1/providers/custom-svc", bytes.NewBufferString(body))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PUT status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+
+	f, err := settings.ParseJSON(mustRead(t, path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(f.Credentials) != 0 {
+		t.Errorf("credentials = %+v, want empty for custom provider", f.Credentials)
+	}
+}
+
 func mustRead(t *testing.T, path string) []byte {
 	t.Helper()
 	data, err := os.ReadFile(path)

@@ -13,7 +13,10 @@ func defaultEnvMapping(t Target) string {
 	if t.Namespace != "llm" {
 		return ""
 	}
-	upper := strings.ToUpper(t.Name)
+	// Normalize hyphens to underscores: env vars cannot contain "-", so a
+	// target name like "opencode-go" maps to OPENCODE_GO_API_KEY (matching the
+	// registry's conn.Env), not the unusable OPENCODE-GO_API_KEY.
+	upper := strings.ToUpper(strings.ReplaceAll(t.Name, "-", "_"))
 	// Common keys: DEEPSEEK_API_KEY, OPENAI_API_KEY, DASHSCOPE_API_KEY, GLM_API_KEY
 	return upper + "_API_KEY"
 }
@@ -32,9 +35,10 @@ func defaultEnvMapping(t Target) string {
 //
 // Default mapping rules (Namespace "llm" only):
 //
-//	{Namespace:"llm", Name:"deepseek"} → DEEPSEEK_API_KEY
-//	{Namespace:"llm", Name:"openai"}   → OPENAI_API_KEY
-//	{Namespace:"llm", Name:"qwen"}     → QWEN_API_KEY
+//	{Namespace:"llm", Name:"deepseek"}    → DEEPSEEK_API_KEY
+//	{Namespace:"llm", Name:"openai"}      → OPENAI_API_KEY
+//	{Namespace:"llm", Name:"qwen"}        → QWEN_API_KEY
+//	{Namespace:"llm", Name:"opencode-go"} → OPENCODE_GO_API_KEY ("-" → "_")
 //
 // Credentials from EnvResolver never expire (ExpiresAt is nil). The Source
 // field is set to "env:<VAR_NAME>".

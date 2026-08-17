@@ -83,6 +83,7 @@ type builtinModelTemplate struct {
 	WebSearch         bool     // supports web search tool
 	InputPricePerM    float64  // USD per million input tokens
 	OutputPricePerM   float64  // USD per million output tokens
+	Temperature       float64  // provider-recommended default (0 = use global default)
 }
 
 type builtinConnection struct {
@@ -143,7 +144,7 @@ var builtinConnections = map[string]builtinConnection{
 	"openrouter": {
 		BaseURL: "https://openrouter.ai/api/v1", Env: "OPENROUTER_API_KEY",
 		ProviderType: "openai",
-		DisplayName: "OpenRouter", Summary: "通过一个 API 密钥使用多个模型", Kind: "api_key",
+		DisplayName:  "OpenRouter", Summary: "通过一个 API 密钥使用多个模型", Kind: "api_key",
 		Models: []builtinModelTemplate{
 			{ID: "openrouter/auto", RuntimeAlias: "openrouter", ContextWindow: 200_000, SupportsTools: true, InputModalities: []string{"text"}},
 		},
@@ -154,7 +155,19 @@ var builtinConnections = map[string]builtinConnection{
 	},
 	"gateway": {
 		ProviderType: "openai",
-		DisplayName: "Talkify Gateway", Summary: "使用 Talkify 账户、订阅模型和云端能力", Kind: "gateway",
+		DisplayName:  "Talkify Gateway", Summary: "使用 Talkify 账户、订阅模型和云端能力", Kind: "gateway",
+	},
+	"opencode-go": {
+		BaseURL: "https://opencode.ai/zen/go/v1", Env: "OPENCODE_GO_API_KEY",
+		WireModel: "deepseek-v4-flash", ProviderType: "openai",
+		DisplayName: "OpenCode Go", Summary: "低订阅费开源编程模型（首月 $5，之后 $10/月）", Kind: "api_key",
+		Models: []builtinModelTemplate{
+			{ID: "deepseek-v4-flash", RuntimeAlias: "ocg deepseek flash", ContextWindow: 1_000_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text"}, InputPricePerM: 0.22, OutputPricePerM: 0.66},
+			{ID: "deepseek-v4-pro", RuntimeAlias: "ocg deepseek pro", ContextWindow: 1_000_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text"}, InputPricePerM: 0.66, OutputPricePerM: 1.98},
+			{ID: "kimi-k3", RuntimeAlias: "ocg kimi k3", ContextWindow: 1_000_000, SupportsTools: true, InputModalities: []string{"text"}, InputPricePerM: 3.00, OutputPricePerM: 15.00, Temperature: 1.0},
+			{ID: "kimi-k2.7-code", RuntimeAlias: "ocg kimi k2.7 code", ContextWindow: 256_000, SupportsTools: true, InputModalities: []string{"text"}, InputPricePerM: 1.2, OutputPricePerM: 5.6, Temperature: 1.0},
+			{ID: "glm-5.2", RuntimeAlias: "ocg glm 5.2", ContextWindow: 128_000, SupportsTools: true, InputModalities: []string{"text"}, InputPricePerM: 1.40, OutputPricePerM: 4.40},
+		},
 	},
 }
 
@@ -183,6 +196,16 @@ func applyRegistryDefaults(mc *ModelConfig) {
 	}
 	if mc.Catalog.ProviderID == "" {
 		mc.Catalog.ProviderID = mc.Name
+	}
+	// Per-model temperature: some providers (e.g. OpenCode Go / Kimi K3)
+	// reject the global default of 0.2 and require a specific value.
+	if mc.Temperature <= 0 && mc.Model != "" && len(conn.Models) > 0 {
+		for _, m := range conn.Models {
+			if m.ID == mc.Model && m.Temperature > 0 {
+				mc.Temperature = m.Temperature
+				break
+			}
+		}
 	}
 }
 
@@ -232,6 +255,26 @@ type BuiltinProviderTemplateModel struct {
 	WebSearch         bool
 	InputPricePerM    float64
 	OutputPricePerM   float64
+	Temperature       float64
+}
+
+// BuiltinConnection returns the built-in template for a known connection id.
+// The second return is false for unknown ids (custom providers configured
+// directly, not derived from the registry).
+func BuiltinConnection(id string) (BuiltinProviderTemplate, bool) {
+	conn, ok := builtinConnections[id]
+	if !ok {
+		return BuiltinProviderTemplate{}, false
+	}
+	return BuiltinProviderTemplate{
+		ID:          id,
+		DisplayName: conn.DisplayName,
+		Summary:     conn.Summary,
+		Kind:        conn.Kind,
+		BaseURL:     conn.BaseURL,
+		API:         conn.ProviderType,
+		Env:         conn.Env,
+	}, true
 }
 
 // BuiltinProviderTemplates returns the built-in provider templates derived from
@@ -259,6 +302,7 @@ func BuiltinProviderTemplates() []BuiltinProviderTemplate {
 				WebSearch:         m.WebSearch,
 				InputPricePerM:    m.InputPricePerM,
 				OutputPricePerM:   m.OutputPricePerM,
+				Temperature:       m.Temperature,
 			})
 		}
 		out = append(out, t)

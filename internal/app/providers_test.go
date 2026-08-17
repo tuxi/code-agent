@@ -142,6 +142,51 @@ func TestFromSettingsProviderDefaultCredential(t *testing.T) {
 	}
 }
 
+// Per-model API override: a model under a provider can declare its own api type,
+// overriding the service-level default. Used by OpenCode Go where some models
+// speak the responses protocol while the service default is openai-compatible.
+func TestFromSettingsPerModelAPIOverride(t *testing.T) {
+	sf, err := settings.ParseJSON([]byte(`{
+  "providers": {
+    "opencode-go": {
+      "base_url": "https://opencode.ai/zen/go/v1",
+      "api": "openai",
+      "credential": {"namespace": "llm", "name": "opencode-go"},
+      "models": [
+        {"id": "deepseek-v4-flash"},
+        {"id": "gpt-5.6-luna", "api": "responses"}
+      ]
+    }
+  }
+}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := FromSettings(settings.Settings{Providers: sf.Providers})
+
+	flashKey := aliasKey("opencode-go", "deepseek-v4-flash")
+	lunaKey := aliasKey("opencode-go", "gpt-5.6-luna")
+
+	flash, ok := cfg.Models[flashKey]
+	if !ok {
+		t.Fatalf("model %q missing; keys=%v", flashKey, keysOf(cfg.Models))
+	}
+	if flash.Provider != "openai" {
+		t.Errorf("deepseek-v4-flash provider = %q, want inherited openai", flash.Provider)
+	}
+
+	luna, ok := cfg.Models[lunaKey]
+	if !ok {
+		t.Fatalf("model %q missing; keys=%v", lunaKey, keysOf(cfg.Models))
+	}
+	if luna.Provider != "responses" {
+		t.Errorf("gpt-5.6-luna provider = %q, want per-model override responses", luna.Provider)
+	}
+	if luna.BaseURL != "https://opencode.ai/zen/go/v1" {
+		t.Errorf("gpt-5.6-luna base_url = %q, want inherited from provider", luna.BaseURL)
+	}
+}
+
 func keysOf(m map[string]ModelConfig) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {

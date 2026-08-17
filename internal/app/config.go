@@ -866,6 +866,9 @@ func (c Config) SelectModel(name string) (ModelConfig, error) {
 			ContextWindow: defaultContextWindow,
 			Temperature:   0.2,
 		}
+		if conn.ProviderType != "" {
+			mc.Provider = conn.ProviderType
+		}
 		if model.IsLocalBaseURL(mc.BaseURL) {
 			mc.Credential = CredentialRef{} // none needed
 		} else if conn.Env != "" {

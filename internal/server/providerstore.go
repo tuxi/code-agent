@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 
+	"code-agent/internal/app"
 	"code-agent/internal/settings"
 )
 
@@ -78,6 +79,15 @@ func (s *ProviderStore) Get(id string) (ProviderDTO, error) {
 // reconfigure failure the change is rolled back (the section is restored) so
 // disk and runtime do not silently diverge (design §4.2). Returns applied=true
 // when the change is hot-effective, false when it needs a restart (OQ2).
+//
+// Credential auto-declaration: when the provider id is a known built-in
+// connection with an api_key kind and a declared env var (e.g. opencode-go →
+// OPENCODE_GO_API_KEY), the matching credentials entry {source:"env", env:...}
+// is created so the runtime resolver chain (config.CredentialResolver step 2)
+// can resolve it. An existing entry is never overwritten — the user may have
+// pointed it at a keychain/injected source instead. Custom (non-registry)
+// providers get no entry: their env var name is unknown, so they configure
+// credentials manually.
 func (s *ProviderStore) Upsert(id string, spec ProviderSpec) (bool, error) {
 	if id == "" {
 		return false, errors.New("provider id required")
@@ -86,6 +96,19 @@ func (s *ProviderStore) Upsert(id string, spec ProviderSpec) (bool, error) {
 	before, err := LoadProviders(s.settingsPath)
 	if err != nil {
 		return false, err
+	}
+	// Resolve the credential entry to auto-declare, if any. The credential ref
+	// name defaults to the provider id when the spec leaves it empty.
+	credNS, credName, credCfg, declare := credentialFor(id, spec)
+	// Capture whether the credential entry already existed, so a reconfigure
+	// rollback removes only what this upsert created (never a user's pre-existing
+	// keychain/injected entry).
+	credExisted := false
+	if declare {
+		_, credExisted, err = loadCredential(s.settingsPath, credNS, credName)
+		if err != nil {
+			return false, err
+		}
 	}
 	pc := settings.ServiceConfig{
 		Enabled:    spec.Enabled,
@@ -113,6 +136,9 @@ func (s *ProviderStore) Upsert(id string, spec ProviderSpec) (bool, error) {
 
 	if err := s.writeProviders(func(doc map[string]any, providers map[string]settings.ServiceConfig) {
 		providers[id] = pc
+		if declare {
+			ensureCredential(doc, credNS, credName, credCfg)
+		}
 	}); err != nil {
 		return false, err
 	}
@@ -128,12 +154,38 @@ func (s *ProviderStore) Upsert(id string, spec ProviderSpec) (bool, error) {
 			} else {
 				delete(providers, id)
 			}
+			// Remove only a credential entry this upsert created; a pre-existing
+			// entry is left untouched.
+			if declare && !credExisted {
+				removeCredential(doc, credNS, credName)
+			}
 		}); berr != nil {
 			return false, fmt.Errorf("apply change failed (%v) and rollback failed (%v)", rerr, berr)
 		}
 		return false, fmt.Errorf("apply change failed; rolled back: %w", rerr)
 	}
 	return true, nil
+}
+
+// credentialFor computes the credentials entry to auto-declare for a provider
+// upsert. It returns declare=false unless the provider is a known built-in
+// api_key connection with a declared env var. The credential name mirrors the
+// ref the provider will carry: spec.Credential.Name when set, else the
+// provider id (matching the ServiceConfig default of llm/<id>).
+func credentialFor(id string, spec ProviderSpec) (ns, name string, cfg settings.CredentialConfig, declare bool) {
+	conn, known := app.BuiltinConnection(id)
+	if !known || conn.Kind != "api_key" || conn.Env == "" {
+		return "", "", settings.CredentialConfig{}, false
+	}
+	name = spec.Credential.Name
+	if name == "" {
+		name = id
+	}
+	ns = spec.Credential.Namespace
+	if ns == "" {
+		ns = "llm"
+	}
+	return ns, name, settings.CredentialConfig{Source: "env", Env: conn.Env}, true
 }
 
 // Delete implements ProviderService. Refuses when the provider is referenced
@@ -184,6 +236,71 @@ func (s *ProviderStore) writeProviders(mutate func(doc map[string]any, providers
 		mutate(doc, providers)
 		doc["providers"] = providers
 	})
+}
+
+// ensureCredential writes credentials[ns][name] = cfg when the entry is
+// absent, preserving an existing entry verbatim (it may point at a keychain or
+// injected source the user configured). Operates on the decoded settings
+// document inside a writeProviders Persist, so the change is atomic with the
+// provider upsert.
+func ensureCredential(doc map[string]any, ns, name string, cfg settings.CredentialConfig) {
+	creds := decodeCredentials(doc)
+	if creds[ns] == nil {
+		creds[ns] = map[string]settings.CredentialConfig{}
+	}
+	if _, exists := creds[ns][name]; exists {
+		return // never clobber a user-configured entry
+	}
+	creds[ns][name] = cfg
+	doc["credentials"] = creds
+}
+
+// removeCredential deletes credentials[ns][name], pruning the now-empty
+// namespace map (and the credentials key) so rollback leaves no residue.
+func removeCredential(doc map[string]any, ns, name string) {
+	creds := decodeCredentials(doc)
+	entries, ok := creds[ns]
+	if !ok {
+		return
+	}
+	delete(entries, name)
+	if len(entries) == 0 {
+		delete(creds, ns)
+	}
+	if len(creds) == 0 {
+		delete(doc, "credentials")
+		return
+	}
+	doc["credentials"] = creds
+}
+
+// decodeCredentials reads the credentials section of a decoded settings
+// document (empty map when absent).
+func decodeCredentials(doc map[string]any) map[string]map[string]settings.CredentialConfig {
+	creds := map[string]map[string]settings.CredentialConfig{}
+	if raw, ok := doc["credentials"].(map[string]any); ok {
+		buf, _ := json.Marshal(raw)
+		_ = json.Unmarshal(buf, &creds)
+	}
+	return creds
+}
+
+// loadCredential reads a single credentials entry from the settings file. The
+// second return reports whether the entry exists.
+func loadCredential(settingsPath, ns, name string) (settings.CredentialConfig, bool, error) {
+	f, err := loadSettingsFile(settingsPath)
+	if err != nil {
+		return settings.CredentialConfig{}, false, err
+	}
+	if f.Credentials == nil {
+		return settings.CredentialConfig{}, false, nil
+	}
+	entries, ok := f.Credentials[ns]
+	if !ok {
+		return settings.CredentialConfig{}, false, nil
+	}
+	cfg, ok := entries[name]
+	return cfg, ok, nil
 }
 
 // referencedByDefault reports whether provider id is referenced by

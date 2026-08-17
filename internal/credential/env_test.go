@@ -173,3 +173,25 @@ func TestEnvResolverUseDefaultStillHonorsMapping(t *testing.T) {
 		t.Errorf("Secret = %q, want %q (explicit mapping must win)", c.Secret, "sk-custom")
 	}
 }
+
+// TestEnvResolverDefaultMappingHyphen verifies the default convention
+// normalizes "-" to "_" so a hyphenated provider name resolves to a usable
+// env var (env vars cannot contain "-"). Regression test for opencode-go:
+// the registry declares OPENCODE_GO_API_KEY, so the default convention must
+// not look for the unusable OPENCODE-GO_API_KEY.
+func TestEnvResolverDefaultMappingHyphen(t *testing.T) {
+	os.Setenv("OPENCODE_GO_API_KEY", "sk-opencode")
+	defer os.Unsetenv("OPENCODE_GO_API_KEY")
+
+	r := &EnvResolver{}
+	c, err := r.Resolve(context.Background(), Target{Namespace: "llm", Name: "opencode-go"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if c.Secret != "sk-opencode" {
+		t.Errorf("Secret = %q, want %q (hyphen must map to underscore)", c.Secret, "sk-opencode")
+	}
+	if c.Source != "env:OPENCODE_GO_API_KEY" {
+		t.Errorf("Source = %q, want %q", c.Source, "env:OPENCODE_GO_API_KEY")
+	}
+}
