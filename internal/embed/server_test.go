@@ -63,9 +63,9 @@ func TestStartServerWithZeroModelsSupportsReadOnlyWorkspace(t *testing.T) {
 	h, err := StartServer(context.Background(), Options{
 		WorkspaceDir: workspace,
 		DataDir:      t.TempDir(),
-		ConfigYAML: `{
+		SettingsJSON: `{
 			"default_model": "",
-			"models": {},
+			"providers": {},
 			"credentials": {},
 			"web": {"fetch": {"timeout_seconds": 30}}
 		}`,
@@ -175,7 +175,7 @@ func TestStartServerRequiresHostGeneratedAccessToken(t *testing.T) {
 	_, err := StartServer(context.Background(), Options{
 		WorkspaceDir: t.TempDir(),
 		DataDir:      t.TempDir(),
-		ConfigYAML:   `{"default_model":"","models":{}}`,
+		SettingsJSON: `{"default_model":"","providers":{}}`,
 		Sandboxed:    true,
 	})
 	if err == nil || !strings.Contains(err.Error(), "in-memory Server Access Token") {
@@ -197,9 +197,9 @@ func TestEmbeddedProvidersPersistToDataDir(t *testing.T) {
 		h, err := StartServer(context.Background(), Options{
 			WorkspaceDir: workspace,
 			DataDir:      dataDir,
-			ConfigYAML: `{
+			SettingsJSON: `{
 				"default_model": "",
-				"models": {},
+				"providers": {},
 				"credentials": {},
 				"web": {"fetch": {"timeout_seconds": 30}}
 			}`,
@@ -297,9 +297,9 @@ func TestEmbeddedSecretsInjection(t *testing.T) {
 	h, err := StartServer(context.Background(), Options{
 		WorkspaceDir: t.TempDir(),
 		DataDir:      t.TempDir(),
-		ConfigYAML: `{
+		SettingsJSON: `{
 			"default_model": "",
-			"models": {},
+			"providers": {},
 			"credentials": {},
 			"web": {"fetch": {"timeout_seconds": 30}}
 		}`,
@@ -350,7 +350,7 @@ func TestStartServerRejectsNonLoopbackPrivateListener(t *testing.T) {
 	_, err := StartServer(context.Background(), Options{
 		WorkspaceDir:      t.TempDir(),
 		DataDir:           t.TempDir(),
-		ConfigYAML:        `{"default_model":"","models":{}}`,
+		SettingsJSON:      `{"default_model":"","providers":{}}`,
 		Addr:              "0.0.0.0:0",
 		Sandboxed:         true,
 		ServerAccessToken: "0123456789abcdef0123456789abcdef",

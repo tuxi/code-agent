@@ -63,19 +63,12 @@ type Options struct {
 	// (e.g. the Documents directory). Overrides whatever the config declares.
 	WorkspaceDir string
 
-	// ConfigYAML is a legacy base config document. Production hosts pass ""
-	// (the embedded runtime's real configuration comes from SettingsJSON /
-	// the persisted <DataDir>/.codeagent/settings.json, which overrides this
-	// base when it carries infrastructure). Tests use it to inject a minimal
-	// base config. Empty => built-in defaults (see app.LoadConfigBytes).
-	ConfigYAML string
-
 	// MCPJSON is the raw Claude-compatible `.mcp.json` document configuring
 	// external MCP servers ({"mcpServers": {...}}). The desktop backend reads this
 	// from the workspace-root file; embedded hosts (iOS/macOS) have no fixed path,
-	// so they inject it here, the same way ConfigYAML carries the main config.
-	// Empty => no MCP servers. On a sandboxed (iOS) host, stdio servers are still
-	// skipped — only http/sse servers connect (they need no subprocess).
+	// so they inject it here. Empty => no MCP servers. On a sandboxed (iOS) host,
+	// stdio servers are still skipped — only http/sse servers connect (they need
+	// no subprocess).
 	MCPJSON string
 
 	// SettingsJSON is the raw project settings document (a Claude-style
@@ -96,9 +89,8 @@ type Options struct {
 
 	// ConnectionsJSON carries connection DEFINITIONS (non-secret) as a JSON
 	// string: {"connections": {"<id>": {api, base_url, credential, models}}}.
-	// R3.4/R3.5: definitions flow here instead of the ConfigYAML models block,
-	// so hosts do not hand-assemble the full YAML document. Empty => no
-	// connections injected.
+	// R3.4/R3.5: definitions flow here instead of a hand-assembled config
+	// document. Empty => no connections injected.
 	ConnectionsJSON string
 
 	// Addr is the listen address. Empty => "127.0.0.1:0", i.e. an OS-assigned
@@ -597,16 +589,20 @@ func (h *Handle) Reconfigure(connectionsJSON, secretsJSON, modelName string) err
 }
 
 // settingsHasInfrastructure reports whether a settings.File carries any
-// infrastructure section (models/credentials/agent/provider/web/runtime/
+// infrastructure section (providers/credentials/agent/provider/web/runtime/
 // default_model/currency) as opposed to only behavior (permissions/verify/
 // hooks). When true, the embedded cfg is rebuilt from the settings document
-// (single config source); when false the YAML-derived cfg stands and the
+// (single config source); when false the built-in default cfg stands and the
 // document supplies behavior only.
+//
+// An EXPLICITLY EMPTY providers section (`"providers": {}`) counts as
+// infrastructure: the host declares it owns the provider set (zero providers is
+// a valid read-only state), so the built-in default models must not leak in.
 func settingsHasInfrastructure(sf settings.File) bool {
 	if sf.DefaultModel != "" || sf.SubagentModel != "" || sf.Currency != "" {
 		return true
 	}
-	if len(sf.Providers) > 0 || len(sf.Credentials) > 0 {
+	if sf.Providers != nil || sf.Credentials != nil {
 		return true
 	}
 	if sf.Agent.MaxSteps != 0 || sf.Agent.MaxParallelTools != 0 ||
@@ -638,7 +634,7 @@ func StartServer(ctx context.Context, opt Options) (*Handle, error) {
 	if err := validateEmbeddedLoopbackAddress(opt.Addr); err != nil {
 		return nil, err
 	}
-	cfg, err := app.LoadConfigBytes([]byte(opt.ConfigYAML))
+	cfg, err := app.LoadConfigBytes(nil)
 	if err != nil {
 		return nil, err
 	}

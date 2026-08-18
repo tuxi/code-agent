@@ -59,7 +59,6 @@ func Start(workspaceDir, dataDir, settingsJSON, modelName, secretsJSON, serverAc
 	h, err := embed.StartServer(context.Background(), embed.Options{
 		WorkspaceDir:      workspaceDir,
 		DataDir:           dataDir,
-		ConfigYAML:        "",
 		SettingsJSON:      settingsJSON,
 		ModelName:         modelName,
 		Secrets:           secrets,

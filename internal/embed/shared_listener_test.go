@@ -40,7 +40,7 @@ func TestEmbeddedSharedListenerReusesCoreRuntimeWithSeparateAuth(t *testing.T) {
 	h, err := StartServer(context.Background(), Options{
 		WorkspaceDir:      t.TempDir(),
 		DataDir:           t.TempDir(),
-		ConfigYAML:        `{"default_model":"","models":{},"credentials":{}}`,
+		SettingsJSON:      `{"default_model":"","providers":{},"credentials":{}}`,
 		Sandboxed:         true,
 		ServerAccessToken: loopbackToken,
 	})
