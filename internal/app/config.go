@@ -881,7 +881,14 @@ func (c Config) SelectModel(name string) (ModelConfig, error) {
 		mc.CompactRatio = c.Agent.CompactRatio
 	}
 	if mc.APIKeyEnv == "" && !model.IsLocalBaseURL(mc.BaseURL) && mc.Credential.IsZero() {
-		return ModelConfig{}, fmt.Errorf("model %q has no credential configured; add a credential: section or set api_key_env", name)
+		// The gateway connection is a declaration, not a concrete model: no
+		// fixed endpoint and no env key — its credential is resolved at call
+		// time from the injected resolver (embedded /v1/secrets, CLI
+		// --gateway-token). A zero Credential here is legitimate; only reject
+		// concrete models that genuinely lack a configured credential.
+		if conn, known := builtinConnections[name]; !(known && conn.Kind == "gateway") {
+			return ModelConfig{}, fmt.Errorf("model %q has no credential configured; add a credential: section or set api_key_env", name)
+		}
 	}
 	return mc, nil
 }

@@ -63,8 +63,11 @@ type Options struct {
 	// (e.g. the Documents directory). Overrides whatever the config declares.
 	WorkspaceDir string
 
-	// ConfigYAML is the raw config document. Empty => built-in defaults
-	// (see app.LoadConfigBytes).
+	// ConfigYAML is a legacy base config document. Production hosts pass ""
+	// (the embedded runtime's real configuration comes from SettingsJSON /
+	// the persisted <DataDir>/.codeagent/settings.json, which overrides this
+	// base when it carries infrastructure). Tests use it to inject a minimal
+	// base config. Empty => built-in defaults (see app.LoadConfigBytes).
 	ConfigYAML string
 
 	// MCPJSON is the raw Claude-compatible `.mcp.json` document configuring

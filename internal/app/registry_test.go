@@ -70,6 +70,23 @@ func TestSelectModelRegistryFallback(t *testing.T) {
 	}
 }
 
+// The gateway connection is a declaration (no endpoint, no env key) whose
+// credential is resolved at call time from the injected resolver. Selecting it
+// as the default model must not fail the static credential check.
+func TestSelectModelGatewayRegistryFallbackWithoutCredential(t *testing.T) {
+	cfg, err := LoadConfig("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mc, err := cfg.SelectModel("gateway")
+	if err != nil {
+		t.Fatalf("SelectModel(gateway) via registry must not require a static credential: %v", err)
+	}
+	if mc.Name != "gateway" {
+		t.Errorf("SelectModel(gateway) = %+v", mc)
+	}
+}
+
 // R2/T1.3: AvailableModelNames offers the config-declared models plus the
 // built-in registry connections, deduplicated.
 func TestAvailableModelNamesIncludesRegistry(t *testing.T) {
