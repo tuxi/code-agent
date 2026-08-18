@@ -162,11 +162,13 @@ var builtinConnections = map[string]builtinConnection{
 		WireModel: "deepseek-v4-flash", ProviderType: "openai",
 		DisplayName: "OpenCode Go", Summary: "低订阅费开源编程模型（首月 $5，之后 $10/月）", Kind: "api_key",
 		Models: []builtinModelTemplate{
+			{ID: "gpt-5.6-luna", RuntimeAlias: "ocg gpt 5.6 luna", ContextWindow: 1_000_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text"}, InputPricePerM: 0.22, OutputPricePerM: 0.66},
 			{ID: "deepseek-v4-flash", RuntimeAlias: "ocg deepseek flash", ContextWindow: 1_000_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text"}, InputPricePerM: 0.22, OutputPricePerM: 0.66},
 			{ID: "deepseek-v4-pro", RuntimeAlias: "ocg deepseek pro", ContextWindow: 1_000_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text"}, InputPricePerM: 0.66, OutputPricePerM: 1.98},
 			{ID: "kimi-k3", RuntimeAlias: "ocg kimi k3", ContextWindow: 1_000_000, SupportsTools: true, InputModalities: []string{"text"}, InputPricePerM: 3.00, OutputPricePerM: 15.00, Temperature: 1.0},
 			{ID: "kimi-k2.7-code", RuntimeAlias: "ocg kimi k2.7 code", ContextWindow: 256_000, SupportsTools: true, InputModalities: []string{"text"}, InputPricePerM: 1.2, OutputPricePerM: 5.6, Temperature: 1.0},
-			{ID: "glm-5.2", RuntimeAlias: "ocg glm 5.2", ContextWindow: 128_000, SupportsTools: true, InputModalities: []string{"text"}, InputPricePerM: 1.40, OutputPricePerM: 4.40},
+			{ID: "glm-5.2", RuntimeAlias: "ocg glm 5.2", ContextWindow: 128_000, SupportsTools: true, InputModalities: []string{"text"}, InputPricePerM: 1.40, OutputPricePerM: 4.40, Temperature: 0.2},
+			{ID: "mimo-v2.5", RuntimeAlias: "ocg mimo v2.5", ContextWindow: 1_000_000, SupportsTools: true, InputModalities: []string{"text"}, InputPricePerM: 0.22, OutputPricePerM: 0.66, Temperature: 0.2},
 		},
 	},
 }
