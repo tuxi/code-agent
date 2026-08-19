@@ -7,11 +7,19 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 
 	"github.com/google/uuid"
 )
 
 const serverStateFilename = "runtime-server-state.json"
+
+// serverStateMu protects the read-modify-write sequence in
+// LoadOrCreateServerState. The embedded runtime currently has process-global
+// storage configuration, so concurrent state initialization in one process is
+// not a supported multi-runtime operation; keep the state transition coherent
+// even if callers race during startup.
+var serverStateMu sync.Mutex
 
 // ServerState is non-secret durable Runtime metadata. It lives beside the
 // session data source so a restart or listener-port change preserves identity,
@@ -37,6 +45,9 @@ func RuntimeStateDir(root string) (string, error) {
 // state is an error: silently replacing server_id would make clients bind an
 // existing endpoint to a different Runtime identity.
 func LoadOrCreateServerState(root string, catalogJSON []byte) (ServerState, error) {
+	serverStateMu.Lock()
+	defer serverStateMu.Unlock()
+
 	dir, err := RuntimeStateDir(root)
 	if err != nil {
 		return ServerState{}, err
@@ -81,13 +92,30 @@ func writeServerState(path string, state ServerState) error {
 	if err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return fmt.Errorf("create runtime server state temp file: %w", err)
+	}
+
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+
+	if err := tmp.Chmod(0o600); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("set runtime server state permissions: %w", err)
+	}
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
 		return fmt.Errorf("write runtime server state: %w", err)
 	}
-	if err := os.Rename(tmp, path); err != nil {
-		_ = os.Remove(tmp)
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close runtime server state: %w", err)
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
 		return fmt.Errorf("commit runtime server state: %w", err)
 	}
+
 	return nil
 }

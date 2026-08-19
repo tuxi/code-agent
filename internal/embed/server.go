@@ -159,6 +159,9 @@ type Handle struct {
 	cancel           context.CancelFunc
 	closers          []func() // run in reverse on Stop, mirroring runServe's defers
 	serveErr         chan error
+	stopOnce         sync.Once
+	stopErr          error
+	embeddedDataDir  string
 
 	// Lifecycle state (v1.2). srvCtx is the server-scoped context resumed turns run
 	// under (so Stop cancels them); cfg + rt back Suspend/ResumeSession/Reconfigure.
@@ -181,6 +184,38 @@ type Handle struct {
 	sharedPort     int
 	sharedEndpoint string
 	sharedStatus   SharedListenerStatus
+}
+
+// The embedded runtime changes runtime.storeBaseDir, which is process-global.
+// Keep the lifecycle contract explicit until storage configuration is moved
+// from package state into a per-runtime object.
+var embeddedLifecycle = struct {
+	sync.Mutex
+	dataDir string
+}{}
+
+func reserveEmbeddedDataDir(dataDir string) error {
+	if dataDir == "" {
+		return nil
+	}
+	embeddedLifecycle.Lock()
+	defer embeddedLifecycle.Unlock()
+	if embeddedLifecycle.dataDir != "" {
+		return fmt.Errorf("embedded Runtime already running with data directory %q", embeddedLifecycle.dataDir)
+	}
+	embeddedLifecycle.dataDir = dataDir
+	return nil
+}
+
+func releaseEmbeddedDataDir(dataDir string) {
+	if dataDir == "" {
+		return
+	}
+	embeddedLifecycle.Lock()
+	if embeddedLifecycle.dataDir == dataDir {
+		embeddedLifecycle.dataDir = ""
+	}
+	embeddedLifecycle.Unlock()
 }
 
 const (
@@ -228,23 +263,29 @@ func (h *Handle) Port() int { return h.port }
 // Stop shuts the server down and releases every resource acquired by StartServer.
 // It is safe to call once; further calls are no-ops.
 func (h *Handle) Stop() error {
-	sharedErr := h.StopSharedListener()
-	if h.srv == nil {
-		fmt.Fprintf(os.Stderr, "[lifecycle] Handle.Stop(): already nil, no-op\n")
-		return sharedErr
-	}
-	fmt.Fprintf(os.Stderr, "[lifecycle] Handle.Stop(): closing server (port=%d)\n", h.port)
-	err := h.srv.Close()
-	if h.cancel != nil {
-		h.cancel()
-		fmt.Fprintf(os.Stderr, "[lifecycle] Handle.Stop(): context cancelled\n")
-	}
-	for i := len(h.closers) - 1; i >= 0; i-- {
-		h.closers[i]()
-	}
-	fmt.Fprintf(os.Stderr, "[lifecycle] Handle.Stop(): %d closers run, DB closed\n", len(h.closers))
-	h.srv = nil
-	return errors.Join(sharedErr, err)
+	h.stopOnce.Do(func() {
+		sharedErr := h.StopSharedListener()
+		if h.srv == nil {
+			fmt.Fprintf(os.Stderr, "[lifecycle] Handle.Stop(): already nil, no-op\n")
+			h.stopErr = sharedErr
+			releaseEmbeddedDataDir(h.embeddedDataDir)
+			return
+		}
+		fmt.Fprintf(os.Stderr, "[lifecycle] Handle.Stop(): closing server (port=%d)\n", h.port)
+		err := h.srv.Close()
+		if h.cancel != nil {
+			h.cancel()
+			fmt.Fprintf(os.Stderr, "[lifecycle] Handle.Stop(): context cancelled\n")
+		}
+		for i := len(h.closers) - 1; i >= 0; i-- {
+			h.closers[i]()
+		}
+		fmt.Fprintf(os.Stderr, "[lifecycle] Handle.Stop(): %d closers run, DB closed\n", len(h.closers))
+		h.srv = nil
+		h.stopErr = errors.Join(sharedErr, err)
+		releaseEmbeddedDataDir(h.embeddedDataDir)
+	})
+	return h.stopErr
 }
 
 // StartSharedListener starts a TLS-only LAN listener around the same core
@@ -643,6 +684,23 @@ func StartServer(ctx context.Context, opt Options) (*Handle, error) {
 	if dataDir == "" {
 		dataDir = opt.WorkspaceDir
 	}
+	if dataDir != "" {
+		resolvedDataDir, err := filepath.Abs(dataDir)
+		if err != nil {
+			return nil, fmt.Errorf("resolve embedded Runtime data directory: %w", err)
+		}
+		dataDir = filepath.Clean(resolvedDataDir)
+	}
+	if err := reserveEmbeddedDataDir(dataDir); err != nil {
+		return nil, err
+	}
+	reservedDataDir := dataDir
+	reserved := true
+	defer func() {
+		if reserved {
+			releaseEmbeddedDataDir(reservedDataDir)
+		}
+	}()
 	settingsPath := ""
 	if dataDir != "" {
 		runtime.SetStoreBaseDir(filepath.Join(dataDir, ".codeagent"))
@@ -753,7 +811,15 @@ func StartServer(ctx context.Context, opt Options) (*Handle, error) {
 	// observers and background goroutines tied to it wind down.
 	srvCtx, cancel := context.WithCancel(ctx)
 
-	h := &Handle{cancel: cancel, serveErr: make(chan error, 1), srvCtx: srvCtx, cfg: embeddedSettings, credential: credChain, modelName: opt.ModelName}
+	h := &Handle{
+		cancel:          cancel,
+		serveErr:        make(chan error, 1),
+		srvCtx:          srvCtx,
+		cfg:             embeddedSettings,
+		credential:      credChain,
+		modelName:       opt.ModelName,
+		embeddedDataDir: reservedDataDir,
+	}
 	// On any error after this point, release whatever we already acquired.
 	ok := false
 	defer func() {
@@ -832,6 +898,7 @@ func StartServer(ctx context.Context, opt Options) (*Handle, error) {
 	}()
 
 	ok = true
+	reserved = false
 	fmt.Fprintf(os.Stderr, "[lifecycle] StartServer() OK: port=%d dataDir=%s storeBase=%s\n", h.port, dataDir, runtime.StoreBaseDir())
 	return h, nil
 }
