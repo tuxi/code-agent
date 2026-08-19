@@ -136,7 +136,8 @@ func buildRuntimeModelCatalog(cfg settings.Settings, injected credential.Resolve
 	groups := make(map[string]*connectionBuilder)
 	included := make(map[string]struct{})
 	dedupTo := make(map[string]string) // deduped alias → canonical alias in the catalog
-	for _, alias := range cfg.ModelNames() {
+	modelNames := cfg.ModelNames()
+	for _, alias := range modelNames {
 		mc := cfg.Models[alias]
 		if strings.TrimSpace(mc.Model) == "" {
 			continue
@@ -206,7 +207,6 @@ func buildRuntimeModelCatalog(cfg settings.Settings, injected credential.Resolve
 		})
 		included[alias] = struct{}{}
 	}
-
 	connectionIDs := make([]string, 0, len(groups))
 	for id := range groups {
 		connectionIDs = append(connectionIDs, id)

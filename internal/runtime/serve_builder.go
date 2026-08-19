@@ -189,7 +189,11 @@ func (ModelUnavailableError) SafeMessage() string {
 // strict. A legacy bare wire-model string is accepted only while the runtime's
 // default endpoint is the Talkify Gateway.
 func resolveTurnModel(cfg settings.Settings, defaultMC settings.ModelConfig, requested string) (settings.ModelConfig, error) {
-	if cfg.Providers != nil && len(cfg.Providers) == 0 {
+	// The empty-model-space check keys off the EXPANDED Models map (the runtime
+	// view FromSettings produces), not the raw Providers section: an explicit
+	// zero-model config must fail cleanly, while a nil map (raw settings never
+	// normalized) means "nothing configured yet" and is allowed through.
+	if cfg.Models != nil && len(cfg.Models) == 0 {
 		return settings.ModelConfig{}, ModelNotConfiguredError{}
 	}
 	if requested == "" {

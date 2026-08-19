@@ -27,7 +27,10 @@ func TestFromSettingsProvidersExpand(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg := FromSettings(settings.Settings{Providers: sf.Providers})
+	cfg, err := FromSettings(settings.Settings{Providers: sf.Providers})
+	if err != nil {
+		t.Fatal(err)
+	}
 	// Both models expanded with inherited fields.
 	plusKey := aliasKey("qwen", "qwen3-coder-plus")
 	maxKey := aliasKey("qwen", "qwen3.7-max")
@@ -66,7 +69,10 @@ func TestFromSettingsCrossProviderSameModel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg := FromSettings(settings.Settings{Providers: sf.Providers})
+	cfg, err := FromSettings(settings.Settings{Providers: sf.Providers})
+	if err != nil {
+		t.Fatal(err)
+	}
 	dsKey := aliasKey("dashscope", "deepseek-v4-flash")
 	orKey := aliasKey("openrouter", "deepseek-v4-flash")
 	if dsKey == orKey {
@@ -91,7 +97,10 @@ func TestFromSettingsOpenRouterSlashModelID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg := FromSettings(settings.Settings{Providers: sf.Providers})
+	cfg, err := FromSettings(settings.Settings{Providers: sf.Providers})
+	if err != nil {
+		t.Fatal(err)
+	}
 	key := aliasKey("openrouter", "deepseek/deepseek-chat")
 	if strings.Contains(key, "/") {
 		t.Errorf("alias key %q must not contain /", key)
@@ -134,7 +143,10 @@ func TestFromSettingsProviderDefaultCredential(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg := FromSettings(settings.Settings{Providers: sf.Providers})
+	cfg, err := FromSettings(settings.Settings{Providers: sf.Providers})
+	if err != nil {
+		t.Fatal(err)
+	}
 	key := aliasKey("openrouter", "anthropic/claude-sonnet-4")
 	mc := cfg.Models[key]
 	if mc.Credential != (settings.CredentialRef{Namespace: "llm", Name: "openrouter"}) {
@@ -162,7 +174,10 @@ func TestFromSettingsPerModelAPIOverride(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg := FromSettings(settings.Settings{Providers: sf.Providers})
+	cfg, err := FromSettings(settings.Settings{Providers: sf.Providers})
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	flashKey := aliasKey("opencode-go", "deepseek-v4-flash")
 	lunaKey := aliasKey("opencode-go", "gpt-5.6-luna")

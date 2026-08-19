@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -33,22 +34,22 @@ const (
 	defaultMaxBackoffSeconds     = 8
 )
 
-// FromSettings builds a Config from the merged settings view
-// (design-config-settings-merge.md). Config remains the runtime view — it
-// carries code-level fields (MCP, Profile, StoreFactory, …) that settings.json
-// never stores; FromSettings fills the user-configurable infrastructure subset
-// and leaves the rest zero for the caller to assemble.
-func FromSettings(set settings.Settings) settings.Settings {
+// FromSettings builds the runtime Settings view from a merged settings value:
+// the grouped providers form is expanded into a flat Models map
+// (design-providers-grouped-config.md §3.3), flat models are carried over, and
+// the shared normalization pass (registry defaults, credential-ref derivation,
+// default_model fallback) is applied. The returned Settings is the runtime
+// view; code-level fields (MCP, Profile, StoreFactory, …) are left as-is for
+// the caller to assemble. Validation failures (e.g. a flat models key
+// containing "/") are returned as errors.
+func FromSettings(set settings.Settings) (settings.Settings, error) {
 	cfg := set
-	if cfg.Credentials == nil {
-		cfg.Credentials = make(map[string]map[string]settings.CredentialConfig)
+	// Fresh maps so the expansion below never mutates the caller's settings.
+	cfg.Models = make(map[string]settings.ModelConfig, len(set.Models))
+	for k, v := range set.Models {
+		cfg.Models[k] = v
 	}
-	if cfg.Models == nil {
-		cfg.Models = map[string]settings.ModelConfig{}
-	}
-	if cfg.Providers == nil {
-		cfg.Providers = map[string]settings.ServiceConfig{}
-	}
+	cfg.Credentials = make(map[string]map[string]settings.CredentialConfig, len(set.Credentials))
 	// Providers: grouped form → flat ModelConfig using the alias key
 	// (provider.<b64>.model.<b64>, design-providers-grouped-config.md §3.3).
 	// Also registers user-friendly keys so default_model and SelectModel
@@ -167,32 +168,23 @@ func FromSettings(set settings.Settings) settings.Settings {
 	if subagentModel == "" {
 		subagentModel = set.SubagentModel
 	}
-	cfg.SubagentModel = subagentModel
+	cfg.Agent.SubagentModel = subagentModel
 
 	// Apply the shared normalization pass (registry fill, defaults, credential-ref
 	// derivation, default_model fallback) so a settings-sourced Config behaves
 	// identically to one parsed from config.yaml.
 	if err := normalizeConfig(&cfg); err != nil {
-		return cfg
+		return cfg, err
 	}
-	return cfg
+	return cfg, nil
 }
 
-// LoadFromSettings builds a fully-normalized Config from the merged
-// settings view. It is the settings-first counterpart to LoadConfigLayered:
-// CLI/daemon entry points call this instead of reading config.yaml, so
-// infrastructure (models/credentials/agent/provider/web) comes from
-// settings.json while code-level fields (MCP, GlobalSkillsDir, StoreFactory…)
-// remain zero and are assembled by the caller. FromSettings + normalizeConfig
-// keep behavior identical to the YAML path.
-func LoadFromSettings(set settings.Settings) settings.Settings {
-	return FromSettings(set)
-}
-
-// LoadSettingsBytes parses configuration from raw YAML bytes (nil or empty =>
-// built-in defaults), applying the same normalization and validation as
-// LoadConfig. Embedded hosts (iOS/macOS in-app) supply config in-memory rather
-// than from a file path, since the app sandbox has no fixed config.yaml.
+// LoadSettingsBytes parses configuration from raw JSON or YAML bytes (nil or
+// empty => built-in defaults), applying the same normalization and validation
+// as FromSettings. Embedded hosts (iOS/macOS in-app) supply config in-memory
+// rather than from a file path, since the app sandbox has no fixed config.yaml.
+// Documents use the settings.json shape (snake_case keys in JSON or YAML); the
+// legacy config.yaml flat "models" map is still accepted.
 func LoadSettingsBytes(data []byte) (settings.Settings, error) {
 	cfg := settings.Settings{
 		Agent:  settings.AgentConfig{MaxSteps: 8},
@@ -201,20 +193,30 @@ func LoadSettingsBytes(data []byte) (settings.Settings, error) {
 
 	if len(data) > 0 {
 		var set settings.File
-		if err := json.Unmarshal(data, &set); err != nil {
-			err = yaml.Unmarshal(data, &set)
-			if err != nil {
-				return cfg, err
-			}
+		if err := parseSettingsDoc(data, &set); err != nil {
+			return cfg, err
 		}
 		cfg = set.ToSettings()
-		cfg = FromSettings(cfg)
+
+		// Legacy flat models: config.yaml-shaped documents declare models under
+		// a flat "models" map (settings.File has no such key — the grouped
+		// providers form is canonical). Parse it separately so old documents
+		// keep working; FromSettings expands providers on top of it.
+		var legacy struct {
+			Models map[string]settings.ModelConfig `json:"models"`
+		}
+		if err := parseSettingsDoc(data, &legacy); err != nil {
+			return cfg, err
+		}
+		if legacy.Models != nil {
+			cfg.Models = legacy.Models
+		}
 	}
 
-	// Backward compatibility applies only when the models field is absent. An
-	// explicit models: {} is the host's zero-Provider read-only mode and must
-	// remain empty.
-	if cfg.Models == nil {
+	// Backward compatibility applies only when neither a flat models map nor a
+	// providers section is present: an explicit models: {} / providers: {} is
+	// the host's zero-model read-only mode and must remain empty.
+	if cfg.Models == nil && cfg.Providers == nil {
 		cfg.Models = map[string]settings.ModelConfig{
 			"deepseek": {
 				Provider: "openai",
@@ -223,10 +225,26 @@ func LoadSettingsBytes(data []byte) (settings.Settings, error) {
 			},
 		}
 	}
-	if err := normalizeConfig(&cfg); err != nil {
-		return settings.Settings{}, err
+	return FromSettings(cfg)
+}
+
+// parseSettingsDoc decodes a settings document that may be JSON or YAML into
+// v. JSON is tried first (settings.json is JSON); a YAML document is
+// normalized through JSON so the json-tagged structs apply unchanged —
+// snake_case keys are identical in both formats, so no yaml tags are needed.
+func parseSettingsDoc(data []byte, v any) error {
+	if err := json.Unmarshal(data, v); err == nil {
+		return nil
 	}
-	return cfg, nil
+	var m map[string]any
+	if err := yaml.Unmarshal(data, &m); err != nil {
+		return err
+	}
+	j, err := json.Marshal(m)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(j, v)
 }
 
 // normalizeConfig applies the shared normalization pass to a Config regardless
@@ -388,10 +406,30 @@ func SelectModel(name string, set settings.Settings) (settings.ModelConfig, erro
 	// the config never declared them (the model/credential config is
 	// user-level; the registry provides the open-box default). Unknown names
 	// still error exactly as before.
-	//conn, known := builtinConnections[name]
 	mc, known := set.Models[name]
 	if !known {
-		return settings.ModelConfig{}, fmt.Errorf("SelectModel unknown model %s", name)
+		conn, ok := builtinConnections[name]
+		if !ok {
+			return settings.ModelConfig{}, fmt.Errorf("unknown model %q; configured models: %s",
+				name, strings.Join(set.ModelNames(), ", "))
+		}
+		mc = settings.ModelConfig{
+			Name:          name,
+			Provider:      "openai",
+			BaseURL:       conn.BaseURL,
+			Model:         conn.WireModel,
+			APIKeyEnv:     conn.Env,
+			ContextWindow: defaultContextWindow,
+			Temperature:   0.2,
+		}
+		if conn.ProviderType != "" {
+			mc.Provider = conn.ProviderType
+		}
+		if model.IsLocalBaseURL(mc.BaseURL) {
+			mc.Credential = settings.CredentialRef{} // none needed
+		} else if conn.Env != "" {
+			mc.Credential = settings.CredentialRef{Namespace: "llm", Name: name}
+		}
 	}
 
 	if mc.Temperature <= 0 {

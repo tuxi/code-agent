@@ -62,8 +62,10 @@ func NewHarness() (*Harness, error) {
 		return nil, err
 	}
 	home, _ := os.UserHomeDir()
-	set := settings.Load(root, home, os.Stderr)
-	set = app.LoadFromSettings(set)
+	set, err := app.FromSettings(settings.Load(root, home, os.Stderr))
+	if err != nil {
+		return nil, fmt.Errorf("normalize settings: %w", err)
+	}
 	mc, err := app.SelectModel("", set)
 	if err != nil {
 		return nil, fmt.Errorf("select model: %w", err)

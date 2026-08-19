@@ -671,10 +671,10 @@ func StartServer(ctx context.Context, opt Options) (*Handle, error) {
 	var embeddedSettings settings.Settings
 	if hasDisk && settingsHasInfrastructure(diskFile) {
 		// Disk is authoritative for infrastructure.
-		embeddedSettings = diskFile.ToSettings()
-		embeddedSettings = app.LoadFromSettings(embeddedSettings)
-		embeddedSettings.GlobalSkillsDir = filepath.Join(dataDir, "skills")
-		embeddedSettings.GlobalPromptsDir = filepath.Join(dataDir, "prompts")
+		var err error
+		if embeddedSettings, err = app.FromSettings(diskFile.ToSettings()); err != nil {
+			return nil, fmt.Errorf("normalize embedded settings: %w", err)
+		}
 	}
 	if opt.SettingsJSON != "" {
 		sf, err := settings.ParseJSON([]byte(opt.SettingsJSON))
@@ -684,7 +684,9 @@ func StartServer(ctx context.Context, opt Options) (*Handle, error) {
 		// Fallback for a migration/legacy host that never persisted a seed: the
 		// injected infrastructure is authoritative only when disk has none.
 		if settingsHasInfrastructure(sf) && (!hasDisk || !settingsHasInfrastructure(diskFile)) {
-			embeddedSettings = app.FromSettings(sf.ToSettings())
+			if embeddedSettings, err = app.FromSettings(sf.ToSettings()); err != nil {
+				return nil, fmt.Errorf("normalize injected settings: %w", err)
+			}
 		}
 		// Behavior (permissions/verify/hooks) is always host-injected.
 		embeddedSettings.Permissions = sf.Permissions
@@ -692,6 +694,13 @@ func StartServer(ctx context.Context, opt Options) (*Handle, error) {
 		if sf.Verify != nil {
 			embeddedSettings.Verify = sf.Verify
 		}
+	}
+	// Global skills/prompts dirs come from the host data dir regardless of which
+	// source provided the infrastructure (disk or injected) — same as the old
+	// LoadConfigBytes path that set them whenever dataDir was non-empty.
+	if dataDir != "" {
+		embeddedSettings.GlobalSkillsDir = filepath.Join(dataDir, "skills")
+		embeddedSettings.GlobalPromptsDir = filepath.Join(dataDir, "prompts")
 	}
 	// R3.5: connection definitions injected via connectionsJSON are merged into
 	// the config as the top (host) layer before MCP/skills assembly.

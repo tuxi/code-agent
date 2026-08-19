@@ -248,18 +248,7 @@ func ResolveTrust(
 		}
 	}
 
-	// 3. trust.json store with parent dir inheritance.
-	if store != nil {
-		if trusted, found := store.Lookup(cwd); found {
-			reason := "persisted trust decision"
-			if !trusted {
-				reason = "persisted: not trusted"
-			}
-			return trusted, reason, nil
-		}
-	}
-
-	// 4. defaultProjectTrust setting.
+	// 3. defaultProjectTrust setting.
 	if defaultTrust != nil {
 		if *defaultTrust {
 			return true, "default: always trust", nil
@@ -267,7 +256,7 @@ func ResolveTrust(
 		return false, "default: never trust", nil
 	}
 
-	// 5. Interactive UI via TrustPolicy.
+	// 4. Interactive UI via TrustPolicy.
 	if policy != nil {
 		decision, err := policy.ResolveTrust(ctx, cwd, hasResources)
 		if err != nil {
@@ -280,6 +269,17 @@ func ResolveTrust(
 			return false, "user declined", nil
 		default:
 			// TrustUndecided: fall through to fail-closed.
+		}
+	}
+
+	// 5. trust.json store with parent dir inheritance.
+	if store != nil {
+		if trusted, found := store.Lookup(cwd); found {
+			reason := "persisted trust decision"
+			if !trusted {
+				reason = "persisted: not trusted"
+			}
+			return trusted, reason, nil
 		}
 	}
 
@@ -332,7 +332,10 @@ func LoadSettingsWithTrust(
 	if trusted {
 		overlay := settings.LoadProjectSettings(root, warn)
 		settings.MergeSettings(&base, overlay)
-		base = app.LoadFromSettings(base)
+	}
+	var err error
+	if base, err = app.FromSettings(base); err != nil {
+		fmt.Fprintf(warn, "[settings] ignoring invalid model config: %v\n", err)
 	}
 	return base, trusted
 }
