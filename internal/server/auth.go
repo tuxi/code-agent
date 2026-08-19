@@ -1,6 +1,7 @@
 package server
 
 import (
+	"code-agent/internal/settings"
 	"crypto/sha256"
 	"crypto/subtle"
 	"errors"
@@ -9,8 +10,6 @@ import (
 	"net/http"
 	"os"
 	"strings"
-
-	"code-agent/internal/app"
 )
 
 const minimumServerAccessTokenBytes = 32
@@ -39,7 +38,7 @@ func ValidateServerAccessToken(token string) error {
 // configured environment variable takes precedence over the local YAML value,
 // allowing production deployments to override a developer's config.yaml.
 // Embedded Runtime never calls this path; its host injects a temporary token.
-func ResolveExternalServerAuth(cfg app.ServerConfig) (ServerAuth, error) {
+func ResolveExternalServerAuth(cfg settings.ServerConfig) (ServerAuth, error) {
 	switch strings.ToLower(strings.TrimSpace(cfg.Authentication)) {
 	case "", "none":
 		return ServerAuth{PublicHealthz: cfg.PublicHealthz}, nil
@@ -71,7 +70,7 @@ func ResolveExternalServerAuth(cfg app.ServerConfig) (ServerAuth, error) {
 // ValidateExternalDeployment fails closed for a directly exposed listener. A
 // reverse proxy remains supported by binding CodeAgent to loopback and
 // terminating TLS at the proxy.
-func ValidateExternalDeployment(addr string, cfg app.ServerConfig, auth ServerAuth) error {
+func ValidateExternalDeployment(addr string, cfg settings.ServerConfig, auth ServerAuth) error {
 	host, _, err := net.SplitHostPort(addr)
 	if err != nil {
 		return fmt.Errorf("invalid server listen address %q: %w", addr, err)
@@ -88,7 +87,7 @@ func ValidateExternalDeployment(addr string, cfg app.ServerConfig, auth ServerAu
 	return validateTLSPair(cfg)
 }
 
-func validateTLSPair(cfg app.ServerConfig) error {
+func validateTLSPair(cfg settings.ServerConfig) error {
 	if (cfg.TLSCertificate == "") != (cfg.TLSPrivateKey == "") {
 		return errors.New("server TLS certificate and private key must be configured together")
 	}

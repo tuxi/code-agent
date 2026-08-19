@@ -38,7 +38,7 @@ func TestFromSettingsProvidersExpand(t *testing.T) {
 	if plus.BaseURL != "https://dashscope.aliyuncs.com/compatible-mode/v1" {
 		t.Errorf("base_url = %q, want inherited from provider", plus.BaseURL)
 	}
-	if plus.Credential != (CredentialRef{Namespace: "llm", Name: "qwen"}) {
+	if plus.Credential != (settings.CredentialRef{Namespace: "llm", Name: "qwen"}) {
 		t.Errorf("credential = %+v, want inherited llm/qwen", plus.Credential)
 	}
 	if plus.Model != "qwen3-coder-plus" {
@@ -108,7 +108,7 @@ func TestFromSettingsOpenRouterSlashModelID(t *testing.T) {
 // design-providers-grouped-config.md §3.1: a flat models key with "/" is
 // rejected (it would collide with grouped expansion).
 func TestFlatModelKeyRejectsSlash(t *testing.T) {
-	_, err := LoadConfigBytes([]byte(`
+	_, err := LoadSettingsBytes([]byte(`
 models:
   dashscope/qwen3-coder-plus:
     provider: openai
@@ -137,7 +137,7 @@ func TestFromSettingsProviderDefaultCredential(t *testing.T) {
 	cfg := FromSettings(settings.Settings{Providers: sf.Providers})
 	key := aliasKey("openrouter", "anthropic/claude-sonnet-4")
 	mc := cfg.Models[key]
-	if mc.Credential != (CredentialRef{Namespace: "llm", Name: "openrouter"}) {
+	if mc.Credential != (settings.CredentialRef{Namespace: "llm", Name: "openrouter"}) {
 		t.Errorf("credential = %+v, want default llm/openrouter", mc.Credential)
 	}
 }
@@ -187,11 +187,10 @@ func TestFromSettingsPerModelAPIOverride(t *testing.T) {
 	}
 }
 
-func keysOf(m map[string]ModelConfig) []string {
+func keysOf(m map[string]settings.ModelConfig) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {
 		out = append(out, k)
 	}
 	return out
 }
-

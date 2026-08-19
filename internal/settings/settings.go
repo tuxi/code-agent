@@ -17,12 +17,16 @@ package settings
 // TODO: optimize
 
 import (
+	"code-agent/internal/credential"
+	"code-agent/internal/mcp"
+	"code-agent/internal/session"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"code-agent/internal/hooks"
@@ -104,6 +108,28 @@ type File struct {
 	ApprovalMode string `json:"approval_mode,omitempty"`
 }
 
+// ToSettings converts an on-disk settings document into the merged
+// Settings view the runtime consumes. It mirrors the field list of the legacy
+// explicit app.FromSettings call — infra blocks AND behavior blocks.
+func (f File) ToSettings() Settings {
+	return Settings{
+		DefaultModel:  f.DefaultModel,
+		SubagentModel: f.SubagentModel,
+		Providers:     f.Providers,
+		Credentials:   f.Credentials,
+		Agent:         f.Agent,
+		Provider:      f.Provider,
+		Web:           f.Web,
+		Runtime:       f.Runtime,
+		Server:        f.Server,
+		Currency:      f.Currency,
+		Permissions:   f.Permissions,
+		Verify:        f.Verify,
+		Hooks:         f.Hooks,
+		ApprovalMode:  f.ApprovalMode,
+	}
+}
+
 // ModelConfig is the on-disk model definition (mirrors app.ModelConfig's
 // user-configurable subset). Self-contained here so settings does not depend on
 // internal/app.
@@ -121,12 +147,11 @@ type ModelConfig struct {
 	Catalog             ModelCatalogMetadata `json:"catalog,omitempty"`
 	// WebSearch enables the provider's built-in web_search tool (Responses API).
 	WebSearch bool `json:"web_search,omitempty"`
-}
 
-// CredentialRef references a credentials entry (namespace/name).
-type CredentialRef struct {
-	Namespace string `json:"namespace,omitempty"` // "gateway" | "llm" | "mcp"
-	Name      string `json:"name,omitempty"`
+	CompactRatio float64 `json:"compact_ratio,omitempty"`
+
+	// Resolved at load time, not read from YAML.
+	Name string `json:"-"` // the friendly name (the map key)
 }
 
 // ServiceConfig is one grouped service (design-providers-grouped-config.md
@@ -164,20 +189,91 @@ type ProviderModel struct {
 	CompactRatio        float64  `json:"compact_ratio,omitempty"`
 }
 
+// CredentialRef points to a credential entry in Config.Credentials.
+type CredentialRef struct {
+	Namespace string `json:"namespace,omitempty"` // "gateway" | "llm" | "mcp"
+	Name      string `json:"name,omitempty"`      // "default" | "deepseek" | "github"
+}
+
+// IsZero reports whether ref is the zero value.
+func (r CredentialRef) IsZero() bool {
+	return r.Namespace == "" && r.Name == ""
+}
+
+// Target converts the ref to a credential.Target.
+func (r CredentialRef) Target() credential.Target {
+	return credential.Target{Namespace: r.Namespace, Name: r.Name}
+}
+
 // CredentialConfig describes how a named credential is obtained.
 type CredentialConfig struct {
 	Source string `json:"source,omitempty"` // "env" | "injected" | "none"
-	Env    string `json:"env,omitempty"`    // env var name (source == env)
+	Env    string `json:"env,omitempty"`    // env var name (when source == "env")
 }
 
-// AgentConfig carries agent behavior knobs.
 type AgentConfig struct {
-	MaxSteps                 int     `json:"max_steps,omitempty"`
-	MaxParallelTools         int     `json:"max_parallel_tools,omitempty"`
-	CompactRatio             float64 `json:"compact_ratio,omitempty"`
-	CompactKeepRatio         float64 `json:"compact_keep_ratio,omitempty"`
-	ClientToolTimeoutSeconds int     `json:"client_tool_timeout_seconds,omitempty"`
-	SubagentModel            string  `json:"subagent_model,omitempty"`
+	MaxSteps int `json:"max_steps,omitempty"`
+
+	// CompactRatio is the fraction of a model's context window at which the
+	// session compacts. Defaults to defaultCompactRatio; values outside (0,1) are
+	// treated as unset.
+	CompactRatio float64 `json:"compact_ratio,omitempty"`
+
+	// CompactKeepRatio is the fraction of the compaction threshold kept as the
+	// verbatim recent tail when compacting (P12.a). Token-denominated: the tail
+	// is CompactThreshold × CompactKeepRatio approximate tokens, which is what
+	// makes compaction converge by construction — summary + bounded tail lands
+	// back under the threshold on a 32k local window as much as on a 128k one.
+	// Defaults to defaultCompactKeepRatio; values outside (0,1) are treated as
+	// unset.
+	CompactKeepRatio float64 `json:"compact_keep_ratio,omitempty"`
+
+	// SubagentModel names the model a delegated read-only subagent (the `task`
+	// tool, 8.3) runs on. Empty inherits the main model; point it at a cheaper
+	// model (e.g. a flash-class one) to make read-only investigation cheap. An
+	// unknown or key-less name falls back to the main model at runtime.
+	SubagentModel string `json:"subagent_model,omitempty"`
+
+	// ClientToolTimeoutSeconds is the lease for a single client-executed tool
+	// call (v1.1): how long the loop blocks waiting for the client to deliver a
+	// tool_result before giving up with "client timeout". 0 uses the built-in
+	// 2-minute default. Raise it when clients run long operations — e.g. a
+	// DreamAI sidecar whose generate tool drives image/video generation that
+	// routinely exceeds two minutes.
+	ClientToolTimeoutSeconds int `json:"client_tool_timeout_seconds,omitempty"`
+
+	// MaxParallelTools caps how many independent, read-only tool calls in one
+	// batch execute concurrently (P8.8). 0/1 keeps the strictly sequential loop
+	// (the default). Raising it lets the model fan out — e.g. 5 `task` subagents
+	// in one turn run at once. Side-effecting calls are always serialized.
+	MaxParallelTools int `json:"max_parallel_tools,omitempty"`
+
+	// BuiltinTools, when non-nil, is a deny-by-default allowlist of built-in tool
+	// names to register: only the named tools are exposed to the model; everything
+	// else (shell, filesystem, git, project_graph, plan_workflow, task, MCP, …) is
+	// left out. When nil/unset, every tool registers (the default, unchanged
+	// behavior). An empty list registers no built-ins at all.
+	//
+	// Use it to lock down a deployment that must NOT expose codeagentd's server-side
+	// shell/filesystem to end users — e.g. the DreamAI sidecar, whose only needed
+	// tool (dreamai_generate) is registered at runtime over the wire, not as a
+	// built-in. Set `builtin_tools: []` (or `[web_search, web_fetch]`) there.
+	BuiltinTools *[]string `json:"builtin_tools,omitempty"`
+}
+
+// ToolAllowed reports whether a tool may be registered. Nil BuiltinTools means
+// "no restriction" (all tools allowed). A non-nil list is a deny-by-default
+// allowlist: only the named tools are allowed.
+func (c AgentConfig) ToolAllowed(name string) bool {
+	if c.BuiltinTools == nil {
+		return true
+	}
+	for _, n := range *c.BuiltinTools {
+		if n == name {
+			return true
+		}
+	}
+	return false
 }
 
 // ProviderConfig tunes the transport resilience layer.
@@ -196,19 +292,67 @@ type WebConfig struct {
 
 // WebSearchConfig configures the web_search tool.
 type WebSearchConfig struct {
-	Provider         string `json:"provider,omitempty"`
-	FallbackProvider string `json:"fallback_provider,omitempty"`
-	GatewayBaseURL   string `json:"gateway_base_url,omitempty"`
-	TopK             int    `json:"top_k,omitempty"`
-	TimeoutSeconds   int    `json:"timeout_seconds,omitempty"`
-	TavilyAPIKeyEnv  string `json:"tavily_api_key_env,omitempty"`
-	BraveAPIKeyEnv   string `json:"brave_api_key_env,omitempty"`
+	Provider              string        `json:"provider,omitempty"`
+	FallbackProvider      string        `json:"fallback_provider,omitempty"`
+	GatewayBaseURL        string        `json:"gateway_base_url,omitempty"`
+	TopK                  int           `json:"top_k,omitempty"`
+	TimeoutSeconds        int           `json:"timeout_seconds,omitempty"`
+	TavilyAPIKeyEnv       string        `json:"tavily_api_key_env,omitempty"`
+	BraveAPIKeyEnv        string        `json:"brave_api_key_env,omitempty"`
+	SearXNGBaseURL        string        `json:"searxng_base_url,omitempty"`
+	GatewayTimeoutSeconds int           `json:"gateway_timeout_seconds,omitempty"`
+	Credential            CredentialRef `json:"credential,omitempty"`
+
+	// Resolved at load time or injected by a host (e.g. iOS Keychain), not read
+	// from YAML. Same pattern as ModelConfig.APIKey.
+	BraveKey  string `json:"-"`
+	TavilyKey string `json:"-"`
 }
 
 // WebFetchConfig configures the web_fetch tool.
 type WebFetchConfig struct {
 	TimeoutSeconds  int `json:"timeout_seconds,omitempty"`
 	CacheTTLSeconds int `json:"cache_ttl_seconds,omitempty"`
+}
+
+// SearXNGInstances returns the list of SearXNG instances from config.
+// If searxng_base_url is set, it is split on commas to form the list.
+// Otherwise the built-in defaults are used.
+func (c WebSearchConfig) SearXNGInstances() []string {
+	if c.SearXNGBaseURL != "" {
+		parts := strings.Split(c.SearXNGBaseURL, ",")
+		for i := range parts {
+			parts[i] = strings.TrimSpace(parts[i])
+		}
+		return parts
+	}
+	return nil // caller uses defaults
+}
+
+// BraveAPIKey returns the resolved Brave API key, if configured.
+// A directly-set key (injected by a host from a keychain, or set during config
+// normalization) takes precedence over the environment variable.
+func (c WebSearchConfig) BraveAPIKey() string {
+	if c.BraveKey != "" {
+		return c.BraveKey
+	}
+	if c.BraveAPIKeyEnv == "" {
+		return ""
+	}
+	return os.Getenv(c.BraveAPIKeyEnv)
+}
+
+// TavilyAPIKey returns the resolved Tavily API key, if configured.
+// A directly-set key (injected by a host from a keychain, or set during config
+// normalization) takes precedence over the environment variable.
+func (c WebSearchConfig) TavilyAPIKey() string {
+	if c.TavilyKey != "" {
+		return c.TavilyKey
+	}
+	if c.TavilyAPIKeyEnv == "" {
+		return ""
+	}
+	return os.Getenv(c.TavilyAPIKeyEnv)
 }
 
 // RuntimeConfig controls process-wide turn admission.
@@ -242,6 +386,24 @@ type ModelCatalogMetadata struct {
 	InputModalities       []string `json:"input_modalities,omitempty"`
 }
 
+// Profile is the platform capability set the runtime assembles for. The default
+// (full) assumes a desktop host. The sandboxed profile is for embedded hosts like
+// iOS, where the OS forbids fork/exec and confines the app to its container, so
+// every subprocess-based tool (shell, git, gopls, MCP stdio servers, hooks) is
+// left unregistered rather than failing at call time.
+type Profile string
+
+const (
+	// ProfileFull is the default desktop profile: all tools registered.
+	ProfileFull Profile = ""
+	// ProfileSandboxed omits subprocess-based tools for OS-sandboxed hosts (iOS).
+	ProfileSandboxed Profile = "sandboxed"
+)
+
+// AllowsSubprocess reports whether the host permits spawning child processes.
+// When false, subprocess-based tools and MCP stdio servers are not assembled.
+func (p Profile) AllowsSubprocess() bool { return p != ProfileSandboxed }
+
 // Settings is the merged view across the layers. Permissions merge as a UNION
 // (deny wins downstream); Verify merges as an OVERRIDE (the highest layer that
 // sets a block wins); Hooks CONCATENATE (every layer's hooks all run, in layer
@@ -272,6 +434,49 @@ type Settings struct {
 	// this load created the template. The TUI surfaces a first-run hint so a
 	// new user knows where to configure models and credentials.
 	Bootstrapped bool
+
+	// GlobalSkillsDir is an optional directory of user-level skills loaded for every
+	// workspace. Skills here act as a shared capability pool (always available); a
+	// project-local skill of the same name takes precedence. Embedded hosts set it in
+	// StartServer from the dataDir parameter. Code-level only (yaml:"-").
+	GlobalSkillsDir string `json:"-"`
+
+	// GlobalPromptsDir is an optional directory of user-level prompt templates.
+	// Same pattern as GlobalSkillsDir: embedded hosts set it from dataDir; desktop
+	// defaults to ~/.codeagent/prompts/.
+	GlobalPromptsDir string `json:"-"`
+
+	// Profile selects the platform capability set the runtime assembles for. It is
+	// code-level only (set by the embedded host, not the YAML) so a desktop config
+	// file can never accidentally downgrade itself. Default (full) assumes a host
+	// that can spawn subprocesses and reach the whole filesystem; Sandboxed is for
+	// embedded hosts like iOS. See Profile.
+	Profile Profile `json:"-"`
+
+	// MCP configures external Model Context Protocol servers whose tools are
+	// registered alongside the built-in ones. It is code-level only (yaml:"-"):
+	// MCP servers are configured in a separate Claude-compatible `.mcp.json`
+	// document, not in this YAML, so a config authored for Claude Code is consumed
+	// verbatim. CLI entry points (run/repl/tui) populate this from CWD's
+	// `.mcp.json` via mcp.ResolveDesktop; the daemon (codeagentd) leaves it empty
+	// and resolves MCP per conversation workspace via WorkspaceRegistry.
+	// Embedded hosts (iOS/macOS) inject it in-memory (see embed.Options.MCPJSON).
+	// Empty (the default) disables it.
+	MCP mcp.Config `json:"-"`
+
+	Models map[string]ModelConfig `json:"-"`
+
+	// Warnings collects non-fatal configuration notes raised during load (e.g.
+	// legacy api_key_env usage slated for removal). Printed by CLI entry points
+	// at startup; empty when the config is clean. Code-level only (yaml:"-").
+	Warnings []string `json:"-"`
+
+	// StoreFactory, if set, creates the session store for a workspace root.
+	// When nil (default), the built-in SQLite store is used (backward compatible).
+	// External consumers that want their own storage backend (e.g. PostgreSQL)
+	// set this to their own factory. The returned Store owns its lifecycle;
+	// callers must Close it. This field is code-level only (yaml:"-").
+	StoreFactory session.StoreFactory `json:"-"`
 }
 
 // UserPath is the user-scope file, shared across all your projects. Empty home
@@ -717,4 +922,100 @@ func appendUnique(dst []string, xs ...string) []string {
 		dst = append(dst, x)
 	}
 	return dst
+}
+
+// CompactThreshold is the prompt-token count at which a session running the
+// given model should compact: the model's context window scaled by the
+// configured compact ratio. This is what makes compaction model-aware — a
+// 256k-window model gets a proportionally higher threshold than a 128k one.
+func (c Settings) CompactThreshold(mc ModelConfig) int {
+	return int(float64(mc.ContextWindow) * c.Agent.CompactRatio)
+}
+
+// CompactKeepTokens is the approximate token budget for the verbatim recent
+// tail kept by compaction (P12.a): the compaction threshold scaled by the keep
+// ratio. Everything older is folded into the summary.
+func (c Settings) CompactKeepTokens(mc ModelConfig) int {
+	return int(float64(c.CompactThreshold(mc)) * c.Agent.CompactKeepRatio)
+}
+
+// CredentialResolver builds a credential.Resolver from the configured
+// credentials section and environment. It returns a ChainResolver that tries
+// (in order): injected credentials (from the secrets map, populated by the
+// caller after LoadConfigBytes), environment variables, and explicit "none".
+//
+// When the credentials section is empty and no external resolver has been
+// injected, a plain EnvResolver is returned (CLI backward compat).
+func (c Settings) CredentialResolver(injected credential.Resolver) credential.Resolver {
+	var resolvers []credential.Resolver
+
+	// 1. Injected credentials (AgentKit secretsJSON / CLI --gateway-token).
+	if injected != nil {
+		resolvers = append(resolvers, injected)
+	}
+
+	// 2. Configured env-based credentials (nested: namespace → name → config).
+	if len(c.Credentials) > 0 {
+		envResolver := &credential.EnvResolver{}
+		for namespace, entries := range c.Credentials {
+			for name, cc := range entries {
+				if cc.Source == "env" && cc.Env != "" {
+					target := credential.Target{Namespace: namespace, Name: name}
+					if envResolver.Mapping == nil {
+						envResolver.Mapping = make(map[string][]credential.Target)
+					}
+					envResolver.Mapping[cc.Env] = append(envResolver.Mapping[cc.Env], target)
+				}
+			}
+		}
+		if envResolver.Mapping != nil {
+			resolvers = append(resolvers, envResolver)
+		}
+	}
+
+	// 3. Default env resolver for models with api_key_env but no explicit
+	//    credential section (backward compat).
+	resolvers = append(resolvers, &credential.EnvResolver{})
+
+	return &credential.ChainResolver{Resolvers: resolvers}
+}
+
+// ModelNames returns the configured model names, sorted.
+func (c Settings) ModelNames() []string {
+	return modelNames(c.Models)
+}
+
+func modelNames(models map[string]ModelConfig) []string {
+	names := make([]string, 0, len(models))
+	for n := range models {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	return names
+}
+
+func (c Settings) RuntimeMaxConcurrentTurns() int {
+	if c.Runtime.MaxConcurrentTurns < 1 {
+		return 1
+	}
+	return c.Runtime.MaxConcurrentTurns
+}
+
+// DisplayModelName returns a human-readable label for a model key. A grouped-
+// provider model (alias key provider.<b64>.model.<b64>) becomes
+// "<provider-id>/<model-id>"; any other key is returned unchanged. The TUI
+// /use picker and REPL /models use this so users never see base64 alias keys.
+func (c Settings) DisplayModelName(key string) string {
+	mc, ok := c.Models[key]
+	if !ok {
+		return key
+	}
+	if mc.Catalog.ConnectionID == "" {
+		return key // flat model, key is already the friendly name
+	}
+	display := mc.Catalog.DisplayName
+	if display == "" {
+		display = mc.Model
+	}
+	return mc.Catalog.ConnectionID + "/" + display
 }

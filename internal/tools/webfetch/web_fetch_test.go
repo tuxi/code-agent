@@ -1,7 +1,7 @@
 package webfetch
 
 import (
-	"code-agent/internal/app"
+	"code-agent/internal/settings"
 	"code-agent/internal/tools"
 	"context"
 	"encoding/json"
@@ -38,7 +38,7 @@ func TestWebFetchBasic(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	tool := newTool(app.WebConfig{}, true)
+	tool := newTool(settings.WebConfig{}, true)
 	result, err := tool.Execute(context.Background(), tools.ExecutionContext{}, json.RawMessage(`{"url":"`+srv.URL+`"}`))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -85,7 +85,7 @@ func TestWebFetchBasic(t *testing.T) {
 }
 
 func TestWebFetchMissingURL(t *testing.T) {
-	tool := NewTool(app.WebConfig{})
+	tool := NewTool(settings.WebConfig{})
 	_, err := tool.Execute(context.Background(), tools.ExecutionContext{}, json.RawMessage(`{}`))
 	if err == nil || !strings.Contains(err.Error(), "url") {
 		t.Errorf("expected url error, got: %v", err)
@@ -98,7 +98,7 @@ func TestWebFetchHTMLError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	tool := newTool(app.WebConfig{}, true)
+	tool := newTool(settings.WebConfig{}, true)
 	_, err := tool.Execute(context.Background(), tools.ExecutionContext{}, json.RawMessage(`{"url":"`+srv.URL+`"}`))
 	if err == nil || !strings.Contains(err.Error(), "404") {
 		t.Errorf("expected 404 error, got: %v", err)
@@ -147,7 +147,7 @@ func TestCache(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	tool := newTool(app.WebConfig{}, true)
+	tool := newTool(settings.WebConfig{}, true)
 
 	// First call — should fetch.
 	_, err := tool.Execute(context.Background(), tools.ExecutionContext{}, json.RawMessage(`{"url":"`+srv.URL+`"}`))
@@ -222,7 +222,7 @@ func TestSSRF_BlocksLoopback(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	tool := NewTool(app.WebConfig{}) // production: SSRF guard active
+	tool := NewTool(settings.WebConfig{}) // production: SSRF guard active
 	_, err := tool.Execute(context.Background(), tools.ExecutionContext{}, json.RawMessage(`{"url":"`+srv.URL+`"}`))
 	if err == nil || !strings.Contains(err.Error(), "blocked non-public address") {
 		t.Errorf("expected loopback to be blocked, got: %v", err)
@@ -232,7 +232,7 @@ func TestSSRF_BlocksLoopback(t *testing.T) {
 // TestSSRF_RejectsNonHTTPScheme verifies non-http(s) URLs are rejected up front,
 // before any dial — covering file://, gopher://, etc.
 func TestSSRF_RejectsNonHTTPScheme(t *testing.T) {
-	tool := NewTool(app.WebConfig{})
+	tool := NewTool(settings.WebConfig{})
 	_, err := tool.Execute(context.Background(), tools.ExecutionContext{}, json.RawMessage(`{"url":"file:///etc/passwd"}`))
 	if err == nil || !strings.Contains(err.Error(), "scheme") {
 		t.Errorf("expected scheme rejection, got: %v", err)

@@ -4,6 +4,7 @@ package webfetch
 
 import (
 	"bytes"
+	"code-agent/internal/settings"
 	"context"
 	"encoding/json"
 	"errors"
@@ -17,7 +18,6 @@ import (
 	"syscall"
 	"time"
 
-	"code-agent/internal/app"
 	"code-agent/internal/tools"
 	"code-agent/internal/truncate"
 	"code-agent/internal/web/cache"
@@ -131,14 +131,14 @@ type Tool struct {
 
 // NewTool builds a web_fetch tool from the web section of config. The HTTP
 // client it builds always blocks non-public dial targets (SSRF protection).
-func NewTool(cfg app.WebConfig) *Tool {
+func NewTool(cfg settings.WebConfig) *Tool {
 	return newTool(cfg, false)
 }
 
 // newTool is the internal constructor. allowPrivate disables the SSRF dial
 // guard and is for tests only (httptest servers bind to loopback); production
 // always reaches this via NewTool with allowPrivate=false.
-func newTool(cfg app.WebConfig, allowPrivate bool) *Tool {
+func newTool(cfg settings.WebConfig, allowPrivate bool) *Tool {
 	timeout := cfg.Fetch.TimeoutSeconds
 	if timeout <= 0 {
 		timeout = 30

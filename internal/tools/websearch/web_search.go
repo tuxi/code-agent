@@ -1,6 +1,7 @@
 package websearch
 
 import (
+	"code-agent/internal/settings"
 	"context"
 	"encoding/json"
 	"errors"
@@ -8,7 +9,6 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"code-agent/internal/app"
 	"code-agent/internal/credential"
 	"code-agent/internal/tools"
 )
@@ -25,7 +25,7 @@ type Tool struct {
 // NewTool builds a web_search tool from the web section of config. It returns
 // nil if no provider is configured (the tool is simply not registered, and the
 // model won't see it).
-func NewTool(cfg app.WebConfig, resolver credential.Resolver) *Tool {
+func NewTool(cfg settings.WebConfig, resolver credential.Resolver) *Tool {
 	if cfg.Search.Provider == "" || cfg.Search.Provider == "disabled" {
 		return nil
 	}

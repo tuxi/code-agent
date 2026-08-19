@@ -3,11 +3,11 @@ package main
 import (
 	"code-agent/cmd/codeagent/tui"
 	"code-agent/internal/agent"
-	"code-agent/internal/app"
 	"code-agent/internal/approve"
 	"code-agent/internal/goal"
 	"code-agent/internal/runtime"
 	"code-agent/internal/session"
+	"code-agent/internal/settings"
 	"code-agent/internal/tools"
 	"code-agent/internal/tools/git"
 	"context"
@@ -34,7 +34,7 @@ import (
 // it never prompts and runs hands-off. Ctrl-C pauses at the turn boundary.
 //
 // The goal package is auto-mode-agnostic: the worker simply inherits runner.Approver.
-func handleGoal(ctx context.Context, line string, cfg app.Config, mc app.ModelConfig, runner *agent.Runner, sess *session.Session, store session.Store, ask lineReader) error {
+func handleGoal(ctx context.Context, line string, cfg settings.Settings, mc settings.ModelConfig, runner *agent.Runner, sess *session.Session, store session.Store, ask lineReader) error {
 	arg := strings.TrimSpace(strings.TrimPrefix(line, "/goal"))
 	switch arg {
 	case "":
@@ -53,7 +53,7 @@ func handleGoal(ctx context.Context, line string, cfg app.Config, mc app.ModelCo
 	}
 }
 
-func goalStart(ctx context.Context, cfg app.Config, mc app.ModelConfig, runner *agent.Runner, sess *session.Session, store session.Store, ask lineReader, objective string) error {
+func goalStart(ctx context.Context, cfg settings.Settings, mc settings.ModelConfig, runner *agent.Runner, sess *session.Session, store session.Store, ask lineReader, objective string) error {
 	objective, budget := parseObjective(objective)
 	if objective == "" {
 		return fmt.Errorf("usage: /goal [--turns N] [--tokens N] [--wall DUR] <objective>")
@@ -80,7 +80,7 @@ func goalStart(ctx context.Context, cfg app.Config, mc app.ModelConfig, runner *
 	return nil
 }
 
-func goalResume(ctx context.Context, cfg app.Config, mc app.ModelConfig, runner *agent.Runner, sess *session.Session, store session.Store, ask lineReader) error {
+func goalResume(ctx context.Context, cfg settings.Settings, mc settings.ModelConfig, runner *agent.Runner, sess *session.Session, store session.Store, ask lineReader) error {
 	g, err := goal.FromSession(sess)
 	if err != nil {
 		return err
@@ -109,7 +109,7 @@ func goalResume(ctx context.Context, cfg app.Config, mc app.ModelConfig, runner 
 // means rejected. caveat != "" means admitted-with-a-warning (fuzzy, or the
 // admitter was unavailable and we failed open). Admission is advisory UX, not the
 // safety boundary — the approver guards high-risk actions regardless.
-func admitObjective(ctx context.Context, cfg app.Config, mc app.ModelConfig, runner *agent.Runner, objective string) (caveat string, err error) {
+func admitObjective(ctx context.Context, cfg settings.Settings, mc settings.ModelConfig, runner *agent.Runner, objective string) (caveat string, err error) {
 	provider, amc, resolveErr := runtime.ResolveSubAgentModel(cfg, mc, runner.Model)
 	if resolveErr != nil {
 		return fmt.Sprintf("准入判定不可用(%v),已从宽放行。", resolveErr), nil
@@ -131,7 +131,7 @@ func admitObjective(ctx context.Context, cfg app.Config, mc app.ModelConfig, run
 // agent.subagent_model knob) so the worker never grades itself. It does NOT print;
 // degraded reports that no separate model was configured (judge fell back to the
 // worker's model), which each driver surfaces its own way.
-func newGoalEngine(cfg app.Config, mc app.ModelConfig, runner *agent.Runner, sess *session.Session, store session.Store) (engine *goal.Engine, degraded bool, err error) {
+func newGoalEngine(cfg settings.Settings, mc settings.ModelConfig, runner *agent.Runner, sess *session.Session, store session.Store) (engine *goal.Engine, degraded bool, err error) {
 	checkerProvider, checkerMC, resolveErr := runtime.ResolveSubAgentModel(cfg, mc, runner.Model)
 	if resolveErr != nil {
 		return nil, false, resolveErr
@@ -162,7 +162,7 @@ func makeDiffFunc(root string) func(context.Context) string {
 
 // admitGoal is the REPL wrapper around admitObjective: it prints the caveat and
 // returns the rejection error.
-func admitGoal(ctx context.Context, cfg app.Config, mc app.ModelConfig, runner *agent.Runner, objective string) error {
+func admitGoal(ctx context.Context, cfg settings.Settings, mc settings.ModelConfig, runner *agent.Runner, objective string) error {
 	caveat, err := admitObjective(ctx, cfg, mc, runner, objective)
 	if err != nil {
 		return err
@@ -175,7 +175,7 @@ func admitGoal(ctx context.Context, cfg app.Config, mc app.ModelConfig, runner *
 
 // buildGoalEngine is the REPL wrapper around newGoalEngine: it prints the
 // degraded-judge warning.
-func buildGoalEngine(cfg app.Config, mc app.ModelConfig, runner *agent.Runner, sess *session.Session, store session.Store) (*goal.Engine, error) {
+func buildGoalEngine(cfg settings.Settings, mc settings.ModelConfig, runner *agent.Runner, sess *session.Session, store session.Store) (*goal.Engine, error) {
 	engine, degraded, err := newGoalEngine(cfg, mc, runner, sess, store)
 	if degraded {
 		fmt.Println("warning: no separate judge model (agent.subagent_model) configured — the checker runs the SAME model as the worker, so judge separation is degraded.")
@@ -188,13 +188,13 @@ func buildGoalEngine(cfg app.Config, mc app.ModelConfig, runner *agent.Runner, s
 // methods print; the TUI renders the returned strings (a stdout write would
 // corrupt the BubbleTea screen).
 type goalOps struct {
-	cfg    app.Config
-	mc     app.ModelConfig
+	cfg    settings.Settings
+	mc     settings.ModelConfig
 	runner *agent.Runner
 	store  session.Store
 }
 
-func buildGoalOps(cfg app.Config, mc app.ModelConfig, runner *agent.Runner, store session.Store) tui.GoalOps {
+func buildGoalOps(cfg settings.Settings, mc settings.ModelConfig, runner *agent.Runner, store session.Store) tui.GoalOps {
 	return goalOps{cfg: cfg, mc: mc, runner: runner, store: store}
 }
 
@@ -321,7 +321,7 @@ func goalStatusText(g *goal.Goal) string {
 // it reuses goalOps, prints the one-line outcome, and returns an exit-coded error
 // so the process exits with a status CI can branch on. SIGINT cancels the pursuit
 // (engine settles paused → exit code for paused).
-func pursueHeadless(ctx context.Context, cfg app.Config, mc app.ModelConfig, runner *agent.Runner, store session.Store, sess *session.Session, objective string) error {
+func pursueHeadless(ctx context.Context, cfg settings.Settings, mc settings.ModelConfig, runner *agent.Runner, store session.Store, sess *session.Session, objective string) error {
 	gctx, stop := signal.NotifyContext(ctx, os.Interrupt)
 	defer stop()
 

@@ -1,14 +1,13 @@
 package webfetch
 
 import (
+	"code-agent/internal/settings"
 	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
-
-	"code-agent/internal/app"
 )
 
 func TestTavilyExtractor(t *testing.T) {
@@ -70,7 +69,7 @@ func (f *fakeFallback) Extract(_ context.Context, _ string) (string, error) {
 // TestFetch_FallbackOnDirectFailure: a direct fetch to a dead port fails at the
 // transport layer, so the configured fallback recovers the content.
 func TestFetch_FallbackOnDirectFailure(t *testing.T) {
-	tool := newTool(app.WebConfig{}, true) // allowPrivate: dead-port dial isn't SSRF-blocked
+	tool := newTool(settings.WebConfig{}, true) // allowPrivate: dead-port dial isn't SSRF-blocked
 	fb := &fakeFallback{content: "## Recovered via fallback\nbody text"}
 	tool.fallback = fb
 
@@ -89,7 +88,7 @@ func TestFetch_FallbackOnDirectFailure(t *testing.T) {
 // TestFetch_NoFallbackOnSSRFBlock is the security-critical case: an SSRF-blocked
 // dial must NOT trigger the fallback, or the internal URL leaks to a third party.
 func TestFetch_NoFallbackOnSSRFBlock(t *testing.T) {
-	tool := NewTool(app.WebConfig{}) // production: SSRF guard active
+	tool := NewTool(settings.WebConfig{}) // production: SSRF guard active
 	fb := &fakeFallback{content: "should never be used"}
 	tool.fallback = fb
 

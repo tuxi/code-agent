@@ -1,7 +1,7 @@
 package runtime
 
 import (
-	"code-agent/internal/app"
+	"code-agent/internal/settings"
 	"code-agent/internal/skills"
 	"code-agent/internal/tools"
 	"testing"
@@ -9,14 +9,14 @@ import (
 
 // registerForProfile builds a registry with just the built-in tools for the given
 // profile and returns the set of registered tool names.
-func registerForProfile(t *testing.T, profile app.Profile) map[string]bool {
+func registerForProfile(t *testing.T, profile settings.Profile) map[string]bool {
 	t.Helper()
 	skillReg, err := skills.Load("", t.TempDir()) // empty dir => empty skills registry
 	if err != nil {
 		t.Fatalf("skills.Load: %v", err)
 	}
 	reg := tools.NewRegistry()
-	cfg := app.Config{Profile: profile}
+	cfg := settings.Settings{Profile: profile}
 	if err := RegisterBuiltinTools(reg, cfg, nil, skillReg, "", nil); err != nil {
 		t.Fatalf("RegisterBuiltinTools(%q): %v", profile, err)
 	}
@@ -36,9 +36,9 @@ func registerWithAllowlist(t *testing.T, allow []string) map[string]bool {
 		t.Fatalf("skills.Load: %v", err)
 	}
 	reg := tools.NewRegistry()
-	cfg := app.Config{
-		Agent: app.AgentConfig{BuiltinTools: &allow},
-		Web:   app.WebConfig{Search: app.WebSearchConfig{Provider: "searxng"}},
+	cfg := settings.Settings{
+		Agent: settings.AgentConfig{BuiltinTools: &allow},
+		Web:   settings.WebConfig{Search: settings.WebSearchConfig{Provider: "searxng"}},
 	}
 	if err := RegisterBuiltinTools(reg, cfg, nil, skillReg, "", nil); err != nil {
 		t.Fatalf("RegisterBuiltinTools: %v", err)
@@ -51,7 +51,7 @@ func registerWithAllowlist(t *testing.T, allow []string) map[string]bool {
 }
 
 func TestRegisterBuiltinToolsOmitsUnconfiguredSearchButKeepsFetch(t *testing.T) {
-	got := registerForProfile(t, app.ProfileSandboxed)
+	got := registerForProfile(t, settings.ProfileSandboxed)
 	if got["web_search"] {
 		t.Fatal("web_search must be absent when no search provider is configured")
 	}
@@ -84,7 +84,7 @@ func TestRegisterBuiltinTools_Allowlist(t *testing.T) {
 	}
 
 	// Nil (unset) allowlist: behaves as before — read_file present (no restriction).
-	full := registerForProfile(t, app.ProfileFull) // cfg with nil BuiltinTools
+	full := registerForProfile(t, settings.ProfileFull) // cfg with nil BuiltinTools
 	if !full["read_file"] {
 		t.Error("nil allowlist (default): read_file must be registered")
 	}
@@ -104,8 +104,8 @@ func TestRegisterBuiltinTools_SandboxedExcludesSubprocessTools(t *testing.T) {
 		"grep", "load_skill", "todo_write", "git_commit", "git_diff", "apply_patch",
 	}
 
-	full := registerForProfile(t, app.ProfileFull)
-	sandboxed := registerForProfile(t, app.ProfileSandboxed)
+	full := registerForProfile(t, settings.ProfileFull)
+	sandboxed := registerForProfile(t, settings.ProfileSandboxed)
 
 	for _, name := range subprocessTools {
 		if !full[name] {

@@ -1,11 +1,11 @@
 package server
 
 import (
+	"code-agent/internal/settings"
 	"encoding/json"
 	"strings"
 	"testing"
 
-	"code-agent/internal/app"
 	runtimepkg "code-agent/internal/runtime"
 )
 
@@ -17,15 +17,15 @@ func TestRuntimeContractPersistsIdentityAndCatalogRevisionWithoutSecrets(t *test
 	t.Cleanup(func() { runtimepkg.SetStoreBaseDir(oldBase) })
 
 	alias := "deepseek/deepseek-chat"
-	cfg := app.Config{
+	cfg := settings.Settings{
 		DefaultModel: alias,
-		Models: map[string]app.ModelConfig{
+		Models: map[string]settings.ModelConfig{
 			alias: {
 				Name: alias, Provider: "openai",
 				BaseURL: "https://secret-provider.example/v1", Model: "deepseek-chat",
 				ContextWindow: 128000,
-				Credential: app.CredentialRef{Namespace: "llm", Name: "deepseek-prod"},
-				Catalog: app.ModelCatalogMetadata{
+				Credential:    settings.CredentialRef{Namespace: "llm", Name: "deepseek-prod"},
+				Catalog: settings.ModelCatalogMetadata{
 					ConnectionID: "deepseek-prod", ProviderID: "deepseek",
 					ConnectionDisplayName: "DeepSeek Production",
 					DisplayName:           "DeepSeek Chat", SupportsTools: boolPointer(true),
@@ -35,11 +35,11 @@ func TestRuntimeContractPersistsIdentityAndCatalogRevisionWithoutSecrets(t *test
 		},
 	}
 
-	info1, catalog1, err := BuildRuntimeContract(cfg, "/workspace", "Xiaoyuan Mac", RuntimeProfileHeadless)
+	info1, catalog1, err := BuildRuntimeContract(cfg, "/workspace", "Xiaoyuan Mac", RuntimeProfileHeadless, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	info2, catalog2, err := BuildRuntimeContract(cfg, "/workspace", "Xiaoyuan Mac", RuntimeProfileHeadless)
+	info2, catalog2, err := BuildRuntimeContract(cfg, "/workspace", "Xiaoyuan Mac", RuntimeProfileHeadless, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,12 +89,12 @@ func TestRuntimeContractPersistsIdentityAndCatalogRevisionWithoutSecrets(t *test
 	}
 
 	changed := cfg
-	changed.Models = make(map[string]app.ModelConfig, len(cfg.Models))
+	changed.Models = make(map[string]settings.ModelConfig, len(cfg.Models))
 	for name, modelConfig := range cfg.Models {
 		modelConfig.Catalog.DisplayName = "DeepSeek Chat Updated"
 		changed.Models[name] = modelConfig
 	}
-	info3, catalog3, err := BuildRuntimeContract(changed, "/workspace", "Xiaoyuan Mac", RuntimeProfileHeadless)
+	info3, catalog3, err := BuildRuntimeContract(changed, "/workspace", "Xiaoyuan Mac", RuntimeProfileHeadless, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,7 +108,10 @@ func TestRuntimeModelCatalogAllowsZeroModels(t *testing.T) {
 	runtimepkg.SetStoreBaseDir(t.TempDir())
 	t.Cleanup(func() { runtimepkg.SetStoreBaseDir(oldBase) })
 	_, catalog, err := BuildRuntimeContract(
-		app.Config{Models: map[string]app.ModelConfig{}}, "/workspace", "", RuntimeProfileSandboxed,
+		settings.Settings{Models: map[string]settings.ModelConfig{}},
+		"/workspace",
+		"", RuntimeProfileSandboxed,
+		nil,
 	)
 	if err != nil {
 		t.Fatal(err)

@@ -24,9 +24,9 @@ import (
 	"code-agent/internal/credential"
 	"code-agent/internal/model"
 	"code-agent/internal/repos"
-	"code-agent/internal/settings"
 	"code-agent/internal/runtime"
 	"code-agent/internal/server"
+	"code-agent/internal/settings"
 )
 
 // defaultCapabilities is the capability set advertised in the WebSocket hello
@@ -74,13 +74,27 @@ func run() error {
 
 	root, _ := os.Getwd()
 	home, _ := os.UserHomeDir()
-	set, _ := runtime.LoadSettingsWithTrust(context.Background(), root, home, nil, runtime.TrustAlways, os.Stderr)
-	cfg := app.LoadConfigFromSettings(set)
+	cfg, _ := runtime.LoadSettingsWithTrust(context.Background(), root, home, nil, runtime.TrustAlways, os.Stderr)
 	// Mutable injected resolver (A2): POST /v1/secrets updates it, and every
 	// credential chain (catalog probing + actual calls) reads it — so a host
 	// can push provider keys to a running daemon without restarting.
 	mutableResolver := credential.NewMutableResolver()
 	var err error
+
+	// Shared credential share (Claude-style): the host app writes provider
+	// keys to ~/.codeagent/secrets.json. Load them so catalog probing and
+	// provider calls see app-managed keys even when no env var is set (the
+	// CLI does the same at startup). A POST /v1/secrets push (mutableResolver)
+	// wins over the file, which wins over env (CredentialResolver appends the
+	// env resolver after this injected layer). A missing/empty file yields nil.
+	secretsResolver, err := credential.SecretsFile{}.Load()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "warning: could not load ~/.codeagent/secrets.json:", err)
+	}
+	baseResolver := credential.Resolver(mutableResolver)
+	if secretsResolver != nil {
+		baseResolver = &credential.ChainResolver{Resolvers: []credential.Resolver{mutableResolver, secretsResolver}}
+	}
 	auth, err := server.ResolveExternalServerAuth(cfg.Server)
 	if err != nil {
 		return err
@@ -103,14 +117,14 @@ func run() error {
 		runtime.StoreFactory = cfg.StoreFactory
 	}
 
-	var mc app.ModelConfig
+	var mc settings.ModelConfig
 	var provider model.Provider
 	if len(cfg.Models) > 0 {
-		mc, err = cfg.SelectModel(modelName)
+		mc, err = app.SelectModel(modelName, cfg)
 		if err != nil {
 			return err
 		}
-		provider, err = runtime.BuildProvider(mc, cfg.Provider, nil)
+		provider, err = runtime.BuildProvider(mc, cfg.Provider, cfg.CredentialResolver(baseResolver))
 		if err != nil {
 			return err
 		}
@@ -156,7 +170,7 @@ func run() error {
 	// daemon's launch directory never decides which MCP tools a conversation sees.
 	// root for skills: "" means no project-local skills from the daemon itself;
 	// workspace-scoped skills are loaded per instance by WorkspaceRegistry.
-	toolReg, _, planRef, jobSink, err := runtime.BuildBaseRegistry(ctx, cfg, mc, provider, cfg.CredentialResolver(mutableResolver), telemetryStore, "", nil)
+	toolReg, _, planRef, jobSink, err := runtime.BuildBaseRegistry(ctx, cfg, mc, provider, cfg.CredentialResolver(baseResolver), telemetryStore, "", nil)
 	if err != nil {
 		return err
 	}
@@ -184,7 +198,7 @@ func run() error {
 	eventStore := &conversation.StoreEventAdapter{Store: telemetryStore}
 	active := conversation.NewActiveTurnRegistry()
 	subs := conversation.NewSubscriptionManager()
-	rb := runtime.NewServeRunBuilder(cfg, set, mc, provider, cfg.CredentialResolver(mutableResolver), toolReg, wsReg, planRef)
+	rb := runtime.NewServeRunBuilder(cfg, mc, provider, cfg.CredentialResolver(baseResolver), toolReg, wsReg, planRef)
 	executor := conversation.NewTurnExecutor(repo, eventStore, active, subs, rb)
 	executor.SetAssetRefReleaseService(rb)
 	maxConcurrentTurns := cfg.RuntimeMaxConcurrentTurns()
@@ -212,7 +226,7 @@ func run() error {
 		capabilities = append(capabilities, "public_git_clone_v1")
 	}
 	runtimeInfo, runtimeModels, err := server.BuildRuntimeContract(
-		cfg, cwd, cfg.Server.DisplayName, server.RuntimeProfileHeadless,
+		cfg, cwd, cfg.Server.DisplayName, server.RuntimeProfileHeadless, baseResolver,
 	)
 	if err != nil {
 		return err
@@ -236,13 +250,13 @@ func run() error {
 	ownerIdentity := owner.Identity()
 	fmt.Fprintf(os.Stderr, "[control-plane] owner ready instance=%s endpoint=%s protocol=%d\n", ownerIdentity.InstanceID, ownerIdentity.Endpoint, ownerIdentity.ProtocolVersion)
 	handler := server.NewMux(repo, eventStore, executor, server.MuxOptions{
-		ServerName:        buildinfo.ServerName(),
-		RuntimeInfo:       runtimeInfo,
-		RuntimeModels:     runtimeModels,
+		ServerName:    buildinfo.ServerName(),
+		RuntimeInfo:   runtimeInfo,
+		RuntimeModels: runtimeModels,
 		RuntimeModelsBuilder: func() server.RuntimeModelCatalog {
 			// A2: live rebuild with the current injected credentials so a
 			// POST /v1/secrets makes models available without a restart.
-			return server.BuildRuntimeModelCatalog(cfg, mutableResolver)
+			return server.BuildRuntimeModelCatalog(cfg, baseResolver)
 		},
 		InjectSecrets: func(targets map[credential.Target]credential.Credential) error {
 			mutableResolver.SetAll(targets)
@@ -257,7 +271,7 @@ func run() error {
 		Prompts:           wsReg,
 		CapabilityResolver: func(ctx context.Context) []string {
 			persistence, ok := repo.(conversation.UserAssetsPersistenceCapability)
-			if ok && persistence.SupportsUserAssetsPersistence() && rb.ImageInputCapability(ctx, cfg.CredentialResolver(mutableResolver)) {
+			if ok && persistence.SupportsUserAssetsPersistence() && rb.ImageInputCapability(ctx, cfg.CredentialResolver(baseResolver)) {
 				return []string{"image_input"}
 			}
 			return nil
@@ -267,7 +281,7 @@ func run() error {
 				fmt.Fprintf(os.Stderr, "[control-plane] session ready reconcile: %v\n", err)
 			}
 			_, _ = executor.RecoverSessionTurnInputs(context.WithoutCancel(ctx), sessionID)
-			go executor.FlushAssetRefReleases(context.WithoutCancel(ctx), cfg.CredentialResolver(mutableResolver))
+			go executor.FlushAssetRefReleases(context.WithoutCancel(ctx), cfg.CredentialResolver(baseResolver))
 		},
 		OwnershipChanged: func(ctx context.Context) {
 			if err := owner.Heartbeat(context.WithoutCancel(ctx)); err != nil {
@@ -279,7 +293,6 @@ func run() error {
 		SessionForks:        owner,
 		WorkflowSnapshot:    runtime.NewWorkflowSnapshotFunc(),
 	})
-
 
 	lis, err := net.Listen("tcp", addr)
 	if err != nil {

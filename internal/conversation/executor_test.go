@@ -1,7 +1,7 @@
 package conversation
 
 import (
-	"code-agent/internal/app"
+	"code-agent/internal/settings"
 	"context"
 	"encoding/json"
 	"errors"
@@ -102,14 +102,14 @@ func (b *fakeRunBuilder) Build(ctx RuntimeContext) TurnRunner {
 
 type defaultOnlyRunBuilder struct{ fakeRunBuilder }
 
-func (b *defaultOnlyRunBuilder) ResolveModel(wireModel string) (*app.ModelConfig, error) {
+func (b *defaultOnlyRunBuilder) ResolveModel(wireModel string) (*settings.ModelConfig, error) {
 	// Cross-session turns carry the target session's default model as the wire
 	// model (AcceptCrossSessionMessage falls back to sess.Model). Accept it and
 	// always resolve to the fixed target default.
 	if wireModel == "" {
 		return nil, fmt.Errorf("unexpected empty wire model: cross-session default should be present")
 	}
-	mc := app.ModelConfig{
+	mc := settings.ModelConfig{
 		Model: "resolved-target-default",
 		Name:  "resolved-target-default",
 	}

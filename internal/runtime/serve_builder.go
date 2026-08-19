@@ -33,7 +33,7 @@ import (
 // runner it was built with; the swap lands at the next Build, i.e. the next turn
 // boundary — the same guarantee the TUI's /use already relies on.
 type ServeRunBuilder struct {
-	Cfg app.Config
+	//Cfg app.Config
 	// Set is the merged project settings view (permissions/verify/hooks +
 	// infrastructure). The assembler provides it: desktop loads the disk
 	// settings.json via settings.Load, embedded parses the host-injected
@@ -50,7 +50,7 @@ type ServeRunBuilder struct {
 	rules *approve.RuleStore
 
 	mu         sync.RWMutex
-	mc         app.ModelConfig
+	mc         settings.ModelConfig
 	provider   model.Provider
 	credential credential.Resolver
 
@@ -69,9 +69,9 @@ func (b *ServeRunBuilder) SetSessionControl(control tools.SessionControl) {
 // set is the merged settings view (permissions/verify/hooks + infrastructure),
 // provided by the assembler — desktop loads disk settings.json, embedded parses
 // the host-injected SettingsJSON.
-func NewServeRunBuilder(cfg app.Config, set settings.Settings, mc app.ModelConfig, provider model.Provider, cred credential.Resolver, toolReg *tools.Registry, wsReg *WorkspaceRegistry, _ *agent.RunnerRef) *ServeRunBuilder {
+func NewServeRunBuilder(set settings.Settings, mc settings.ModelConfig, provider model.Provider, cred credential.Resolver, toolReg *tools.Registry, wsReg *WorkspaceRegistry, _ *agent.RunnerRef) *ServeRunBuilder {
 	return &ServeRunBuilder{
-		Cfg: cfg, Set: set, ToolReg: toolReg, WSReg: wsReg,
+		Set: set, ToolReg: toolReg, WSReg: wsReg,
 		rules:   approve.NewRuleStore("", set.Permissions.Allow, set.Permissions.Deny),
 		wsRules: make(map[string]*approve.RuleStore),
 		mc:      mc, provider: provider, credential: cred,
@@ -122,7 +122,7 @@ func (b *ServeRunBuilder) approvalMode(root string) approve.Mode {
 
 // Reconfigure hot-swaps the model config and provider used by future turns
 // (v1.2 §3.3). It does not touch the listener or any in-flight turn.
-func (b *ServeRunBuilder) Reconfigure(mc app.ModelConfig, provider model.Provider, cred credential.Resolver) {
+func (b *ServeRunBuilder) Reconfigure(mc settings.ModelConfig, provider model.Provider, cred credential.Resolver) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.mc = mc
@@ -130,11 +130,11 @@ func (b *ServeRunBuilder) Reconfigure(mc app.ModelConfig, provider model.Provide
 	b.credential = cred
 }
 
-func (b *ServeRunBuilder) ResolveModel(wireModel string) (*app.ModelConfig, error) {
+func (b *ServeRunBuilder) ResolveModel(wireModel string) (*settings.ModelConfig, error) {
 	b.mu.RLock()
-	defaultMC, cfg := b.mc, b.Cfg
+	defaultMC := b.mc
 	b.mu.RUnlock()
-	selected, err := resolveTurnModel(cfg, defaultMC, wireModel)
+	selected, err := resolveTurnModel(b.Set, defaultMC, wireModel)
 	if err != nil {
 		return nil, err
 	}
@@ -188,17 +188,17 @@ func (ModelUnavailableError) SafeMessage() string {
 // provider.* namespace is reserved for AgentKit Runtime Aliases and is always
 // strict. A legacy bare wire-model string is accepted only while the runtime's
 // default endpoint is the Talkify Gateway.
-func resolveTurnModel(cfg app.Config, defaultMC app.ModelConfig, requested string) (app.ModelConfig, error) {
-	if cfg.Models != nil && len(cfg.Models) == 0 {
-		return app.ModelConfig{}, ModelNotConfiguredError{}
+func resolveTurnModel(cfg settings.Settings, defaultMC settings.ModelConfig, requested string) (settings.ModelConfig, error) {
+	if cfg.Providers != nil && len(cfg.Providers) == 0 {
+		return settings.ModelConfig{}, ModelNotConfiguredError{}
 	}
 	if requested == "" {
 		return defaultMC, nil
 	}
-	if selected, err := cfg.SelectModel(requested); err == nil {
+	if selected, err := app.SelectModel(requested, cfg); err == nil {
 		return selected, nil
 	} else if strings.HasPrefix(requested, "provider.") {
-		return app.ModelConfig{}, ModelUnavailableError{Requested: requested, Cause: err}
+		return settings.ModelConfig{}, ModelUnavailableError{Requested: requested, Cause: err}
 	}
 	if !isGatewayModelEndpoint(defaultMC.BaseURL) {
 		// Cross-session turns may pass a model override string (e.g.
@@ -247,7 +247,7 @@ func (b *ServeRunBuilder) ImageInputCapability(ctx context.Context, cred credent
 
 func (b *ServeRunBuilder) gatewayProvider(cred credential.Resolver) (model.Provider, bool) {
 	b.mu.RLock()
-	mc, pc, baseCred := b.mc, b.Cfg.Provider, b.credential
+	mc, pc, baseCred := b.mc, b.Set.Provider, b.credential
 	b.mu.RUnlock()
 	if !isGatewayModelEndpoint(mc.BaseURL) {
 		return nil, false
@@ -288,7 +288,7 @@ func (b *ServeRunBuilder) ReleaseConversationAssetRefs(ctx context.Context, cred
 func (b *ServeRunBuilder) Build(ctx conversation.RuntimeContext) conversation.TurnRunner {
 	b.mu.RLock()
 	defaultMC, baseProvider, baseCredential, control := b.mc, b.provider, b.credential, b.control
-	cfg := b.Cfg
+	cfg := b.Set
 	b.mu.RUnlock()
 
 	mc, modelErr := resolveTurnModel(cfg, defaultMC, ctx.Model)
@@ -375,7 +375,7 @@ func (b *ServeRunBuilder) Build(ctx conversation.RuntimeContext) conversation.Tu
 	ctx.Approver = wrapped
 	ctx.PlanApprover = wrapped
 
-	runner := BuildRunner(b.Cfg, b.Set, mc, provider, turnTools, skillReg, ctx.Approver, ctx.Publisher, wsRules, workspacePath)
+	runner := BuildRunner(b.Set, mc, provider, turnTools, skillReg, ctx.Approver, ctx.Publisher, wsRules, workspacePath)
 	runner.ReservedTurnID = ctx.TurnID
 	runner.RequestID = ctx.RequestID
 	runner.SessionControl = control
@@ -428,7 +428,7 @@ func (r failedTurnRunner) ResumeTurn(context.Context, *session.Session) (agent.T
 	return agent.TurnResult{}, r.err
 }
 
-func rebindTurnTask(registry *tools.Registry, cfg app.Config, mc app.ModelConfig, provider model.Provider, cred credential.Resolver, root string, skillReg *skills.Registry) {
+func rebindTurnTask(registry *tools.Registry, cfg settings.Settings, mc settings.ModelConfig, provider model.Provider, cred credential.Resolver, root string, skillReg *skills.Registry) {
 	raw, ok := registry.Get("task")
 	if !ok {
 		return

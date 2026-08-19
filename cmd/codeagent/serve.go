@@ -1,16 +1,15 @@
 package main
 
 import (
+	"code-agent/internal/settings"
 	"context"
 	"fmt"
 	"net/http"
 	"os"
 
-	"code-agent/internal/app"
 	"code-agent/internal/embed"
 	"code-agent/internal/mcp"
 	"code-agent/internal/model"
-	"code-agent/internal/runtime"
 	"code-agent/internal/server"
 )
 
@@ -20,7 +19,7 @@ import (
 // runtime expose identical behavior. Tools are stateless — each Execute call
 // receives its workspace via ExecutionContext — so the same tool instances serve
 // every conversation regardless of workspace.
-func runServe(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider model.Provider, addr string) error {
+func runServe(ctx context.Context, cfg settings.Settings, mc settings.ModelConfig, provider model.Provider, addr string) error {
 	root, _ := os.Getwd()
 	auth, err := server.ResolveExternalServerAuth(cfg.Server)
 	if err != nil {
@@ -38,12 +37,8 @@ func runServe(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider 
 	// workspace-scoped path.
 	cfg.MCP = mcp.Config{}
 
-	// The CLI serve path uses process lifecycle, not the in-app suspend/resume
-	// verbs, so it ignores the returned Runtime bundle.
-	home, _ := os.UserHomeDir()
-	serveSet, _ := runtime.LoadSettingsWithTrust(ctx, root, home, nil, runtime.TrustAlways, os.Stderr)
 	handler, _, closers, err := embed.Assemble(
-		ctx, cfg, serveSet, mc, provider, cfg.CredentialResolver(nil), root, "",
+		ctx, cfg, mc, provider, cfg.CredentialResolver(nil), root, "",
 		embed.RuntimeServerOptions{
 			Profile: server.RuntimeProfileHeadless, DisplayName: cfg.Server.DisplayName, Auth: auth,
 		},

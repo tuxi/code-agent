@@ -2,9 +2,9 @@ package main
 
 import (
 	"code-agent/internal/agent"
-	"code-agent/internal/app"
 	"code-agent/internal/model"
 	"code-agent/internal/runtime"
+	"code-agent/internal/settings"
 	"code-agent/internal/tools"
 	"context"
 	"encoding/json"
@@ -77,8 +77,8 @@ func testSubAgent(provider model.Provider, root string) *runtime.SubAgent {
 	return &runtime.SubAgent{
 		Root:     root,
 		Provider: provider,
-		MC:       app.ModelConfig{Name: "test", Model: "test-model", ContextWindow: 128000, Temperature: 0.2},
-		Cfg:      app.Config{Agent: app.AgentConfig{CompactRatio: 0.5}},
+		MC:       settings.ModelConfig{Name: "test", Model: "test-model", ContextWindow: 128000, Temperature: 0.2},
+		Cfg:      settings.Settings{Agent: settings.AgentConfig{CompactRatio: 0.5}},
 		ReadOnly: tools.NewRegistry(), // empty: the fake model ignores tools
 	}
 }
@@ -99,8 +99,8 @@ func TestSubAgentPersistsTranscript(t *testing.T) {
 	sa := &runtime.SubAgent{
 		Root:     t.TempDir(),
 		Provider: answerProvider{content: "answer at loop.go:42"},
-		MC:       app.ModelConfig{Name: "test", Model: "test-model", ContextWindow: 128000, Temperature: 0.2},
-		Cfg:      app.Config{Agent: app.AgentConfig{CompactRatio: 0.5}},
+		MC:       settings.ModelConfig{Name: "test", Model: "test-model", ContextWindow: 128000, Temperature: 0.2},
+		Cfg:      settings.Settings{Agent: settings.AgentConfig{CompactRatio: 0.5}},
 		ReadOnly: tools.NewRegistry(),
 		Store:    store,
 	}
@@ -182,7 +182,7 @@ func TestNewSubAgentReadOnlySetIsFailClosed(t *testing.T) {
 	for _, name := range []string{"read_file", "grep", "edit_file", "run_command", "git_commit"} {
 		_ = full.Register(namedTool{name})
 	}
-	sa := runtime.NewSubAgent(app.Config{}, app.ModelConfig{Name: "m"}, answerProvider{}, t.TempDir(), full, "", nil, nil, nil)
+	sa := runtime.NewSubAgent(settings.Settings{}, settings.ModelConfig{Name: "m"}, answerProvider{}, t.TempDir(), full, "", nil, nil, nil)
 
 	for _, want := range []string{"read_file", "grep"} {
 		if _, ok := sa.ReadOnly.Get(want); !ok {
@@ -204,8 +204,8 @@ func TestDenyAllRefusesEverything(t *testing.T) {
 
 func TestResolveSubAgentModelInheritsWhenUnset(t *testing.T) {
 	parent := answerProvider{content: "x"}
-	mc := app.ModelConfig{Name: "main", Model: "main-model"}
-	prov, gotMC, err := runtime.ResolveSubAgentModel(app.Config{}, mc, parent)
+	mc := settings.ModelConfig{Name: "main", Model: "main-model"}
+	prov, gotMC, err := runtime.ResolveSubAgentModel(settings.Settings{}, mc, parent)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -219,8 +219,8 @@ func TestResolveSubAgentModelInheritsWhenUnset(t *testing.T) {
 
 func TestResolveSubAgentModelRejectsUnknown(t *testing.T) {
 	parent := answerProvider{content: "x"}
-	mc := app.ModelConfig{Name: "main", Model: "main-model"}
-	cfg := app.Config{Agent: app.AgentConfig{SubagentModel: "ghost"}} // not in Models
+	mc := settings.ModelConfig{Name: "main", Model: "main-model"}
+	cfg := settings.Settings{Agent: settings.AgentConfig{SubagentModel: "ghost"}} // not in Models
 	_, _, err := runtime.ResolveSubAgentModel(cfg, mc, parent)
 	if err == nil {
 		t.Fatal("an unknown explicit subagent_model must fail")

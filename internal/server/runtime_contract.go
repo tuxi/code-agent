@@ -1,6 +1,7 @@
 package server
 
 import (
+	"code-agent/internal/settings"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -9,7 +10,6 @@ import (
 	"sort"
 	"strings"
 
-	"code-agent/internal/app"
 	"code-agent/internal/buildinfo"
 	"code-agent/internal/credential"
 	"code-agent/internal/model"
@@ -83,14 +83,14 @@ type RuntimeModelDescriptor struct {
 // GET /v1/runtime/models after a POST /v1/secrets — the startup snapshot
 // (BuildRuntimeContract) and the live view diverge only in credential
 // availability.
-func BuildRuntimeModelCatalog(cfg app.Config, injected credential.Resolver) RuntimeModelCatalog {
+func BuildRuntimeModelCatalog(cfg settings.Settings, injected credential.Resolver) RuntimeModelCatalog {
 	return buildRuntimeModelCatalog(cfg, injected)
 }
 
 // BuildRuntimeContract constructs allowlisted public DTOs and binds them to the
 // durable identity of the current session data source.
-func BuildRuntimeContract(cfg app.Config, root, displayName, profile string) (RuntimeInfo, RuntimeModelCatalog, error) {
-	catalog := buildRuntimeModelCatalog(cfg, nil)
+func BuildRuntimeContract(cfg settings.Settings, root, displayName, profile string, injected credential.Resolver) (RuntimeInfo, RuntimeModelCatalog, error) {
+	catalog := buildRuntimeModelCatalog(cfg, injected)
 	fingerprint, err := json.Marshal(catalog)
 	if err != nil {
 		return RuntimeInfo{}, RuntimeModelCatalog{}, err
@@ -119,11 +119,11 @@ func BuildRuntimeContract(cfg app.Config, root, displayName, profile string) (Ru
 	}, catalog, nil
 }
 
-func buildRuntimeModelCatalog(cfg app.Config, injected credential.Resolver) RuntimeModelCatalog {
+func buildRuntimeModelCatalog(cfg settings.Settings, injected credential.Resolver) RuntimeModelCatalog {
 	type connectionBuilder struct {
-		connection      RuntimeModelConnection
-		seenModels      map[string]struct{} // wireModelID → seen, for dedup across aliases
-		seenCanonical   map[string]string   // wireModelID → canonical alias
+		connection    RuntimeModelConnection
+		seenModels    map[string]struct{} // wireModelID → seen, for dedup across aliases
+		seenCanonical map[string]string   // wireModelID → canonical alias
 	}
 	// Wire v2: real availability instead of the hardcoded true. Probe each
 	// model's credential through the configured resolver chain (env + the
@@ -243,7 +243,7 @@ func buildRuntimeModelCatalog(cfg app.Config, injected credential.Resolver) Runt
 // credential (local base URL / source none), or its credential is declared
 // as injected (the real secret will be provided by the host at runtime; the
 // env-based resolver chain won't see it at catalog-build time).
-func probeModelAvailability(cfg app.Config, mc app.ModelConfig, resolver credential.Resolver, ctx context.Context) (available bool, reason, credStatus, credSource string) {
+func probeModelAvailability(cfg settings.Settings, mc settings.ModelConfig, resolver credential.Resolver, ctx context.Context) (available bool, reason, credStatus, credSource string) {
 	// Declared as injected → treat as configured (the secret is not in the
 	// env chain — it arrives via injectSecrets / Reconfigure at runtime).
 	if !mc.Credential.IsZero() {
@@ -276,7 +276,7 @@ func probeModelAvailability(cfg app.Config, mc app.ModelConfig, resolver credent
 
 // credentialSourceFor maps a credential ref's namespace to the wire "source"
 // label. Injected credentials (gateway) are declared, not probed.
-func credentialSourceFor(ref app.CredentialRef) string {
+func credentialSourceFor(ref settings.CredentialRef) string {
 	if ref.Namespace == "gateway" {
 		return "injected"
 	}

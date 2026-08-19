@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"code-agent/internal/settings"
 	"context"
 	"fmt"
 	"os"
@@ -8,7 +9,6 @@ import (
 	"sync"
 	"time"
 
-	"code-agent/internal/app"
 	"code-agent/internal/mcp"
 	"code-agent/internal/session"
 	"code-agent/internal/skills"
@@ -61,9 +61,9 @@ type WorkspaceInstance struct {
 // workspaceMCP carries everything buildInstance needs to resolve and connect a
 // workspace's MCP servers. Set once via EnableMCP before the first Get.
 type workspaceMCP struct {
-	ctx           context.Context // daemon-lifetime; MCP sessions outlive one request
-	base          *tools.Registry // cloned per workspace; MCP tools registered on top
-	cfg           app.Config      // Agent.ToolAllowed gating + Profile (stdio filter)
+	ctx           context.Context   // daemon-lifetime; MCP sessions outlive one request
+	base          *tools.Registry   // cloned per workspace; MCP tools registered on top
+	cfg           settings.Settings // Agent.ToolAllowed gating + Profile (stdio filter)
 	injected      []mcp.ServerConfig
 	inheritClaude bool
 }
@@ -116,7 +116,7 @@ func NewWorkspaceRegistry(globalSkillsDir string) *WorkspaceRegistry {
 //
 // ctx should be daemon-scoped, not request-scoped: MCP sessions live until the
 // workspace closes.
-func (wr *WorkspaceRegistry) EnableMCP(ctx context.Context, base *tools.Registry, cfg app.Config, injected []mcp.ServerConfig, inheritClaude bool) {
+func (wr *WorkspaceRegistry) EnableMCP(ctx context.Context, base *tools.Registry, cfg settings.Settings, injected []mcp.ServerConfig, inheritClaude bool) {
 	wr.mu.Lock()
 	defer wr.mu.Unlock()
 	wr.mcp = &workspaceMCP{

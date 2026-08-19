@@ -1,9 +1,8 @@
 package embed
 
 import (
+	"code-agent/internal/settings"
 	"testing"
-
-	"code-agent/internal/app"
 )
 
 // applyConnections unit tests — cover the credential-ref routing, the
@@ -11,7 +10,7 @@ import (
 // that probeModelAvailability relies on.
 
 func TestApplyConnectionsInjectedBYOKUsesLLMNamespace(t *testing.T) {
-	cfg := app.Config{}
+	cfg := settings.Settings{}
 	conns := map[string]connectionDefinition{
 		"deepseek": {
 			API:     "openai",
@@ -28,7 +27,7 @@ func TestApplyConnectionsInjectedBYOKUsesLLMNamespace(t *testing.T) {
 	applyConnections(&cfg, conns)
 
 	mc := cfg.Models["deepseek-v4-flash"]
-	if mc.Credential != (app.CredentialRef{Namespace: "llm", Name: "deepseek"}) {
+	if mc.Credential != (settings.CredentialRef{Namespace: "llm", Name: "deepseek"}) {
 		t.Errorf("credential = %+v, want llm/deepseek", mc.Credential)
 	}
 	// The injected credential must be recorded in the Credentials section so
@@ -39,7 +38,7 @@ func TestApplyConnectionsInjectedBYOKUsesLLMNamespace(t *testing.T) {
 }
 
 func TestApplyConnectionsJWTUsesGatewayNamespace(t *testing.T) {
-	cfg := app.Config{}
+	cfg := settings.Settings{}
 	conns := map[string]connectionDefinition{
 		"gateway": {
 			API:     "openai",
@@ -53,7 +52,7 @@ func TestApplyConnectionsJWTUsesGatewayNamespace(t *testing.T) {
 	applyConnections(&cfg, conns)
 
 	mc := cfg.Models["gateway"]
-	if mc.Credential != (app.CredentialRef{Namespace: "gateway", Name: "default"}) {
+	if mc.Credential != (settings.CredentialRef{Namespace: "gateway", Name: "default"}) {
 		t.Errorf("credential = %+v, want gateway/default", mc.Credential)
 	}
 	if cc, ok := cfg.Credentials["gateway"]["default"]; !ok || cc.Source != "injected" {
@@ -62,7 +61,7 @@ func TestApplyConnectionsJWTUsesGatewayNamespace(t *testing.T) {
 }
 
 func TestApplyConnectionsRuntimeAliasIsFriendlyName(t *testing.T) {
-	cfg := app.Config{}
+	cfg := settings.Settings{}
 	conns := map[string]connectionDefinition{
 		"deepseek": {
 			API:     "openai",
@@ -97,7 +96,7 @@ func TestApplyConnectionsRuntimeAliasIsFriendlyName(t *testing.T) {
 }
 
 func TestApplyConnectionsExplicitNamespaceOverridesSource(t *testing.T) {
-	cfg := app.Config{}
+	cfg := settings.Settings{}
 	conns := map[string]connectionDefinition{
 		"my-provider": {
 			API:     "openai",
@@ -115,12 +114,12 @@ func TestApplyConnectionsExplicitNamespaceOverridesSource(t *testing.T) {
 	applyConnections(&cfg, conns)
 
 	mc := cfg.Models["model-a"]
-	if mc.Credential != (app.CredentialRef{Namespace: "llm", Name: "my-key"}) {
+	if mc.Credential != (settings.CredentialRef{Namespace: "llm", Name: "my-key"}) {
 		t.Errorf("credential = %+v, want llm/my-key (explicit namespace)", mc.Credential)
 	}
 }
 
-func keys(m map[string]app.ModelConfig) []string {
+func keys(m map[string]settings.ModelConfig) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {
 		out = append(out, k)

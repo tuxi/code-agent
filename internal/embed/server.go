@@ -163,7 +163,7 @@ type Handle struct {
 	// Lifecycle state (v1.2). srvCtx is the server-scoped context resumed turns run
 	// under (so Stop cancels them); cfg + rt back Suspend/ResumeSession/Reconfigure.
 	srvCtx     context.Context
-	cfg        app.Config
+	cfg        settings.Settings
 	rt         *Runtime
 	credential credential.Resolver
 	modelName  string
@@ -563,7 +563,7 @@ func (h *Handle) Reconfigure(connectionsJSON, secretsJSON, modelName string) err
 		if modelName != "" {
 			return runtime.ModelNotConfiguredError{}
 		}
-		h.rt.Builder.Reconfigure(app.ModelConfig{}, nil, credChain)
+		h.rt.Builder.Reconfigure(settings.ModelConfig{}, nil, credChain)
 		h.cfg = cfg
 		h.credential = credChain
 		h.modelName = ""
@@ -573,7 +573,7 @@ func (h *Handle) Reconfigure(connectionsJSON, secretsJSON, modelName string) err
 	if selectedModelName == "" {
 		selectedModelName = h.modelName
 	}
-	mc, err := cfg.SelectModel(selectedModelName)
+	mc, err := app.SelectModel(selectedModelName, cfg)
 	if err != nil {
 		return err
 	}
@@ -634,10 +634,6 @@ func StartServer(ctx context.Context, opt Options) (*Handle, error) {
 	if err := validateEmbeddedLoopbackAddress(opt.Addr); err != nil {
 		return nil, err
 	}
-	cfg, err := app.LoadConfigBytes(nil)
-	if err != nil {
-		return nil, err
-	}
 
 	// Redirect the session store off $HOME (the read-only iOS container) to a
 	// writable host-supplied directory. The same directory owns the persistent
@@ -650,8 +646,6 @@ func StartServer(ctx context.Context, opt Options) (*Handle, error) {
 	settingsPath := ""
 	if dataDir != "" {
 		runtime.SetStoreBaseDir(filepath.Join(dataDir, ".codeagent"))
-		cfg.GlobalSkillsDir = filepath.Join(dataDir, "skills")
-		cfg.GlobalPromptsDir = filepath.Join(dataDir, "prompts")
 		settingsPath = filepath.Join(dataDir, ".codeagent", "settings.json")
 	}
 
@@ -677,8 +671,10 @@ func StartServer(ctx context.Context, opt Options) (*Handle, error) {
 	var embeddedSettings settings.Settings
 	if hasDisk && settingsHasInfrastructure(diskFile) {
 		// Disk is authoritative for infrastructure.
-		cfg = app.FromSettings(settingsFileToSettings(diskFile))
-		embeddedSettings = settingsFileToSettings(diskFile)
+		embeddedSettings = diskFile.ToSettings()
+		embeddedSettings = app.LoadFromSettings(embeddedSettings)
+		embeddedSettings.GlobalSkillsDir = filepath.Join(dataDir, "skills")
+		embeddedSettings.GlobalPromptsDir = filepath.Join(dataDir, "prompts")
 	}
 	if opt.SettingsJSON != "" {
 		sf, err := settings.ParseJSON([]byte(opt.SettingsJSON))
@@ -688,7 +684,7 @@ func StartServer(ctx context.Context, opt Options) (*Handle, error) {
 		// Fallback for a migration/legacy host that never persisted a seed: the
 		// injected infrastructure is authoritative only when disk has none.
 		if settingsHasInfrastructure(sf) && (!hasDisk || !settingsHasInfrastructure(diskFile)) {
-			cfg = app.FromSettings(settingsFileToSettings(sf))
+			embeddedSettings = app.FromSettings(sf.ToSettings())
 		}
 		// Behavior (permissions/verify/hooks) is always host-injected.
 		embeddedSettings.Permissions = sf.Permissions
@@ -702,11 +698,11 @@ func StartServer(ctx context.Context, opt Options) (*Handle, error) {
 	if conns, err := parseConnectionsJSON(opt.ConnectionsJSON); err != nil {
 		return nil, err
 	} else {
-		applyConnections(&cfg, conns)
+		applyConnections(&embeddedSettings, conns)
 	}
 	// MCP servers are injected as a Claude-compatible `.mcp.json` document rather
 	// than embedded in the YAML config. Empty => no MCP.
-	if cfg.MCP, err = mcp.ParseJSON([]byte(opt.MCPJSON)); err != nil {
+	if embeddedSettings.MCP, err = mcp.ParseJSON([]byte(opt.MCPJSON)); err != nil {
 		return nil, err
 	}
 	if opt.WorkspaceDir != "" {
@@ -714,7 +710,7 @@ func StartServer(ctx context.Context, opt Options) (*Handle, error) {
 	}
 
 	if opt.Sandboxed {
-		cfg.Profile = app.ProfileSandboxed
+		embeddedSettings.Profile = settings.ProfileSandboxed
 		embeddedSettings.Hooks = nil // hooks run `sh -c`; disable them on a no-subprocess host
 	}
 
@@ -722,21 +718,21 @@ func StartServer(ctx context.Context, opt Options) (*Handle, error) {
 	// and let POST /v1/secrets update it live. injectSecrets still performs the
 	// cfg mutation (credential ref alignment + web search keys); its entries are
 	// copied into the mutable resolver so the startup set is also HTTP-visible.
-	injectedResolver := injectSecrets(&cfg, opt.Secrets)
+	injectedResolver := injectSecrets(&embeddedSettings, opt.Secrets)
 	mutableResolver := credential.NewMutableResolver()
 	if sr, ok := injectedResolver.(credential.StaticResolver); ok {
 		mutableResolver.SetAll(map[credential.Target]credential.Credential(sr))
 	}
-	credChain := cfg.CredentialResolver(mutableResolver)
+	credChain := embeddedSettings.CredentialResolver(mutableResolver)
 
-	var mc app.ModelConfig
+	var mc settings.ModelConfig
 	var provider model.Provider
-	if len(cfg.Models) > 0 {
-		mc, err = cfg.SelectModel(opt.ModelName)
+	if len(embeddedSettings.Models) > 0 {
+		mc, err = app.SelectModel(opt.ModelName, embeddedSettings)
 		if err != nil {
 			return nil, err
 		}
-		provider, err = runtime.BuildProvider(mc, cfg.Provider, credChain)
+		provider, err = runtime.BuildProvider(mc, embeddedSettings.Provider, credChain)
 		if err != nil {
 			return nil, err
 		}
@@ -748,7 +744,7 @@ func StartServer(ctx context.Context, opt Options) (*Handle, error) {
 	// observers and background goroutines tied to it wind down.
 	srvCtx, cancel := context.WithCancel(ctx)
 
-	h := &Handle{cancel: cancel, serveErr: make(chan error, 1), srvCtx: srvCtx, cfg: cfg, credential: credChain, modelName: opt.ModelName}
+	h := &Handle{cancel: cancel, serveErr: make(chan error, 1), srvCtx: srvCtx, cfg: embeddedSettings, credential: credChain, modelName: opt.ModelName}
 	// On any error after this point, release whatever we already acquired.
 	ok := false
 	defer func() {
@@ -762,7 +758,7 @@ func StartServer(ctx context.Context, opt Options) (*Handle, error) {
 
 	workspaceDir := opt.WorkspaceDir
 	if opt.MaxConcurrentTurns > 0 {
-		cfg.Runtime.MaxConcurrentTurns = opt.MaxConcurrentTurns
+		embeddedSettings.Runtime.MaxConcurrentTurns = opt.MaxConcurrentTurns
 	}
 	cloneStateDir := ""
 	if dataDir != "" {
@@ -772,19 +768,26 @@ func StartServer(ctx context.Context, opt Options) (*Handle, error) {
 	if opt.Sandboxed {
 		profile = server.RuntimeProfileSandboxed
 	}
-	coreHandler, rt, closers, err := Assemble(
-		srvCtx, cfg, embeddedSettings, mc, provider, credChain, workspaceDir, cloneStateDir,
-		RuntimeServerOptions{
-			Profile:   profile,
-			Providers: server.NewProviderStore(settingsPath, nil),
-			InjectSecrets: func(targets map[credential.Target]credential.Credential) error {
-				mutableResolver.SetAll(targets)
-				return nil
-			},
-			RuntimeModelsBuilder: func() server.RuntimeModelCatalog {
-				return server.BuildRuntimeModelCatalog(cfg, mutableResolver)
-			},
+	options := RuntimeServerOptions{
+		Profile:   profile,
+		Providers: server.NewProviderStore(settingsPath, nil),
+		InjectSecrets: func(targets map[credential.Target]credential.Credential) error {
+			mutableResolver.SetAll(targets)
+			return nil
 		},
+		RuntimeModelsBuilder: func() server.RuntimeModelCatalog {
+			return server.BuildRuntimeModelCatalog(embeddedSettings, mutableResolver)
+		},
+	}
+	coreHandler, rt, closers, err := Assemble(
+		srvCtx,
+		embeddedSettings,
+		mc,
+		provider,
+		credChain,
+		workspaceDir,
+		cloneStateDir,
+		options,
 	)
 	if err != nil {
 		return nil, err
@@ -849,7 +852,7 @@ func validateEmbeddedLoopbackAddress(addr string) error {
 // The provider must already be built when models are configured (callers differ
 // in how they resolve credentials). It is nil for an intentional models: {}
 // Embedded Runtime. On error, resources opened before the failure are released.
-func Assemble(ctx context.Context, cfg app.Config, set settings.Settings, mc app.ModelConfig, provider model.Provider, cred credential.Resolver, workspaceDir, cloneStateDir string, serverOptions RuntimeServerOptions) (http.Handler, *Runtime, []func(), error) {
+func Assemble(ctx context.Context, cfg settings.Settings, mc settings.ModelConfig, provider model.Provider, cred credential.Resolver, workspaceDir, cloneStateDir string, serverOptions RuntimeServerOptions) (http.Handler, *Runtime, []func(), error) {
 	if workspaceDir == "" {
 		workspaceDir, _ = os.Getwd()
 	}
@@ -859,8 +862,9 @@ func Assemble(ctx context.Context, cfg app.Config, set settings.Settings, mc app
 			closers[i]()
 		}
 	}
+
 	runtimeInfo, runtimeModels, err := server.BuildRuntimeContract(
-		cfg, workspaceDir, serverOptions.DisplayName, serverOptions.Profile,
+		cfg, workspaceDir, serverOptions.DisplayName, serverOptions.Profile, cred,
 	)
 	if err != nil {
 		return nil, nil, nil, err
@@ -893,7 +897,7 @@ func Assemble(ctx context.Context, cfg app.Config, set settings.Settings, mc app
 	// re-anchoring there would wrongly rebind sessions to the launch directory — so
 	// pass "" to keep absolute behavior unchanged.
 	currentWorkspaceDir := ""
-	if cfg.Profile == app.ProfileSandboxed {
+	if cfg.Profile == settings.ProfileSandboxed {
 		currentWorkspaceDir = workspaceDir
 	}
 	repo := conversation.NewSQLiteRepository(
@@ -914,7 +918,7 @@ func Assemble(ctx context.Context, cfg app.Config, set settings.Settings, mc app
 
 	active := conversation.NewActiveTurnRegistry()
 	subs := conversation.NewSubscriptionManager()
-	rb := runtime.NewServeRunBuilder(cfg, set, mc, provider, cred, toolReg, wsReg, planRef)
+	rb := runtime.NewServeRunBuilder(cfg, mc, provider, cred, toolReg, wsReg, planRef)
 	executor := conversation.NewTurnExecutor(repo, eventStore, active, subs, rb)
 	executor.SetAssetRefReleaseService(rb)
 	maxConcurrentTurns := cfg.RuntimeMaxConcurrentTurns()
@@ -922,7 +926,7 @@ func Assemble(ctx context.Context, cfg app.Config, set settings.Settings, mc app
 	if provider != nil {
 		executor.SetTitleGenerator(conversation.NewLLMTitleGenerator(provider, mc.Model))
 	}
-	managedWorktrees, worktreeReport, worktreeErr := runtime.ConfigureManagedWorktrees(ctx, telemetryStore, repo, executor, cfg.Profile != app.ProfileSandboxed)
+	managedWorktrees, worktreeReport, worktreeErr := runtime.ConfigureManagedWorktrees(ctx, telemetryStore, repo, executor, cfg.Profile != settings.ProfileSandboxed)
 	if worktreeErr != nil {
 		fmt.Printf("codeagent embedded: managed worktrees disabled: %v\n", worktreeErr)
 	} else if managedWorktrees != nil && (len(worktreeReport.Issues) > 0 || len(worktreeReport.Orphans) > 0) {
@@ -1051,28 +1055,6 @@ func persistSettingsSeed(path, raw string) error {
 	return os.WriteFile(path, []byte(raw), 0o644)
 }
 
-// settingsFileToSettings converts an on-disk settings document into the merged
-// Settings view the runtime consumes. It mirrors the field list of the legacy
-// explicit app.FromSettings call — infra blocks AND behavior blocks.
-func settingsFileToSettings(f settings.File) settings.Settings {
-	return settings.Settings{
-		DefaultModel:  f.DefaultModel,
-		SubagentModel: f.SubagentModel,
-		Providers:     f.Providers,
-		Credentials:   f.Credentials,
-		Agent:         f.Agent,
-		Provider:      f.Provider,
-		Web:           f.Web,
-		Runtime:       f.Runtime,
-		Server:        f.Server,
-		Currency:      f.Currency,
-		Permissions:   f.Permissions,
-		Verify:        f.Verify,
-		Hooks:         f.Hooks,
-		ApprovalMode:  f.ApprovalMode,
-	}
-}
-
 // parseConnectionsJSON decodes the connectionsJSON document (R3.4) into a map
 // of connection id → definition. Shape (design-connection-injection-channel §4):
 //
@@ -1138,12 +1120,12 @@ type connectionCredentialDecl struct {
 // is created under the connection id so the gateway-picks-model semantic is
 // preserved. Injected connections act as the top layer (design §8.3 层级 4) —
 // they are added, not replacing config-declared models.
-func applyConnections(cfg *app.Config, conns map[string]connectionDefinition) {
+func applyConnections(cfg *settings.Settings, conns map[string]connectionDefinition) {
 	if len(conns) == 0 {
 		return
 	}
 	if cfg.Models == nil {
-		cfg.Models = map[string]app.ModelConfig{}
+		cfg.Models = map[string]settings.ModelConfig{}
 	}
 	for id, def := range conns {
 		if id == "" {
@@ -1153,7 +1135,7 @@ func applyConnections(cfg *app.Config, conns map[string]connectionDefinition) {
 		if api == "" {
 			api = "openai"
 		}
-		var cred app.CredentialRef
+		var cred settings.CredentialRef
 		apiKeyEnv := ""
 		if def.Credential != nil {
 			// Resolve the credential target. Namespace, when set, wins; the
@@ -1175,13 +1157,13 @@ func applyConnections(cfg *app.Config, conns map[string]connectionDefinition) {
 			}
 			switch ns {
 			case "gateway":
-				cred = app.CredentialRef{Namespace: "gateway", Name: "default"}
+				cred = settings.CredentialRef{Namespace: "gateway", Name: "default"}
 			case "llm":
 				name := def.Credential.Ref
 				if name == "" {
 					name = id
 				}
-				cred = app.CredentialRef{Namespace: "llm", Name: name}
+				cred = settings.CredentialRef{Namespace: "llm", Name: name}
 				if def.Credential.Source == "env" && def.Credential.Env != "" {
 					apiKeyEnv = def.Credential.Env
 				}
@@ -1196,19 +1178,19 @@ func applyConnections(cfg *app.Config, conns map[string]connectionDefinition) {
 			if src == "injected" || src == "jwt" || src == "keychain" {
 				if !cred.IsZero() {
 					if cfg.Credentials == nil {
-						cfg.Credentials = map[string]map[string]app.CredentialConfig{}
+						cfg.Credentials = map[string]map[string]settings.CredentialConfig{}
 					}
 					if cfg.Credentials[cred.Namespace] == nil {
-						cfg.Credentials[cred.Namespace] = map[string]app.CredentialConfig{}
+						cfg.Credentials[cred.Namespace] = map[string]settings.CredentialConfig{}
 					}
-					cfg.Credentials[cred.Namespace][cred.Name] = app.CredentialConfig{Source: "injected"}
+					cfg.Credentials[cred.Namespace][cred.Name] = settings.CredentialConfig{Source: "injected"}
 				}
 			}
 		}
 		if len(def.Models) == 0 {
 			// Gateway / fallback: single model with empty wire model
 			// (gateway chooses). The friendly name is the connection id.
-			cfg.Models[id] = app.ModelConfig{
+			cfg.Models[id] = settings.ModelConfig{
 				Name:       id,
 				Provider:   api,
 				BaseURL:    def.BaseURL,
@@ -1229,7 +1211,7 @@ func applyConnections(cfg *app.Config, conns map[string]connectionDefinition) {
 			if m.RuntimeAlias != "" {
 				friendlyName = m.RuntimeAlias
 			}
-			mc := app.ModelConfig{
+			mc := settings.ModelConfig{
 				Name:       friendlyName,
 				Provider:   api,
 				BaseURL:    def.BaseURL,
@@ -1238,7 +1220,7 @@ func applyConnections(cfg *app.Config, conns map[string]connectionDefinition) {
 				APIKeyEnv:  apiKeyEnv,
 			}
 			if m.DisplayName != "" {
-				mc.Catalog = app.ModelCatalogMetadata{DisplayName: m.DisplayName}
+				mc.Catalog = settings.ModelCatalogMetadata{DisplayName: m.DisplayName}
 			}
 			cfg.Models[friendlyName] = mc
 		}
@@ -1288,7 +1270,7 @@ func parseSecretsJSON(secretsJSON string) (map[string]string, error) {
 // path) and, for legacy single-value keys, populate the matching model's
 // Credential ref so the two-level resolver can serve it. This no longer writes
 // ModelConfig.APIKey (R1.1: the APIKey field is deprecated and on its way out).
-func injectSecrets(cfg *app.Config, secrets map[string]string) credential.Resolver {
+func injectSecrets(cfg *settings.Settings, secrets map[string]string) credential.Resolver {
 	if len(secrets) == 0 {
 		return nil
 	}
@@ -1335,7 +1317,7 @@ func injectSecrets(cfg *app.Config, secrets map[string]string) credential.Resolv
 		for name, mc := range cfg.Models {
 			if key == mc.APIKeyEnv || key == name {
 				if mc.Credential.IsZero() {
-					mc.Credential = app.CredentialRef{Namespace: "llm", Name: name}
+					mc.Credential = settings.CredentialRef{Namespace: "llm", Name: name}
 					cfg.Models[name] = mc
 				}
 				resolver[credential.Target{Namespace: "llm", Name: name}] = credential.Credential{

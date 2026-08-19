@@ -1,6 +1,7 @@
 package conversation
 
 import (
+	"code-agent/internal/settings"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
@@ -10,7 +11,6 @@ import (
 	"time"
 
 	"code-agent/internal/agent"
-	"code-agent/internal/app"
 	"code-agent/internal/credential"
 	"code-agent/internal/model"
 	"code-agent/internal/session"
@@ -725,7 +725,7 @@ func (e *TurnExecutor) driveTurn(
 	turnID := e.scheduler.ReserveTurnID()
 	pub := &sequencingEmitter{ctx: context.WithoutCancel(parentCtx), events: e.events, live: e.subs.Emitter(sess.ID)}
 	resolver, ok := e.rb.(ModelResolver)
-	var resolvedModel app.ModelConfig
+	var resolvedModel settings.ModelConfig
 	if ok {
 		rm, resolveErr := resolver.ResolveModel(wireModel)
 		if resolveErr != nil {
@@ -758,7 +758,7 @@ func (e *TurnExecutor) driveTurn(
 	} else {
 		// Legacy/custom run builders without a ModelResolver: the wire model is
 		// authoritative and session model metadata is left untouched.
-		resolvedModel = app.ModelConfig{Model: wireModel, Name: wireModel}
+		resolvedModel = settings.ModelConfig{Model: wireModel, Name: wireModel}
 	}
 	var claimed session.TurnInput
 	var duplicate bool

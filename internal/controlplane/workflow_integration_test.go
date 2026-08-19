@@ -1,7 +1,7 @@
 package controlplane
 
 import (
-	"code-agent/internal/app"
+	"code-agent/internal/settings"
 	"context"
 	"sync"
 	"testing"
@@ -26,8 +26,8 @@ type workflowRunBuilder struct {
 	runs []workflowRun
 }
 
-func (b *workflowRunBuilder) ResolveModel(string) (*app.ModelConfig, error) {
-	m := app.ModelConfig{Model: "workflow-test-model"}
+func (b *workflowRunBuilder) ResolveModel(string) (*settings.ModelConfig, error) {
+	m := settings.ModelConfig{Model: "workflow-test-model"}
 	return &m, nil
 }
 

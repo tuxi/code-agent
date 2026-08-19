@@ -1,13 +1,12 @@
 package server
 
 import (
+	"code-agent/internal/settings"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
-
-	"code-agent/internal/app"
 )
 
 func TestServerAuthProtectsEveryNonHealthRoute(t *testing.T) {
@@ -74,22 +73,22 @@ func TestServerAuthProtectsEveryNonHealthRoute(t *testing.T) {
 
 func TestExternalDeploymentSecurity(t *testing.T) {
 	t.Setenv("RUNTIME_TOKEN", "0123456789abcdef0123456789abcdef")
-	auth, err := ResolveExternalServerAuth(app.ServerConfig{
+	auth, err := ResolveExternalServerAuth(settings.ServerConfig{
 		Authentication: "bearer", AccessTokenEnv: "RUNTIME_TOKEN", PublicHealthz: true,
 	})
 	if err != nil || !auth.Enabled {
 		t.Fatalf("ResolveExternalServerAuth = %+v, %v", auth, err)
 	}
-	if err := ValidateExternalDeployment("127.0.0.1:8797", app.ServerConfig{}, ServerAuth{}); err != nil {
+	if err := ValidateExternalDeployment("127.0.0.1:8797", settings.ServerConfig{}, ServerAuth{}); err != nil {
 		t.Fatalf("loopback unauthenticated deployment rejected: %v", err)
 	}
-	if err := ValidateExternalDeployment(":8797", app.ServerConfig{}, ServerAuth{}); err == nil {
+	if err := ValidateExternalDeployment(":8797", settings.ServerConfig{}, ServerAuth{}); err == nil {
 		t.Fatal("non-loopback unauthenticated deployment must fail")
 	}
-	if err := ValidateExternalDeployment("0.0.0.0:8797", app.ServerConfig{}, auth); err == nil {
+	if err := ValidateExternalDeployment("0.0.0.0:8797", settings.ServerConfig{}, auth); err == nil {
 		t.Fatal("non-loopback bearer deployment without TLS must fail")
 	}
-	tlsConfig := app.ServerConfig{TLSCertificate: "server.crt", TLSPrivateKey: "server.key"}
+	tlsConfig := settings.ServerConfig{TLSCertificate: "server.crt", TLSPrivateKey: "server.key"}
 	if err := ValidateExternalDeployment("0.0.0.0:8797", tlsConfig, auth); err != nil {
 		t.Fatalf("authenticated TLS deployment rejected: %v", err)
 	}
@@ -101,7 +100,7 @@ func TestResolveExternalServerAuthUsesYAMLFallbackAndEnvironmentOverride(t *test
 		envToken  = "environment-token-0123456789abcdef12"
 	)
 	t.Setenv("RUNTIME_TOKEN", "")
-	cfg := app.ServerConfig{
+	cfg := settings.ServerConfig{
 		Authentication: "bearer",
 		AccessToken:    yamlToken,
 		AccessTokenEnv: "RUNTIME_TOKEN",
@@ -127,7 +126,7 @@ func TestResolveExternalServerAuthUsesYAMLFallbackAndEnvironmentOverride(t *test
 func TestResolveExternalServerAuthRejectsMissingOrShortToken(t *testing.T) {
 	t.Setenv("CODEAGENT_SERVER_ACCESS_TOKEN", "")
 	for _, token := range []string{"", "too-short"} {
-		_, err := ResolveExternalServerAuth(app.ServerConfig{
+		_, err := ResolveExternalServerAuth(settings.ServerConfig{
 			Authentication: "bearer",
 			AccessToken:    token,
 		})

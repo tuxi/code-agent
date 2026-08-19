@@ -1,6 +1,7 @@
 package websearch
 
 import (
+	"code-agent/internal/settings"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -8,24 +9,23 @@ import (
 	"strings"
 	"testing"
 
-	"code-agent/internal/app"
 	"code-agent/internal/tools"
 )
 
 func TestNewToolReturnsNilWhenSearchIsUnavailable(t *testing.T) {
-	cases := []app.WebConfig{
+	cases := []settings.WebConfig{
 		{},
-		{Search: app.WebSearchConfig{Provider: "disabled"}},
-		{Search: app.WebSearchConfig{Provider: "tavily"}},
-		{Search: app.WebSearchConfig{Provider: "brave"}},
+		{Search: settings.WebSearchConfig{Provider: "disabled"}},
+		{Search: settings.WebSearchConfig{Provider: "tavily"}},
+		{Search: settings.WebSearchConfig{Provider: "brave"}},
 	}
 	for _, cfg := range cases {
 		if tool := NewTool(cfg, nil); tool != nil {
 			t.Errorf("provider %q produced an unusable web_search tool", cfg.Search.Provider)
 		}
 	}
-	if tool := NewTool(app.WebConfig{
-		Search: app.WebSearchConfig{Provider: "searxng"},
+	if tool := NewTool(settings.WebConfig{
+		Search: settings.WebSearchConfig{Provider: "searxng"},
 	}, nil); tool == nil {
 		t.Fatal("configured keyless searxng provider must register web_search")
 	}

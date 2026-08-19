@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"code-agent/internal/agent"
-	"code-agent/internal/app"
 	"code-agent/internal/conversation"
 	"code-agent/internal/credential"
 	"code-agent/internal/model"
@@ -33,7 +32,7 @@ func TestServeRunBuilderPlanToolsAreTurnScoped(t *testing.T) {
 	SetStoreBaseDir(t.TempDir())
 	base := tools.NewRegistry()
 	sharedRef := WirePlanTools(base, t.TempDir())
-	builder := NewServeRunBuilder(app.Config{}, settings.Settings{}, app.ModelConfig{}, nil, nil, base, NewWorkspaceRegistry(""), sharedRef)
+	builder := NewServeRunBuilder(settings.Settings{}, settings.ModelConfig{}, nil, nil, base, NewWorkspaceRegistry(""), sharedRef)
 	workspace := t.TempDir()
 
 	var runners [2]*agent.Runner
@@ -72,16 +71,16 @@ func TestServeRunBuilderUsesSessionCredentialForManagedSearch(t *testing.T) {
 	sessionCredential := credential.StaticResolver{
 		target: {Type: credential.Bearer, Secret: "session-token"},
 	}
-	cfg := app.Config{Web: app.WebConfig{Search: app.WebSearchConfig{
+	cfg := settings.Settings{Web: settings.WebConfig{Search: settings.WebSearchConfig{
 		Provider: "gateway", GatewayBaseURL: "https://gateway.example/api/v1/agent",
-		Credential: app.CredentialRef{Namespace: "gateway", Name: "default"}, TopK: 5, GatewayTimeoutSeconds: 77,
+		Credential: settings.CredentialRef{Namespace: "gateway", Name: "default"}, TopK: 5, GatewayTimeoutSeconds: 77,
 	}}}
 	base := tools.NewRegistry()
 	if err := base.Register(websearch.NewTool(cfg.Web, baseCredential)); err != nil {
 		t.Fatal(err)
 	}
 	sharedRef := WirePlanTools(base, t.TempDir())
-	builder := NewServeRunBuilder(cfg, settings.Settings{}, app.ModelConfig{}, nil, baseCredential, base, NewWorkspaceRegistry(""), sharedRef)
+	builder := NewServeRunBuilder(cfg, settings.ModelConfig{}, nil, baseCredential, base, NewWorkspaceRegistry(""), sharedRef)
 	workspace := t.TempDir()
 	runner := builder.Build(conversation.RuntimeContext{
 		Session:    &session.Session{ID: "session-a", WorkspacePath: workspace},
@@ -107,18 +106,18 @@ func TestServeRunBuilderUsesSessionCredentialForManagedSearch(t *testing.T) {
 
 func TestServeRunBuilderRuntimeAliasStrictness(t *testing.T) {
 	alias := "provider.Y29tcGFueQ.model.ZGVlcHNlZWstY2hhdA"
-	direct := app.ModelConfig{
+	direct := settings.ModelConfig{
 		Name:       alias,
 		Provider:   "openai",
 		BaseURL:    "https://direct.example/v1",
 		Model:      "deepseek-chat",
-		Credential: app.CredentialRef{Namespace: "llm", Name: "company"},
+		Credential: settings.CredentialRef{Namespace: "llm", Name: "company"},
 	}
-	cfg := app.Config{
+	cfg := settings.Settings{
 		DefaultModel: alias,
-		Models:       map[string]app.ModelConfig{alias: direct},
+		Models:       map[string]settings.ModelConfig{alias: direct},
 	}
-	builder := NewServeRunBuilder(cfg, settings.Settings{}, direct, nil, nil, tools.NewRegistry(), NewWorkspaceRegistry(""), nil)
+	builder := NewServeRunBuilder(cfg, direct, nil, nil, tools.NewRegistry(), NewWorkspaceRegistry(""), nil)
 
 	got, err := builder.ResolveModel(alias)
 	if err != nil || got == nil || got.Model != "deepseek-chat" {
@@ -141,8 +140,8 @@ func TestServeRunBuilderRuntimeAliasStrictness(t *testing.T) {
 
 	gateway := direct
 	gateway.BaseURL = "https://gateway.example/api/v1/agent"
-	gateway.Credential = app.CredentialRef{Namespace: "gateway", Name: "default"}
-	gatewayBuilder := NewServeRunBuilder(cfg, settings.Settings{}, gateway, nil, nil, tools.NewRegistry(), NewWorkspaceRegistry(""), nil)
+	gateway.Credential = settings.CredentialRef{Namespace: "gateway", Name: "default"}
+	gatewayBuilder := NewServeRunBuilder(cfg, gateway, nil, nil, tools.NewRegistry(), NewWorkspaceRegistry(""), nil)
 	got, err = gatewayBuilder.ResolveModel("legacy-gateway-model")
 	if err != nil || got == nil || got.Model != "legacy-gateway-model" {
 		t.Fatalf("legacy Gateway wire model = %+v, %v", got, err)
@@ -165,19 +164,19 @@ func TestServeRunBuilderRoutesConcurrentProvidersAndCredentials(t *testing.T) {
 		{"provider.cHJveHktc3RhZ2U.model.c2hhcmVk", "https://proxy-stage.test/v1", "shared", "llm/proxy-stage", "stage-key"},
 	}
 
-	cfg := app.Config{
+	cfg := settings.Settings{
 		DefaultModel: cases[0].alias,
-		Models:       make(map[string]app.ModelConfig, len(cases)),
-		Provider:     app.ProviderConfig{RequestTimeoutSeconds: 5},
-		Agent:        app.AgentConfig{MaxSteps: 1},
+		Models:       make(map[string]settings.ModelConfig, len(cases)),
+		Provider:     settings.ProviderConfig{RequestTimeoutSeconds: 5},
+		Agent:        settings.AgentConfig{MaxSteps: 1},
 	}
 	baseCredentials := make(credential.StaticResolver)
 	for _, tc := range cases {
 		namespace, name, _ := strings.Cut(tc.target, "/")
-		cfg.Models[tc.alias] = app.ModelConfig{
+		cfg.Models[tc.alias] = settings.ModelConfig{
 			Name: tc.alias, Provider: "openai", BaseURL: tc.baseURL, Model: tc.wireModel,
 			ContextWindow: 128000,
-			Credential:    app.CredentialRef{Namespace: namespace, Name: name},
+			Credential:    settings.CredentialRef{Namespace: namespace, Name: name},
 		}
 		if namespace == "llm" {
 			baseCredentials[credential.Target{Namespace: namespace, Name: name}] =
@@ -193,7 +192,7 @@ func TestServeRunBuilderRoutesConcurrentProvidersAndCredentials(t *testing.T) {
 		t.Fatal(err)
 	}
 	builder := NewServeRunBuilder(
-		cfg, settings.Settings{}, defaultMC, defaultProvider, baseCredentials,
+		cfg, defaultMC, defaultProvider, baseCredentials,
 		tools.NewRegistry(), NewWorkspaceRegistry(""), nil,
 	)
 
@@ -279,12 +278,12 @@ func TestServeRunBuilderRebindsTaskToCurrentTurn(t *testing.T) {
 	SetStoreBaseDir(t.TempDir())
 	mainAlias := "provider.bWFpbg.model.bWFpbi1tb2RlbA"
 	altAlias := "provider.YWx0.model.YWx0LW1vZGVs"
-	mainMC := app.ModelConfig{Name: mainAlias, Provider: "openai", BaseURL: "http://localhost:11434/v1", Model: "main-model", ContextWindow: 128000}
-	altMC := app.ModelConfig{Name: altAlias, Provider: "openai", BaseURL: "http://localhost:11435/v1", Model: "alt-model", ContextWindow: 128000}
-	cfg := app.Config{
+	mainMC := settings.ModelConfig{Name: mainAlias, Provider: "openai", BaseURL: "http://localhost:11434/v1", Model: "main-model", ContextWindow: 128000}
+	altMC := settings.ModelConfig{Name: altAlias, Provider: "openai", BaseURL: "http://localhost:11435/v1", Model: "alt-model", ContextWindow: 128000}
+	cfg := settings.Settings{
 		DefaultModel: mainAlias,
-		Models:       map[string]app.ModelConfig{mainAlias: mainMC, altAlias: altMC},
-		Agent:        app.AgentConfig{MaxSteps: 1},
+		Models:       map[string]settings.ModelConfig{mainAlias: mainMC, altAlias: altMC},
+		Agent:        settings.AgentConfig{MaxSteps: 1},
 	}
 	mainProvider, err := BuildProvider(mainMC, cfg.Provider, nil)
 	if err != nil {
@@ -295,7 +294,7 @@ func TestServeRunBuilderRebindsTaskToCurrentTurn(t *testing.T) {
 	if err := base.Register(task.NewTool(template)); err != nil {
 		t.Fatal(err)
 	}
-	builder := NewServeRunBuilder(cfg, settings.Settings{}, mainMC, mainProvider, nil, base, NewWorkspaceRegistry(""), nil)
+	builder := NewServeRunBuilder(cfg, mainMC, mainProvider, nil, base, NewWorkspaceRegistry(""), nil)
 	runner := builder.Build(conversation.RuntimeContext{
 		Session:       &session.Session{ID: "alt", WorkspacePath: t.TempDir()},
 		Model:         altAlias,
@@ -315,7 +314,7 @@ func TestServeRunBuilderRebindsTaskToCurrentTurn(t *testing.T) {
 	}
 
 	cfg.Agent.SubagentModel = mainAlias
-	explicitBuilder := NewServeRunBuilder(cfg, settings.Settings{}, mainMC, mainProvider, nil, base, NewWorkspaceRegistry(""), nil)
+	explicitBuilder := NewServeRunBuilder(cfg, mainMC, mainProvider, nil, base, NewWorkspaceRegistry(""), nil)
 	explicitRunner := explicitBuilder.Build(conversation.RuntimeContext{
 		Session:       &session.Session{ID: "explicit", WorkspacePath: t.TempDir()},
 		Model:         altAlias,
@@ -331,7 +330,7 @@ func TestServeRunBuilderRebindsTaskToCurrentTurn(t *testing.T) {
 	}
 
 	cfg.Agent.SubagentModel = "provider.bWlzc2luZw.model.bWlzc2luZw"
-	strictBuilder := NewServeRunBuilder(cfg, settings.Settings{}, mainMC, mainProvider, nil, base, NewWorkspaceRegistry(""), nil)
+	strictBuilder := NewServeRunBuilder(cfg, mainMC, mainProvider, nil, base, NewWorkspaceRegistry(""), nil)
 	strictRunner := strictBuilder.Build(conversation.RuntimeContext{
 		Session:       &session.Session{ID: "strict", WorkspacePath: t.TempDir()},
 		Model:         altAlias,

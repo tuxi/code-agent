@@ -7,6 +7,7 @@ import (
 	"code-agent/internal/model"
 	"code-agent/internal/observation"
 	"code-agent/internal/session"
+	"code-agent/internal/settings"
 	"code-agent/internal/tools"
 	"context"
 	"encoding/json"
@@ -54,8 +55,8 @@ func (DenyAllApprover) Approve(string, json.RawMessage) agent.Verdict { return a
 type SubAgent struct {
 	Root        string
 	Provider    model.Provider
-	MC          app.ModelConfig
-	Cfg         app.Config
+	MC          settings.ModelConfig
+	Cfg         settings.Settings
 	InitErr     error
 	ReadOnly    *tools.Registry
 	SkillsIndex string
@@ -74,7 +75,7 @@ type SubAgent struct {
 // model (agent.subagent_model, falling back to the parent) and freezes the
 // read-only tool subset from the parent registry as it stands now — so tools added
 // to the parent later (task itself, MCP tools) are never in the subagent's set.
-func NewSubAgent(cfg app.Config, mc app.ModelConfig, parent model.Provider, root string, full *tools.Registry, skillsIndex string, store session.Store, progress agent.Emitter, forwarder *JobEventSink) *SubAgent {
+func NewSubAgent(cfg settings.Settings, mc settings.ModelConfig, parent model.Provider, root string, full *tools.Registry, skillsIndex string, store session.Store, progress agent.Emitter, forwarder *JobEventSink) *SubAgent {
 	return NewSubAgentWithCredential(cfg, mc, parent, nil, root, full, skillsIndex, store, progress, forwarder)
 }
 
@@ -82,7 +83,7 @@ func NewSubAgent(cfg app.Config, mc app.ModelConfig, parent model.Provider, root
 // compatibility NewSubAgent entry point, it carries the host-injected credential
 // chain into a separately configured subagent model. This matters on iOS, where
 // credentials arrive through secretsJSON rather than process environment vars.
-func NewSubAgentWithCredential(cfg app.Config, mc app.ModelConfig, parent model.Provider, cred credential.Resolver, root string, full *tools.Registry, skillsIndex string, store session.Store, progress agent.Emitter, forwarder *JobEventSink) *SubAgent {
+func NewSubAgentWithCredential(cfg settings.Settings, mc settings.ModelConfig, parent model.Provider, cred credential.Resolver, root string, full *tools.Registry, skillsIndex string, store session.Store, progress agent.Emitter, forwarder *JobEventSink) *SubAgent {
 	provider, subMC, resolveErr := ResolveSubAgentModelWithCredential(context.Background(), cfg, mc, parent, cred)
 	return &SubAgent{
 		Root:        root,
@@ -101,7 +102,7 @@ func NewSubAgentWithCredential(cfg app.Config, mc app.ModelConfig, parent model.
 // Rebind returns a turn-scoped copy of the subagent template. The copy preserves
 // observability sinks but resolves its model and provider from the current
 // turn's model, provider, and effective credential chain.
-func (s *SubAgent) Rebind(cfg app.Config, mc app.ModelConfig, parent model.Provider, cred credential.Resolver, root string, full *tools.Registry, skillsIndex string) *SubAgent {
+func (s *SubAgent) Rebind(cfg settings.Settings, mc settings.ModelConfig, parent model.Provider, cred credential.Resolver, root string, full *tools.Registry, skillsIndex string) *SubAgent {
 	return NewSubAgentWithCredential(
 		cfg, mc, parent, cred, root, full, skillsIndex,
 		s.Store, s.Progress, s.Forwarder,
@@ -220,20 +221,20 @@ func (s *SubAgent) Run(ctx context.Context, ec tools.ExecutionContext, taskPromp
 // An unset agent.subagent_model inherits the current turn. An explicitly named
 // model is strict: an unknown alias, unavailable credential, or unsupported
 // provider returns an error and never falls back to the runtime startup model.
-func ResolveSubAgentModel(cfg app.Config, mc app.ModelConfig, parent model.Provider) (model.Provider, app.ModelConfig, error) {
+func ResolveSubAgentModel(cfg settings.Settings, mc settings.ModelConfig, parent model.Provider) (model.Provider, settings.ModelConfig, error) {
 	return ResolveSubAgentModelWithCredential(context.Background(), cfg, mc, parent, nil)
 }
 
 // ResolveSubAgentModelWithCredential resolves a dedicated subagent model using
 // the same effective credential chain as the parent runtime.
-func ResolveSubAgentModelWithCredential(ctx context.Context, cfg app.Config, mc app.ModelConfig, parent model.Provider, cred credential.Resolver) (model.Provider, app.ModelConfig, error) {
+func ResolveSubAgentModelWithCredential(ctx context.Context, cfg settings.Settings, mc settings.ModelConfig, parent model.Provider, cred credential.Resolver) (model.Provider, settings.ModelConfig, error) {
 	name := cfg.Agent.SubagentModel
 	if name == "" {
 		return parent, mc, nil
 	}
-	subMC, err := cfg.SelectModel(name)
+	subMC, err := app.SelectModel(name, cfg)
 	if err != nil {
-		return nil, app.ModelConfig{}, fmt.Errorf("resolve subagent model %q: %w", name, err)
+		return nil, settings.ModelConfig{}, fmt.Errorf("resolve subagent model %q: %w", name, err)
 	}
 	if cred != nil && !subMC.Credential.IsZero() {
 		resolved, resolveErr := cred.Resolve(ctx, subMC.Credential.Target())

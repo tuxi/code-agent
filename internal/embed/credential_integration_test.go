@@ -1,6 +1,7 @@
 package embed
 
 import (
+	"code-agent/internal/settings"
 	"context"
 	"errors"
 	"fmt"
@@ -42,14 +43,14 @@ func TestE0_OldBYOK(t *testing.T) {
 	// secret now comes solely from the resolver chain (EnvResolver), not
 	// from a static APIKey field.
 	t.Setenv("DEEPSEEK_API_KEY", "sk-legacy-byok")
-	mc := app.ModelConfig{
-		Provider:  "openai",
-		BaseURL:   srv.URL,
-		Model:     "test-model",
-		APIKeyEnv: "DEEPSEEK_API_KEY",
-		Credential: app.CredentialRef{Namespace: "llm", Name: "deepseek"},
+	mc := settings.ModelConfig{
+		Provider:   "openai",
+		BaseURL:    srv.URL,
+		Model:      "test-model",
+		APIKeyEnv:  "DEEPSEEK_API_KEY",
+		Credential: settings.CredentialRef{Namespace: "llm", Name: "deepseek"},
 	}
-	pc := app.ProviderConfig{
+	pc := settings.ProviderConfig{
 		RequestTimeoutSeconds: 10,
 		MaxRetries:            0,
 	}
@@ -89,9 +90,9 @@ models:
       namespace: gateway
       name: default
 `
-	cfg, err := app.LoadConfigBytes([]byte(cfgYAML))
+	cfg, err := app.LoadSettingsBytes([]byte(cfgYAML))
 	if err != nil {
-		t.Fatalf("LoadConfigBytes: %v", err)
+		t.Fatalf("LoadSettingsBytes: %v", err)
 	}
 
 	// Simulate AgentKit injecting a gateway token via secretsJSON (new format).
@@ -104,12 +105,12 @@ models:
 	}
 	credChain := cfg.CredentialResolver(injectedResolver)
 
-	mc, err := cfg.SelectModel("agent")
+	mc, err := app.SelectModel("agent", cfg)
 	if err != nil {
 		t.Fatalf("SelectModel: %v", err)
 	}
 
-	pc := app.ProviderConfig{
+	pc := settings.ProviderConfig{
 		RequestTimeoutSeconds: 10,
 		MaxRetries:            0,
 	}
@@ -175,15 +176,15 @@ models:
 agent:
   subagent_model: deepseek
 `
-	cfg, err := app.LoadConfigBytes([]byte(cfgYAML))
+	cfg, err := app.LoadSettingsBytes([]byte(cfgYAML))
 	if err != nil {
-		t.Fatalf("LoadConfigBytes: %v", err)
+		t.Fatalf("LoadSettingsBytes: %v", err)
 	}
 	injected := injectSecrets(&cfg, map[string]string{
 		"gateway/default": `{"type":"bearer","secret":"ios-gateway-token"}`,
 	})
 	chain := cfg.CredentialResolver(injected)
-	mc, err := cfg.SelectModel("")
+	mc, err := app.SelectModel("", cfg)
 	if err != nil {
 		t.Fatalf("SelectModel: %v", err)
 	}
@@ -237,16 +238,16 @@ models:
 agent:
   subagent_model: deepseek
 `
-	cfg, err := app.LoadConfigBytes([]byte(cfgYAML))
+	cfg, err := app.LoadSettingsBytes([]byte(cfgYAML))
 	if err != nil {
-		t.Fatalf("LoadConfigBytes: %v", err)
+		t.Fatalf("LoadSettingsBytes: %v", err)
 	}
 	injected := injectSecrets(&cfg, map[string]string{
 		"gateway/default": `{"type":"bearer","secret":"gateway-token"}`,
 		"llm/deepseek":    `{"type":"bearer","secret":"dedicated-subagent-token"}`,
 	})
 	chain := cfg.CredentialResolver(injected)
-	mc, err := cfg.SelectModel("")
+	mc, err := app.SelectModel("", cfg)
 	if err != nil {
 		t.Fatalf("SelectModel: %v", err)
 	}
@@ -290,12 +291,12 @@ models:
       namespace: gateway
       name: default
 `
-	cfg, err := app.LoadConfigBytes([]byte(cfgYAML))
+	cfg, err := app.LoadSettingsBytes([]byte(cfgYAML))
 	if err != nil {
-		t.Fatalf("LoadConfigBytes: %v", err)
+		t.Fatalf("LoadSettingsBytes: %v", err)
 	}
 
-	pc := app.ProviderConfig{
+	pc := settings.ProviderConfig{
 		RequestTimeoutSeconds: 10,
 		MaxRetries:            0,
 	}
@@ -308,7 +309,7 @@ models:
 	injectedV1 := injectSecrets(&cfgV1, secretsV1)
 	chainV1 := cfgV1.CredentialResolver(injectedV1)
 
-	mcV1, err := cfgV1.SelectModel("agent")
+	mcV1, err := app.SelectModel("agent", cfgV1)
 	if err != nil {
 		t.Fatalf("SelectModel v1: %v", err)
 	}
@@ -337,7 +338,7 @@ models:
 	injectedV2 := injectSecrets(&cfgV2, secretsV2)
 	chainV2 := cfgV2.CredentialResolver(injectedV2)
 
-	mcV2, err := cfgV2.SelectModel("agent")
+	mcV2, err := app.SelectModel("agent", cfgV2)
 	if err != nil {
 		t.Fatalf("SelectModel v2: %v", err)
 	}
@@ -380,9 +381,9 @@ models:
       namespace: gateway
       name: default
 `
-	cfg, err := app.LoadConfigBytes([]byte(cfgYAML))
+	cfg, err := app.LoadSettingsBytes([]byte(cfgYAML))
 	if err != nil {
-		t.Fatalf("LoadConfigBytes: %v", err)
+		t.Fatalf("LoadSettingsBytes: %v", err)
 	}
 
 	secrets := map[string]string{
@@ -391,13 +392,13 @@ models:
 	injected := injectSecrets(&cfg, secrets)
 	chain := cfg.CredentialResolver(injected)
 
-	mc, err := cfg.SelectModel("agent")
+	mc, err := app.SelectModel("agent", cfg)
 	if err != nil {
 		t.Fatalf("SelectModel: %v", err)
 	}
 
 	// MaxRetries=1: if 401 were retryable, we'd see 2 calls (1 initial + 1 retry).
-	pc := app.ProviderConfig{
+	pc := settings.ProviderConfig{
 		RequestTimeoutSeconds: 10,
 		MaxRetries:            1,
 		BackoffMillis:         1,
@@ -444,9 +445,9 @@ models:
       namespace: gateway
       name: default
 `
-	cfg, err := app.LoadConfigBytes([]byte(cfgYAML))
+	cfg, err := app.LoadSettingsBytes([]byte(cfgYAML))
 	if err != nil {
-		t.Fatalf("LoadConfigBytes: %v", err)
+		t.Fatalf("LoadSettingsBytes: %v", err)
 	}
 
 	secrets := map[string]string{
@@ -478,8 +479,8 @@ models:
 // (env-var-name → plain string) still inject: the plain string becomes a
 // bearer credential on llm/<name> served through the resolver chain (R3.3).
 func TestE0_InjectSecretsOldFormatStillWorks(t *testing.T) {
-	cfg := app.Config{
-		Models: map[string]app.ModelConfig{
+	cfg := settings.Settings{
+		Models: map[string]settings.ModelConfig{
 			"deepseek": {APIKeyEnv: "DEEPSEEK_API_KEY"},
 		},
 	}
@@ -499,7 +500,7 @@ func TestE0_InjectSecretsOldFormatStillWorks(t *testing.T) {
 	}
 	// The model's Credential ref is aligned to llm/deepseek so the resolver is
 	// reachable via the ref (the deprecated APIKey field is no longer written).
-	if mc := cfg.Models["deepseek"]; mc.Credential != (app.CredentialRef{Namespace: "llm", Name: "deepseek"}) {
+	if mc := cfg.Models["deepseek"]; mc.Credential != (settings.CredentialRef{Namespace: "llm", Name: "deepseek"}) {
 		t.Errorf("Credential ref = %+v, want llm/deepseek", mc.Credential)
 	}
 }
@@ -545,9 +546,9 @@ models:
       namespace: gateway
       name: default
 `
-	cfg, err := app.LoadConfigBytes([]byte(cfgYAML))
+	cfg, err := app.LoadSettingsBytes([]byte(cfgYAML))
 	if err != nil {
-		t.Fatalf("LoadConfigBytes: %v", err)
+		t.Fatalf("LoadSettingsBytes: %v", err)
 	}
 
 	// Inject valid token first.
@@ -579,7 +580,7 @@ models:
 
 	// Re-verify old token: the model in the ORIGINAL cfg still points to the
 	// gateway credential ref (the deprecated APIKey field is no longer written).
-	if mc := cfg.Models["agent"]; mc.Credential != (app.CredentialRef{Namespace: "gateway", Name: "default"}) {
+	if mc := cfg.Models["agent"]; mc.Credential != (settings.CredentialRef{Namespace: "gateway", Name: "default"}) {
 		t.Errorf("Credential ref = %+v, want gateway/default (old state preserved)", mc.Credential)
 	}
 
@@ -610,9 +611,9 @@ models:
       namespace: gateway
       name: default
 `
-	cfg, err := app.LoadConfigBytes([]byte(cfgYAML))
+	cfg, err := app.LoadSettingsBytes([]byte(cfgYAML))
 	if err != nil {
-		t.Fatalf("LoadConfigBytes: %v", err)
+		t.Fatalf("LoadSettingsBytes: %v", err)
 	}
 
 	futureExpiry := time.Now().Add(24 * time.Hour).Unix()

@@ -1,10 +1,10 @@
 package runtime
 
 import (
+	"code-agent/internal/settings"
 	"fmt"
 	"time"
 
-	"code-agent/internal/app"
 	"code-agent/internal/credential"
 	"code-agent/internal/model"
 )
@@ -23,7 +23,7 @@ import (
 // Every provider is wrapped in a ResilientProvider so a transient API error
 // (timeout, 429, 5xx) does not kill the run: timeout and retry policy live in
 // this one transport layer, not in each provider.
-func BuildProvider(mc app.ModelConfig, pc app.ProviderConfig, cred credential.Resolver) (model.Provider, error) {
+func BuildProvider(mc settings.ModelConfig, pc settings.ProviderConfig, cred credential.Resolver) (model.Provider, error) {
 	var inner model.Provider
 	switch mc.Provider {
 	case "openai", "":

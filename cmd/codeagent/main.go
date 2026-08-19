@@ -60,7 +60,7 @@ func run() error {
 	// then conditionally merge project settings if trusted.
 	home, _ := os.UserHomeDir()
 	trustStore, _ := runtime.LoadTrustStore(home)
-	set, trusted := runtime.LoadSettingsWithTrust(
+	cfg, trusted := runtime.LoadSettingsWithTrust(
 		context.Background(), root, home, trustOverride,
 		&runtime.TerminalTrustPolicy{Store: trustStore},
 		os.Stderr,
@@ -74,7 +74,6 @@ func run() error {
 	if !trusted {
 		return fmt.Errorf("project not trusted; use --trust to override")
 	}
-	cfg := app.LoadConfigFromSettings(set)
 	var err error
 
 	// R1.5: surface legacy api_key_env deprecation notes collected during load.
@@ -126,7 +125,7 @@ func run() error {
 	if len(args) > 0 {
 		switch args[0] {
 		case "sessions":
-			return listSessions(ctx, cfg, args[1:])
+			return listSessions(ctx, args[1:])
 		case "stats":
 			return runStats(ctx, cfg)
 		case "trace":
@@ -136,14 +135,14 @@ func run() error {
 					limit = n
 				}
 			}
-			return runTrace(ctx, cfg, limit)
+			return runTrace(ctx, limit)
 		case "tasks":
-			return runTasks(ctx, cfg)
+			return runTasks(ctx)
 		case "task-trace":
 			if len(args) < 2 {
 				return fmt.Errorf("usage: codeagent task-trace <sub-session-id>  (see 'codeagent tasks')")
 			}
-			return runTaskTrace(ctx, cfg, args[1])
+			return runTaskTrace(ctx, args[1])
 		case "plugin":
 			return runPlugin(args[1:])
 		case "skill":
@@ -154,16 +153,14 @@ func run() error {
 			return runTranscripts(args[1:])
 		case "init":
 			return runInit(args[1:])
-		case "migrate":
-			return runMigrate(args[1:])
 		}
 	}
 
 	if len(args) > 0 && args[0] == "serve" {
-		var mc app.ModelConfig
+		var mc settings.ModelConfig
 		var provider model.Provider
 		if len(cfg.Models) > 0 {
-			mc, err = cfg.SelectModel(modelName)
+			mc, err = app.SelectModel(modelName, cfg)
 			if err != nil {
 				return err
 			}
@@ -181,7 +178,7 @@ func run() error {
 		return runServe(ctx, cfg, mc, provider, addr)
 	}
 
-	mc, err := cfg.SelectModel(modelName)
+	mc, err := app.SelectModel(modelName, cfg)
 	if err != nil {
 		return err
 	}
@@ -192,7 +189,7 @@ func run() error {
 	}
 
 	if len(args) == 0 {
-		return runTUI(ctx, cfg, mc, provider, secretsResolver, autoMode, noContextFiles, set)
+		return runTUI(ctx, cfg, mc, provider, secretsResolver, autoMode, noContextFiles)
 	}
 
 	command := args[0]
@@ -202,18 +199,18 @@ func run() error {
 	case "ask":
 		return runAsk(ctx, mc, provider, goal)
 	case "run":
-		return runAgent(ctx, cfg, mc, provider, goal, autoMode, noContextFiles, set)
+		return runAgent(ctx, cfg, mc, provider, goal, autoMode, noContextFiles)
 	case "goal":
-		return runGoal(ctx, cfg, mc, provider, goal, autoMode, noContextFiles, set)
+		return runGoal(ctx, cfg, mc, provider, goal, autoMode, noContextFiles)
 	case "tui":
-		return runTUI(ctx, cfg, mc, provider, secretsResolver, autoMode, noContextFiles, set)
+		return runTUI(ctx, cfg, mc, provider, secretsResolver, autoMode, noContextFiles)
 	case "repl":
-		return repl(ctx, cfg, mc, provider, "", autoMode, noContextFiles, set)
+		return repl(ctx, cfg, mc, provider, "", autoMode, noContextFiles, cfg)
 	case "resume":
 		if len(args) < 2 {
 			return fmt.Errorf("usage: codeagent resume <session-id>  (see 'codeagent sessions')")
 		}
-		return repl(ctx, cfg, mc, provider, args[1], autoMode, noContextFiles, set)
+		return repl(ctx, cfg, mc, provider, args[1], autoMode, noContextFiles, cfg)
 	default:
 		printUsage()
 		return fmt.Errorf("unknown command: %s", command)
@@ -221,7 +218,7 @@ func run() error {
 }
 
 // listSessions prints saved sessions, most recently updated first.
-func listSessions(ctx context.Context, cfg app.Config, args []string) error {
+func listSessions(ctx context.Context, args []string) error {
 	global := false
 	for _, arg := range args {
 		switch arg {
@@ -301,7 +298,7 @@ func printSessionMetas(metas []session.Meta) {
 }
 
 // runStats prints aggregate telemetry across all saved sessions.
-func runStats(ctx context.Context, cfg app.Config) error {
+func runStats(ctx context.Context, cfg settings.Settings) error {
 	root, _ := os.Getwd()
 	store, err := runtime.OpenStore(root)
 	if err != nil {
@@ -314,7 +311,7 @@ func runStats(ctx context.Context, cfg app.Config) error {
 // printStatsReport renders all three telemetry sections: Context (compaction),
 // Provider (transport), and Cost (token spend). Shared by `codeagent stats` and
 // the REPL's /stats.
-func printStatsReport(ctx context.Context, store session.Store, cfg app.Config) error {
+func printStatsReport(ctx context.Context, store session.Store, cfg settings.Settings) error {
 	cstat, err := store.Stats(ctx)
 	if err != nil {
 		return err
@@ -358,7 +355,7 @@ func computeCost(promptTokens, cachedTokens, completionTokens int64, inPerM, cac
 
 // printCostReport joins per-model token usage with the configured prices. A
 // model with no price set is shown "unpriced" (tokens but no money).
-func printCostReport(usage []session.ModelUsage, cfg app.Config) {
+func printCostReport(usage []session.ModelUsage, cfg settings.Settings) {
 	if len(usage) == 0 {
 		fmt.Println("(no requests recorded yet)")
 		return
@@ -367,15 +364,15 @@ func printCostReport(usage []session.ModelUsage, cfg app.Config) {
 	// Include the built-in registry connections so a model selected without a
 	// config declaration (T2.2) is still matched to its (registry-derived)
 	// ModelConfig.
-	priced := map[string]app.ModelConfig{}
+	priced := map[string]settings.ModelConfig{}
 	for _, mc := range cfg.Models {
 		priced[mc.Model] = mc
 	}
-	for _, name := range cfg.AvailableModelNames() {
+	for _, name := range app.AvailableModelNames(cfg) {
 		if _, exists := priced[name]; exists {
 			continue
 		}
-		if mc, err := cfg.SelectModel(name); err == nil {
+		if mc, err := app.SelectModel(name, cfg); err == nil {
 			priced[mc.Model] = mc
 		}
 	}
@@ -429,7 +426,7 @@ func printContextStats(st session.Stats) {
 
 // printProviderStats renders transport telemetry — the answer to "why are
 // requests slow / failing" that a bare "context deadline exceeded" cannot give.
-func printProviderStats(st session.ProviderStats, cfg app.Config) {
+func printProviderStats(st session.ProviderStats, cfg settings.Settings) {
 	fmt.Printf("Requests:           %d\n", st.Requests)
 	if st.Requests == 0 {
 		fmt.Println("(no requests recorded yet)")
@@ -476,7 +473,7 @@ func printLatencyHistogram(buckets []session.LatencyBucket) {
 }
 
 // runTrace prints the most recent requests with their per-attempt breakdown.
-func runTrace(ctx context.Context, cfg app.Config, limit int) error {
+func runTrace(ctx context.Context, limit int) error {
 	root, _ := os.Getwd()
 	store, err := runtime.OpenStore(root)
 	if err != nil {
@@ -518,7 +515,7 @@ func printTrace(recs []session.RequestRecord) {
 // task_started event whose session_id is the isolated sub-session that holds the
 // full (otherwise invisible) investigation. Inspect one with `codeagent
 // task-trace <id>`.
-func runTasks(ctx context.Context, cfg app.Config) error {
+func runTasks(ctx context.Context) error {
 	root, _ := os.Getwd()
 	store, err := runtime.OpenStore(root)
 	if err != nil {
@@ -547,7 +544,7 @@ func runTasks(ctx context.Context, cfg app.Config) error {
 // console renderer the live run uses — so you can see exactly what the subagent
 // did (its reads, searches, observations), which is invisible by design while it
 // runs (default-quiet).
-func runTaskTrace(ctx context.Context, cfg app.Config, sessionID string) error {
+func runTaskTrace(ctx context.Context, sessionID string) error {
 	root, _ := os.Getwd()
 	store, err := runtime.OpenStore(root)
 	if err != nil {
@@ -593,7 +590,7 @@ func truncateOneLine(s string, max int) string {
 	return s
 }
 
-func runAsk(ctx context.Context, mc app.ModelConfig, provider model.Provider, question string) error {
+func runAsk(ctx context.Context, mc settings.ModelConfig, provider model.Provider, question string) error {
 	resp, err := provider.Complete(ctx, model.Request{
 		Model:       mc.Model,
 		Temperature: mc.Temperature,
@@ -609,7 +606,7 @@ func runAsk(ctx context.Context, mc app.ModelConfig, provider model.Provider, qu
 	return nil
 }
 
-func runAgent(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider model.Provider, goal string, autoMode bool, noContextFiles bool, set settings.Settings) error {
+func runAgent(ctx context.Context, cfg settings.Settings, mc settings.ModelConfig, provider model.Provider, goal string, autoMode bool, noContextFiles bool) error {
 	root, _ := os.Getwd()
 
 	store, err := runtime.OpenStore(root)
@@ -633,12 +630,12 @@ func runAgent(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider 
 	// today's behavior). The tier is audited by the loop (correlated
 	// EventAutoApproved), so the approver itself takes no emitter. The wrap
 	// happens inside BuildRunner via the Allowlist, so no further decoration here.
-	rules := approve.NewRuleStore(root, set.Permissions.Allow, set.Permissions.Deny)
-	approver := approve.NewModeApprover(approve.ModeFromSettings(set), root, ui.ConfirmApprover{})
+	rules := approve.NewRuleStore(root, cfg.Permissions.Allow, cfg.Permissions.Deny)
+	approver := approve.NewModeApprover(approve.ModeFromSettings(cfg), root, ui.ConfirmApprover{})
 	if autoMode {
 		approver.SetMode(approve.ModeAuto)
 	}
-	runner := runtime.BuildRunner(cfg, set, mc, provider, registry, skillReg, approver, runtime.WithEventStore(buildEmitter(), store, ctx), rules, root)
+	runner := runtime.BuildRunner(cfg, mc, provider, registry, skillReg, approver, runtime.WithEventStore(buildEmitter(), store, ctx), rules, root)
 	planRef.R = runner
 	runner.PlanApprover = approver
 
@@ -675,7 +672,7 @@ func runAgent(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider 
 // with a code reflecting the result (achieved=0; blocked/errored/budget/paused
 // distinct) so CI can branch on it. Same setup as runAgent; the pursuit and the
 // exit-code mapping live in pursueHeadless.
-func runGoal(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider model.Provider, objective string, autoMode bool, noContextFiles bool, set settings.Settings) error {
+func runGoal(ctx context.Context, cfg settings.Settings, mc settings.ModelConfig, provider model.Provider, objective string, autoMode bool, noContextFiles bool) error {
 	if strings.TrimSpace(objective) == "" {
 		return fmt.Errorf(`usage: codeagent [--auto] goal "<objective>"`)
 	}
@@ -700,12 +697,12 @@ func runGoal(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider m
 		fmt.Fprintln(os.Stderr, "note: auto mode OFF — non-interactive, so confirm-tier tools (mutating commands, edits) will be denied; pass --auto for hands-off.")
 	}
 
-	rules := approve.NewRuleStore(root, set.Permissions.Allow, set.Permissions.Deny)
-	approver := approve.NewModeApprover(approve.ModeFromSettings(set), root, ui.ConfirmApprover{})
+	rules := approve.NewRuleStore(root, cfg.Permissions.Allow, cfg.Permissions.Deny)
+	approver := approve.NewModeApprover(approve.ModeFromSettings(cfg), root, ui.ConfirmApprover{})
 	if autoMode {
 		approver.SetMode(approve.ModeAuto)
 	}
-	runner := runtime.BuildRunner(cfg, set, mc, provider, registry, skillReg, approver, runtime.WithEventStore(buildEmitter(), store, ctx), rules, root)
+	runner := runtime.BuildRunner(cfg, mc, provider, registry, skillReg, approver, runtime.WithEventStore(buildEmitter(), store, ctx), rules, root)
 	planRef.R = runner
 	runner.PlanApprover = approver
 
@@ -754,7 +751,7 @@ func (o mcpPromptOps) Render(command string, args []string) (string, error) {
 // as `run`/`repl` (buildRunner) but with channel-backed Emitter/Approver, so the
 // loop runs on a background goroutine while the program owns the terminal. The
 // agent is unchanged; only the renderer differs.
-func runTUI(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider model.Provider, secretsResolver credential.Resolver, autoMode bool, noContextFiles bool, set settings.Settings) error {
+func runTUI(ctx context.Context, cfg settings.Settings, mc settings.ModelConfig, provider model.Provider, secretsResolver credential.Resolver, autoMode bool, noContextFiles bool) error {
 	root, _ := os.Getwd()
 
 	home, _ := os.UserHomeDir()
@@ -801,12 +798,12 @@ func runTUI(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider mo
 	// The permission store is shared into the loop's allowlist; the TUI card's
 	// interactive "always allow" grant into it is a later step.
 
-	rules := approve.NewRuleStore(root, set.Permissions.Allow, set.Permissions.Deny)
-	approver := approve.NewModeApprover(approve.ModeFromSettings(set), root, backend.Approver).WithPlanApprover(backend.PlanApprover)
+	rules := approve.NewRuleStore(root, cfg.Permissions.Allow, cfg.Permissions.Deny)
+	approver := approve.NewModeApprover(approve.ModeFromSettings(cfg), root, backend.Approver).WithPlanApprover(backend.PlanApprover)
 	if autoMode {
 		approver.SetMode(approve.ModeAuto)
 	}
-	runner := runtime.BuildRunner(cfg, set, mc, provider, registry, skillReg, approver, runtime.WithEventStore(backend.Emitter, store, ctx), rules, root)
+	runner := runtime.BuildRunner(cfg, mc, provider, registry, skillReg, approver, runtime.WithEventStore(backend.Emitter, store, ctx), rules, root)
 	planRef.R = runner
 	runner.Stream = true // 8.6: stream the model's text live (TUI only)
 	runner.PlanApprover = approver
@@ -822,7 +819,7 @@ func runTUI(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider mo
 		Session:          sess.ID,
 		CompactThreshold: cfg.CompactThreshold(mc),
 		SubagentBudget:   runtime.SubAgentMaxSteps,
-		FirstRun:         set.Bootstrapped,
+		FirstRun:         cfg.Bootstrapped,
 	}
 	// /resume loads a stored session and re-budgets it to the current model — the
 	// same helper the REPL's /resume uses.
@@ -841,7 +838,7 @@ func runTUI(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider mo
 	// /use switches the runner to a new model between turns — the same logic as
 	// the REPL's /use, but inside the run-loop goroutine via modelSwap.
 	modelSwap := func(name string) (tui.HeaderInfo, error) {
-		newMC, err := cfg.SelectModel(name)
+		newMC, err := app.SelectModel(name, cfg)
 		if err != nil {
 			return tui.HeaderInfo{}, err
 		}
@@ -869,7 +866,7 @@ func runTUI(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider mo
 		}, nil
 	}
 	goalOps := buildGoalOps(cfg, mc, runner, store)
-	return tui.Run(ctx, backend, runner, sess, store, root, header, resume, modelSwap, cfg.AvailableModelNames(), cfg.DisplayModelName, &persistedMode{ModeApprover: approver, path: settings.ProjectLocalPath(root)}, rules, mcpPromptOps{ctx: ctx, mgr: mcpMgr}, goalOps)
+	return tui.Run(ctx, backend, runner, sess, store, root, header, resume, modelSwap, app.AvailableModelNames(cfg), cfg.DisplayModelName, &persistedMode{ModeApprover: approver, path: settings.ProjectLocalPath(root)}, rules, mcpPromptOps{ctx: ctx, mgr: mcpMgr}, goalOps)
 }
 
 // runPlugin handles `codeagent plugin <subcommand> [args...]`.

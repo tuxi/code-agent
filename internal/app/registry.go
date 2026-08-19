@@ -1,6 +1,7 @@
 package app
 
 import (
+	"code-agent/internal/settings"
 	"encoding/base64"
 	"fmt"
 	"sort"
@@ -29,25 +30,6 @@ func b64urlDecode(s string) (string, bool) {
 		return "", false
 	}
 	return string(buf), true
-}
-
-// DisplayModelName returns a human-readable label for a model key. A grouped-
-// provider model (alias key provider.<b64>.model.<b64>) becomes
-// "<provider-id>/<model-id>"; any other key is returned unchanged. The TUI
-// /use picker and REPL /models use this so users never see base64 alias keys.
-func (c Config) DisplayModelName(key string) string {
-	mc, ok := c.Models[key]
-	if !ok {
-		return key
-	}
-	if mc.Catalog.ConnectionID == "" {
-		return key // flat model, key is already the friendly name
-	}
-	display := mc.Catalog.DisplayName
-	if display == "" {
-		display = mc.Model
-	}
-	return mc.Catalog.ConnectionID + "/" + display
 }
 
 // validateFlatModelKey enforces design-providers-grouped-config.md §3.1: a
@@ -153,22 +135,22 @@ var builtinConnections = map[string]builtinConnection{
 		BaseURL: "http://localhost:11434/v1", ProviderType: "ollama",
 		DisplayName: "Ollama", Summary: "连接本机或局域网中的 Ollama", Kind: "local",
 	},
-	"gateway": {
-		ProviderType: "openai",
-		DisplayName:  "Talkify Gateway", Summary: "使用 Talkify 账户、订阅模型和云端能力", Kind: "gateway",
-	},
+	//"gateway": {
+	//	ProviderType: "openai",
+	//	DisplayName:  "Talkify Gateway", Summary: "使用 Talkify 账户、订阅模型和云端能力", Kind: "gateway",
+	//},
 	"opencode-go": {
 		BaseURL: "https://opencode.ai/zen/go/v1", Env: "OPENCODE_GO_API_KEY",
 		WireModel: "deepseek-v4-flash", ProviderType: "openai",
 		DisplayName: "OpenCode Go", Summary: "低订阅费开源编程模型（首月 $5，之后 $10/月）", Kind: "api_key",
 		Models: []builtinModelTemplate{
-			{ID: "gpt-5.6-luna", RuntimeAlias: "ocg gpt 5.6 luna", ContextWindow: 1_000_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text"}, InputPricePerM: 0.22, OutputPricePerM: 0.66},
-			{ID: "deepseek-v4-flash", RuntimeAlias: "ocg deepseek flash", ContextWindow: 1_000_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text"}, InputPricePerM: 0.22, OutputPricePerM: 0.66},
-			{ID: "deepseek-v4-pro", RuntimeAlias: "ocg deepseek pro", ContextWindow: 1_000_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text"}, InputPricePerM: 0.66, OutputPricePerM: 1.98},
-			{ID: "kimi-k3", RuntimeAlias: "ocg kimi k3", ContextWindow: 1_000_000, SupportsTools: true, InputModalities: []string{"text"}, InputPricePerM: 3.00, OutputPricePerM: 15.00, Temperature: 1.0},
-			{ID: "kimi-k2.7-code", RuntimeAlias: "ocg kimi k2.7 code", ContextWindow: 256_000, SupportsTools: true, InputModalities: []string{"text"}, InputPricePerM: 1.2, OutputPricePerM: 5.6, Temperature: 1.0},
-			{ID: "glm-5.2", RuntimeAlias: "ocg glm 5.2", ContextWindow: 128_000, SupportsTools: true, InputModalities: []string{"text"}, InputPricePerM: 1.40, OutputPricePerM: 4.40, Temperature: 0.2},
-			{ID: "mimo-v2.5", RuntimeAlias: "ocg mimo v2.5", ContextWindow: 1_000_000, SupportsTools: true, InputModalities: []string{"text"}, InputPricePerM: 0.22, OutputPricePerM: 0.66, Temperature: 0.2},
+			{ID: "gpt-5.6-luna", RuntimeAlias: "opencode gpt 5.6 luna", ContextWindow: 1_000_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text"}, InputPricePerM: 0.22, OutputPricePerM: 0.66},
+			{ID: "deepseek-v4-flash", RuntimeAlias: "opencode deepseek flash", ContextWindow: 1_000_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text"}, InputPricePerM: 0.22, OutputPricePerM: 0.66},
+			{ID: "deepseek-v4-pro", RuntimeAlias: "opencode deepseek pro", ContextWindow: 1_000_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text"}, InputPricePerM: 0.66, OutputPricePerM: 1.98},
+			{ID: "kimi-k3", RuntimeAlias: "opencode kimi k3", ContextWindow: 1_000_000, SupportsTools: true, InputModalities: []string{"text"}, InputPricePerM: 3.00, OutputPricePerM: 15.00, Temperature: 1.0},
+			{ID: "kimi-k2.7-code", RuntimeAlias: "opencode kimi k2.7 code", ContextWindow: 256_000, SupportsTools: true, InputModalities: []string{"text"}, InputPricePerM: 1.2, OutputPricePerM: 5.6, Temperature: 1.0},
+			{ID: "glm-5.2", RuntimeAlias: "opencode glm 5.2", ContextWindow: 128_000, SupportsTools: true, InputModalities: []string{"text"}, InputPricePerM: 1.40, OutputPricePerM: 4.40, Temperature: 0.2},
+			{ID: "mimo-v2.5", RuntimeAlias: "opencode mimo v2.5", ContextWindow: 1_000_000, SupportsTools: true, InputModalities: []string{"text"}, InputPricePerM: 0.22, OutputPricePerM: 0.66, Temperature: 0.2},
 		},
 	},
 }
@@ -182,7 +164,7 @@ var builtinConnections = map[string]builtinConnection{
 // resolves the service id to its api type (ProviderType) and records the
 // service id in Catalog.ProviderID for /v1/runtime/models. A generic api type
 // (openai/responses/ollama) or an explicit base_url is never overwritten.
-func applyRegistryDefaults(mc *ModelConfig) {
+func applyRegistryDefaults(mc *settings.ModelConfig) {
 	conn, ok := builtinConnections[mc.Name]
 	if !ok {
 		return
@@ -217,7 +199,7 @@ func applyRegistryDefaults(mc *ModelConfig) {
 // with no config.yaml still offers qwen/glm/ollama alongside the default
 // deepseek (R2/T1.3). Selection itself goes through SelectModel, which errors
 // clearly when the chosen connection has no credential.
-func (c Config) AvailableModelNames() []string {
+func AvailableModelNames(c settings.Settings) []string {
 	seen := make(map[string]struct{}, len(c.Models)+len(builtinConnections))
 	for name := range c.Models {
 		seen[name] = struct{}{}

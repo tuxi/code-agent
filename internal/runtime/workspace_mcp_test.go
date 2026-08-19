@@ -1,13 +1,13 @@
 package runtime
 
 import (
+	"code-agent/internal/settings"
 	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
 
-	"code-agent/internal/app"
 	"code-agent/internal/tools"
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -70,7 +70,7 @@ func newMCPTestRegistry(t *testing.T) *WorkspaceRegistry {
 	t.Setenv("HOME", t.TempDir()) // user-scope ~/.codeagent/mcp.json must not leak in
 
 	wr := NewWorkspaceRegistry("")
-	wr.EnableMCP(context.Background(), tools.NewRegistry(), app.Config{}, nil, false)
+	wr.EnableMCP(context.Background(), tools.NewRegistry(), settings.Settings{}, nil, false)
 	t.Cleanup(func() { wr.Close() })
 	return wr
 }
@@ -159,7 +159,7 @@ func TestWorkspaceMCPToolAllowedGate(t *testing.T) {
 	writeMCPJSON(t, ws, "srv_a", "alpha")
 	t.Setenv("HOME", t.TempDir())
 
-	locked := app.Config{}
+	locked := settings.Settings{}
 	locked.Agent.BuiltinTools = &[]string{} // nothing allowed
 
 	wr := NewWorkspaceRegistry("")

@@ -1,12 +1,12 @@
 package main
 
 import (
+	"code-agent/internal/settings"
 	"context"
 	"path/filepath"
 	"testing"
 	"time"
 
-	"code-agent/internal/app"
 	"code-agent/internal/model"
 	"code-agent/internal/session"
 	"code-agent/internal/session/sqlite"
@@ -39,9 +39,9 @@ func seedSession(t *testing.T, store session.Store, id string, updated time.Time
 	}
 }
 
-func testConfigModel() (app.Config, *app.ModelConfig) {
-	cfg := app.Config{Agent: app.AgentConfig{CompactRatio: 0.7}}
-	mc := &app.ModelConfig{Name: "m", Model: "wire-model", ContextWindow: 128000}
+func testConfigModel() (settings.Settings, *settings.ModelConfig) {
+	cfg := settings.Settings{Agent: settings.AgentConfig{CompactRatio: 0.7}}
+	mc := &settings.ModelConfig{Name: "m", Model: "wire-model", ContextWindow: 128000}
 	return cfg, mc
 }
 

@@ -33,8 +33,7 @@ import (
 // statically configured (AutoApprover), not set per-connection.
 type replRunBuilder struct {
 	set      settings.Settings
-	cfg      app.Config
-	mc       app.ModelConfig
+	mc       settings.ModelConfig
 	provider model.Provider
 	registry *tools.Registry
 	skillReg *skills.Registry
@@ -45,7 +44,7 @@ type replRunBuilder struct {
 }
 
 func (b *replRunBuilder) Build(ctx conversation.RuntimeContext) conversation.TurnRunner {
-	runner := runtime.BuildRunner(b.cfg, b.set, b.mc, b.provider, b.registry, b.skillReg, b.approver, b.emitter, b.rules, b.root)
+	runner := runtime.BuildRunner(b.set, b.mc, b.provider, b.registry, b.skillReg, b.approver, b.emitter, b.rules, b.root)
 	runner.ClientWaiter = ctx.ClientWaiter
 	return runner
 }
@@ -65,7 +64,7 @@ type lineReader func(prompt string) (string, error)
 // mode mishandles wide CJK characters (a backspace erases one display column, so
 // half a character lingers) and can drive some terminals into buggy wide-char
 // wrap rendering.
-func repl(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider model.Provider, resumeID string, auto bool, noContextFiles bool, set settings.Settings) error {
+func repl(ctx context.Context, cfg settings.Settings, mc settings.ModelConfig, provider model.Provider, resumeID string, auto bool, noContextFiles bool, set settings.Settings) error {
 	root, _ := os.Getwd()
 
 	// Shared credential file: the host app writes Keychain provider keys to
@@ -138,7 +137,7 @@ func repl(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider mode
 	if auto {
 		approver.SetMode(approve.ModeAuto)
 	}
-	runner := runtime.BuildRunner(cfg, set, mc, provider, registry, skillReg, approver, runtime.WithEventStore(buildEmitter(), store, ctx), rules, root)
+	runner := runtime.BuildRunner(cfg, mc, provider, registry, skillReg, approver, runtime.WithEventStore(buildEmitter(), store, ctx), rules, root)
 	planRef.R = runner // wire plan tools to the runner (late binding)
 	runner.PlanApprover = approver
 	runner.AskUserApprover = &replAskUserApprover{ask: ask}
@@ -173,7 +172,7 @@ func repl(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider mode
 	active := conversation.NewActiveTurnRegistry()
 	subs := conversation.NewSubscriptionManager()
 	rb := &replRunBuilder{
-		cfg: cfg, mc: mc, provider: provider,
+		set: cfg, mc: mc, provider: provider,
 		registry: registry, skillReg: skillReg,
 		approver: approver,
 		emitter:  runtime.WithEventStore(buildEmitter(), store, ctx),
@@ -289,7 +288,7 @@ func repl(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider mode
 // usually the one passed in, but /resume swaps it for a different stored session
 // — plus quit=true for /exit and /quit. ask reads sub-prompts (e.g. /resume's
 // selection) through the shared readline instance.
-func handleCommand(line string, cfg app.Config, mc *app.ModelConfig, runner *agent.Runner, sess *session.Session, store session.Store, ask lineReader, secretsResolver credential.Resolver, root string) (*session.Session, bool, error) {
+func handleCommand(line string, cfg settings.Settings, mc *settings.ModelConfig, runner *agent.Runner, sess *session.Session, store session.Store, ask lineReader, secretsResolver credential.Resolver, root string) (*session.Session, bool, error) {
 	fields := strings.Fields(line)
 	switch fields[0] {
 	case "/exit", "/quit":
@@ -418,7 +417,7 @@ func handleCommand(line string, cfg app.Config, mc *app.ModelConfig, runner *age
 		return sess, false, nil
 
 	case "/models":
-		for _, name := range cfg.AvailableModelNames() {
+		for _, name := range app.AvailableModelNames(cfg) {
 			marker := "  "
 			if name == mc.Name {
 				marker = "* "
@@ -431,7 +430,7 @@ func handleCommand(line string, cfg app.Config, mc *app.ModelConfig, runner *age
 		if len(fields) < 2 {
 			return sess, false, fmt.Errorf("usage: /use NAME")
 		}
-		newMC, err := cfg.SelectModel(fields[1])
+		newMC, err := app.SelectModel(fields[1], cfg)
 		if err != nil {
 			return sess, false, err
 		}
@@ -463,7 +462,7 @@ func handleCommand(line string, cfg app.Config, mc *app.ModelConfig, runner *age
 // it switches directly; otherwise it lists sessions and reads a numbered choice.
 // It returns the session to make active — the current one unchanged on
 // cancel/no-op. A non-empty current session is saved before switching away.
-func resumeInteractive(cfg app.Config, mc *app.ModelConfig, sess *session.Session, store session.Store, read lineReader, fields []string) (*session.Session, error) {
+func resumeInteractive(cfg settings.Settings, mc *settings.ModelConfig, sess *session.Session, store session.Store, read lineReader, fields []string) (*session.Session, error) {
 	ctx := context.Background()
 
 	target := ""
@@ -525,7 +524,7 @@ func resumeInteractive(cfg app.Config, mc *app.ModelConfig, sess *session.Sessio
 // loadAndRebudget loads a stored session and re-budgets it to the currently
 // selected model — the model that will actually run owns WHEN to compact, the
 // same semantics as /use.
-func loadAndRebudget(ctx context.Context, cfg app.Config, mc app.ModelConfig, store session.Store, id string) (*session.Session, error) {
+func loadAndRebudget(ctx context.Context, cfg settings.Settings, mc settings.ModelConfig, store session.Store, id string) (*session.Session, error) {
 	sess, err := store.Load(ctx, id)
 	if err != nil {
 		return nil, err
@@ -670,7 +669,7 @@ func parseMultiSelect(line string, q agent.AskUserQuestion) (agent.AskUserAnswer
 
 // loadPromptTemplatesForWorkspace loads templates from global and project
 // directories. Global comes first (lowest priority); project overrides by name.
-func loadPromptTemplatesForWorkspace(root string, cfg app.Config) []promptpkg.Template {
+func loadPromptTemplatesForWorkspace(root string, cfg settings.Settings) []promptpkg.Template {
 	var dirs []string
 	if cfg.GlobalPromptsDir != "" {
 		dirs = append(dirs, cfg.GlobalPromptsDir)

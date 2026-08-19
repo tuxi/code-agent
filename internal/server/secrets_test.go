@@ -14,7 +14,7 @@ import (
 // A2: POST /v1/secrets updates the mutable injected resolver, and the next
 // GET /v1/runtime/models rebuilds the catalog so the model becomes available.
 func TestSecretsInjectionMakesModelAvailable(t *testing.T) {
-	cfg, err := app.LoadConfigBytes([]byte(`
+	cfg, err := app.LoadSettingsBytes([]byte(`
 models:
   qwen:
     provider: openai

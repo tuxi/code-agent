@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"code-agent/internal/agent"
-	"code-agent/internal/app"
 	"code-agent/internal/approve"
 	"code-agent/internal/hooks"
 	"code-agent/internal/model"
@@ -31,7 +30,7 @@ func userHome() string {
 // running, so switching models (`/use`) must rebuild it. Shared by run and repl.
 // The verbatim tail is token-budgeted from the model's compaction threshold
 // (P12.a), so compaction converges on a 32k local window as much as on 128k.
-func BuildCompactor(cfg app.Config, mc app.ModelConfig, provider model.Provider) session.Compactor {
+func BuildCompactor(cfg settings.Settings, mc settings.ModelConfig, provider model.Provider) session.Compactor {
 	return &session.LLMCompactor{
 		Provider:         provider,
 		ModelName:        mc.Model,
@@ -45,14 +44,14 @@ func BuildCompactor(cfg app.Config, mc app.ModelConfig, provider model.Provider)
 // tool) and the Emitter (how the event stream is rendered) — everything else
 // (tools, observation, reflection, the skills nudge, compaction, the step cap) is
 // identical, so it lives here and callers cannot drift apart.
-func BuildRunner(cfg app.Config, set settings.Settings, mc app.ModelConfig, provider model.Provider, registry *tools.Registry, skillReg *skills.Registry, approver agent.Approver, emitter agent.Emitter, rules *approve.RuleStore, root string) *agent.Runner {
+func BuildRunner(cfg settings.Settings, mc settings.ModelConfig, provider model.Provider, registry *tools.Registry, skillReg *skills.Registry, approver agent.Approver, emitter agent.Emitter, rules *approve.RuleStore, root string) *agent.Runner {
 	// Hook runner: settings-layer hooks (the config layer no longer carries
 	// hooks). Hooks run `sh -c`, so on a no-subprocess host (iOS) they are
 	// suppressed — never just set.Hooks (P11.c).
 	var hook agent.ToolHook
 	var hookRunner *hooks.Runner
 	if cfg.Profile.AllowsSubprocess() {
-		allHooks := set.Hooks
+		allHooks := cfg.Hooks
 		if hr := hooks.New(allHooks, root); hr != nil {
 			hook = hr
 			hookRunner = hr

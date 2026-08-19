@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"code-agent/internal/app"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -90,7 +91,7 @@ func (s *TrustStore) Lookup(cwd string) (bool, bool) {
 		if parent == abs {
 			break // reached root
 		}
-				abs = parent
+		abs = parent
 	}
 	return false, false
 }
@@ -331,8 +332,8 @@ func LoadSettingsWithTrust(
 	if trusted {
 		overlay := settings.LoadProjectSettings(root, warn)
 		settings.MergeSettings(&base, overlay)
+		base = app.LoadFromSettings(base)
 	}
-
 	return base, trusted
 }
 

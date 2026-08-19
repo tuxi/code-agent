@@ -1,6 +1,7 @@
 package embed
 
 import (
+	"code-agent/internal/settings"
 	"context"
 	"encoding/json"
 	"errors"
@@ -11,15 +12,14 @@ import (
 	"strings"
 	"testing"
 
-	"code-agent/internal/app"
 	"code-agent/internal/credential"
 	"code-agent/internal/runtime"
 	"code-agent/internal/server"
 )
 
 func TestInjectSecrets_WebSearchKeys(t *testing.T) {
-	cfg := app.Config{
-		Models: map[string]app.ModelConfig{
+	cfg := settings.Settings{
+		Models: map[string]settings.ModelConfig{
 			"deepseek": {APIKeyEnv: "DEEPSEEK_API_KEY"},
 		},
 	}
@@ -36,7 +36,7 @@ func TestInjectSecrets_WebSearchKeys(t *testing.T) {
 
 	// Model key injected — the model's Credential ref is aligned to llm/deepseek
 	// (the deprecated APIKey field is no longer written, R1.1).
-	if got := cfg.Models["deepseek"].Credential; got != (app.CredentialRef{Namespace: "llm", Name: "deepseek"}) {
+	if got := cfg.Models["deepseek"].Credential; got != (settings.CredentialRef{Namespace: "llm", Name: "deepseek"}) {
 		t.Errorf("model Credential ref = %+v, want llm/deepseek", got)
 	}
 
@@ -363,8 +363,8 @@ func TestStartServerRejectsNonLoopbackPrivateListener(t *testing.T) {
 func TestInjectSecrets_WebSearchNoEnvName(t *testing.T) {
 	// When tavily_api_key_env is empty, no injection should happen even if a
 	// matching secret key exists — there's no declared env name to match against.
-	cfg := app.Config{
-		Models: map[string]app.ModelConfig{
+	cfg := settings.Settings{
+		Models: map[string]settings.ModelConfig{
 			"deepseek": {APIKeyEnv: "DEEPSEEK_API_KEY"},
 		},
 	}
@@ -383,8 +383,8 @@ func TestInjectSecrets_WebSearchNoEnvName(t *testing.T) {
 }
 
 func TestInjectSecrets_WebSearchEmptySecret(t *testing.T) {
-	cfg := app.Config{
-		Models: map[string]app.ModelConfig{
+	cfg := settings.Settings{
+		Models: map[string]settings.ModelConfig{
 			"deepseek": {APIKeyEnv: "DEEPSEEK_API_KEY"},
 		},
 	}
@@ -404,8 +404,8 @@ func TestInjectSecrets_WebSearchEmptySecret(t *testing.T) {
 }
 
 func TestInjectSecrets_NilSecrets(t *testing.T) {
-	cfg := app.Config{
-		Models: map[string]app.ModelConfig{
+	cfg := settings.Settings{
+		Models: map[string]settings.ModelConfig{
 			"deepseek": {APIKeyEnv: "DEEPSEEK_API_KEY"},
 		},
 	}

@@ -2,13 +2,13 @@ package runtime
 
 import (
 	"code-agent/internal/agent"
-	"code-agent/internal/app"
 	"code-agent/internal/credential"
 	"code-agent/internal/jobs"
 	"code-agent/internal/lsp"
 	"code-agent/internal/mcp"
 	"code-agent/internal/model"
 	"code-agent/internal/session"
+	"code-agent/internal/settings"
 	"code-agent/internal/skills"
 	"code-agent/internal/tools"
 	"code-agent/internal/tools/filesystem"
@@ -34,9 +34,9 @@ import (
 // returns — all three tools dereference it lazily at Execute time.
 func WirePlanTools(registry *tools.Registry, plansDir string) *agent.RunnerRef {
 	ref := &agent.RunnerRef{}
-	registry.Register(agent.NewEnterPlanModeTool(ref))
-	registry.Register(agent.NewProposePlanTool(ref, plansDir))
-	registry.Register(agent.NewAskUserTool(ref))
+	_ = registry.Register(agent.NewEnterPlanModeTool(ref))
+	_ = registry.Register(agent.NewProposePlanTool(ref, plansDir))
+	_ = registry.Register(agent.NewAskUserTool(ref))
 	return ref
 }
 
@@ -48,7 +48,7 @@ func WirePlanTools(registry *tools.Registry, plansDir string) *agent.RunnerRef {
 // jobSink, when non-nil, observes every background job's lifecycle (P8.7 Phase
 // A) — pass NewJobEventSink(...) to persist job events under the job's own id
 // partition, or nil for jobs invisible to the event stream (tests).
-func RegisterBuiltinTools(registry *tools.Registry, cfg app.Config, cred credential.Resolver, skillReg *skills.Registry, root string, jobSink jobs.Sink) error {
+func RegisterBuiltinTools(registry *tools.Registry, cfg settings.Settings, cred credential.Resolver, skillReg *skills.Registry, root string, jobSink jobs.Sink) error {
 	// Pure-Go tools that work inside an OS sandbox (no subprocess, container-local
 	// filesystem and network only). Registered under every profile.
 	toolList := []tools.Tool{
@@ -137,7 +137,7 @@ func RegisterBuiltinTools(registry *tools.Registry, cfg app.Config, cred credent
 // process root: the returned registry is the shared base each workspace clones
 // and layers its own MCP tools onto. Single-workspace entry points (run, repl,
 // tui) keep using BuildRegistry, which builds on top of this.
-func BuildBaseRegistry(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider model.Provider, cred credential.Resolver, store session.Store, root string, progress agent.Emitter) (*tools.Registry, *skills.Registry, *agent.RunnerRef, *JobEventSink, error) {
+func BuildBaseRegistry(ctx context.Context, cfg settings.Settings, mc settings.ModelConfig, provider model.Provider, cred credential.Resolver, store session.Store, root string, progress agent.Emitter) (*tools.Registry, *skills.Registry, *agent.RunnerRef, *JobEventSink, error) {
 	registry := tools.NewRegistry()
 
 	skillReg, err := skills.Load(cfg.GlobalSkillsDir, filepath.Join(root, "skills"))
@@ -248,7 +248,7 @@ func BuildBaseRegistry(ctx context.Context, cfg app.Config, mc app.ModelConfig, 
 // load_skill tool and the system-prompt index, so the index the model sees and
 // the bodies it can load stay in sync. The returned Manager owns the MCP
 // subprocesses; the caller must Close it.
-func BuildRegistry(ctx context.Context, cfg app.Config, mc app.ModelConfig, provider model.Provider, store session.Store, root string, progress agent.Emitter) (*tools.Registry, *skills.Registry, *mcp.Manager, *agent.RunnerRef, *JobEventSink, error) {
+func BuildRegistry(ctx context.Context, cfg settings.Settings, mc settings.ModelConfig, provider model.Provider, store session.Store, root string, progress agent.Emitter) (*tools.Registry, *skills.Registry, *mcp.Manager, *agent.RunnerRef, *JobEventSink, error) {
 	registry, skillReg, planRef, jobSink, err := BuildBaseRegistry(ctx, cfg, mc, provider, cfg.CredentialResolver(nil), store, root, progress)
 	if err != nil {
 		return nil, nil, nil, nil, nil, err

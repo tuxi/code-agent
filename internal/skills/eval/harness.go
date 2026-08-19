@@ -63,12 +63,12 @@ func NewHarness() (*Harness, error) {
 	}
 	home, _ := os.UserHomeDir()
 	set := settings.Load(root, home, os.Stderr)
-	cfg := app.LoadConfigFromSettings(set)
-	mc, err := cfg.SelectModel("")
+	set = app.LoadFromSettings(set)
+	mc, err := app.SelectModel("", set)
 	if err != nil {
 		return nil, fmt.Errorf("select model: %w", err)
 	}
-	provider, err := runtime.BuildProvider(mc, cfg.Provider, nil)
+	provider, err := runtime.BuildProvider(mc, set.Provider, nil)
 	if err != nil {
 		return nil, fmt.Errorf("build provider: %w", err)
 	}
