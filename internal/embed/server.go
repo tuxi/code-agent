@@ -29,6 +29,7 @@ import (
 	"code-agent/internal/controlplane"
 	"code-agent/internal/conversation"
 	"code-agent/internal/credential"
+	"code-agent/internal/gitworkspace"
 	"code-agent/internal/mcp"
 	"code-agent/internal/model"
 	"code-agent/internal/repos"
@@ -1116,6 +1117,10 @@ func Assemble(ctx context.Context, cfg settings.Settings, mc settings.ModelConfi
 
 	runtimeCapabilities := server.ConfiguredRuntimeCapabilities(maxConcurrentTurns)
 	runtimeCapabilities.ManagedWorktree = managedWorktrees != nil
+	var gitBranches *gitworkspace.Manager
+	if cfg.Profile != settings.ProfileSandboxed {
+		gitBranches = gitworkspace.New(workspaceDir, executor, managedWorktrees)
+	}
 	if cloneStateDir == "" {
 		if home, err := os.UserHomeDir(); err == nil {
 			cloneStateDir = filepath.Join(home, ".codeagent", "clone")
@@ -1129,6 +1134,9 @@ func Assemble(ctx context.Context, cfg settings.Settings, mc settings.ModelConfi
 	} else {
 		closers = append(closers, func() { _ = cloneService.Close() })
 		capabilities = append(capabilities, "public_git_clone_v1")
+	}
+	if gitBranches != nil {
+		capabilities = append(capabilities, gitworkspace.Capability)
 	}
 	handler := server.NewMux(repo, eventStore, executor, server.MuxOptions{
 		ServerName:           buildinfo.ServerName(),
@@ -1166,6 +1174,7 @@ func Assemble(ctx context.Context, cfg settings.Settings, mc settings.ModelConfi
 		},
 		RuntimeCapabilities: runtimeCapabilities,
 		ManagedWorktrees:    managedWorktrees,
+		GitBranches:         gitBranches,
 		SessionForks:        owner,
 		WorkflowSnapshot:    runtime.NewWorkflowSnapshotFunc(),
 	})

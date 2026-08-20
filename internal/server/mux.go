@@ -16,6 +16,7 @@ import (
 	"code-agent/internal/assetref"
 	"code-agent/internal/conversation"
 	"code-agent/internal/credential"
+	"code-agent/internal/gitworkspace"
 	"code-agent/internal/managedworktree"
 	"code-agent/internal/mcp"
 	"code-agent/internal/model"
@@ -383,6 +384,7 @@ type MuxOptions struct {
 	// Providers pattern. Implemented by the assembler, which owns the settings
 	// paths.
 	Permissions PermissionService
+	GitBranches *gitworkspace.Manager
 	// RuntimeModelsBuilder, when set, rebuilds the model catalog on each
 	// GET /v1/runtime/models with the latest injected credentials — so a
 	// POST /v1/secrets makes models available without a restart. When nil, the
@@ -439,6 +441,7 @@ type RuntimeCapabilities struct {
 	ConversationArchive      bool `json:"conversation_archive_v1"`
 	ConversationFork         bool `json:"conversation_fork_v1"`
 	PublicGitClone           bool `json:"public_git_clone_v1"`
+	WorkspaceGitBranch       bool `json:"workspace_git_branch_v1"`
 	MaxConcurrentTurns       int  `json:"max_concurrent_turns"`
 	MaxConnectedSessions     int  `json:"max_connected_sessions"`
 }
@@ -562,6 +565,7 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 	}
 	runtimeCapabilities := opts.RuntimeCapabilities
 	runtimeCapabilities.PublicGitClone = opts.CloneService != nil
+	runtimeCapabilities.WorkspaceGitBranch = opts.GitBranches != nil
 	runtimeCapabilities.ConversationFork = opts.SessionForks != nil
 	archiveRepo, archiveSupported := repo.(conversation.ArchivableConversationRepository)
 	if capability, ok := repo.(conversation.ConversationArchiveCapability); ok {
@@ -619,6 +623,7 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 	registerSecretsRoutes(mux, opts)
 	registerSettingsRoutes(mux, opts)
 	registerPermissionRoutes(mux, opts)
+	registerGitBranchRoutes(mux, opts)
 
 	mux.HandleFunc("GET /v1/activity", func(w http.ResponseWriter, r *http.Request) {
 		generatedAt := time.Now().UTC()

@@ -1471,6 +1471,12 @@ func (e *TurnExecutor) HasActivity(sessionID string) bool {
 	return false
 }
 
+// LoadSession exposes the repository read needed by Runtime-owned resource
+// guards. It intentionally does not mutate or admit work.
+func (e *TurnExecutor) LoadSession(ctx context.Context, sessionID string) (*session.Session, error) {
+	return e.repo.Load(ctx, sessionID)
+}
+
 // Subscribe returns a live event channel for a session. Used by the control plane
 // for event-driven wait_sessions instead of polling.
 func (e *TurnExecutor) Subscribe(sessionID string) (<-chan agent.Event, func()) {

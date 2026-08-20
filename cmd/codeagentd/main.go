@@ -24,6 +24,7 @@ import (
 	"code-agent/internal/controlplane"
 	"code-agent/internal/conversation"
 	"code-agent/internal/credential"
+	"code-agent/internal/gitworkspace"
 	"code-agent/internal/model"
 	"code-agent/internal/repos"
 	"code-agent/internal/runtime"
@@ -223,7 +224,9 @@ func run() error {
 
 	runtimeCapabilities := server.ConfiguredRuntimeCapabilities(maxConcurrentTurns)
 	runtimeCapabilities.ManagedWorktree = managedWorktrees != nil
+	gitBranches := gitworkspace.New(cwd, executor, managedWorktrees)
 	capabilities := append([]string(nil), defaultCapabilities...)
+	capabilities = append(capabilities, gitworkspace.Capability)
 	if cloneService != nil {
 		capabilities = append(capabilities, "public_git_clone_v1")
 	}
@@ -329,6 +332,7 @@ func run() error {
 		},
 		RuntimeCapabilities: runtimeCapabilities,
 		ManagedWorktrees:    managedWorktrees,
+		GitBranches:         gitBranches,
 		SessionForks:        owner,
 		WorkflowSnapshot:    runtime.NewWorkflowSnapshotFunc(),
 	})
