@@ -110,10 +110,16 @@ func (s *ProviderStore) Upsert(id string, spec ProviderSpec) (bool, error) {
 			return false, err
 		}
 	}
+	api := spec.API
+	if api == "gateway" {
+		// Gateway is a connection kind, not a provider wire protocol. Accept
+		// legacy clients but persist the OpenAI-compatible protocol value.
+		api = "openai"
+	}
 	pc := settings.ServiceConfig{
 		Enabled:    spec.Enabled,
 		BaseURL:    spec.BaseURL,
-		API:        spec.API,
+		API:        api,
 		Credential: settings.CredentialRef{Namespace: spec.Credential.Namespace, Name: spec.Credential.Name},
 		Headers:    spec.Headers,
 	}

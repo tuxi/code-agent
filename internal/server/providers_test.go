@@ -64,6 +64,29 @@ func TestProviderStoreUpsertAndGet(t *testing.T) {
 	}
 }
 
+func TestProviderStoreNormalizesLegacyGatewayAPI(t *testing.T) {
+	store := NewProviderStore(filepath.Join(t.TempDir(), "s.json"), nil)
+	handler := testProviderMux(t, store)
+	body := `{"base_url":"https://gateway.example.com/api/v1/agent","api":"gateway","credential":{"namespace":"gateway","name":"default"},"models":[{"id":"deepseek-v4-flash"}]}`
+	req := httptest.NewRequest(http.MethodPut, "/v1/providers/talkify-gateway", bytes.NewBufferString(body))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PUT status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+
+	got, err := store.Get("talkify-gateway")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.API != "openai" {
+		t.Errorf("api = %q, want openai", got.API)
+	}
+	if got.Credential != (ProviderCred{Namespace: "gateway", Name: "default"}) {
+		t.Errorf("credential = %+v, want gateway/default", got.Credential)
+	}
+}
+
 // PUT with empty models is rejected.
 func TestProviderStoreUpsertRejectsEmptyModels(t *testing.T) {
 	store := NewProviderStore(filepath.Join(t.TempDir(), "s.json"), nil)

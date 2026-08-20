@@ -1210,6 +1210,11 @@ func applyConnections(cfg *settings.Settings, conns map[string]connectionDefinit
 		api := def.API
 		if api == "" {
 			api = "openai"
+		} else if api == "gateway" {
+			// Gateway is a connection kind, not a provider wire protocol. Keep
+			// accepting the old injected shape and normalize it to the OpenAI-
+			// compatible provider used by the runtime.
+			api = "openai"
 		}
 		var cred settings.CredentialRef
 		apiKeyEnv := ""

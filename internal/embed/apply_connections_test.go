@@ -119,6 +119,32 @@ func TestApplyConnectionsExplicitNamespaceOverridesSource(t *testing.T) {
 	}
 }
 
+func TestApplyConnectionsGatewayAPIUsesOpenAIProvider(t *testing.T) {
+	cfg := settings.Settings{}
+	conns := map[string]connectionDefinition{
+		"talkify-gateway": {
+			API:     "gateway", // legacy connection-injection value
+			BaseURL: "https://gateway.example.com/v1",
+			Credential: &connectionCredentialDecl{
+				Source: "injected",
+				Ref:    "gateway",
+			},
+			Models: []connectionModelDef{
+				{WireModelID: "deepseek-v4-flash"},
+			},
+		},
+	}
+	applyConnections(&cfg, conns)
+
+	mc := cfg.Models["deepseek-v4-flash"]
+	if mc.Provider != "openai" {
+		t.Errorf("provider = %q, want openai", mc.Provider)
+	}
+	if mc.Credential != (settings.CredentialRef{Namespace: "gateway", Name: "default"}) {
+		t.Errorf("credential = %+v, want gateway/default", mc.Credential)
+	}
+}
+
 func keys(m map[string]settings.ModelConfig) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {
