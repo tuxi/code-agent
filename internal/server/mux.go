@@ -392,6 +392,11 @@ type MuxOptions struct {
 	// {target: secret} map updated into the mutable injected resolver. Nil
 	// disables the endpoint (404).
 	InjectSecrets func(targets map[credential.Target]credential.Credential) error
+	// ReloadSettings applies the persisted settings snapshot to the live runtime.
+	// It is intentionally explicit: hosts can call this after replacing
+	// settings.json without making the runtime watch a file while it is being
+	// atomically replaced.
+	ReloadSettings func() error
 	// WorkspaceReloader reloads MCP servers for a given workspace. Nil disables
 	// the POST /v1/workspaces/{path}/mcp/reload endpoint (returns 404).
 	WorkspaceReloader func(workspacePath string) error
@@ -612,6 +617,7 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 
 	registerProviderRoutes(mux, opts)
 	registerSecretsRoutes(mux, opts)
+	registerSettingsRoutes(mux, opts)
 	registerPermissionRoutes(mux, opts)
 
 	mux.HandleFunc("GET /v1/activity", func(w http.ResponseWriter, r *http.Request) {

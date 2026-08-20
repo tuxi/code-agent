@@ -73,8 +73,9 @@ type workspaceMCP struct {
 // per-workspace store. Built-in tools are global (shared across all workspaces);
 // MCP tools are workspace-scoped when EnableMCP was called.
 type WorkspaceRegistry struct {
-	mu        sync.Mutex
-	instances map[string]*WorkspaceInstance
+	mu          sync.Mutex
+	mcpReloadMu sync.Mutex
+	instances   map[string]*WorkspaceInstance
 
 	// sessionWorkspaces maps session IDs to workspace instances so event-reader
 	// endpoints can resolve which store to query.
@@ -162,9 +163,51 @@ func (wr *WorkspaceRegistry) Get(workspacePath string) (*WorkspaceInstance, erro
 	// blocks until tools are ready, then reads a fully-built ToolReg (the Once
 	// provides the happens-before edge). Gets for OTHER workspaces proceed freely.
 	if mcpCfg != nil {
+		wr.mcpReloadMu.Lock()
 		inst.mcpOnce.Do(func() { inst.initMCP(mcpCfg) })
+		wr.mcpReloadMu.Unlock()
 	}
 	return inst, nil
+}
+
+// ReconfigureMCP replaces the process-level MCP policy and rebuilds every
+// already-loaded workspace. New conversations observe the new policy
+// immediately; a failed connection leaves that workspace with built-ins only.
+// The reload mutex serializes this operation with lazy MCP initialization.
+func (wr *WorkspaceRegistry) ReconfigureMCP(cfg settings.Settings, injected []mcp.ServerConfig) {
+	wr.mcpReloadMu.Lock()
+	defer wr.mcpReloadMu.Unlock()
+
+	wr.mu.Lock()
+	if wr.mcp == nil {
+		wr.mu.Unlock()
+		return
+	}
+	mc := &workspaceMCP{ctx: context.Background(), base: nil, cfg: cfg, injected: injected}
+	mc.ctx = wr.mcp.ctx
+	mc.base = wr.mcp.base
+	mc.inheritClaude = wr.mcp.inheritClaude
+	wr.mcp = mc
+	instances := make([]*WorkspaceInstance, 0, len(wr.instances))
+	for _, inst := range wr.instances {
+		instances = append(instances, inst)
+	}
+	wr.mu.Unlock()
+
+	for _, inst := range instances {
+		inst.mu.Lock()
+		oldMgr := inst.MCPMgr
+		inst.MCPMgr = nil
+		inst.ToolReg = nil
+		inst.mcpCfg = mc
+		inst.mcpMTime = time.Time{}
+		inst.mcpOnce = sync.Once{}
+		inst.mu.Unlock()
+		if oldMgr != nil {
+			_ = oldMgr.Close()
+		}
+		inst.mcpOnce.Do(func() { inst.initMCP(mc) })
+	}
 }
 
 // initMCP resolves this workspace's MCP config, connects its servers, and builds
@@ -314,17 +357,16 @@ func (inst *WorkspaceInstance) CheckReloadMCP() bool {
 	inst.mu.RLock()
 	last := inst.mcpMTime
 	inst.mu.RUnlock()
-	if last.IsZero() {
-		return false
-	}
-	return latestMCPFileTime(inst.RootPath).After(last)
+	return !latestMCPFileTime(inst.RootPath).Equal(last)
 }
 
 // ReloadMCP re-reads the workspace .mcp.json, tears down stale servers,
 // starts new ones, and atomically swaps ToolReg. On failure the previous
 // state stays intact; in-flight turns see the old registry until they end.
 func (inst *WorkspaceInstance) ReloadMCP() (changed bool) {
+	inst.mu.RLock()
 	mc := inst.mcpCfg
+	inst.mu.RUnlock()
 	if mc == nil {
 		return false
 	}
@@ -332,7 +374,7 @@ func (inst *WorkspaceInstance) ReloadMCP() (changed bool) {
 	defer inst.mu.Unlock()
 
 	newTime := latestMCPFileTime(inst.RootPath)
-	if !newTime.After(inst.mcpMTime) {
+	if newTime.Equal(inst.mcpMTime) {
 		return false
 	}
 

@@ -88,14 +88,14 @@ func (b *ServeRunBuilder) Rules() *approve.RuleStore { return b.rules }
 // to that workspace's .codeagent/settings.local.json rather than the user-global
 // settings file — preventing workspace pollution. When root is empty (server
 // default), falls back to the process-wide store.
-func (b *ServeRunBuilder) workspaceRules(root string) *approve.RuleStore {
+func (b *ServeRunBuilder) workspaceRules(root string, set settings.Settings) *approve.RuleStore {
 	if root == "" {
 		return b.rules
 	}
 	b.wsRulesMu.Lock()
 	ws, ok := b.wsRules[root]
 	if !ok {
-		ws = approve.NewRuleStore(root, b.Set.Permissions.Allow, b.Set.Permissions.Deny)
+		ws = approve.NewRuleStore(root, set.Permissions.Allow, set.Permissions.Deny)
 		b.wsRules[root] = ws
 	}
 	b.wsRulesMu.Unlock()
@@ -108,8 +108,8 @@ func (b *ServeRunBuilder) workspaceRules(root string) *approve.RuleStore {
 // local) override it, so a PUT to settings.local.json takes effect at the next
 // turn boundary without a restart. Empty root (server default) uses the base
 // view only. Absent/invalid → ask.
-func (b *ServeRunBuilder) approvalMode(root string) approve.Mode {
-	mode := approve.ModeFromSettings(b.Set)
+func (b *ServeRunBuilder) approvalMode(set settings.Settings, root string) approve.Mode {
+	mode := approve.ModeFromSettings(set)
 	if root == "" {
 		return mode
 	}
@@ -130,11 +130,35 @@ func (b *ServeRunBuilder) Reconfigure(mc settings.ModelConfig, provider model.Pr
 	b.credential = cred
 }
 
+// ReconfigureSettings atomically replaces the runtime settings snapshot and
+// the provider used by future turns. In-flight turns already own their runner
+// and continue with the previous snapshot.
+func (b *ServeRunBuilder) ReconfigureSettings(set settings.Settings, mc settings.ModelConfig, provider model.Provider, cred credential.Resolver) {
+	b.mu.Lock()
+	b.Set = set
+	b.mc = mc
+	b.provider = provider
+	b.credential = cred
+	b.mu.Unlock()
+
+	if b.rules != nil {
+		b.rules.Reconfigure(set.Permissions.Allow, set.Permissions.Deny)
+	}
+	b.wsRulesMu.Lock()
+	for _, rules := range b.wsRules {
+		rules.Reconfigure(set.Permissions.Allow, set.Permissions.Deny)
+	}
+	b.wsRulesMu.Unlock()
+	if b.WSReg != nil {
+		b.WSReg.ReconfigureMCP(set, set.MCP.Servers)
+	}
+}
+
 func (b *ServeRunBuilder) ResolveModel(wireModel string) (*settings.ModelConfig, error) {
 	b.mu.RLock()
-	defaultMC := b.mc
+	defaultMC, cfg := b.mc, b.Set
 	b.mu.RUnlock()
-	selected, err := resolveTurnModel(b.Set, defaultMC, wireModel)
+	selected, err := resolveTurnModel(cfg, defaultMC, wireModel)
 	if err != nil {
 		return nil, err
 	}
@@ -365,7 +389,7 @@ func (b *ServeRunBuilder) Build(ctx conversation.RuntimeContext) conversation.Tu
 	// Resolve the permission store for this workspace. Each workspace gets its
 	// own RuleStore so an "Always allow" grant stays scoped to that workspace's
 	// .codeagent/settings.local.json and never pollutes other workspaces.
-	wsRules := b.workspaceRules(workspacePath)
+	wsRules := b.workspaceRules(workspacePath, cfg)
 	if ra, ok := ctx.Approver.(interface{ SetGranter(approve.Granter) }); ok {
 		ra.SetGranter(wsRules)
 	}
@@ -375,11 +399,11 @@ func (b *ServeRunBuilder) Build(ctx conversation.RuntimeContext) conversation.Tu
 	// wrapper delegates everything in ask mode, so a workspace with no
 	// configured tier behaves exactly as before. The mode is re-read from disk
 	// every turn, so a /v1/permissions PUT lands at the next turn boundary.
-	wrapped := approve.NewModeApprover(b.approvalMode(workspacePath), workspacePath, ctx.Approver).WithPlanApprover(ctx.PlanApprover)
+	wrapped := approve.NewModeApprover(b.approvalMode(cfg, workspacePath), workspacePath, ctx.Approver).WithPlanApprover(ctx.PlanApprover)
 	ctx.Approver = wrapped
 	ctx.PlanApprover = wrapped
 
-	runner := BuildRunner(b.Set, mc, provider, turnTools, skillReg, ctx.Approver, ctx.Publisher, wsRules, workspacePath)
+	runner := BuildRunner(cfg, mc, provider, turnTools, skillReg, ctx.Approver, ctx.Publisher, wsRules, workspacePath)
 	runner.ReservedTurnID = ctx.TurnID
 	runner.RequestID = ctx.RequestID
 	runner.SessionControl = control

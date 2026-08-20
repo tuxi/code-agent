@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 
 	"code-agent/internal/app"
 	"code-agent/internal/settings"
@@ -22,6 +23,7 @@ import (
 // the settings paths and the Reconfigure trigger — the server layer stays a
 // dumb pipe over the ProviderService interface.
 type ProviderStore struct {
+	applyMu sync.Mutex
 	// settingsPath is the settings.json file that owns the providers section.
 	// For a desktop/server deployment this is <root>/.codeagent/settings.json.
 	settingsPath string
@@ -34,6 +36,15 @@ type ProviderStore struct {
 // NewProviderStore builds the store for the given settings file.
 func NewProviderStore(settingsPath string, reconfigure func() error) *ProviderStore {
 	return &ProviderStore{settingsPath: settingsPath, reconfigure: reconfigure}
+}
+
+// SetReconfigure installs the runtime apply hook after the store has been
+// constructed. Embedded runtimes need this because the HTTP store is wired
+// into the mux before the Handle has been fully assembled.
+func (s *ProviderStore) SetReconfigure(reconfigure func() error) {
+	s.applyMu.Lock()
+	defer s.applyMu.Unlock()
+	s.reconfigure = reconfigure
 }
 
 // LoadProviders reads the providers section from disk (empty map when absent).
@@ -89,6 +100,9 @@ func (s *ProviderStore) Get(id string) (ProviderDTO, error) {
 // providers get no entry: their env var name is unknown, so they configure
 // credentials manually.
 func (s *ProviderStore) Upsert(id string, spec ProviderSpec) (bool, error) {
+	s.applyMu.Lock()
+	defer s.applyMu.Unlock()
+
 	if id == "" {
 		return false, errors.New("provider id required")
 	}
@@ -198,6 +212,9 @@ func credentialFor(id string, spec ProviderSpec) (ns, name string, cfg settings.
 // by default_model/subagent_model (dangling default). Returns applied=true
 // when the removal is hot-effective, false when it needs a restart (OQ2).
 func (s *ProviderStore) Delete(id string) (bool, error) {
+	s.applyMu.Lock()
+	defer s.applyMu.Unlock()
+
 	providers, err := LoadProviders(s.settingsPath)
 	if err != nil {
 		return false, err

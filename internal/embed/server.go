@@ -136,6 +136,10 @@ type RuntimeServerOptions struct {
 	// GET /v1/runtime/models so a POST /v1/secrets makes models available
 	// without a restart. Nil serves the startup snapshot.
 	RuntimeModelsBuilder func() server.RuntimeModelCatalog
+
+	// ReloadSettings applies the persisted settings snapshot to the live
+	// embedded runtime. Nil disables POST /v1/settings/reload.
+	ReloadSettings func() error
 }
 
 // Runtime is the set of live components Assemble builds that the lifecycle verbs
@@ -162,6 +166,7 @@ type Handle struct {
 	stopOnce         sync.Once
 	stopErr          error
 	embeddedDataDir  string
+	settingsPath     string
 
 	// Lifecycle state (v1.2). srvCtx is the server-scoped context resumed turns run
 	// under (so Stop cancels them); cfg + rt back Suspend/ResumeSession/Reconfigure.
@@ -169,7 +174,11 @@ type Handle struct {
 	cfg        settings.Settings
 	rt         *Runtime
 	credential credential.Resolver
-	modelName  string
+	// injectedCredential is the host-owned mutable resolver. Rebuilding the
+	// settings credential chain on reload is required when credential mappings
+	// or environment-backed declarations change.
+	injectedCredential credential.Resolver
+	modelName          string
 
 	reconfigureMu sync.Mutex
 
@@ -629,6 +638,49 @@ func (h *Handle) Reconfigure(connectionsJSON, secretsJSON, modelName string) err
 	return nil
 }
 
+// reloadSettingsFromDisk applies the persisted settings snapshot to the
+// running embedded runtime. Host-owned behavior and sandbox wiring remain
+// unchanged; the applied snapshot takes effect for the next turn.
+func (h *Handle) reloadSettingsFromDisk() error {
+	h.reconfigureMu.Lock()
+	defer h.reconfigureMu.Unlock()
+
+	disk, ok, err := loadDiskSettingsFile(h.settingsPath)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("settings file %q is missing", h.settingsPath)
+	}
+	next, err := app.FromSettings(disk.ToSettings())
+	if err != nil {
+		return fmt.Errorf("normalize settings after provider update: %w", err)
+	}
+	// These fields are host-owned in an embedded runtime and are not part of
+	// the provider-management write path.
+	next.Permissions = h.cfg.Permissions
+	next.Verify = h.cfg.Verify
+	next.Hooks = h.cfg.Hooks
+	next.MCP = h.cfg.MCP
+	next.Profile = h.cfg.Profile
+	next.GlobalSkillsDir = h.cfg.GlobalSkillsDir
+	next.StoreFactory = h.cfg.StoreFactory
+
+	mc, err := app.SelectModel(h.modelName, next)
+	if err != nil {
+		return err
+	}
+	nextCred := next.CredentialResolver(h.injectedCredential)
+	provider, err := runtime.BuildProvider(mc, next.Provider, nextCred)
+	if err != nil {
+		return err
+	}
+	h.rt.Builder.ReconfigureSettings(next, mc, provider, nextCred)
+	h.cfg = next
+	h.credential = nextCred
+	return nil
+}
+
 // settingsHasInfrastructure reports whether a settings.File carries any
 // infrastructure section (providers/credentials/agent/provider/web/runtime/
 // default_model/currency) as opposed to only behavior (permissions/verify/
@@ -812,13 +864,15 @@ func StartServer(ctx context.Context, opt Options) (*Handle, error) {
 	srvCtx, cancel := context.WithCancel(ctx)
 
 	h := &Handle{
-		cancel:          cancel,
-		serveErr:        make(chan error, 1),
-		srvCtx:          srvCtx,
-		cfg:             embeddedSettings,
-		credential:      credChain,
-		modelName:       opt.ModelName,
-		embeddedDataDir: reservedDataDir,
+		cancel:             cancel,
+		serveErr:           make(chan error, 1),
+		srvCtx:             srvCtx,
+		cfg:                embeddedSettings,
+		credential:         credChain,
+		injectedCredential: mutableResolver,
+		modelName:          opt.ModelName,
+		embeddedDataDir:    reservedDataDir,
+		settingsPath:       settingsPath,
 	}
 	// On any error after this point, release whatever we already acquired.
 	ok := false
@@ -843,15 +897,30 @@ func StartServer(ctx context.Context, opt Options) (*Handle, error) {
 	if opt.Sandboxed {
 		profile = server.RuntimeProfileSandboxed
 	}
+	var embeddedSettingsMu sync.RWMutex
+	providerStore := server.NewProviderStore(settingsPath, nil)
+	reloadSettings := func() error {
+		if err := h.reloadSettingsFromDisk(); err != nil {
+			return err
+		}
+		embeddedSettingsMu.Lock()
+		embeddedSettings = h.cfg
+		embeddedSettingsMu.Unlock()
+		return nil
+	}
 	options := RuntimeServerOptions{
-		Profile:   profile,
-		Providers: server.NewProviderStore(settingsPath, nil),
+		Profile:        profile,
+		Providers:      providerStore,
+		ReloadSettings: reloadSettings,
 		InjectSecrets: func(targets map[credential.Target]credential.Credential) error {
-			mutableResolver.SetAll(targets)
+			mutableResolver.MergeAll(targets)
 			return nil
 		},
 		RuntimeModelsBuilder: func() server.RuntimeModelCatalog {
-			return server.BuildRuntimeModelCatalog(embeddedSettings, mutableResolver)
+			embeddedSettingsMu.RLock()
+			current := embeddedSettings
+			embeddedSettingsMu.RUnlock()
+			return server.BuildRuntimeModelCatalog(current, mutableResolver)
 		},
 	}
 	coreHandler, rt, closers, err := Assemble(
@@ -870,6 +939,16 @@ func StartServer(ctx context.Context, opt Options) (*Handle, error) {
 	h.closers = closers
 	h.rt = rt
 	h.coreHandler = coreHandler
+	providerStore.SetReconfigure(reloadSettings)
+	if settingsPath != "" {
+		settingsWatcher, watchErr := app.Watch(settingsPath, 250*time.Millisecond, reloadSettings, func(err error) {
+			fmt.Fprintf(os.Stderr, "[settings] embedded reload deferred: %v\n", err)
+		})
+		if watchErr != nil {
+			return nil, watchErr
+		}
+		h.closers = append(h.closers, func() { _ = settingsWatcher.Close() })
+	}
 
 	addr := opt.Addr
 	if addr == "" {
@@ -1058,6 +1137,7 @@ func Assemble(ctx context.Context, cfg settings.Settings, mc settings.ModelConfi
 		Providers:            serverOptions.Providers,
 		InjectSecrets:        serverOptions.InjectSecrets,
 		RuntimeModelsBuilder: serverOptions.RuntimeModelsBuilder,
+		ReloadSettings:       serverOptions.ReloadSettings,
 		ServerAuth:           serverOptions.Auth,
 		Capabilities:         capabilities,
 		CloneService:         cloneService,

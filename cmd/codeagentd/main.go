@@ -16,6 +16,8 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
+	"time"
 
 	"code-agent/internal/app"
 	"code-agent/internal/buildinfo"
@@ -249,6 +251,36 @@ func run() error {
 	defer owner.Close()
 	ownerIdentity := owner.Identity()
 	fmt.Fprintf(os.Stderr, "[control-plane] owner ready instance=%s endpoint=%s protocol=%d\n", ownerIdentity.InstanceID, ownerIdentity.Endpoint, ownerIdentity.ProtocolVersion)
+	var cfgMu sync.RWMutex
+	providerStore := server.NewProviderStore(settings.UserPath(home), nil)
+	var reloadMu sync.Mutex
+	reloadSettings := func() error {
+		reloadMu.Lock()
+		defer reloadMu.Unlock()
+		next, _ := runtime.LoadSettingsWithTrust(context.Background(), root, home, nil, runtime.TrustAlways, os.Stderr)
+		nextMC, err := app.SelectModel(modelName, next)
+		if err != nil {
+			return err
+		}
+		nextCred := next.CredentialResolver(baseResolver)
+		nextProvider, err := runtime.BuildProvider(nextMC, next.Provider, nextCred)
+		if err != nil {
+			return err
+		}
+		rb.ReconfigureSettings(next, nextMC, nextProvider, nextCred)
+		cfgMu.Lock()
+		cfg = next
+		cfgMu.Unlock()
+		return nil
+	}
+	providerStore.SetReconfigure(reloadSettings)
+	settingsWatcher, err := app.Watch(settings.UserPath(home), 250*time.Millisecond, reloadSettings, func(err error) {
+		fmt.Fprintf(os.Stderr, "[settings] daemon reload deferred: %v\n", err)
+	})
+	if err != nil {
+		return err
+	}
+	defer settingsWatcher.Close()
 	handler := server.NewMux(repo, eventStore, executor, server.MuxOptions{
 		ServerName:    buildinfo.ServerName(),
 		RuntimeInfo:   runtimeInfo,
@@ -256,22 +288,29 @@ func run() error {
 		RuntimeModelsBuilder: func() server.RuntimeModelCatalog {
 			// A2: live rebuild with the current injected credentials so a
 			// POST /v1/secrets makes models available without a restart.
-			return server.BuildRuntimeModelCatalog(cfg, baseResolver)
+			cfgMu.RLock()
+			current := cfg
+			cfgMu.RUnlock()
+			return server.BuildRuntimeModelCatalog(current, baseResolver)
 		},
 		InjectSecrets: func(targets map[credential.Target]credential.Credential) error {
-			mutableResolver.SetAll(targets)
+			mutableResolver.MergeAll(targets)
 			return nil
 		},
+		ReloadSettings:    reloadSettings,
 		ServerAuth:        auth,
 		Capabilities:      capabilities,
 		CloneService:      cloneService,
 		Granter:           rb.Rules(),
-		Providers:         server.NewProviderStore(settings.UserPath(home), nil),
+		Providers:         providerStore,
 		WorkspaceReloader: wsReg.ReloadWorkspace,
 		Prompts:           wsReg,
 		CapabilityResolver: func(ctx context.Context) []string {
+			cfgMu.RLock()
+			current := cfg
+			cfgMu.RUnlock()
 			persistence, ok := repo.(conversation.UserAssetsPersistenceCapability)
-			if ok && persistence.SupportsUserAssetsPersistence() && rb.ImageInputCapability(ctx, cfg.CredentialResolver(baseResolver)) {
+			if ok && persistence.SupportsUserAssetsPersistence() && rb.ImageInputCapability(ctx, current.CredentialResolver(baseResolver)) {
 				return []string{"image_input"}
 			}
 			return nil

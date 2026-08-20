@@ -50,9 +50,11 @@ func ParseScope(s string) Scope {
 // mid-session takes effect on the very next matching call without rebuilding
 // anything.
 type RuleStore struct {
-	mu    sync.RWMutex
-	allow map[string]struct{}
-	deny  map[string]struct{}
+	mu        sync.RWMutex
+	allow     map[string]struct{}
+	deny      map[string]struct{}
+	yamlAllow map[string]struct{}
+	yamlDeny  map[string]struct{}
 
 	projectLocalPath string // "" when no workspace root is known
 	userPath         string // "" when the home dir cannot be resolved
@@ -66,8 +68,10 @@ type RuleStore struct {
 // file (grants then default to the user scope's path when available).
 func NewRuleStore(root string, yamlAllow, yamlDeny []string) *RuleStore {
 	s := &RuleStore{
-		allow: toSet(yamlAllow),
-		deny:  toSet(yamlDeny),
+		allow:     toSet(yamlAllow),
+		deny:      toSet(yamlDeny),
+		yamlAllow: toSet(yamlAllow),
+		yamlDeny:  toSet(yamlDeny),
 	}
 	home, _ := os.UserHomeDir()
 	// Write paths for a NEW grant: project-local by default, user for a shared
@@ -91,6 +95,30 @@ func NewRuleStore(root string, yamlAllow, yamlDeny []string) *RuleStore {
 		s.deny[p] = struct{}{}
 	}
 	return s
+}
+
+// Reconfigure replaces the settings-provided permission rules while retaining
+// the user/project settings layers and any grants already persisted there.
+// Matching calls can continue concurrently; the replacement is atomic.
+func (s *RuleStore) Reconfigure(yamlAllow, yamlDeny []string) {
+	allow := toSet(yamlAllow)
+	deny := toSet(yamlDeny)
+	s.mu.Lock()
+	for p := range s.yamlAllow {
+		delete(s.allow, p)
+	}
+	for p := range s.yamlDeny {
+		delete(s.deny, p)
+	}
+	for p := range allow {
+		s.allow[p] = struct{}{}
+	}
+	for p := range deny {
+		s.deny[p] = struct{}{}
+	}
+	s.yamlAllow = allow
+	s.yamlDeny = deny
+	s.mu.Unlock()
 }
 
 // MatchDeny reports the first deny pattern matching name, if any.

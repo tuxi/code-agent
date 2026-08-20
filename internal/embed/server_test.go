@@ -185,9 +185,9 @@ func TestStartServerRequiresHostGeneratedAccessToken(t *testing.T) {
 
 // TestEmbeddedProvidersPersistToDataDir verifies the embedded runtime exposes
 // the daemon-parity /v1/providers surface: PUT persists to
-// <DataDir>/.codeagent/settings.json (applied=false, restart required), GET
-// round-trips the definition, and a second StartServer over the same DataDir
-// loads the persisted provider back into the config.
+// <DataDir>/.codeagent/settings.json (applied=true), GET round-trips the
+// definition, and a second StartServer over the same DataDir loads the
+// persisted provider back into the config.
 func TestEmbeddedProvidersPersistToDataDir(t *testing.T) {
 	const serverAccessToken = "0123456789abcdef0123456789abcdef"
 	dataDir := t.TempDir()
@@ -251,8 +251,8 @@ func TestEmbeddedProvidersPersistToDataDir(t *testing.T) {
 		t.Fatalf("PUT /v1/providers status = %d envelope=%+v", status, envelope)
 	}
 	data, _ := envelope["data"].(map[string]any)
-	if applied, _ := data["applied"].(bool); applied {
-		t.Fatalf("PUT applied = true, want false (restart required): %+v", envelope)
+	if applied, _ := data["applied"].(bool); !applied {
+		t.Fatalf("PUT applied = false, want true (hot update): %+v", envelope)
 	}
 
 	// GET /v1/providers — definition round-trips.

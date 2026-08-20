@@ -50,6 +50,21 @@ func (r *MutableResolver) SetAll(creds map[Target]Credential) {
 	r.creds = creds
 }
 
+// MergeAll upserts credentials into the current map without removing entries
+// for other providers. HTTP secret injection is incremental: a client may push
+// only the newly changed provider, and that must not invalidate credentials
+// that were injected earlier in the same runtime.
+func (r *MutableResolver) MergeAll(creds map[Target]Credential) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.creds == nil {
+		r.creds = make(map[Target]Credential)
+	}
+	for target, credential := range creds {
+		r.creds[target] = credential
+	}
+}
+
 // Len returns the number of injected credentials (for tests/logging).
 func (r *MutableResolver) Len() int {
 	r.mu.RLock()
