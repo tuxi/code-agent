@@ -5,12 +5,15 @@ import (
 	"bytes"
 	"code-agent/pkg"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 
@@ -80,6 +83,24 @@ func NewOpenAICompatibleProviderWithKey(baseURL, apiKey string) *OpenAICompatibl
 	return p
 }
 
+// loadSystemRootCAs returns a CertPool backed by the system CA bundle
+// (/etc/ssl/cert.pem). On macOS this bypasses the Security.framework path
+// (SecPolicyCreateSSL), which can intermittently return NULL in hardened
+// runtime child processes and cause "tls: failed to verify certificate:
+// SecPolicyCreateSSL error: 0". Returns nil if the bundle is unavailable,
+// in which case Go falls back to its default system root pool.
+func loadSystemRootCAs() *x509.CertPool {
+	data, err := os.ReadFile("/etc/ssl/cert.pem")
+	if err != nil {
+		return nil
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(data) {
+		return nil
+	}
+	return pool
+}
+
 // defaultHTTPClient returns the standard HTTP client used by providers.
 func defaultHTTPClient() *http.Client {
 	// No total Timeout: it is a hard ceiling on the WHOLE exchange including
@@ -94,6 +115,7 @@ func defaultHTTPClient() *http.Client {
 		Transport: &http.Transport{
 			Proxy:                 http.ProxyFromEnvironment,
 			DialContext:           (&net.Dialer{Timeout: 10 * time.Second}).DialContext,
+			TLSClientConfig:       &tls.Config{RootCAs: loadSystemRootCAs()},
 			TLSHandshakeTimeout:   10 * time.Second,
 			ResponseHeaderTimeout: 60 * time.Second,
 			ExpectContinueTimeout: 1 * time.Second,
