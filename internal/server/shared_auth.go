@@ -469,7 +469,11 @@ func writeSharedEnrollmentResult(
 func (a *SharedDeviceAuthenticator) beginEnrollment(
 	bootstrapSecret, deviceName, platform string,
 ) (*pendingSharedEnrollment, error) {
-	got := sha256.Sum256([]byte(bootstrapSecret))
+	raw, err := base64.RawURLEncoding.DecodeString(bootstrapSecret)
+	if err != nil || len(raw) < minimumServerAccessTokenBytes {
+		return nil, errors.New("pairing bootstrap unavailable")
+	}
+	got := sha256.Sum256(raw)
 	now := time.Now()
 
 	a.mu.Lock()
