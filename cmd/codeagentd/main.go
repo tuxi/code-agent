@@ -240,6 +240,11 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	sharing, err := server.OpenDaemonRuntimeSharing(stateDir, runtimeInfo.ServerID, runtimeInfo.DisplayName)
+	if err != nil {
+		return fmt.Errorf("open runtime sharing state: %w", err)
+	}
+	defer sharing.Stop()
 	owner, err := controlplane.NewManager(stateDir, runtimeInfo.ServerID, repo, executor, controlplane.Config{})
 	if err != nil {
 		return err
@@ -285,6 +290,7 @@ func run() error {
 	}
 	defer settingsWatcher.Close()
 	handler := server.NewMux(repo, eventStore, executor, server.MuxOptions{
+		Sharing:       sharing,
 		ServerName:    buildinfo.ServerName(),
 		RuntimeInfo:   runtimeInfo,
 		RuntimeModels: runtimeModels,
@@ -336,6 +342,7 @@ func run() error {
 		SessionForks:        owner,
 		WorkflowSnapshot:    runtime.NewWorkflowSnapshotFunc(),
 	})
+	sharing.SetCoreHandler(handler)
 
 	lis, err := net.Listen("tcp", addr)
 	if err != nil {

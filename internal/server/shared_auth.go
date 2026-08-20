@@ -81,6 +81,15 @@ type SharedDeviceAuthenticator struct {
 	enrollmentTTL    time.Duration
 	rateByAddress    map[string]pairRateState
 	connections      map[string]map[*trackedDeviceConn]struct{}
+	// enrollmentCommitter is used by daemon mode to durably commit a device
+	// before the pairing response releases the plaintext credential.
+	enrollmentCommitter func(SharedEnrollment) error
+}
+
+func (a *SharedDeviceAuthenticator) SetEnrollmentCommitter(f func(SharedEnrollment) error) {
+	a.mu.Lock()
+	a.enrollmentCommitter = f
+	a.mu.Unlock()
 }
 
 type trackedDeviceConn struct {
@@ -208,7 +217,7 @@ func (a *SharedDeviceAuthenticator) Handler(next http.Handler) http.Handler {
 			authenticator:  a,
 			deviceID:       deviceID,
 			credentialHash: credentialHash,
-		}, r)
+		}, withSharedDeviceAuthContext(r))
 	})
 }
 
@@ -389,11 +398,34 @@ func (a *SharedDeviceAuthenticator) handlePair(w http.ResponseWriter, r *http.Re
 		a.audit(r, "pairing_bootstrap_rejected", "")
 		Result(w, r, http.StatusUnauthorized, CodeUnauthorized, "pairing authorization failed", map[string]string{
 			"code": "pairing_bootstrap_invalid",
+			"err":  err.Error(),
 		})
 		return
 	}
 	defer a.finishEnrollment(enrollment.public.EnrollmentID)
 	a.audit(r, "enrollment_pending", enrollment.public.DeviceID)
+	a.mu.Lock()
+	committer := a.enrollmentCommitter
+	a.mu.Unlock()
+	if committer != nil {
+		if err := committer(enrollment.public); err != nil {
+			_ = a.RejectEnrollment(enrollment.public.EnrollmentID)
+			Result(w, r, http.StatusInternalServerError, CodeInternal, "pairing could not be persisted", map[string]string{
+				"code": "pairing_persistence_failed",
+				"err":  err.Error(),
+			})
+			return
+		}
+		if err := a.AcknowledgeEnrollment(enrollment.public.EnrollmentID); err != nil {
+			Result(w, r, http.StatusInternalServerError, CodeInternal, "pairing could not be activated", map[string]string{
+				"code": "pairing_activation_failed",
+				"err":  err.Error(),
+			})
+			return
+		}
+		writeSharedEnrollmentResult(w, r, enrollment, true)
+		return
+	}
 
 	timer := time.NewTimer(time.Until(enrollment.public.ExpiresAt))
 	defer timer.Stop()

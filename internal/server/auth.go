@@ -2,6 +2,7 @@ package server
 
 import (
 	"code-agent/internal/settings"
+	"context"
 	"crypto/sha256"
 	"crypto/subtle"
 	"errors"
@@ -26,6 +27,8 @@ type runtimeAuthError struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
 }
+
+type sharedDeviceAuthContextKey struct{}
 
 func ValidateServerAccessToken(token string) error {
 	if len([]byte(token)) < minimumServerAccessTokenBytes {
@@ -110,6 +113,10 @@ func WithServerAuth(next http.Handler, auth ServerAuth) http.Handler {
 		return next
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if ok, _ := r.Context().Value(sharedDeviceAuthContextKey{}).(bool); ok {
+			next.ServeHTTP(w, r)
+			return
+		}
 		if auth.PublicHealthz && r.Method == http.MethodGet && r.URL.Path == "/healthz" {
 			next.ServeHTTP(w, r)
 			return
@@ -126,6 +133,10 @@ func WithServerAuth(next http.Handler, auth ServerAuth) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+func withSharedDeviceAuthContext(r *http.Request) *http.Request {
+	return r.WithContext(context.WithValue(r.Context(), sharedDeviceAuthContextKey{}, true))
 }
 
 func withServerAuth(next http.Handler, auth ServerAuth) http.Handler {

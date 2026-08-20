@@ -356,6 +356,9 @@ type MessageView struct {
 
 // MuxOptions configures the HTTP surface.
 type MuxOptions struct {
+	// Sharing exposes daemon-owned localhost control endpoints. Embedded hosts
+	// leave this nil and continue using their existing lifecycle API.
+	Sharing *DaemonRuntimeSharing
 	// ServerName is reported in the WebSocket hello handshake.
 	ServerName    string
 	RuntimeInfo   RuntimeInfo
@@ -602,6 +605,9 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 	mux.HandleFunc("GET /v1/runtime/info", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, r, http.StatusOK, opts.RuntimeInfo)
 	})
+	if opts.Sharing != nil {
+		registerRuntimeSharingRoutes(mux, opts.Sharing, opts.RuntimeInfo)
+	}
 
 	mux.HandleFunc("GET /v1/runtime/models", func(w http.ResponseWriter, r *http.Request) {
 		catalog := opts.RuntimeModels
