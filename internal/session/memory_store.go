@@ -25,6 +25,8 @@ var (
 	_ SessionStore             = (*MemoryStore)(nil)
 	_ EventStore               = (*MemoryStore)(nil)
 	_ EventAttentionStore      = (*MemoryStore)(nil)
+	_ EventBudgetStore         = (*MemoryStore)(nil)
+	_ EventKindStore           = (*MemoryStore)(nil)
 	_ TelemetryStore           = (*MemoryStore)(nil)
 	_ ConversationArchiveStore = (*MemoryStore)(nil)
 	_ TurnInputStore           = (*MemoryStore)(nil)
@@ -417,6 +419,52 @@ func (m *MemoryStore) SessionEventsSince(_ context.Context, sessionID string, si
 	var out []EventRecord
 	for _, e := range m.events {
 		if e.SessionID == sessionID && e.Seq > sinceSeq {
+			out = append(out, e)
+		}
+	}
+	return out, nil
+}
+
+// SessionEventsSinceBudget mirrors the sqlite EventBudgetStore contract: the
+// bounded newest-first tail in ascending seq order, plus a truncated flag.
+func (m *MemoryStore) SessionEventsSinceBudget(_ context.Context, sessionID string, sinceSeq int64, maxBytes int64) ([]EventRecord, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []EventRecord
+	var total int64
+	truncated := false
+	// Walk newest first (the store's events slice is insertion order, so reverse).
+	for i := len(m.events) - 1; i >= 0; i-- {
+		e := m.events[i]
+		if e.SessionID != sessionID || e.Seq <= sinceSeq {
+			continue
+		}
+		if len(out) > 0 && total+int64(len(e.Payload)) > maxBytes {
+			truncated = true
+			break
+		}
+		total += int64(len(e.Payload))
+		out = append(out, e)
+	}
+	// Reverse newest-first back to ascending seq order.
+	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
+		out[i], out[j] = out[j], out[i]
+	}
+	return out, truncated, nil
+}
+
+// SessionEventsByKind mirrors the sqlite EventKindStore contract: events of the
+// given kinds only, in seq order.
+func (m *MemoryStore) SessionEventsByKind(_ context.Context, sessionID string, kinds []string) ([]EventRecord, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	want := make(map[string]bool, len(kinds))
+	for _, k := range kinds {
+		want[k] = true
+	}
+	var out []EventRecord
+	for _, e := range m.events {
+		if e.SessionID == sessionID && want[e.Kind] {
 			out = append(out, e)
 		}
 	}

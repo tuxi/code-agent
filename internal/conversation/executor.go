@@ -723,7 +723,7 @@ func (e *TurnExecutor) driveTurn(
 	// the scheduler. These events are persisted even for a cancelled queued turn,
 	// so reconnecting clients see one complete lifecycle rather than a silent gap.
 	turnID := e.scheduler.ReserveTurnID()
-	pub := &sequencingEmitter{ctx: context.WithoutCancel(parentCtx), events: e.events, live: e.subs.Emitter(sess.ID)}
+	pub := &sequencingEmitter{ctx: context.WithoutCancel(parentCtx), events: e.events, live: e.subs.Emitter(sess.ID), toolStreams: agent.NewToolStreamCapper()}
 	resolver, ok := e.rb.(ModelResolver)
 	var resolvedModel settings.ModelConfig
 	if ok {
@@ -1381,7 +1381,7 @@ func (e *TurnExecutor) ensureTurnStartedEvent(ctx context.Context, input session
 			}
 		}
 	}
-	pub := &sequencingEmitter{ctx: context.WithoutCancel(ctx), events: e.events, live: e.subs.Emitter(input.SessionID)}
+	pub := &sequencingEmitter{ctx: context.WithoutCancel(ctx), events: e.events, live: e.subs.Emitter(input.SessionID), toolStreams: agent.NewToolStreamCapper()}
 	pub.Emit(agent.Event{
 		Kind: agent.EventTurnStarted, SessionID: input.SessionID, TurnID: input.TurnID,
 		Text: input.Text, UserAssets: append([]model.GatewayAssetRef(nil), input.Assets...),
@@ -1614,6 +1614,11 @@ type sequencingEmitter struct {
 	events ConversationEventStore
 	live   agent.Emitter
 
+	// toolStreams bounds per-tool-call stdout/stderr persistence (P1): the first
+	// 64KB per call is stored verbatim, overflow is dropped, and a head+tail
+	// marker is persisted at tool_finished. Live fan-out is never truncated.
+	toolStreams *agent.ToolStreamCapper
+
 	mu          sync.Mutex
 	terminalErr error
 }
@@ -1626,6 +1631,57 @@ func (s *sequencingEmitter) Emit(ev agent.Event) {
 	if ev.At.IsZero() {
 		ev.At = time.Now()
 	}
+	// Tool stream persistence cap: chunks beyond a call's budget are fanned live
+	// but not persisted; the tail is written as a marker at tool_finished so the
+	// event log stays bounded for long-running commands (xcodebuild etc.).
+	if (ev.Kind == agent.EventToolStdout || ev.Kind == agent.EventToolStderr) && s.toolStreams != nil {
+		if ev.CallID != "" && !s.toolStreams.NoteChunk(ev.CallID, ev.Kind, ev.Chunk) {
+			s.live.Emit(ev) // live only, no seq — overflow beyond the persistence budget
+			return
+		}
+	}
+	if ev.Kind == agent.EventToolFinished && s.toolStreams != nil {
+		// Persist truncation markers for this call BEFORE the finished event, so
+		// the replay shows head+marker+tail in order. Markers are persisted but
+		// NOT fanned live — live subscribers already received the full stream.
+		for _, m := range s.toolStreams.FlushCall(ev.CallID) {
+			m.SessionID = ev.SessionID
+			m.TurnID = ev.TurnID
+			m.CallID = ev.CallID
+			s.persistOnly(m)
+		}
+	}
+	if (ev.Kind == agent.EventTurnFinished || ev.Kind == agent.EventTurnFailed || ev.Kind == agent.EventTurnCancelled) && s.toolStreams != nil {
+		// A tool that died without tool_finished still leaves a bounded record.
+		for _, m := range s.toolStreams.FlushAll() {
+			m.SessionID = ev.SessionID
+			m.TurnID = ev.TurnID
+			s.persistOnly(m)
+		}
+	}
+	s.persist(ev)
+}
+
+// persist marshals, appends, stamps the seq, and fans live — the shared core of
+// the old single-path Emit.
+func (s *sequencingEmitter) persist(ev agent.Event) {
+	if seq, ok := s.append(ev); ok {
+		ev.Seq = seq
+		s.live.Emit(ev)
+	}
+}
+
+// persistOnly appends and stamps the seq but does NOT fan live. Used for
+// truncation markers: their content was already streamed live, so re-fanning it
+// would duplicate the tail in a connected client's view; the marker exists for
+// replay/backfill, where the live stream is not available.
+func (s *sequencingEmitter) persistOnly(ev agent.Event) {
+	s.append(ev)
+}
+
+// append persists one event and returns its assigned seq (ok=false on error).
+// Terminal persistence errors are retained for the executor.
+func (s *sequencingEmitter) append(ev agent.Event) (int64, bool) {
 	// Marshal BEFORE stamping seq: the persisted payload must not carry seq (that
 	// lives in the rowid); replay re-stamps it from the row.
 	payload, err := json.Marshal(ev)
@@ -1639,20 +1695,17 @@ func (s *sequencingEmitter) Emit(ev agent.Event) {
 			Payload:   payload,
 		})
 		if err == nil {
-			ev.Seq = seq
+			return seq, true
 		}
 	}
-	if err != nil && isTerminalLifecycleEvent(ev.Kind) {
+	if isTerminalLifecycleEvent(ev.Kind) {
 		s.mu.Lock()
 		if s.terminalErr == nil {
 			s.terminalErr = fmt.Errorf("persist %s for session %s turn %s: %w", ev.Kind, ev.SessionID, ev.TurnID, err)
 		}
 		s.mu.Unlock()
-		// A terminal event without a durable sequence cannot be advertised as a
-		// reliable completion. The executor observes terminalErr and fails the run.
-		return
 	}
-	s.live.Emit(ev)
+	return 0, false
 }
 
 func isEphemeralRuntimeEvent(kind agent.EventKind) bool {

@@ -404,7 +404,66 @@ func (a *StoreEventAdapter) SupportsAttentionSnapshot() bool {
 	return ok
 }
 
+// SessionEventsSinceBudget implements session.EventBudgetStore. It delegates to
+// the backing store when that store supports the bounded replay natively;
+// otherwise it provides the same contract generically over SessionEvents —
+// the adapter is the production seam for the daemon, so every backend gets the
+// bounded tail without a full materialization.
+func (a *StoreEventAdapter) SessionEventsSinceBudget(ctx context.Context, sessionID string, sinceSeq int64, maxBytes int64) ([]session.EventRecord, bool, error) {
+	if b, ok := a.Store.(session.EventBudgetStore); ok {
+		return b.SessionEventsSinceBudget(ctx, sessionID, sinceSeq, maxBytes)
+	}
+	recs, err := a.Store.SessionEventsSince(ctx, sessionID, sinceSeq)
+	if err != nil {
+		return nil, false, err
+	}
+	// Newest-first walk with a cumulative payload budget, then reverse to seq
+	// order — the same semantics as the sqlite implementation.
+	var out []session.EventRecord
+	var total int64
+	truncated := false
+	for i := len(recs) - 1; i >= 0; i-- {
+		e := recs[i]
+		if len(out) > 0 && total+int64(len(e.Payload)) > maxBytes {
+			truncated = true
+			break
+		}
+		total += int64(len(e.Payload))
+		out = append(out, e)
+	}
+	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
+		out[i], out[j] = out[j], out[i]
+	}
+	return out, truncated, nil
+}
+
+// SessionEventsByKind implements session.EventKindStore. Delegates when the
+// backing store supports kind-indexed replay; otherwise filters a full
+// SessionEvents fetch in Go (correct, just less efficient for huge logs).
+func (a *StoreEventAdapter) SessionEventsByKind(ctx context.Context, sessionID string, kinds []string) ([]session.EventRecord, error) {
+	if ks, ok := a.Store.(session.EventKindStore); ok {
+		return ks.SessionEventsByKind(ctx, sessionID, kinds)
+	}
+	recs, err := a.Store.SessionEvents(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	want := make(map[string]bool, len(kinds))
+	for _, k := range kinds {
+		want[k] = true
+	}
+	var out []session.EventRecord
+	for _, rec := range recs {
+		if want[rec.Kind] {
+			out = append(out, rec)
+		}
+	}
+	return out, nil
+}
+
 // Compile-time check.
 var _ ConversationEventStore = (*StoreEventAdapter)(nil)
 var _ ConversationAttentionStore = (*StoreEventAdapter)(nil)
 var _ ConversationAttentionCapability = (*StoreEventAdapter)(nil)
+var _ session.EventBudgetStore = (*StoreEventAdapter)(nil)
+var _ session.EventKindStore = (*StoreEventAdapter)(nil)

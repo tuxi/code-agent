@@ -1064,7 +1064,7 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 
 	mux.HandleFunc("GET /v1/conversations/{id}/messages", func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
-		recs, ok := loadEvents(r.Context(), eventStore, repo, id, w)
+		recs, ok := loadEventsByKind(r.Context(), eventStore, repo, id, []string{string(agent.EventTurnStarted), string(agent.EventTurnFinished)}, w)
 		if !ok {
 			return
 		}
@@ -1692,14 +1692,63 @@ func loadEvents(ctx context.Context, eventStore conversation.ConversationEventSt
 	return loadEventsSince(ctx, eventStore, repo, id, 0, w)
 }
 
+// loadEventsByKind fetches only events of the given kinds, in seq order, and
+// resolves existence like loadEvents. Endpoints that need just turn boundaries or
+// tool results use this instead of a full replay, so they never load unrelated
+// giant payloads (tool_stdout blobs) into memory. Stores without the kind-index
+// fall back to a full replay filtered in Go.
+func loadEventsByKind(ctx context.Context, eventStore conversation.ConversationEventStore, repo conversation.ConversationRepository, id string, kinds []string, w http.ResponseWriter) ([]session.EventRecord, bool) {
+	var recs []session.EventRecord
+	if ks, ok := eventStore.(session.EventKindStore); ok {
+		var err error
+		recs, err = ks.SessionEventsByKind(ctx, id, kinds)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return nil, false
+		}
+	} else {
+		all, ok := loadEvents(ctx, eventStore, repo, id, w)
+		if !ok {
+			return nil, false
+		}
+		want := make(map[string]bool, len(kinds))
+		for _, k := range kinds {
+			want[k] = true
+		}
+		for _, rec := range all {
+			if want[rec.Kind] {
+				recs = append(recs, rec)
+			}
+		}
+	}
+	if len(recs) == 0 {
+		if _, err := repo.Load(ctx, id); err != nil {
+			http.Error(w, "conversation not found", http.StatusNotFound)
+			return nil, false
+		}
+	}
+	return recs, true
+}
+
+// replayBudgetBytes bounds a full (since=0) event replay. A session whose event
+// log is huge (hundreds of MB of tool output) must not be materialized whole
+// into memory by one request; the tail that fits the budget is returned and the
+// caller is told it was truncated. Incremental replays (since>0) are typically
+// small and are left unbounded — a client that already holds most of the log
+// must not miss the gap.
+const replayBudgetBytes = 8 * 1024 * 1024
+
 // loadEventsSince is loadEvents with an incremental floor: sinceSeq > 0 replays
 // only events after that seq (v1.2 §4), else the full log. The existence 404 is
 // still resolved against the Repository when the (possibly filtered) result is
 // empty, so an unknown id 404s and a known id with no newer events returns [].
 func loadEventsSince(ctx context.Context, eventStore conversation.ConversationEventStore, repo conversation.ConversationRepository, id string, sinceSeq int64, w http.ResponseWriter) ([]session.EventRecord, bool) {
 	var recs []session.EventRecord
+	var truncated bool
 	var err error
-	if sinceSeq > 0 {
+	if b, ok := eventStore.(session.EventBudgetStore); ok && sinceSeq == 0 {
+		recs, truncated, err = b.SessionEventsSinceBudget(ctx, id, 0, replayBudgetBytes)
+	} else if sinceSeq > 0 {
 		recs, err = eventStore.ReplaySince(ctx, id, sinceSeq)
 	} else {
 		recs, err = eventStore.Replay(ctx, id)
@@ -1707,6 +1756,9 @@ func loadEventsSince(ctx context.Context, eventStore conversation.ConversationEv
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return nil, false
+	}
+	if truncated {
+		w.Header().Set("X-Codeagent-Replay-Truncated", "1")
 	}
 	if len(recs) == 0 {
 		if _, err := repo.Load(ctx, id); err != nil {

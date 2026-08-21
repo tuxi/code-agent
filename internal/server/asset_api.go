@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"code-agent/internal/agent"
 	"code-agent/internal/assetref"
 	"code-agent/internal/conversation"
 	"code-agent/internal/session"
@@ -53,7 +54,16 @@ func findConversationAsset(ctx context.Context, eventStore conversation.Conversa
 	if err != nil {
 		return assets.Ref{}, nil, assetHTTPError{status: http.StatusNotFound, message: "conversation not found"}
 	}
-	recs, err := eventStore.Replay(ctx, conversationID)
+	// Only tool_finished events carry the clickable-asset list. Filtering by kind
+	// means asset lookup never materializes a session's whole (potentially huge)
+	// event log — tool_stdout blobs are never loaded. Fall back to a full replay
+	// for stores without the kind index.
+	var recs []session.EventRecord
+	if ks, ok := eventStore.(session.EventKindStore); ok {
+		recs, err = ks.SessionEventsByKind(ctx, conversationID, []string{string(agent.EventToolFinished)})
+	} else {
+		recs, err = eventStore.Replay(ctx, conversationID)
+	}
 	if err != nil {
 		return assets.Ref{}, nil, assetHTTPError{status: http.StatusInternalServerError, message: err.Error()}
 	}

@@ -28,6 +28,8 @@ var (
 	_ session.SessionStore             = (*Store)(nil)
 	_ session.EventStore               = (*Store)(nil)
 	_ session.EventAttentionStore      = (*Store)(nil)
+	_ session.EventBudgetStore         = (*Store)(nil)
+	_ session.EventKindStore           = (*Store)(nil)
 	_ session.TelemetryStore           = (*Store)(nil)
 	_ session.ConversationArchiveStore = (*Store)(nil)
 	_ worktree.Store                   = (*Store)(nil)
@@ -776,6 +778,76 @@ func (s *Store) SessionEventsSince(ctx context.Context, sessionID string, sinceS
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, session_id, turn_id, kind, at, COALESCE(payload, '')
 		FROM session_events WHERE session_id=? AND id > ? ORDER BY id ASC`, sessionID, sinceSeq)
+	if err != nil {
+		return nil, err
+	}
+	return scanEventRows(rows)
+}
+
+// SessionEventsSinceBudget implements session.EventBudgetStore: it replays the
+// session's events newer than sinceSeq, newest first, stopping once the
+// cumulative payload exceeds maxBytes, then returns them in ascending seq order.
+// The truncated flag reports whether events were dropped to fit the budget, so a
+// full replay of a session with a huge event log (hundreds of MB of tool output)
+// loads only a bounded tail instead of materializing the whole log into memory.
+func (s *Store) SessionEventsSinceBudget(ctx context.Context, sessionID string, sinceSeq int64, maxBytes int64) ([]session.EventRecord, bool, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, session_id, turn_id, kind, at, COALESCE(payload, '')
+		FROM session_events WHERE session_id=? AND id > ? ORDER BY id DESC`, sessionID, sinceSeq)
+	if err != nil {
+		return nil, false, err
+	}
+	defer rows.Close()
+
+	var out []session.EventRecord
+	var total int64
+	truncated := false
+	for rows.Next() {
+		var e session.EventRecord
+		var at, payload string
+		if err := rows.Scan(&e.Seq, &e.SessionID, &e.TurnID, &e.Kind, &at, &payload); err != nil {
+			return nil, false, err
+		}
+		e.At = parseTime(at)
+		if payload != "" {
+			e.Payload = json.RawMessage(payload)
+		}
+		if len(out) > 0 && total+int64(len(payload)) > maxBytes {
+			// This row would push the cumulative payload over budget; the rows
+			// already collected are the bounded tail. Drop it and the rest.
+			truncated = true
+			break
+		}
+		total += int64(len(payload))
+		out = append(out, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, false, err
+	}
+	// Reverse newest-first back to ascending seq order.
+	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
+		out[i], out[j] = out[j], out[i]
+	}
+	return out, truncated, nil
+}
+
+// SessionEventsByKind implements session.EventKindStore: it replays only events
+// of the given kinds in seq order, so detail/messages/asset endpoints load just
+// the rows they need instead of a session's whole (potentially huge) event log.
+func (s *Store) SessionEventsByKind(ctx context.Context, sessionID string, kinds []string) ([]session.EventRecord, error) {
+	if len(kinds) == 0 {
+		return nil, nil
+	}
+	placeholders := strings.Repeat("?,", len(kinds))
+	placeholders = placeholders[:len(placeholders)-1]
+	args := make([]any, 0, len(kinds)+1)
+	args = append(args, sessionID)
+	for _, k := range kinds {
+		args = append(args, k)
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, session_id, turn_id, kind, at, COALESCE(payload, '')
+		FROM session_events WHERE session_id=? AND kind IN (`+placeholders+`) ORDER BY id ASC`, args...)
 	if err != nil {
 		return nil, err
 	}

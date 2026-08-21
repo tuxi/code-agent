@@ -137,6 +137,27 @@ type EventAttentionStore interface {
 	SessionEventAttention(ctx context.Context, sinceSequence int64) (EventAttentionSnapshot, error)
 }
 
+// EventBudgetStore is an optional event-store extension that replays a
+// session's events under a payload byte budget, newest first, so a session with
+// a huge event log (e.g. hundreds of MB of tool output) cannot be materialized
+// whole into memory by a full replay. It is kept separate from EventStore so
+// third-party backends remain source-compatible until they opt in.
+//
+// The returned truncated flag reports whether events were dropped to fit the
+// budget; callers surface it (e.g. a response header) so clients know the
+// replay is a bounded tail, not the full log.
+type EventBudgetStore interface {
+	SessionEventsSinceBudget(ctx context.Context, sessionID string, sinceSeq int64, maxBytes int64) ([]EventRecord, bool, error)
+}
+
+// EventKindStore is an optional event-store extension that replays only events
+// of the given kinds, in seq order. Endpoints that need just turn boundaries or
+// tool results (detail view, message list, asset lookup) use this instead of a
+// full replay, so they never load unrelated giant payloads (tool_stdout blobs).
+type EventKindStore interface {
+	SessionEventsByKind(ctx context.Context, sessionID string, kinds []string) ([]EventRecord, error)
+}
+
 // RequestRecord is one persisted model request (across its retry attempts) for
 // transport telemetry. The persisted log doubles as a per-request trace.
 type RequestRecord struct {
