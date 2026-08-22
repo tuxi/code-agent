@@ -45,6 +45,14 @@ type Message struct {
 	Role    Role   `json:"role"`
 	Content string `json:"content"`
 
+	// ContentParts carries multimodal content blocks (text + image) for
+	// vision-capable models. It is runtime-only state assembled per request by
+	// the agent loop from LocalAssets; it is never persisted and excluded from
+	// Provider JSON here (`json:"-"`). The OpenAI-compatible provider serializes
+	// it as a content-block array; every other consumer ignores it, so a plain
+	// string Content remains the single source of truth for history.
+	ContentParts []ContentPart `json:"-"`
+
 	// Assets are Gateway-owned, ownership-checked asset references. They contain
 	// neither bytes nor OSS URLs and are safe to persist with the message.
 	Assets []GatewayAssetRef `json:"assets,omitempty"`
@@ -99,6 +107,25 @@ type GatewayAssetRef struct {
 	Kind     string `json:"kind"`
 	MIMEType string `json:"mime_type"`
 	Filename string `json:"filename"`
+}
+
+// ContentPart is one block of a multimodal message content array (the OpenAI
+// chat-completions vision format). Only the two shapes vision input needs are
+// modeled; the wire JSON matches the API schema directly:
+//
+//	{"type":"text","text":"..."}
+//	{"type":"image_url","image_url":{"url":"data:image/png;base64,..."}}
+type ContentPart struct {
+	Type     string        `json:"type"` // "text" | "image_url"
+	Text     string        `json:"text,omitempty"`
+	ImageURL *ContentImage `json:"image_url,omitempty"`
+}
+
+// ContentImage is the image payload of an image_url content part. URL carries
+// either a data: URL (base64 inline, how the agent loop injects local files) or
+// a public http(s) URL.
+type ContentImage struct {
+	URL string `json:"url"`
 }
 
 // ToolCall is a single function call the model requested.

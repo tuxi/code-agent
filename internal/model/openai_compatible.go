@@ -131,12 +131,52 @@ type chatCompletionRequest struct {
 	RequestID     string            `json:"request_id,omitempty"`
 	ExecutionID   string            `json:"execution_id,omitempty"`
 	Model         string            `json:"model"`
-	Messages      []Message         `json:"messages"`
+	Messages      []wireMessage     `json:"messages"`
 	Temperature   float64           `json:"temperature,omitempty"`
 	Tools         *[]ToolDefinition `json:"tools,omitempty"`
 	ToolChoice    string            `json:"tool_choice,omitempty"`
 	Stream        bool              `json:"stream,omitempty"`
 	StreamOptions *streamOptions    `json:"stream_options,omitempty"`
+}
+
+// wireMessage is the on-the-wire form of a Message. Content is a plain string
+// for text-only messages (the historical shape every OpenAI-compatible endpoint
+// accepts); when the loop assembled multimodal ContentParts, Content becomes a
+// content-block array instead. Assets ride along for the Agent Gateway contract
+// (which resolves them server-side); LocalAssets/OriginTurnID are runtime and
+// persistence state and never serialized here.
+type wireMessage struct {
+	Role       Role              `json:"role"`
+	Content    any               `json:"content"`
+	Assets     []GatewayAssetRef `json:"assets,omitempty"`
+	ToolCalls  []ToolCall        `json:"tool_calls,omitempty"`
+	ToolCallID string            `json:"tool_call_id,omitempty"`
+}
+
+func newWireMessages(messages []Message) []wireMessage {
+	out := make([]wireMessage, len(messages))
+	for i, m := range messages {
+		w := wireMessage{
+			Role:       m.Role,
+			Assets:     m.Assets,
+			ToolCalls:  m.ToolCalls,
+			ToolCallID: m.ToolCallID,
+		}
+		if len(m.ContentParts) > 0 {
+			parts := make([]ContentPart, len(m.ContentParts))
+			copy(parts, m.ContentParts)
+			// The message's text content leads the block array so the model
+			// reads the prompt before the images.
+			if m.Content != "" {
+				parts = append([]ContentPart{{Type: "text", Text: m.Content}}, parts...)
+			}
+			w.Content = parts
+		} else {
+			w.Content = m.Content
+		}
+		out[i] = w
+	}
+	return out
 }
 
 // streamOptions asks the provider to include a final usage chunk in the SSE
@@ -277,7 +317,7 @@ func (p *OpenAICompatibleProvider) CompleteStream(ctx context.Context, req Reque
 
 	data, err := json.Marshal(chatCompletionRequest{
 		SessionID: req.SessionID, TurnID: req.TurnID, RequestID: req.RequestID, ExecutionID: req.ExecutionID,
-		Model: req.Model, Messages: req.Messages, Temperature: req.Temperature,
+		Model: req.Model, Messages: newWireMessages(req.Messages), Temperature: req.Temperature,
 		Tools: toolsForGatewayRequest(req.Messages, req.Tools), ToolChoice: req.ToolChoice,
 		Stream: true, StreamOptions: &streamOptions{IncludeUsage: true},
 	})
@@ -431,7 +471,7 @@ func (p *OpenAICompatibleProvider) Complete(ctx context.Context, req Request) (R
 		RequestID:   req.RequestID,
 		ExecutionID: req.ExecutionID,
 		Model:       req.Model,
-		Messages:    req.Messages,
+		Messages:    newWireMessages(req.Messages),
 		Temperature: req.Temperature,
 		Tools:       toolsForGatewayRequest(req.Messages, req.Tools),
 		ToolChoice:  req.ToolChoice,

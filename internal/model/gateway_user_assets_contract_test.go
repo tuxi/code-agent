@@ -74,7 +74,7 @@ func TestGatewayChatCanonicalIdentityAndAssets(t *testing.T) {
 		ExecutionID: "exec_01J2YB", Model: "deepseek-v4-pro",
 		Messages: []Message{{Role: RoleUser, Content: "解释这张截图里的错误", Assets: []GatewayAssetRef{asset}}},
 	}
-	body := chatCompletionRequest{SessionID: req.SessionID, TurnID: req.TurnID, RequestID: req.RequestID, ExecutionID: req.ExecutionID, Model: req.Model, Messages: req.Messages, Tools: toolsForGatewayRequest(req.Messages, req.Tools), Stream: true}
+	body := chatCompletionRequest{SessionID: req.SessionID, TurnID: req.TurnID, RequestID: req.RequestID, ExecutionID: req.ExecutionID, Model: req.Model, Messages: newWireMessages(req.Messages), Tools: toolsForGatewayRequest(req.Messages, req.Tools), Stream: true}
 	actual, err := json.Marshal(body)
 	if err != nil {
 		t.Fatal(err)
