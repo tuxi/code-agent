@@ -10,6 +10,7 @@ import (
 	"code-agent/internal/tools"
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -218,6 +219,13 @@ type Runner struct {
 	AutoUploadCaptureAssets bool
 	assetUploadCache        map[string]model.GatewayAssetRef
 	UserAssetsSupported     bool
+
+	// VisionSupported mirrors the selected model's declared image input
+	// capability (settings.ModelConfig.SupportsVision). When true, local image
+	// attachments are injected as multimodal content parts on the user message;
+	// when false, the textual attachment manifest is used as before. Derived at
+	// construction; the loop never inspects model names.
+	VisionSupported bool
 
 	// Correlation IDs stamped onto every emitted event. Set per RunTurn (which is
 	// sequential on a Runner), so an event always carries which session and turn
@@ -795,7 +803,154 @@ func (r *Runner) RunPreparedTurn(ctx context.Context, sess *session.Session) (Tu
 	return r.drive(ctx, sess)
 }
 
-func withLocalAssetManifests(messages []model.Message) []model.Message {
+func (r *Runner) withLocalAssetManifests(messages []model.Message) []model.Message {
+	// Vision-capable models get image attachments inlined as multimodal content
+	// parts instead of the textual manifest; everything else is unchanged.
+	if r.VisionSupported && r.WorkspaceRoot != "" {
+		return r.withVisionContentParts(messages)
+	}
+	return withTextAssetManifests(messages)
+}
+
+// Limits mirroring the DeepSeek vision API contract: a single inline image and
+// the whole request body are bounded. The total raw-byte budget leaves real
+// headroom for the ~33% base64 expansion plus system prompt, history, and tool
+// definitions under the provider's 48 MiB request-body cap, so a full budget
+// still fits instead of failing upstream with a 413.
+const (
+	visionMaxImageBytes    = 32 << 20 // 32 MiB per image (provider's inline cap)
+	visionMaxTotalImgBytes = 32 << 20 // raw-byte budget for all images in one request
+)
+
+// sniffImageMIME returns the actual image format from magic bytes. Providers
+// judge images by content, not by filename or declared MIME type.
+func sniffImageMIME(data []byte) string {
+	switch {
+	case len(data) >= 3 && data[0] == 0xFF && data[1] == 0xD8 && data[2] == 0xFF:
+		return "image/jpeg"
+	case len(data) >= 8 && string(data[:8]) == "\x89PNG\r\n\x1a\n":
+		return "image/png"
+	case len(data) >= 6 && (string(data[:6]) == "GIF87a" || string(data[:6]) == "GIF89a"):
+		return "image/gif"
+	case len(data) >= 12 && string(data[:4]) == "RIFF" && string(data[8:12]) == "WEBP":
+		return "image/webp"
+	default:
+		return ""
+	}
+}
+
+// resolveAssetPath joins a persisted workspace-relative attachment path onto
+// the workspace root and rejects any path that escapes it (defense against a
+// tampered or corrupted RelativePath in the session store reaching the
+// filesystem). The second return is false when the path is unsafe.
+func (r *Runner) resolveAssetPath(rel string) (string, bool) {
+	clean := filepath.Clean(filepath.Join(r.WorkspaceRoot, filepath.FromSlash(rel)))
+	relCheck, err := filepath.Rel(r.WorkspaceRoot, clean)
+	if err != nil || relCheck == ".." || strings.HasPrefix(relCheck, ".."+string(filepath.Separator)) {
+		return "", false
+	}
+	return clean, true
+}
+
+// withVisionContentParts converts local image attachments into image_url
+// content parts on their user messages; all notes (non-image attachments,
+// unreadable or oversized images) are appended to the message's text content so
+// ContentParts stays strictly image-only and the wire remains a plain string
+// when there is nothing to visualize. Gateway-owned Assets are never inlined
+// (the Runtime holds no bytes or URLs for them by design) and keep the textual
+// manifest so the model still learns they exist and how to inspect them.
+// Persisted history is never touched — parts are assembled fresh on every
+// request.
+func (r *Runner) withVisionContentParts(messages []model.Message) []model.Message {
+	var out []model.Message
+	totalImageBytes := int64(0)
+	for i, msg := range messages {
+		if len(msg.LocalAssets) == 0 && len(msg.Assets) == 0 {
+			continue
+		}
+		if out == nil {
+			out = append([]model.Message(nil), messages...)
+		}
+		var notes strings.Builder
+		var parts []model.ContentPart
+		for _, asset := range msg.LocalAssets {
+			mime := asset.MIMEType
+			isImage := strings.HasPrefix(mime, "image/")
+			path, safe := r.resolveAssetPath(asset.RelativePath)
+			if !safe {
+				fmt.Fprintf(os.Stderr, "[vision] attachment %q escapes the workspace; skipped\n", asset.RelativePath)
+				fmt.Fprintf(&notes, "\n[Attachment %q is currently unavailable (path outside the workspace).]", asset.Filename)
+				continue
+			}
+			data, err := os.ReadFile(path)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "[vision] read attachment %q: %v\n", asset.RelativePath, err)
+				fmt.Fprintf(&notes, "\n[Attachment %q is currently unavailable (%v).]", asset.Filename, err)
+				continue
+			}
+			// Trust content over declarations, matching provider behavior.
+			if sniffed := sniffImageMIME(data); sniffed != "" {
+				mime = sniffed
+				isImage = true
+			} else if isImage {
+				isImage = false // declared image that isn't one — fall through to a note
+			}
+			if !isImage {
+				fmt.Fprintf(&notes, "\n[Attached file %q (%s, %d bytes) is stored at %q. Inspect it with an appropriate client-side local tool; do not guess its contents.]",
+					asset.Filename, mime, asset.SizeBytes, asset.RelativePath)
+				continue
+			}
+			size := int64(len(data))
+			if size > visionMaxImageBytes || totalImageBytes+size > visionMaxTotalImgBytes {
+				fmt.Fprintf(os.Stderr, "[vision] image %q (%d bytes) exceeds request budget; skipped\n", asset.RelativePath, size)
+				fmt.Fprintf(&notes, "\n[Attached image %q was omitted: it exceeds the %d MiB per-request image budget. It remains available at %q via client-side tools.]",
+					asset.Filename, visionMaxTotalImgBytes>>20, asset.RelativePath)
+				continue
+			}
+			totalImageBytes += size
+			parts = append(parts, model.ContentPart{
+				Type:     "image_url",
+				ImageURL: &model.ContentImage{URL: fmt.Sprintf("data:%s;base64,%s", mime, base64.StdEncoding.EncodeToString(data))},
+			})
+			// The model sees the pixels above but must also learn the file's
+			// workspace path: without it, tool-based follow-ups (OCR, barcodes,
+			// metadata via analyze_local_image) dead-end, and the model may
+			// wrongly conclude the image "is not on disk". list_files hides
+			// .codeagent, so this note is the only pointer to the path.
+			fmt.Fprintf(&notes, "\n[Attached image %q is visible to you above and is also stored in the workspace at %q — use analyze_local_image on that path for OCR, barcode, or metadata analysis.]",
+				asset.Filename, asset.RelativePath)
+		}
+		if len(parts) > 0 {
+			out[i].ContentParts = parts
+		}
+		// Gateway-owned assets: the Runtime holds no bytes or URLs for them, so
+		// they keep the textual manifest (analyze_image client tool with the
+		// asset_id) exactly like the text path — vision changes what happens to
+		// LocalAssets only.
+		if len(msg.Assets) > 0 {
+			notes.WriteString("\n\n[User uploaded assets]\n")
+			notes.WriteString("The user uploaded the following assets. Their contents are currently NOT visible to you. ")
+			notes.WriteString("Do not guess their contents. Use the analyze_image client tool with the asset_id to inspect an image.\n")
+			for _, asset := range msg.Assets {
+				fmt.Fprintf(&notes, "- asset_id=%d; kind=%s; mime_type=%s; filename=%s\n",
+					asset.AssetID, asset.Kind, asset.MIMEType, asset.Filename)
+			}
+		}
+		if notes.Len() > 0 {
+			out[i].Content += notes.String()
+		}
+		// Defense in depth: the provider request carries resolved content only;
+		// structured attachment metadata stays out of Provider JSON.
+		out[i].LocalAssets = nil
+		out[i].Assets = nil
+	}
+	if out == nil {
+		return messages
+	}
+	return out
+}
+
+func withTextAssetManifests(messages []model.Message) []model.Message {
 	var out []model.Message
 	for i, msg := range messages {
 		// 任一资产类型非空才处理（原来是len(messages[i].LocalAssets) == 0 直接跳过）
@@ -987,7 +1142,7 @@ func (r *Runner) drive(ctx context.Context, sess *session.Session) (TurnResult, 
 		if r.PlanState == PlanStatusPlanning {
 			msgs = appendEphemeralUser(msgs, planningPrompt)
 		}
-		msgs = withLocalAssetManifests(msgs)
+		msgs = r.withLocalAssetManifests(msgs)
 
 		r.emitInvocationID = newInvocationID()
 		r.emit(Event{Kind: EventModelStarted})
@@ -1429,7 +1584,7 @@ func (r *Runner) finalAnswerAfterLimit(ctx context.Context, sess *session.Sessio
 		Role:    model.RoleUser,
 		Content: stepLimitNudge,
 	})
-	msgs = withLocalAssetManifests(msgs)
+	msgs = r.withLocalAssetManifests(msgs)
 
 	r.emitInvocationID = newInvocationID()
 	r.emit(Event{Kind: EventModelStarted})

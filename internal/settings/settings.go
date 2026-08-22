@@ -154,6 +154,19 @@ type ModelConfig struct {
 	Name string `json:"-"` // the friendly name (the map key)
 }
 
+// SupportsVision reports whether this model declares image input among its
+// input modalities. It is the single source of truth for the runtime's decision
+// to inject local image attachments as multimodal content parts; models
+// without an explicit "image" modality stay text-only (fail-safe default).
+func (mc ModelConfig) SupportsVision() bool {
+	for _, m := range mc.Catalog.InputModalities {
+		if m == "image" {
+			return true
+		}
+	}
+	return false
+}
+
 // ServiceConfig is one grouped service (design-providers-grouped-config.md
 // §3.1). Fields at this level inherit to every model in Models. Headers hold
 // ENV references only (e.g. "Bearer ${OPENROUTER_API_KEY}") — values never

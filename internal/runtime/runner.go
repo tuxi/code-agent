@@ -114,6 +114,14 @@ func BuildRunner(cfg settings.Settings, mc settings.ModelConfig, provider model.
 			runner.AssetUploader = uploader
 		}
 	}
+	// Vision input is a per-model capability, but the injection only fires when
+	// the wire transport can actually serialize content parts. OpenAI-compatible
+	// and Responses both map ContentParts to their native image blocks
+	// (image_url / input_image); an unsupported transport (ollama today) keeps
+	// the textual manifest fallback instead of silently dropping images. The
+	// loop decides per request.
+	runner.VisionSupported = mc.SupportsVision() &&
+		(mc.Provider == "" || mc.Provider == "openai" || mc.Provider == "responses")
 	return runner
 }
 
