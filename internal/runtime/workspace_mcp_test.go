@@ -63,11 +63,11 @@ func writeMCPJSON(t *testing.T, root, serverName, toolName string) {
 }
 
 // newMCPTestRegistry builds a WorkspaceRegistry with MCP enabled over an empty
-// base registry, hermetic against the developer's real ~/.codeagent/mcp.json
+// base registry, hermetic against the developer's real ~/.codeagent/.mcp.json
 // (HOME is pointed at a temp dir).
 func newMCPTestRegistry(t *testing.T) *WorkspaceRegistry {
 	t.Helper()
-	t.Setenv("HOME", t.TempDir()) // user-scope ~/.codeagent/mcp.json must not leak in
+	t.Setenv("HOME", t.TempDir()) // user-scope ~/.codeagent/.mcp.json must not leak in
 
 	wr := NewWorkspaceRegistry("")
 	wr.EnableMCP(context.Background(), tools.NewRegistry(), settings.Settings{}, nil, false)

@@ -81,7 +81,7 @@ func run() error {
 		fmt.Fprintln(os.Stderr, "warning:", w)
 	}
 	// MCP servers come from Claude-compatible `.mcp.json` files, layered by scope:
-	// project (<root>/.mcp.json) over user (~/.codeagent/mcp.json). Set
+	// project (<root>/.mcp.json) over user (~/.codeagent/.mcp.json). Set
 	// CODEAGENT_MCP_INHERIT_CLAUDE=1 to also inherit user-scope servers from an
 	// existing ~/.claude.json. Missing files => no MCP.
 	inheritClaude := os.Getenv("CODEAGENT_MCP_INHERIT_CLAUDE") == "1"

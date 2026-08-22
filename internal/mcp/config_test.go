@@ -168,7 +168,7 @@ func TestMergePrecedence(t *testing.T) {
 // (.mcp.json) on a same-name server, and both unique servers survive.
 func TestResolveDesktopLocalOverridesProject(t *testing.T) {
 	root := t.TempDir()
-	t.Setenv("HOME", t.TempDir()) // hermetic: no real ~/.codeagent/mcp.json
+	t.Setenv("HOME", t.TempDir()) // hermetic: no real ~/.codeagent/.mcp.json
 
 	writeFile(t, filepath.Join(root, ".mcp.json"),
 		`{"mcpServers":{"shared":{"type":"http","url":"https://project"},"proj-only":{"command":"p"}}}`)

@@ -104,7 +104,7 @@ func LoadLocal(root string) (Config, error) {
 	return LoadFile(filepath.Join(root, ".mcp.local.json"))
 }
 
-// LoadUser reads the user-scope `~/.codeagent/mcp.json` — our own home namespace
+// LoadUser reads the user-scope `~/.codeagent/.mcp.json` — our own home namespace
 // (alongside ~/.codeagent/skills), the analog of Claude's user scope. It uses the
 // same strict parsing as project scope: a malformed user file fails loudly.
 // A missing home directory or file yields an empty Config, since MCP is opt-in.
@@ -113,14 +113,14 @@ func LoadUser() (Config, error) {
 	if err != nil {
 		return Config{}, nil
 	}
-	return LoadFile(filepath.Join(home, ".codeagent", "mcp.json"))
+	return LoadFile(filepath.Join(home, ".codeagent", ".mcp.json"))
 }
 
 // ResolveDesktop layers the desktop MCP scopes into one config, applying Claude's
 // scope precedence (the whole server entry comes from the highest-precedence
 // source; fields never merge across scopes):
 //
-//	local (<root>/.mcp.local.json)  >  project (<root>/.mcp.json)  >  user (~/.codeagent/mcp.json)
+//	local (<root>/.mcp.local.json)  >  project (<root>/.mcp.json)  >  user (~/.codeagent/.mcp.json)
 //
 // When inheritClaude is true it additionally imports the user's existing Claude
 // user-scope servers (~/.claude.json) at the LOWEST precedence, so a Claude user
