@@ -141,10 +141,41 @@ type responseItem struct {
 
 // responseContent is one content block inside a message item. input_text marks
 // user-side text; output_text marks assistant-side text (the OpenAI convention
-// for replaying prior assistant messages).
+// for replaying prior assistant messages); input_image carries a multimodal
+// image (image_url is a data: URL or public http(s) URL — a plain string on the
+// Responses wire, unlike the nested object in chat completions).
 type responseContent struct {
-	Type string `json:"type"`
-	Text string `json:"text"`
+	Type     string `json:"type"`
+	Text     string `json:"text,omitempty"`
+	ImageURL string `json:"image_url,omitempty"`
+	Detail   string `json:"detail,omitempty"`
+}
+
+// userResponseContent maps a user message into Responses content blocks. A
+// message without ContentParts keeps the historical single input_text block;
+// with parts, the text leads and each image part becomes an input_image block.
+func userResponseContent(content string, parts []ContentPart) []responseContent {
+	if len(parts) == 0 {
+		return []responseContent{{Type: "input_text", Text: content}}
+	}
+	out := make([]responseContent, 0, len(parts)+1)
+	if content != "" {
+		out = append(out, responseContent{Type: "input_text", Text: content})
+	}
+	for _, p := range parts {
+		switch p.Type {
+		case "image_url":
+			if p.ImageURL == nil || p.ImageURL.URL == "" {
+				continue
+			}
+			out = append(out, responseContent{Type: "input_image", ImageURL: p.ImageURL.URL})
+		case "text":
+			if p.Text != "" {
+				out = append(out, responseContent{Type: "input_text", Text: p.Text})
+			}
+		}
+	}
+	return out
 }
 
 // toResponsesRequest maps the canonical Request into the Responses body:
@@ -165,7 +196,7 @@ func toResponsesRequest(req Request, webSearch bool) responsesRequest {
 			items = append(items, responseItem{
 				Type:    "message",
 				Role:    "user",
-				Content: []responseContent{{Type: "input_text", Text: m.Content}},
+				Content: userResponseContent(m.Content, m.ContentParts),
 			})
 		case RoleAssistant:
 			if m.Content != "" {

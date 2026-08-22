@@ -105,6 +105,7 @@ var builtinConnections = map[string]builtinConnection{
 		Models: []builtinModelTemplate{
 			{ID: "deepseek-v4-flash", RuntimeAlias: "deepseek", ContextWindow: 1_000_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text"}, WebSearch: true, InputPricePerM: 0.16, OutputPricePerM: 0.32},
 			{ID: "deepseek-v4-pro", RuntimeAlias: "deepseek-pro", ContextWindow: 1_000_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text"}, InputPricePerM: 0.45, OutputPricePerM: 0.90},
+			{ID: "deepseek-v4-flash-vision-exp", RuntimeAlias: "deepseek-vision", ContextWindow: 1_000_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text", "image"}, InputPricePerM: 0.16, OutputPricePerM: 0.32},
 		},
 	},
 	"qwen": {

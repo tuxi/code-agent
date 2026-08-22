@@ -112,6 +112,88 @@ func TestResponsesRequestBodyMapping(t *testing.T) {
 	}
 }
 
+// TestResponsesUserContentPartsMapsToInputImage verifies a user message
+// carrying multimodal ContentParts serializes to input_text + input_image
+// blocks on the Responses wire (image_url is a plain string data URL).
+func TestResponsesUserContentPartsMapsToInputImage(t *testing.T) {
+	req := Request{
+		Model: "deepseek-v4-flash-vision-exp",
+		Messages: []Message{{
+			Role:    RoleUser,
+			Content: "describe this",
+			ContentParts: []ContentPart{
+				{Type: "image_url", ImageURL: &ContentImage{URL: "data:image/png;base64,aGVsbG8="}},
+			},
+		}},
+	}
+	body := toResponsesRequest(req, false)
+	if len(body.Input) != 1 {
+		t.Fatalf("input items = %d, want 1", len(body.Input))
+	}
+	msg := body.Input[0]
+	if msg.Type != "message" || msg.Role != "user" {
+		t.Fatalf("item = %+v, want user message", msg)
+	}
+	if len(msg.Content) != 2 {
+		t.Fatalf("content blocks = %+v, want input_text + input_image", msg.Content)
+	}
+	if msg.Content[0].Type != "input_text" || msg.Content[0].Text != "describe this" {
+		t.Errorf("first block = %+v, want leading input_text", msg.Content[0])
+	}
+	img := msg.Content[1]
+	if img.Type != "input_image" || img.ImageURL != "data:image/png;base64,aGVsbG8=" {
+		t.Errorf("image block = %+v, want input_image with data URL", img)
+	}
+	// Wire shape: image_url is a plain string, not a nested object.
+	raw, err := json.Marshal(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"type":"input_image","image_url":"data:image/png;base64,aGVsbG8="`) {
+		t.Errorf("wire body %s lacks flat input_image with string image_url", raw)
+	}
+}
+
+// TestResponsesUserTextOnlyKeepsInputText verifies the historical shape is
+// preserved: a user message without ContentParts stays a single input_text
+// block even when other messages carry parts.
+func TestResponsesUserTextOnlyKeepsInputText(t *testing.T) {
+	body := toResponsesRequest(Request{
+		Messages: []Message{
+			{Role: RoleUser, Content: "plain"},
+			{Role: RoleUser, Content: "with image", ContentParts: []ContentPart{
+				{Type: "image_url", ImageURL: &ContentImage{URL: "data:image/jpeg;base64,eA=="}},
+			}},
+		},
+	}, false)
+	if len(body.Input) != 2 {
+		t.Fatalf("input items = %d, want 2", len(body.Input))
+	}
+	if len(body.Input[0].Content) != 1 || body.Input[0].Content[0].Type != "input_text" || body.Input[0].Content[0].Text != "plain" {
+		t.Errorf("text-only message = %+v, want single input_text", body.Input[0])
+	}
+	if len(body.Input[1].Content) != 2 {
+		t.Errorf("image message = %+v, want input_text + input_image", body.Input[1])
+	}
+}
+
+// TestResponsesEmptyContentPartsDegradeToInputText verifies a message whose
+// parts are all empty/unsupported still produces a valid input_text-only item.
+func TestResponsesEmptyContentPartsDegradeToInputText(t *testing.T) {
+	body := toResponsesRequest(Request{
+		Messages: []Message{{
+			Role: RoleUser, Content: "hi", ContentParts: []ContentPart{
+				{Type: "image_url", ImageURL: nil},
+				{Type: "text", Text: ""},
+			},
+		}},
+	}, false)
+	msg := body.Input[0]
+	if len(msg.Content) != 1 || msg.Content[0].Type != "input_text" || msg.Content[0].Text != "hi" {
+		t.Errorf("content = %+v, want single input_text with prompt", msg.Content)
+	}
+}
+
 func TestResponsesWebSearchToolAndReplay(t *testing.T) {
 	// Turn 1 request: provider.WebSearch=true advertises the built-in web_search
 	// tool alongside the function tools.
