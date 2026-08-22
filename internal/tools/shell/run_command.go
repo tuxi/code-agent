@@ -546,7 +546,7 @@ func outsideWorkspaceRead(args []string, rootAbs string) string {
 			continue
 		}
 		if err := workspace.ValidatePath(rootAbs, target); err != nil {
-			return fmt.Sprintf("refused: %s may only read paths inside the workspace; use project tools for workspace files and respect user-scoped read limits", args[0])
+			return fmt.Sprintf("refused: %s may only read paths inside the workspace; for paths outside the workspace use the list_files/read_file/grep tools instead (they support user approval)", args[0])
 		}
 	}
 	return ""
