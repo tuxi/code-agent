@@ -194,6 +194,89 @@ func TestResponsesEmptyContentPartsDegradeToInputText(t *testing.T) {
 	}
 }
 
+// TestWireToolImagesPromotedToSyntheticUserMessage verifies the chat
+// completions placement rule: a tool message carrying image parts stays
+// text-only on the wire and its images are promoted into ONE synthetic user
+// message right after the run of tool results, keeping tool_call pairing.
+func TestWireToolImagesPromotedToSyntheticUserMessage(t *testing.T) {
+	img := func(u string) ContentPart {
+		return ContentPart{Type: "image_url", ImageURL: &ContentImage{URL: u}}
+	}
+	msgs := []Message{
+		{Role: RoleUser, Content: "take a look"},
+		{Role: RoleAssistant, ToolCalls: []ToolCall{
+			{ID: "c1", Type: "function", Function: FunctionCall{Name: "snap"}},
+			{ID: "c2", Type: "function", Function: FunctionCall{Name: "snap"}},
+		}},
+		{Role: RoleTool, ToolCallID: "c1", Content: "shot one", ContentParts: []ContentPart{img("data:image/png;base64,one=")}},
+		{Role: RoleTool, ToolCallID: "c2", Content: "shot two", ContentParts: []ContentPart{img("data:image/png;base64,two=")}},
+	}
+	var got map[string]any
+	data, err := json.Marshal(chatCompletionRequest{Messages: newWireMessages(msgs)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatal(err)
+	}
+	messages := got["messages"].([]any)
+	// user, assistant(tool_calls), tool c1, tool c2, synthetic user = 5
+	if len(messages) != 5 {
+		t.Fatalf("messages = %d, want 5 (two tools + one merged synthetic user)", len(messages))
+	}
+	tool1 := messages[2].(map[string]any)
+	if tool1["content"] != "shot one" {
+		t.Errorf("tool content = %#v, want plain string (no blocks on tool messages)", tool1["content"])
+	}
+	synth := messages[4].(map[string]any)
+	if synth["role"] != "user" {
+		t.Fatalf("synthetic role = %#v, want user", synth["role"])
+	}
+	blocks, ok := synth["content"].([]any)
+	if !ok || len(blocks) != 3 {
+		t.Fatalf("synthetic content = %#v, want note + 2 images (merged)", synth["content"])
+	}
+	if blocks[0].(map[string]any)["type"] != "text" {
+		t.Errorf("first synthetic block = %#v, want provenance text", blocks[0])
+	}
+	if blocks[1].(map[string]any)["image_url"].(map[string]any)["url"] != "data:image/png;base64,one=" ||
+		blocks[2].(map[string]any)["image_url"].(map[string]any)["url"] != "data:image/png;base64,two=" {
+		t.Errorf("image blocks = %#v", blocks[1:])
+	}
+}
+
+// TestResponsesToolOutputBlocks verifies function_call_output carries images as
+// a content-block list while text-only results stay a plain string.
+func TestResponsesToolOutputBlocks(t *testing.T) {
+	body := toResponsesRequest(Request{
+		Messages: []Message{
+			{Role: RoleUser, Content: "go"},
+			{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "c1", Type: "function", Function: FunctionCall{Name: "snap"}}}},
+			{Role: RoleTool, ToolCallID: "c1", Content: "captured", ContentParts: []ContentPart{
+				{Type: "image_url", ImageURL: &ContentImage{URL: "data:image/png;base64,eGw="}},
+			}},
+			{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "c2", Type: "function", Function: FunctionCall{Name: "read"}}}},
+			{Role: RoleTool, ToolCallID: "c2", Content: "plain text result"},
+		},
+	}, false)
+	if len(body.Input) != 5 {
+		t.Fatalf("input items = %d, want 5", len(body.Input))
+	}
+	withImg := body.Input[2]
+	blocks, ok := withImg.Output.([]responseContent)
+	if !ok {
+		t.Fatalf("image tool output = %#v (%T), want block list", withImg.Output, withImg.Output)
+	}
+	if len(blocks) != 2 || blocks[0].Type != "input_text" || blocks[0].Text != "captured" ||
+		blocks[1].Type != "input_image" || blocks[1].ImageURL != "data:image/png;base64,eGw=" {
+		t.Errorf("blocks = %+v, want input_text then input_image", blocks)
+	}
+	textOnly := body.Input[4]
+	if s, isStr := textOnly.Output.(string); !isStr || s != "plain text result" {
+		t.Errorf("text-only output = %#v (%T), want plain string", textOnly.Output, textOnly.Output)
+	}
+}
+
 func TestResponsesWebSearchToolAndReplay(t *testing.T) {
 	// Turn 1 request: provider.WebSearch=true advertises the built-in web_search
 	// tool alongside the function tools.

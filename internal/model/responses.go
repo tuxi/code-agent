@@ -126,17 +126,20 @@ func toResponsesTools(tools []ToolDefinition) *[]responsesTool {
 // function call output, or a web_search_call to replay. Only one of the field
 // groups is set per item.
 type responseItem struct {
-	Type         string            `json:"type"`
-	ID           string            `json:"id,omitempty"`            // web_search_call identity
-	Role         string            `json:"role,omitempty"`          // message items
-	Content      []responseContent `json:"content,omitempty"`       // message items
-	CallID       string            `json:"call_id,omitempty"`       // function_call / function_call_output
-	Name         string            `json:"name,omitempty"`          // function_call
-	Arguments    string            `json:"arguments,omitempty"`     // function_call (JSON string)
-	Output       string            `json:"output,omitempty"`        // function_call_output
-	Status       string            `json:"status,omitempty"`        // web_search_call
-	Action       json.RawMessage   `json:"action,omitempty"`        // web_search_call (object or "search")
-	SearchConfig json.RawMessage   `json:"search_config,omitempty"` // web_search_call
+	Type      string            `json:"type"`
+	ID        string            `json:"id,omitempty"`        // web_search_call identity
+	Role      string            `json:"role,omitempty"`      // message items
+	Content   []responseContent `json:"content,omitempty"`   // message items
+	CallID    string            `json:"call_id,omitempty"`   // function_call / function_call_output
+	Name      string            `json:"name,omitempty"`      // function_call
+	Arguments string            `json:"arguments,omitempty"` // function_call (JSON string)
+	// Output is the function_call_output payload: a plain string for text-only
+	// results, or a content-block list (input_text/input_image) when the tool
+	// produced images for a vision model. any keeps both wire shapes exact.
+	Output       any             `json:"output,omitempty"`
+	Status       string          `json:"status,omitempty"`        // web_search_call
+	Action       json.RawMessage `json:"action,omitempty"`        // web_search_call (object or "search")
+	SearchConfig json.RawMessage `json:"search_config,omitempty"` // web_search_call
 }
 
 // responseContent is one content block inside a message item. input_text marks
@@ -173,6 +176,26 @@ func userResponseContent(content string, parts []ContentPart) []responseContent 
 			if p.Text != "" {
 				out = append(out, responseContent{Type: "input_text", Text: p.Text})
 			}
+		}
+	}
+	return out
+}
+
+// toolOutputContent maps a tool-result message into the function_call_output
+// payload. Text-only results keep the historical plain-string shape; with image
+// parts the output becomes a content-block list (text leading, images
+// following) so a vision model receives the tool's images inline.
+func toolOutputContent(content string, parts []ContentPart) any {
+	if len(parts) == 0 {
+		return content
+	}
+	out := make([]responseContent, 0, len(parts)+1)
+	if content != "" {
+		out = append(out, responseContent{Type: "input_text", Text: content})
+	}
+	for _, p := range parts {
+		if p.Type == "image_url" && p.ImageURL != nil && p.ImageURL.URL != "" {
+			out = append(out, responseContent{Type: "input_image", ImageURL: p.ImageURL.URL})
 		}
 	}
 	return out
@@ -236,7 +259,7 @@ func toResponsesRequest(req Request, webSearch bool) responsesRequest {
 			items = append(items, responseItem{
 				Type:   "function_call_output",
 				CallID: m.ToolCallID,
-				Output: m.Content,
+				Output: toolOutputContent(m.Content, m.ContentParts),
 			})
 		}
 	}

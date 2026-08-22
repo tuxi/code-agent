@@ -154,8 +154,30 @@ type wireMessage struct {
 }
 
 func newWireMessages(messages []Message) []wireMessage {
-	out := make([]wireMessage, len(messages))
-	for i, m := range messages {
+	out := make([]wireMessage, 0, len(messages)+4)
+	// pendingToolImages accumulates image parts from consecutive tool messages:
+	// chat completions cannot carry images in tool messages (DeepSeek rejects
+	// them), so they are promoted into ONE synthetic user message after the
+	// run of tool results, keeping the assistant tool_calls / tool-result
+	// pairing intact.
+	var pendingToolImages []ContentPart
+	flushToolImages := func() {
+		if len(pendingToolImages) == 0 {
+			return
+		}
+		// The synthetic message exists only to carry the images; it must not be
+		// mistaken for a user-authored turn. Content is a block list: the
+		// provenance note leads, images follow.
+		blocks := make([]ContentPart, 0, len(pendingToolImages)+1)
+		blocks = append(blocks, ContentPart{Type: "text", Text: "[Images returned by the tools above are attached for you to inspect.]"})
+		blocks = append(blocks, pendingToolImages...)
+		out = append(out, wireMessage{
+			Role:    RoleUser,
+			Content: blocks,
+		})
+		pendingToolImages = nil
+	}
+	for _, m := range messages {
 		w := wireMessage{
 			Role:       m.Role,
 			Assets:     m.Assets,
@@ -165,17 +187,30 @@ func newWireMessages(messages []Message) []wireMessage {
 		if len(m.ContentParts) > 0 {
 			parts := make([]ContentPart, len(m.ContentParts))
 			copy(parts, m.ContentParts)
-			// The message's text content leads the block array so the model
-			// reads the prompt before the images.
-			if m.Content != "" {
-				parts = append([]ContentPart{{Type: "text", Text: m.Content}}, parts...)
+			if m.Role == RoleTool {
+				// Tool results stay text-only on this wire; their images ride
+				// the next synthetic user message.
+				pendingToolImages = append(pendingToolImages, parts...)
+				w.Content = m.Content
+			} else {
+				// The message's text content leads the block array so the model
+				// reads the prompt before the images.
+				if m.Content != "" {
+					parts = append([]ContentPart{{Type: "text", Text: m.Content}}, parts...)
+				}
+				w.Content = parts
 			}
-			w.Content = parts
 		} else {
 			w.Content = m.Content
 		}
-		out[i] = w
+		out = append(out, w)
+		// Flush before any non-tool message so the images land between the tool
+		// results and whatever follows (assistant reply or new user turn).
+		if m.Role != RoleTool {
+			flushToolImages()
+		}
 	}
+	flushToolImages()
 	return out
 }
 
