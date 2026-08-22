@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -417,6 +419,7 @@ func (r *Runner) commitToolResult(ctx context.Context, sess *session.Session, tu
 		step.Observation = observation
 		turn.Steps[len(turn.Steps)-1].Observation = observation
 	}
+	toolLocalAssets := r.visionToolLocalAssets(assetRefs)
 	*turnAssets = append(*turnAssets, assetRefs...)
 
 	r.emit(Event{
@@ -433,12 +436,74 @@ func (r *Runner) commitToolResult(ctx context.Context, sess *session.Session, tu
 	})
 
 	sess.Messages = append(sess.Messages, model.Message{
-		Role:       model.RoleTool,
-		ToolCallID: p.call.ID,
-		Content:    observation,
-		Assets:     gatewayAssets,
+		Role:        model.RoleTool,
+		ToolCallID:  p.call.ID,
+		Content:     observation,
+		Assets:      gatewayAssets,
+		LocalAssets: toolLocalAssets,
 	})
 	sess.UpdatedAt = time.Now()
+}
+
+// visionToolLocalAssets stages image assets produced by a tool so the wire
+// transformer can inline them for vision-capable models. It is the tool-result
+// counterpart of user LocalAssets: only references are persisted (workspace
+// relative paths), bytes are read fresh at request time. Out-of-workspace
+// captures are staged into .codeagent/assets/client/ first — the same staging
+// the Gateway upload path uses, so files it already moved resolve directly.
+func (r *Runner) visionToolLocalAssets(refs []assets.Ref) []model.LocalAssetRef {
+	if !r.VisionSupported || len(refs) == 0 {
+		return nil
+	}
+	var out []model.LocalAssetRef
+	for _, ref := range refs {
+		if !strings.HasPrefix(strings.ToLower(ref.MIMEType), "image/") || ref.AbsolutePath == "" {
+			continue
+		}
+		localPath, err := r.safeWorkspaceAssetPath(ref.AbsolutePath)
+		staged := false
+		if err != nil && r.WorkspaceRoot != "" {
+			s, copyErr := copyAssetToWorkspace(ref.AbsolutePath, r.WorkspaceRoot, ref.MIMEType)
+			if copyErr != nil {
+				fmt.Fprintf(os.Stderr, "[vision] stage tool image %q: %v\n", ref.AbsolutePath, copyErr)
+				continue
+			}
+			localPath, staged = s, true
+		} else if err != nil {
+			continue
+		}
+		// safeWorkspaceAssetPath returns the symlink-resolved physical path;
+		// resolve the workspace root the same way so the relative path stays
+		// inside the workspace even when /tmp-style symlinks are involved. A
+		// freshly staged file was joined from the logical root, so it uses that.
+		rootForRel := r.WorkspaceRoot
+		if !staged {
+			if resolved, err := filepath.EvalSymlinks(r.WorkspaceRoot); err == nil {
+				rootForRel = resolved
+			}
+		}
+		rel, err := filepath.Rel(rootForRel, localPath)
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			fmt.Fprintf(os.Stderr, "[vision] tool image %q outside the workspace; skipped\n", localPath)
+			continue
+		}
+		sha, size, err := fileSHA256(localPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[vision] hash tool image %q: %v\n", localPath, err)
+			continue
+		}
+		out = append(out, model.LocalAssetRef{
+			ID:             assets.StableID(r.emitTurnID, "vision", len(out), sha),
+			RelativePath:   filepath.ToSlash(rel),
+			Filename:       filepath.Base(localPath),
+			MIMEType:       ref.MIMEType,
+			Kind:           "image",
+			SizeBytes:      size,
+			SHA256:         sha,
+			TransferPolicy: "local_only",
+		})
+	}
+	return out
 }
 
 func (r *Runner) updateHarnessGates(toolName string, input json.RawMessage, observation string, sideEffecting bool) {

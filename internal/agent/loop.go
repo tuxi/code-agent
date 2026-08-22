@@ -853,14 +853,15 @@ func (r *Runner) resolveAssetPath(rel string) (string, bool) {
 }
 
 // withVisionContentParts converts local image attachments into image_url
-// content parts on their user messages; all notes (non-image attachments,
-// unreadable or oversized images) are appended to the message's text content so
-// ContentParts stays strictly image-only and the wire remains a plain string
-// when there is nothing to visualize. Gateway-owned Assets are never inlined
-// (the Runtime holds no bytes or URLs for them by design) and keep the textual
-// manifest so the model still learns they exist and how to inspect them.
-// Persisted history is never touched — parts are assembled fresh on every
-// request.
+// content parts on their messages — user attachments and tool-produced images
+// alike; all notes (non-image attachments, unreadable or oversized images) are
+// appended to the message's text content so ContentParts stays strictly
+// image-only and the wire remains a plain string when there is nothing to
+// visualize. Gateway-owned Assets are never inlined (the Runtime holds no bytes
+// or URLs for them by design) and keep the textual manifest so the model still
+// learns they exist and how to inspect them. The per-request image budget is
+// shared across all messages (user + tool, in order). Persisted history is
+// never touched — parts are assembled fresh on every request.
 func (r *Runner) withVisionContentParts(messages []model.Message) []model.Message {
 	var out []model.Message
 	totalImageBytes := int64(0)
@@ -926,8 +927,9 @@ func (r *Runner) withVisionContentParts(messages []model.Message) []model.Messag
 		// Gateway-owned assets: the Runtime holds no bytes or URLs for them, so
 		// they keep the textual manifest (analyze_image client tool with the
 		// asset_id) exactly like the text path — vision changes what happens to
-		// LocalAssets only.
-		if len(msg.Assets) > 0 {
+		// LocalAssets only. Tool-result images carry no gateway manifest: their
+		// observation text already describes them.
+		if len(msg.Assets) > 0 && msg.Role == model.RoleUser {
 			notes.WriteString("\n\n[User uploaded assets]\n")
 			notes.WriteString("The user uploaded the following assets. Their contents are currently NOT visible to you. ")
 			notes.WriteString("Do not guess their contents. Use the analyze_image client tool with the asset_id to inspect an image.\n")
@@ -962,8 +964,9 @@ func withTextAssetManifests(messages []model.Message) []model.Message {
 			out = append([]model.Message(nil), messages...)
 		}
 		var manifest strings.Builder
-		// 本地资产清单
-		if len(msg.LocalAssets) > 0 {
+		// 本地资产清单。tool 消息的 LocalAssets（vision 提交的工具图片引用）静默
+		// 剥离、不加清单：观察文本本身已描述工具输出，非 vision 模型行为保持不变。
+		if len(msg.LocalAssets) > 0 && msg.Role != model.RoleTool {
 			manifest.WriteString("\n\n[Local attachment manifest]\n")
 			manifest.WriteString("The following files are stored in the workspace. Their contents are currently NOT visible to you. ")
 			manifest.WriteString("Do not guess their contents. Use an appropriate client-side local tool such as analyze_local_image, read_pdf, or render_pdf_pages to inspect them.\n")
@@ -971,6 +974,8 @@ func withTextAssetManifests(messages []model.Message) []model.Message {
 				fmt.Fprintf(&manifest, "- path=%q; filename=%q; kind=%q; mime_type=%q; size_bytes=%d\n",
 					asset.RelativePath, asset.Filename, asset.Kind, asset.MIMEType, asset.SizeBytes)
 			}
+		}
+		if len(msg.LocalAssets) > 0 {
 			// Defense in depth: a Provider inspecting Request directly receives no
 			// structured local attachment metadata.
 			out[i].LocalAssets = nil
