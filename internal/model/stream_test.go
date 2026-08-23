@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"code-agent/internal/credential"
@@ -136,6 +137,34 @@ func TestCompleteParsesOpenRouterReasoningFields(t *testing.T) {
 	}
 	if resp2.ReasoningContent != "from details" {
 		t.Fatalf("reasoning = %q, want the reasoning_details text", resp2.ReasoningContent)
+	}
+}
+
+func TestCompleteRetriesEmptyResponseBody(t *testing.T) {
+	var emptyCalls atomic.Int32
+	// OpenRouter occasionally returns HTTP 200 with a zero-byte body when an
+	// upstream dies after the headers are sent. That is a transient truncation
+	// (io.ErrUnexpectedEOF), not a decode failure, so the resilient wrapper
+	// must retry it.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if emptyCalls.Add(1) == 1 {
+			w.WriteHeader(http.StatusOK)
+			return // empty body on the first attempt
+		}
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"recovered"},"finish_reason":"stop"}]}`))
+	}))
+	defer srv.Close()
+
+	p := NewOpenAICompatibleProviderWithKey(srv.URL, "key")
+	rp := &ResilientProvider{Inner: p, MaxRetries: 2, sleep: noSleep(), LogWriter: io.Discard}
+
+	resp, err := rp.Complete(context.Background(), Request{Model: "m"})
+	if err != nil {
+		t.Fatalf("empty body should be retried and recover, got %v", err)
+	}
+	if resp.Content != "recovered" {
+		t.Fatalf("content = %q", resp.Content)
 	}
 }
 

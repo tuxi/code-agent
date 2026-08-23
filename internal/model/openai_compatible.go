@@ -606,6 +606,15 @@ func (p *OpenAICompatibleProvider) Complete(ctx context.Context, req Request) (R
 		return Response{}, p.withCredentialContext(apiErrorFromBody(resp.StatusCode, raw))
 	}
 
+	// A 200 with an empty body is a truncated upstream response (seen from
+	// OpenRouter when a provider dies after the headers are sent), not a
+	// malformed payload. io.ErrUnexpectedEOF classifies it as transient so the
+	// resilience layer retries, instead of surfacing "unexpected end of JSON
+	// input; raw=" to the user.
+	if len(raw) == 0 {
+		return Response{}, fmt.Errorf("model api returned an empty response body: %w", io.ErrUnexpectedEOF)
+	}
+
 	var decoded chatCompletionResponse
 	if err := json.Unmarshal(raw, &decoded); err != nil {
 		return Response{}, fmt.Errorf("decode response: %w; raw=%s", err, string(raw))
