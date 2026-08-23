@@ -50,6 +50,9 @@ type RuntimeSharedDevice struct {
 	CredentialSHA256 string  `json:"credential_sha256"`
 	DisplayName      string  `json:"display_name,omitempty"`
 	Platform         string  `json:"platform,omitempty"`
+	ClientDeviceID   string  `json:"client_device_id,omitempty"`
+	OSVersion        string  `json:"os_version,omitempty"`
+	AppVersion       string  `json:"app_version,omitempty"`
 	PairedAt         string  `json:"paired_at"`
 	RevokedAt        *string `json:"revoked_at"`
 }
@@ -189,12 +192,23 @@ func (s *DaemonRuntimeSharing) Start(addr, displayName string) error {
 	auth.SetEnrollmentCommitter(func(enrollment SharedEnrollment) error {
 		s.mu.Lock()
 		defer s.mu.Unlock()
-		for _, d := range s.disk.Devices {
-			if d.DeviceID == enrollment.DeviceID && d.RevokedAt == nil {
-				return errors.New("device already exists")
+		// Upsert: if a device with this auth-table device_id already exists
+		// (same physical client re-paired), refresh its credential and metadata
+		// in place instead of rejecting it or accumulating a duplicate row.
+		for i := range s.disk.Devices {
+			if s.disk.Devices[i].DeviceID == enrollment.DeviceID {
+				s.disk.Devices[i].CredentialSHA256 = enrollment.CredentialSHA256
+				s.disk.Devices[i].DisplayName = enrollment.DeviceName
+				s.disk.Devices[i].Platform = enrollment.Platform
+				s.disk.Devices[i].ClientDeviceID = enrollment.ClientDeviceID
+				s.disk.Devices[i].OSVersion = enrollment.OSVersion
+				s.disk.Devices[i].AppVersion = enrollment.AppVersion
+				s.disk.Devices[i].PairedAt = enrollment.CreatedAt.Format(time.RFC3339Nano)
+				s.disk.Devices[i].RevokedAt = nil
+				return s.persistLocked()
 			}
 		}
-		s.disk.Devices = append(s.disk.Devices, RuntimeSharedDevice{DeviceID: enrollment.DeviceID, CredentialSHA256: enrollment.CredentialSHA256, DisplayName: enrollment.DeviceName, Platform: enrollment.Platform, PairedAt: enrollment.CreatedAt.Format(time.RFC3339Nano)})
+		s.disk.Devices = append(s.disk.Devices, RuntimeSharedDevice{DeviceID: enrollment.DeviceID, CredentialSHA256: enrollment.CredentialSHA256, DisplayName: enrollment.DeviceName, Platform: enrollment.Platform, ClientDeviceID: enrollment.ClientDeviceID, OSVersion: enrollment.OSVersion, AppVersion: enrollment.AppVersion, PairedAt: enrollment.CreatedAt.Format(time.RFC3339Nano)})
 		return s.persistLocked()
 	})
 	sharedCore := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -325,7 +339,7 @@ func (s *DaemonRuntimeSharing) activeRecordsLocked() []SharedDeviceRecord {
 	out := make([]SharedDeviceRecord, 0)
 	for _, d := range s.disk.Devices {
 		if d.RevokedAt == nil {
-			out = append(out, SharedDeviceRecord{DeviceID: d.DeviceID, CredentialSHA256: d.CredentialSHA256})
+			out = append(out, SharedDeviceRecord{DeviceID: d.DeviceID, CredentialSHA256: d.CredentialSHA256, ClientDeviceID: d.ClientDeviceID})
 		}
 	}
 	return out

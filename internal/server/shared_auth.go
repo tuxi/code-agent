@@ -39,6 +39,7 @@ const (
 type SharedDeviceRecord struct {
 	DeviceID         string `json:"device_id"`
 	CredentialSHA256 string `json:"credential_sha256"`
+	ClientDeviceID   string `json:"client_device_id,omitempty"`
 }
 
 // SharedEnrollment is the host-visible, non-secret half of an enrollment. The
@@ -50,6 +51,9 @@ type SharedEnrollment struct {
 	CredentialSHA256 string    `json:"credential_sha256"`
 	DeviceName       string    `json:"device_name,omitempty"`
 	Platform         string    `json:"platform,omitempty"`
+	ClientDeviceID   string    `json:"client_device_id,omitempty"`
+	OSVersion        string    `json:"os_version,omitempty"`
+	AppVersion       string    `json:"app_version,omitempty"`
 	CreatedAt        time.Time `json:"created_at"`
 	ExpiresAt        time.Time `json:"expires_at"`
 }
@@ -73,6 +77,12 @@ type SharedDeviceAuthenticator struct {
 
 	devices map[string][sha256.Size]byte
 	pending map[string]*pendingSharedEnrollment
+
+	// deviceRecords mirrors the active (non-revoked) device metadata last pushed
+	// via UpdateDevices. It is the lookup source for reusing a device_id when the
+	// same physical client re-pairs (matched by ClientDeviceID). Because the
+	// daemon only pushes activeRecordsLocked(), every entry here is active.
+	deviceRecords []SharedDeviceRecord
 
 	bootstrapHash    [sha256.Size]byte
 	hasBootstrap     bool
@@ -237,6 +247,7 @@ func (a *SharedDeviceAuthenticator) UpdateDevices(records []SharedDeviceRecord) 
 		next[record.DeviceID] = digest
 	}
 	a.mu.Lock()
+	a.deviceRecords = append([]SharedDeviceRecord(nil), records...)
 	var closeConnections []*trackedDeviceConn
 	for deviceID, active := range a.connections {
 		oldDigest, existed := a.devices[deviceID]
@@ -358,6 +369,9 @@ func (a *SharedDeviceAuthenticator) handlePair(w http.ResponseWriter, r *http.Re
 		BootstrapSecret string `json:"bootstrap_secret"`
 		DeviceName      string `json:"device_name"`
 		Platform        string `json:"platform"`
+		ClientDeviceID  string `json:"device_id"`
+		OSVersion       string `json:"os_version"`
+		AppVersion      string `json:"app_version"`
 	}
 	body, bodyErr := readSharedRequestBody(w, r, maxPairRequestBytes, pairBodyReadTimeout)
 	if bodyErr != nil {
@@ -387,13 +401,16 @@ func (a *SharedDeviceAuthenticator) handlePair(w http.ResponseWriter, r *http.Re
 		return
 	}
 	if len([]byte(request.DeviceName)) > maxDeviceMetadataBytes ||
-		len([]byte(request.Platform)) > maxDeviceMetadataBytes {
+		len([]byte(request.Platform)) > maxDeviceMetadataBytes ||
+		len([]byte(request.ClientDeviceID)) > maxDeviceMetadataBytes ||
+		len([]byte(request.OSVersion)) > maxDeviceMetadataBytes ||
+		len([]byte(request.AppVersion)) > maxDeviceMetadataBytes {
 		Result(w, r, http.StatusBadRequest, CodeBadRequest, "pairing metadata is too long", map[string]string{
 			"code": "pairing_metadata_invalid",
 		})
 		return
 	}
-	enrollment, err := a.beginEnrollment(request.BootstrapSecret, request.DeviceName, request.Platform)
+	enrollment, err := a.beginEnrollment(request.BootstrapSecret, request.DeviceName, request.Platform, request.ClientDeviceID, request.OSVersion, request.AppVersion)
 	if err != nil {
 		a.audit(r, "pairing_bootstrap_rejected", "")
 		Result(w, r, http.StatusUnauthorized, CodeUnauthorized, "pairing authorization failed", map[string]string{
@@ -467,7 +484,7 @@ func writeSharedEnrollmentResult(
 }
 
 func (a *SharedDeviceAuthenticator) beginEnrollment(
-	bootstrapSecret, deviceName, platform string,
+	bootstrapSecret, deviceName, platform, clientDeviceID, osVersion, appVersion string,
 ) (*pendingSharedEnrollment, error) {
 	raw, err := base64.RawURLEncoding.DecodeString(bootstrapSecret)
 	if err != nil || len(raw) < minimumServerAccessTokenBytes {
@@ -482,9 +499,21 @@ func (a *SharedDeviceAuthenticator) beginEnrollment(
 		subtle.ConstantTimeCompare(got[:], a.bootstrapHash[:]) != 1 {
 		return nil, errors.New("pairing bootstrap unavailable")
 	}
-	deviceID, err := randomIdentifier("dev", 16)
-	if err != nil {
-		return nil, err
+	// Reuse the existing device_id for the same physical device (matched by the
+	// client's stable device_id) so repeated scans of one iPhone converge to a
+	// single active device entry, instead of accumulating new rows. The
+	// credential is rotated (fresh secret) but the auth-table key stays stable.
+	deviceID := ""
+	if strings.TrimSpace(clientDeviceID) != "" {
+		if existing := a.deviceIDForClient(clientDeviceID); existing != "" {
+			deviceID = existing
+		}
+	}
+	if deviceID == "" {
+		deviceID, err = randomIdentifier("dev", 16)
+		if err != nil {
+			return nil, err
+		}
 	}
 	enrollmentID, err := randomIdentifier("enr", 16)
 	if err != nil {
@@ -507,6 +536,9 @@ func (a *SharedDeviceAuthenticator) beginEnrollment(
 			CredentialSHA256: hex.EncodeToString(digest[:]),
 			DeviceName:       strings.TrimSpace(deviceName),
 			Platform:         strings.TrimSpace(platform),
+			ClientDeviceID:   strings.TrimSpace(clientDeviceID),
+			OSVersion:        strings.TrimSpace(osVersion),
+			AppVersion:       strings.TrimSpace(appVersion),
 			CreatedAt:        now.UTC(),
 			ExpiresAt:        expiresAt.UTC(),
 		},
@@ -516,6 +548,22 @@ func (a *SharedDeviceAuthenticator) beginEnrollment(
 	a.pending[enrollmentID] = enrollment
 	a.bootstrapPending = true
 	return enrollment, nil
+}
+
+// deviceIDForClient returns the auth-table device_id of the currently active
+// device that reports this client's stable device_id, or "" if none matches.
+// It is called with a.mu held.
+func (a *SharedDeviceAuthenticator) deviceIDForClient(clientDeviceID string) string {
+	trimmed := strings.TrimSpace(clientDeviceID)
+	if trimmed == "" {
+		return ""
+	}
+	for _, device := range a.deviceRecords {
+		if device.ClientDeviceID == trimmed {
+			return device.DeviceID
+		}
+	}
+	return ""
 }
 
 func (a *SharedDeviceAuthenticator) finishEnrollment(enrollmentID string) {

@@ -171,6 +171,84 @@ func TestSharedDeviceAuthUsesDeviceIDLookupAndConstantHash(t *testing.T) {
 	}
 }
 
+func TestSharedEnrollmentReusesDeviceIDForSameClient(t *testing.T) {
+	const bootstrap = "bootstrap-secret-0123456789abcdef0123456789"
+	raw, _ := base64.RawURLEncoding.DecodeString(bootstrap)
+	bootstrapHash := sha256.Sum256(raw)
+	// Seed one active device with a stable client_device_id.
+	const clientDeviceID = "iphone-abcdef"
+	const deviceID = "dev_iphone-1"
+	credential := deviceCredentialPrefix + "." + deviceID + "." +
+		base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{0x11}, 32))
+	digest := sha256.Sum256([]byte(credential))
+	authenticator, err := NewSharedDeviceAuthenticator(
+		[]SharedDeviceRecord{{
+			DeviceID:         deviceID,
+			CredentialSHA256: hex.EncodeToString(digest[:]),
+			ClientDeviceID:   clientDeviceID,
+		}},
+		hex.EncodeToString(bootstrapHash[:]),
+		time.Now().Add(time.Minute),
+		time.Second,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	enrollment, err := authenticator.beginEnrollment(
+		bootstrap, "Xiaoyuan's iPhone", "iOS",
+		clientDeviceID, "18.5", "1.2.3",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if enrollment.public.DeviceID != deviceID {
+		t.Fatalf("reused device_id = %q, want %q", enrollment.public.DeviceID, deviceID)
+	}
+	if enrollment.public.ClientDeviceID != clientDeviceID {
+		t.Fatalf("client_device_id = %q, want %q", enrollment.public.ClientDeviceID, clientDeviceID)
+	}
+	if enrollment.public.OSVersion != "18.5" || enrollment.public.AppVersion != "1.2.3" {
+		t.Fatalf("metadata not propagated: %+v", enrollment.public)
+	}
+}
+
+func TestSharedEnrollmentNewDeviceForDifferentClient(t *testing.T) {
+	const bootstrap = "bootstrap-secret-0123456789abcdef0123456789"
+	raw, _ := base64.RawURLEncoding.DecodeString(bootstrap)
+	bootstrapHash := sha256.Sum256(raw)
+	credential := deviceCredentialPrefix + ".dev_existing." +
+		base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{0x22}, 32))
+	digest := sha256.Sum256([]byte(credential))
+	authenticator, err := NewSharedDeviceAuthenticator(
+		[]SharedDeviceRecord{{
+			DeviceID:         "dev_existing",
+			CredentialSHA256: hex.EncodeToString(digest[:]),
+			ClientDeviceID:   "iphone-existing",
+		}},
+		hex.EncodeToString(bootstrapHash[:]),
+		time.Now().Add(time.Minute),
+		time.Second,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	enrollment, err := authenticator.beginEnrollment(
+		bootstrap, "New iPhone", "iOS",
+		"iphone-new", "18.5", "1.2.3",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if enrollment.public.DeviceID == "dev_existing" {
+		t.Fatalf("different client must get a fresh device_id, got %q", enrollment.public.DeviceID)
+	}
+	if !strings.HasPrefix(enrollment.public.DeviceID, "dev_") {
+		t.Fatalf("device_id = %q has wrong prefix", enrollment.public.DeviceID)
+	}
+}
+
 func TestSharedEnrollmentTimeoutRevokesPendingStateAndKeepsBootstrapRetryable(t *testing.T) {
 	const bootstrap = "retryable-bootstrap-secret-0123456789abcdef"
 	bootstrapHash := sha256.Sum256([]byte(bootstrap))
