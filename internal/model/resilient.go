@@ -134,7 +134,16 @@ func (p *ResilientProvider) Complete(ctx context.Context, req Request) (resp Res
 		class := errorClass(err) // "" on success
 		stat.Trace = append(stat.Trace, Attempt{Latency: attemptDur, ErrorClass: class})
 		if err == nil {
-			return resp, nil
+			// A transport-successful response can still be an unusable no-op
+			// (no text, no tool calls — seen from OpenRouter's multi-provider
+			// routing and reasoning models that exhaust their budget on hidden
+			// thinking). Retrying is safe: the request replay guarantees hold,
+			// and nothing was emitted to the user for an empty turn.
+			if verr := resp.ValidateAssistantTurn(); verr != nil {
+				err = fmt.Errorf("%w (finish_reason=%q)", verr, resp.FinishReason)
+			} else {
+				return resp, nil
+			}
 		}
 		if class == "timeout" {
 			stat.TimedOut = true
@@ -186,6 +195,16 @@ func (p *ResilientProvider) CompleteStream(ctx context.Context, req Request, onT
 	resp, err := sp.CompleteStream(attemptCtx, req, onText, onReasoning)
 	if cancel != nil {
 		cancel()
+	}
+	if err == nil {
+		// A stream that completed cleanly but produced neither text nor tool
+		// calls emitted nothing the renderer could have shown, so replaying via
+		// the resilient non-streamed path is safe (no half-rendered text to
+		// duplicate). This rescues OpenRouter's occasional zero-delta streams.
+		if verr := resp.ValidateAssistantTurn(); verr != nil {
+			err = fmt.Errorf("%w (finish_reason=%q)", verr, resp.FinishReason)
+			resp = Response{}
+		}
 	}
 	if err == nil {
 		if p.Observer != nil {
@@ -291,6 +310,12 @@ func isRetryable(err error) bool {
 		return false
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	// An empty assistant turn arrived over a healthy transport (HTTP 200, clean
+	// [DONE]). It is a provider-side no-op, not a caller mistake — one more
+	// attempt usually produces real content.
+	if errors.Is(err, ErrEmptyAssistantResponse) {
 		return true
 	}
 

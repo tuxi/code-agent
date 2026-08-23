@@ -69,6 +69,76 @@ func TestCompleteStreamParsesTextToolCallsAndUsage(t *testing.T) {
 	}
 }
 
+func TestCompleteStreamParsesOpenRouterReasoningFields(t *testing.T) {
+	// OpenRouter normalizes reasoning into `reasoning` (flat string) and
+	// `reasoning_details` (structured array) instead of DeepSeek's
+	// `reasoning_content`. A reasoning-only stream must surface as reasoning,
+	// not as an empty response.
+	sse := strings.Join([]string{
+		`data: {"choices":[{"delta":{"reasoning":"thinking "}}]}`,
+		`data: {"choices":[{"delta":{"reasoning_details":[{"type":"reasoning.text","text":"hard"},{"type":"reasoning.encrypted","data":"REDACTED"}]}}]}`,
+		`data: {"choices":[{"delta":{"content":"answer"}}]}`,
+		`data: {"choices":[{"finish_reason":"stop"}],"usage":{"prompt_tokens":7,"completion_tokens":5}}`,
+		`data: [DONE]`,
+	}, "\n\n") + "\n\n"
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(sse))
+	}))
+	defer srv.Close()
+
+	p := NewOpenAICompatibleProviderWithKey(srv.URL, "key")
+	var reasoningDeltas []string
+	resp, err := p.CompleteStream(context.Background(), Request{Model: "m"}, nil, func(d string) {
+		reasoningDeltas = append(reasoningDeltas, d)
+	})
+	if err != nil {
+		t.Fatalf("CompleteStream: %v", err)
+	}
+	if resp.Content != "answer" {
+		t.Fatalf("content = %q, want answer", resp.Content)
+	}
+	if got := strings.Join(reasoningDeltas, ""); got != "thinking hard" {
+		t.Fatalf("onReasoning deltas = %q, want 'thinking hard' (encrypted entries contribute nothing)", got)
+	}
+	if resp.ReasoningContent != "thinking hard" {
+		t.Fatalf("accumulated reasoning = %q, want 'thinking hard'", resp.ReasoningContent)
+	}
+}
+
+func TestCompleteParsesOpenRouterReasoningFields(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"","reasoning":"only thought","reasoning_details":[{"type":"reasoning.summary","summary":"summarized"}]},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":3}}`))
+	}))
+	defer srv.Close()
+
+	p := NewOpenAICompatibleProviderWithKey(srv.URL, "key")
+	resp, err := p.Complete(context.Background(), Request{Model: "m"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.ReasoningContent != "only thought" {
+		t.Fatalf("reasoning = %q, want the flat `reasoning` field", resp.ReasoningContent)
+	}
+
+	// details-only shape
+	srv2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"","reasoning_details":[{"type":"reasoning.text","text":"from details"}]},"finish_reason":"stop"}]}`))
+	}))
+	defer srv2.Close()
+	p2 := NewOpenAICompatibleProviderWithKey(srv2.URL, "key")
+	resp2, err := p2.Complete(context.Background(), Request{Model: "m"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp2.ReasoningContent != "from details" {
+		t.Fatalf("reasoning = %q, want the reasoning_details text", resp2.ReasoningContent)
+	}
+}
+
 func TestOpenAICompatibleAuthErrorsIncludeTargetAndRedactBody(t *testing.T) {
 	target := credential.Target{Namespace: "llm", Name: "company-production"}
 	resolver := credential.StaticResolver{
@@ -252,5 +322,75 @@ func TestResilientCompleteStreamDoesNotFallbackForGatewayQuota(t *testing.T) {
 	}
 	if inner.completeCalls != 0 {
 		t.Fatalf("Complete calls = %d, want 0 (quota must not fall back)", inner.completeCalls)
+	}
+}
+
+// emptyStreamProvider completes the SSE exchange cleanly but returns neither
+// text nor tool calls — what OpenRouter's zero-delta streams look like here.
+type emptyStreamProvider struct {
+	completeResp Response
+	streamCalls  int
+}
+
+func (e *emptyStreamProvider) Complete(context.Context, Request) (Response, error) {
+	return e.completeResp, nil
+}
+
+func (e *emptyStreamProvider) CompleteStream(context.Context, Request, func(string), func(string)) (Response, error) {
+	e.streamCalls++
+	return Response{FinishReason: "stop"}, nil // clean [DONE], zero deltas
+}
+
+// A clean-but-empty stream must not surface as ErrEmptyAssistantResponse: it
+// falls back to the non-streamed path, which returns real content.
+func TestResilientEmptyStreamFallsBackToComplete(t *testing.T) {
+	inner := &emptyStreamProvider{completeResp: Response{Content: "rescued"}}
+	p := &ResilientProvider{Inner: inner}
+
+	resp, err := p.CompleteStream(context.Background(), Request{Model: "m"}, func(string) {}, func(string) {})
+	if err != nil {
+		t.Fatalf("empty stream should fall back to Complete, got %v", err)
+	}
+	if resp.Content != "rescued" {
+		t.Fatalf("content = %q, want the fallback answer", resp.Content)
+	}
+	if inner.streamCalls != 1 {
+		t.Fatalf("stream calls = %d, want 1", inner.streamCalls)
+	}
+}
+
+// A transport-successful empty response from Complete is retried like any other
+// transient failure instead of failing the turn.
+func TestResilientRetriesEmptyAssistantResponse(t *testing.T) {
+	inner := &fakeInner{
+		errs: []error{ErrEmptyAssistantResponse},
+		resp: Response{Content: "second attempt worked"},
+	}
+	p := &ResilientProvider{Inner: inner, MaxRetries: 2, sleep: noSleep(), LogWriter: io.Discard}
+
+	resp, err := p.Complete(context.Background(), Request{Model: "m"})
+	if err != nil {
+		t.Fatalf("empty response should be retried, got %v", err)
+	}
+	if resp.Content != "second attempt worked" {
+		t.Fatalf("content = %q", resp.Content)
+	}
+	if inner.calls != 2 {
+		t.Fatalf("calls = %d, want 2 (empty, then success)", inner.calls)
+	}
+}
+
+// When every attempt comes back empty, the caller sees ErrEmptyAssistantResponse
+// (wrapped by the exhausted-retries envelope).
+func TestResilientExhaustsRetriesOnEmptyResponses(t *testing.T) {
+	inner := &fakeInner{errs: []error{ErrEmptyAssistantResponse, ErrEmptyAssistantResponse}}
+	p := &ResilientProvider{Inner: inner, MaxRetries: 1, sleep: noSleep(), LogWriter: io.Discard}
+
+	_, err := p.Complete(context.Background(), Request{Model: "m"})
+	if !errors.Is(err, ErrEmptyAssistantResponse) {
+		t.Fatalf("err = %v, want ErrEmptyAssistantResponse", err)
+	}
+	if inner.calls != 2 {
+		t.Fatalf("calls = %d, want 2", inner.calls)
 	}
 }

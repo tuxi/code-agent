@@ -259,12 +259,18 @@ func (r Response) HasToolCalls() bool {
 	return len(r.ToolCalls) > 0
 }
 
+// isEmptyTurn reports whether the response carries neither text nor tool
+// calls — an invalid no-op turn (see ValidateAssistantTurn).
+func (r Response) isEmptyTurn() bool {
+	return strings.TrimSpace(r.Content) == "" && !r.HasToolCalls()
+}
+
 // ValidateAssistantTurn verifies that this response can safely be persisted as
 // an assistant message. Tool-only responses are valid, but a response with
 // neither text nor tool calls is an invalid no-op and must fail the turn rather
 // than poison the next provider request.
 func (r Response) ValidateAssistantTurn() error {
-	if strings.TrimSpace(r.Content) == "" && !r.HasToolCalls() {
+	if r.isEmptyTurn() {
 		return ErrEmptyAssistantResponse
 	}
 

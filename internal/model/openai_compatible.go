@@ -223,9 +223,14 @@ type streamOptions struct {
 type chatCompletionResponse struct {
 	Choices []struct {
 		Message struct {
-			Content          string     `json:"content"`
-			ReasoningContent string     `json:"reasoning_content"`
-			ToolCalls        []ToolCall `json:"tool_calls"`
+			Content string `json:"content"`
+			// ReasoningContent is the DeepSeek/vLLM-style reasoning channel;
+			// OpenRouter delivers the same data as Reasoning /
+			// ReasoningDetails (see streamChunk.Delta).
+			ReasoningContent string            `json:"reasoning_content"`
+			Reasoning        string            `json:"reasoning"`
+			ReasoningDetails []reasoningDetail `json:"reasoning_details"`
+			ToolCalls        []ToolCall        `json:"tool_calls"`
 		} `json:"message"`
 		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
@@ -249,6 +254,32 @@ type openAIErrorPayload struct {
 	Code    any    `json:"code"`
 }
 
+// reasoningDetail is one entry of OpenRouter's reasoning_details array — its
+// normalized shape for reasoning output across providers (DeepSeek-style
+// providers use the flat reasoning_content string instead). Only the text
+// variants carry displayable reasoning; encrypted/summary-only entries are
+// tolerated but contribute nothing.
+type reasoningDetail struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
+	// Summary backs the "reasoning.summary" type, whose payload field differs
+	// from "reasoning.text".
+	Summary string `json:"summary"`
+}
+
+// reasoningText flattens one reasoning detail to its displayable text, or ""
+// for non-text variants (encrypted blocks, redacted payloads).
+func (d reasoningDetail) reasoningText() string {
+	switch d.Type {
+	case "reasoning.text":
+		return d.Text
+	case "reasoning.summary":
+		return d.Summary
+	default:
+		return ""
+	}
+}
+
 // streamChunk is one SSE delta in an OpenAI-compatible streaming response.
 type streamChunk struct {
 	// Error is emitted by an OpenAI-compatible gateway when the upstream request
@@ -258,8 +289,14 @@ type streamChunk struct {
 	Error   *openAIErrorPayload `json:"error,omitempty"`
 	Choices []struct {
 		Delta struct {
-			Content          string `json:"content"`           // final-answer text delta
-			ReasoningContent string `json:"reasoning_content"` // provider-visible reasoning delta
+			Content string `json:"content"` // final-answer text delta
+			// ReasoningContent is the DeepSeek/vLLM-style reasoning channel.
+			// OpenRouter normalizes the same data into Reasoning (its wire name,
+			// with reasoning_content accepted as an input alias only) and the
+			// structured ReasoningDetails array; all three are accumulated.
+			ReasoningContent string            `json:"reasoning_content"`
+			Reasoning        string            `json:"reasoning"`
+			ReasoningDetails []reasoningDetail `json:"reasoning_details"`
 			ToolCalls        []struct {
 				Index    int    `json:"index"`
 				ID       string `json:"id"`
@@ -443,6 +480,24 @@ func (p *OpenAICompatibleProvider) CompleteStream(ctx context.Context, req Reque
 				onReasoning(ch.Delta.ReasoningContent)
 			}
 		}
+		// OpenRouter-style reasoning channels: the flat `reasoning` string and
+		// the structured `reasoning_details` array carry the same data that
+		// DeepSeek-style providers put in reasoning_content. Without them a
+		// reasoning-heavy turn looks empty to us.
+		if ch.Delta.Reasoning != "" {
+			reasoningContent.WriteString(ch.Delta.Reasoning)
+			if onReasoning != nil {
+				onReasoning(ch.Delta.Reasoning)
+			}
+		}
+		for _, d := range ch.Delta.ReasoningDetails {
+			if text := d.reasoningText(); text != "" {
+				reasoningContent.WriteString(text)
+				if onReasoning != nil {
+					onReasoning(text)
+				}
+			}
+		}
 
 		if ch.Delta.Content != "" {
 			content.WriteString(ch.Delta.Content)
@@ -568,9 +623,23 @@ func (p *OpenAICompatibleProvider) Complete(ctx context.Context, req Request) (R
 	}
 
 	choice := decoded.Choices[0]
+	// OpenRouter-style reasoning channels (see streamChunk.Delta): prefer the
+	// DeepSeek-style flat string, then OpenRouter's flat alias, then its
+	// structured details array.
+	reasoning := choice.Message.ReasoningContent
+	if reasoning == "" {
+		reasoning = choice.Message.Reasoning
+	}
+	if reasoning == "" {
+		var sb strings.Builder
+		for _, d := range choice.Message.ReasoningDetails {
+			sb.WriteString(d.reasoningText())
+		}
+		reasoning = sb.String()
+	}
 	return Response{
 		Content:          strings.TrimSpace(choice.Message.Content),
-		ReasoningContent: strings.TrimSpace(choice.Message.ReasoningContent),
+		ReasoningContent: strings.TrimSpace(reasoning),
 		ToolCalls:        choice.Message.ToolCalls,
 		FinishReason:     choice.FinishReason,
 		Usage: Usage{
