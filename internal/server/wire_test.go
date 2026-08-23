@@ -165,10 +165,19 @@ func cases() map[string]wireCase {
 			SessionID: "sess_root", TurnID: "turn_7", CallID: "call_abc",
 			Chunk: "Warning: deprecated package\n",
 		}},
+		"model_request": {ev: agent.Event{
+			Kind: agent.EventModelRequest, At: fixedAt,
+			SessionID: "sess_root", TurnID: "turn_7", InvocationID: "inv_1",
+			ModelName: "deepseek/deepseek-v4-flash", Provider: "openai_compatible",
+			ToolNames:         []string{"run_command", "read_file", "grep"},
+			MessageCount:      42,
+			SystemPromptChars: 18320, ToolsPromptChars: 9600,
+			Temperature: 0.3, ToolChoice: "auto", Streamed: true,
+		}},
 		"model_finished": {ev: agent.Event{
 			Kind: agent.EventModelFinished, At: fixedAt,
 			SessionID: "sess_root", TurnID: "turn_7",
-			PromptTokens: 4096, CompletionTokens: 128, TotalTokens: 4224,
+			PromptTokens: 4096, CachedPromptTokens: 3584, CompletionTokens: 128, TotalTokens: 4224,
 			BillingUnits: 4480, Elapsed: 731 * time.Millisecond,
 		}},
 		"todo_updated": {ev: agent.Event{

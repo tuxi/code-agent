@@ -1,0 +1,21 @@
+{
+  "event_id": "evt_fixed",
+  "kind": "model_request",
+  "at": "2026-06-24T10:00:00.123Z",
+  "session_id": "sess_root",
+  "turn_id": "turn_7",
+  "invocation_id": "inv_1",
+  "model": "deepseek/deepseek-v4-flash",
+  "provider": "openai_compatible",
+  "tool_names": [
+    "run_command",
+    "read_file",
+    "grep"
+  ],
+  "message_count": 42,
+  "system_prompt_chars": 18320,
+  "tools_prompt_chars": 9600,
+  "temperature": 0.3,
+  "tool_choice": "auto",
+  "streamed": true
+}

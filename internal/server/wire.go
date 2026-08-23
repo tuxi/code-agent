@@ -63,17 +63,27 @@ type wireEvent struct {
 	PlanState string `json:"plan_state,omitempty"`
 
 	// Model / thinking.
-	Text               string `json:"text,omitempty"`
-	PromptTokens       int    `json:"prompt_tokens,omitempty"`
-	CompletionTokens   int    `json:"completion_tokens,omitempty"`
-	TotalTokens        int    `json:"total_tokens,omitempty"`
-	BillingUnits       int64  `json:"billing_units,omitempty"`
-	ModelBillingUnits  int64  `json:"model_billing_units,omitempty"`
-	ToolBillingUnits   int64  `json:"tool_billing_units,omitempty"`
-	ExecutedToolCalls  int    `json:"executed_tool_calls,omitempty"`
-	SucceededToolCalls int    `json:"succeeded_tool_calls,omitempty"`
-	BillableToolCalls  int    `json:"billable_tool_calls,omitempty"`
-	ElapsedMS          int64  `json:"elapsed_ms,omitempty"`
+	Text               string   `json:"text,omitempty"`
+	ModelName          string   `json:"model,omitempty"`
+	Provider           string   `json:"provider,omitempty"`
+	ToolNames          []string `json:"tool_names,omitempty"`
+	MessageCount       int      `json:"message_count,omitempty"`
+	SystemPromptChars  int      `json:"system_prompt_chars,omitempty"`
+	ToolsPromptChars   int      `json:"tools_prompt_chars,omitempty"`
+	Temperature        float64  `json:"temperature,omitempty"`
+	ToolChoice         string   `json:"tool_choice,omitempty"`
+	Streamed           bool     `json:"streamed,omitempty"`
+	CachedPromptTokens int      `json:"cached_prompt_tokens,omitempty"`
+	PromptTokens       int      `json:"prompt_tokens,omitempty"`
+	CompletionTokens   int      `json:"completion_tokens,omitempty"`
+	TotalTokens        int      `json:"total_tokens,omitempty"`
+	BillingUnits       int64    `json:"billing_units,omitempty"`
+	ModelBillingUnits  int64    `json:"model_billing_units,omitempty"`
+	ToolBillingUnits   int64    `json:"tool_billing_units,omitempty"`
+	ExecutedToolCalls  int      `json:"executed_tool_calls,omitempty"`
+	SucceededToolCalls int      `json:"succeeded_tool_calls,omitempty"`
+	BillableToolCalls  int      `json:"billable_tool_calls,omitempty"`
+	ElapsedMS          int64    `json:"elapsed_ms,omitempty"`
 
 	// Compaction.
 	BeforeTokens int     `json:"before_tokens,omitempty"`
@@ -137,6 +147,16 @@ func toWire(e agent.Event) wireEvent {
 		Workflow:           e.Workflow,
 		Todos:              e.Todos,
 		Text:               e.Text,
+		ModelName:          e.ModelName,
+		Provider:           e.Provider,
+		ToolNames:          e.ToolNames,
+		MessageCount:       e.MessageCount,
+		SystemPromptChars:  e.SystemPromptChars,
+		ToolsPromptChars:   e.ToolsPromptChars,
+		Temperature:        e.Temperature,
+		ToolChoice:         e.ToolChoice,
+		Streamed:           e.Streamed,
+		CachedPromptTokens: e.CachedPromptTokens,
 		PromptTokens:       e.PromptTokens,
 		CompletionTokens:   e.CompletionTokens,
 		TotalTokens:        e.TotalTokens,

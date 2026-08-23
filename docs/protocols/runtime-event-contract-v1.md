@@ -236,6 +236,44 @@ About to call the LLM. Timing anchor.
 }
 ```
 
+#### `model_request` (since v1.4)
+
+The request envelope for one model invocation — WHAT was asked of the model, not
+just that a call happened. Emitted immediately after `model_started`, sharing its
+`invocation_id`, so a trajectory view can group "what was sent → what came back →
+token cost" into one card. Persisted with `seq`; recoverable on replay/reconnect.
+Context shape is summarized as counts/chars only — the full message text lives in
+the session store, never duplicated here.
+
+```json
+{
+  "kind": "model_request",
+  "invocation_id": "inv_...",
+  "model": "deepseek/deepseek-v4-flash",
+  "provider": "openai_compatible",
+  "tool_names": ["run_command", "read_file", "grep"],
+  "message_count": 42,
+  "system_prompt_chars": 18320,
+  "tools_prompt_chars": 9600,
+  "temperature": 0.3,
+  "tool_choice": "auto",
+  "streamed": true
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `invocation_id` | string | Same id as the paired `model_finished` (and any `thinking` snapshot) |
+| `model` | string | Model id requested |
+| `provider` | string | Provider adapter class (`openai_compatible`, `responses`, …); unknown providers degrade to a generic name |
+| `tool_names` | string[] | Tools advertised on this request, in advertisement order; absent when none |
+| `message_count` | int | Messages in the request context |
+| `system_prompt_chars` | int | Rendered system prompt length in characters |
+| `tools_prompt_chars` | int | Total tool-schema size (descriptions + parameters) in characters |
+| `temperature` | float | Sampling temperature; omitted when zero |
+| `tool_choice` | string | `"auto"` / `"none"` / `"required"`; omitted when unset |
+| `streamed` | bool | True when the response was streamed |
+
 #### `model_finished` (since v1.0)
 
 LLM returned.
@@ -244,6 +282,7 @@ LLM returned.
 {
   "kind": "model_finished",
   "prompt_tokens": 2500,
+  "cached_prompt_tokens": 2100,
   "elapsed_ms": 3200,
   "err": null
 }
@@ -252,6 +291,7 @@ LLM returned.
 | Field | Type | Description |
 |-------|------|-------------|
 | `prompt_tokens` | int | Prompt token count |
+| `cached_prompt_tokens` | int | Portion of `prompt_tokens` served from the provider's prompt cache (since v1.4). A breakdown of `prompt_tokens`, NOT additional tokens; omitted when the provider reports nothing |
 | `elapsed_ms` | int | Model call duration in milliseconds |
 | `err` | string | null or error message |
 
@@ -871,6 +911,7 @@ Job 子流（`GET /v1/jobs/{id}/stream`）使用**相同的事件信封**（§4�
 | `turn_resumed` | v1.2 | Turn lifecycle | ✅ | ✅ |
 | `turn_failed` | v1.2 | Turn lifecycle | ✅ | ✅ |
 | `model_started` | v1.0 | Model | ✅ | ✅ |
+| `model_request` | v1.4 | Model | ✅ | ✅ |
 | `model_finished` | v1.0 | Model | ✅ | ✅ |
 | `token_delta` | v1.0 | Model | ❌* | ❌ |
 | `reasoning_delta` | v1.2 | Model | ❌* | ❌ |

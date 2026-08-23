@@ -1187,12 +1187,13 @@ func (r *Runner) drive(ctx context.Context, sess *session.Session) (TurnResult, 
 		// turn_failed, the authoritative terminal event. Putting Err on both
 		// events creates two persisted, user-visible copies of one failure.
 		r.emit(Event{
-			Kind:             EventModelFinished,
-			PromptTokens:     resp.Usage.PromptTokens,
-			CompletionTokens: resp.Usage.CompletionTokens,
-			TotalTokens:      resp.Usage.TotalTokens,
-			BillingUnits:     resp.Usage.BillingUnits,
-			Elapsed:          time.Since(modelStart),
+			Kind:               EventModelFinished,
+			PromptTokens:       resp.Usage.PromptTokens,
+			CompletionTokens:   resp.Usage.CompletionTokens,
+			TotalTokens:        resp.Usage.TotalTokens,
+			CachedPromptTokens: resp.Usage.CachedPromptTokens,
+			BillingUnits:       resp.Usage.BillingUnits,
+			Elapsed:            time.Since(modelStart),
 		})
 		turn.ModelBillingUnits += resp.Usage.BillingUnits
 		turn.BillingUnits += resp.Usage.BillingUnits
@@ -1603,7 +1604,7 @@ func (r *Runner) finalAnswerAfterLimit(ctx context.Context, sess *session.Sessio
 	if resp.ReasoningContent != "" && !errors.Is(err, context.Canceled) {
 		r.emit(Event{Kind: EventThinking, Text: resp.ReasoningContent})
 	}
-	r.emit(Event{Kind: EventModelFinished, PromptTokens: resp.Usage.PromptTokens, CompletionTokens: resp.Usage.CompletionTokens, TotalTokens: resp.Usage.TotalTokens, BillingUnits: resp.Usage.BillingUnits, Elapsed: time.Since(start), Err: errString(err)})
+	r.emit(Event{Kind: EventModelFinished, PromptTokens: resp.Usage.PromptTokens, CompletionTokens: resp.Usage.CompletionTokens, TotalTokens: resp.Usage.TotalTokens, CachedPromptTokens: resp.Usage.CachedPromptTokens, BillingUnits: resp.Usage.BillingUnits, Elapsed: time.Since(start), Err: errString(err)})
 	tok := resp.Usage.PromptTokens + resp.Usage.CompletionTokens
 	// A leaked tool-call markup (deepseek, when forced to answer with no tools) is
 	// not an answer — don't show the user noise or persist it; fall back cleanly.
@@ -1752,6 +1753,38 @@ func (r *Runner) complete(ctx context.Context, req model.Request, streamedText, 
 	req.TurnID = r.emitTurnID
 	req.RequestID = r.emitRequestID
 	req.ExecutionID = r.emitInvocationID
+
+	// Request-envelope event (trajectory transparency): the facts a replay needs
+	// to reconstruct WHAT was asked of the model this invocation. Emitted after
+	// the transforms above so it reflects the actual request. Context shape is
+	// summarized as counts/chars, never the full text — the session store already
+	// holds the messages and the system prompt.
+	toolNames := make([]string, len(req.Tools))
+	toolsChars := 0
+	for i, t := range req.Tools {
+		toolNames[i] = t.Function.Name
+		toolsChars += len(t.Function.Description) + len(t.Function.Parameters)
+	}
+	systemChars := 0
+	if len(req.Messages) > 0 && req.Messages[0].Role == model.RoleSystem {
+		systemChars = len(req.Messages[0].Content)
+	}
+	streamed := false
+	if _, ok := r.Model.(model.StreamingProvider); ok && r.Stream {
+		streamed = true
+	}
+	r.emit(Event{
+		Kind:              EventModelRequest,
+		ModelName:         req.Model,
+		Provider:          providerName(r.Model),
+		ToolNames:         toolNames,
+		MessageCount:      len(req.Messages),
+		SystemPromptChars: systemChars,
+		ToolsPromptChars:  toolsChars,
+		Temperature:       req.Temperature,
+		ToolChoice:        req.ToolChoice,
+		Streamed:          streamed,
+	})
 	if r.Stream {
 		if sp, ok := r.Model.(model.StreamingProvider); ok {
 			resp, err := sp.CompleteStream(ctx, req, func(delta string) {
@@ -1776,6 +1809,23 @@ func (r *Runner) complete(ctx context.Context, req model.Request, streamedText, 
 		r.recordCacheSample(resp.Usage.PromptTokens, resp.Usage.CachedPromptTokens)
 	}
 	return resp, err
+}
+
+// providerName returns a best-effort display name for the provider behind a
+// model call, for the model_request envelope event. It reads only the concrete
+// types the runtime constructs — never a tool or model name — so the loop stays
+// provider-agnostic (an unknown provider degrades to "provider").
+func providerName(p model.Provider) string {
+	switch p.(type) {
+	case *model.OpenAICompatibleProvider:
+		return "openai_compatible"
+	case *model.ResilientProvider:
+		return "resilient"
+	case *model.ResponsesProvider:
+		return "responses"
+	default:
+		return "provider"
+	}
 }
 
 // workflowPlanApproval returns a PlanApproval callback wired to the Runner's

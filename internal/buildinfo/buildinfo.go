@@ -5,7 +5,7 @@ package buildinfo
 const (
 	Product           = "codeagent"
 	AgentWireMajor    = 1
-	AgentWireRevision = "1.2"
+	AgentWireRevision = "1.4"
 )
 
 // Version is replaced at build time with:

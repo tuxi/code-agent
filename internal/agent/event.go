@@ -21,6 +21,7 @@ const (
 	EventTurnQueued     EventKind = "turn_queued"
 	EventTurnStarted    EventKind = "turn_started"
 	EventModelStarted   EventKind = "model_started"   // about to call the model
+	EventModelRequest   EventKind = "model_request"   // the request envelope: model, advertised tools, context shape
 	EventModelFinished  EventKind = "model_finished"  // model returned (carries latency)
 	EventTokenDelta     EventKind = "token_delta"     // streamed final-answer text; ephemeral, not persisted
 	EventReasoningDelta EventKind = "reasoning_delta" // streamed provider-visible reasoning; ephemeral, not persisted
@@ -198,6 +199,7 @@ type Event struct {
 	PromptTokens       int           // ModelFinished: current invocation context size
 	CompletionTokens   int           // ModelFinished: current invocation output
 	TotalTokens        int           // ModelFinished: current invocation provider total
+	CachedPromptTokens int           // ModelFinished: prompt tokens served from the provider cache (a breakdown of PromptTokens; 0 when unreported)
 	BillingUnits       int64         // ModelFinished: invocation Units; TurnFinished/Failed: total turn Units
 	ModelBillingUnits  int64         // TurnFinished/Failed: cumulative model Gateway Usage Units
 	ToolBillingUnits   int64         // TurnFinished/Failed: cumulative managed-tool Usage Units
@@ -237,6 +239,21 @@ type Event struct {
 	// will distinguish WebSocket-loss cancellation when that behaviour
 	// is implemented.
 	CancelledReason string
+
+	// ModelRequest carries the request envelope on EventModelRequest — the
+	// facts a trajectory view needs to show WHAT was asked of the model, not
+	// just that a call happened. ToolNames lists the advertised tools in
+	// advertisement order; MessageCount/SystemPromptChars/ToolsPromptChars
+	// describe the context shape without duplicating its (large) content.
+	ModelName         string
+	Provider          string
+	ToolNames         []string
+	MessageCount      int
+	SystemPromptChars int
+	ToolsPromptChars  int
+	Streamed          bool
+	Temperature       float64
+	ToolChoice        string
 }
 
 // Emitter receives loop events. Implementations render (REPL), stream (live UI),
