@@ -93,7 +93,8 @@ func (r *recordingSubmitter) Submit(ctx context.Context, sessionID, prompt, mode
 	if r.onSubmit != nil {
 		r.onSubmit(perm)
 	}
-	return "turn-1", nil
+	// Mirror the real adapter: return the conversation id, not a turn id.
+	return sessionID, nil
 }
 
 type recordingCreator struct{}

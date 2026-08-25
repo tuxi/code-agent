@@ -229,6 +229,72 @@ func TestSchedulerCancelOnceCompletes(t *testing.T) {
 	}
 }
 
+// TestSchedulerReusePersistsSession verifies a reuse-mode recurring automation
+// creates a conversation on the first firing, persists it as session_id, and
+// later firings reuse it (no conversation pile-up).
+func TestSchedulerReusePersistsSession(t *testing.T) {
+	s := newTestStore(t)
+	a := Automation{
+		Name:         "btc-poll",
+		Prompt:       "query btc",
+		Status:       StatusActive,
+		ScheduleType: ScheduleRecurring,
+		RRule:        "FREQ=MINUTELY;INTERVAL=5",
+		Timezone:     "UTC",
+		ModeExec:     ModeReuse,
+	}
+	created, _ := s.Create(context.Background(), a)
+	disp := &fakeDispatcher{}
+	sched := NewScheduler(s, disp, time.Hour)
+
+	// First firing: creates a conversation, scheduler persists session_id.
+	_ = s.UpdateNextRunAt(context.Background(), created.ID, time.Now().Add(-time.Second))
+	sched.tick(context.Background())
+	got, _ := s.Get(context.Background(), created.ID)
+	if got.SessionID == "" {
+		t.Fatal("reuse mode should persist the first firing's session_id")
+	}
+
+	// Second firing: dispatcher receives the persisted session_id.
+	_ = s.UpdateNextRunAt(context.Background(), created.ID, time.Now().Add(-time.Second))
+	sched.tick(context.Background())
+	if len(disp.fired) != 2 {
+		t.Fatalf("expected 2 firings, got %d", len(disp.fired))
+	}
+	// The dispatcher was given the persisted session on the second firing.
+	if disp.fired[1].SessionID != got.SessionID {
+		t.Fatalf("second firing session_id = %q, want %q (reused)", disp.fired[1].SessionID, got.SessionID)
+	}
+}
+
+// TestDispatcherReuseFirstFiring verifies the dispatcher creates a conversation
+// on the first reuse firing and reuses the persisted id on later ones.
+func TestDispatcherReuseFirstFiring(t *testing.T) {
+	creator := &trackingCreator{}
+	sub := &recordingSubmitter{}
+	d := NewTurnDispatcher(sub, creator)
+
+	// First firing: no session_id yet → create.
+	a := Automation{ID: "auto-1", Prompt: "p", ModeExec: ModeReuse}
+	sid, err := d.Dispatch(context.Background(), a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sid != "sess-1" {
+		t.Fatalf("first firing sid = %q, want sess-1", sid)
+	}
+
+	// Second firing: session_id persisted → reuse, no new conversation.
+	a2 := Automation{ID: "auto-1", Prompt: "p", ModeExec: ModeReuse, SessionID: "sess-1"}
+	sid2, err := d.Dispatch(context.Background(), a2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sid2 != "sess-1" {
+		t.Fatalf("second firing sid = %q, want sess-1 (reused)", sid2)
+	}
+}
+
 // TestDispatcherKeepsConversationOnFailure verifies a standalone firing whose
 // submit fails KEEPS the just-created conversation (so the user can open it and
 // see the failure), rather than rolling it back. The retry cap bounds how many

@@ -40,7 +40,7 @@ func (*AutomationTool) InputSchema() json.RawMessage {
 			"rrule": {"type": "string", "description": "recurring rule, e.g. FREQ=DAILY;BYHOUR=16;BYMINUTE=0"},
 			"scheduled_at": {"type": "string", "description": "once: ISO8601 firing time"},
 			"timezone": {"type": "string", "description": "IANA timezone, e.g. America/Los_Angeles"},
-			"mode_exec": {"type": "string", "enum": ["standalone", "chat"], "description": "standalone=new conversation each firing; chat=return to session_id"},
+			"mode_exec": {"type": "string", "enum": ["standalone", "chat", "reuse"], "description": "standalone=new conversation each firing; chat=return to session_id; reuse=reuse the first firing's conversation (default for recurring)"},
 			"session_id": {"type": "string", "description": "chat mode: the session to return to"},
 			"cwds": {"type": "array", "items": {"type": "string"}, "description": "optional target workspaces"},
 			"model_id": {"type": "string"},
@@ -169,8 +169,16 @@ func buildAutomation(in automationInput, ec tools.ExecutionContext) (automation.
 	mode := automation.ModeStandalone
 	if in.ModeExec == "chat" {
 		mode = automation.ModeChat
+	} else if in.ModeExec == "reuse" {
+		mode = automation.ModeReuse
 	} else if in.ModeExec != "" && in.ModeExec != "standalone" {
-		return automation.Automation{}, fmt.Errorf("automation: mode_exec must be standalone or chat")
+		return automation.Automation{}, fmt.Errorf("automation: mode_exec must be standalone, chat, or reuse")
+	}
+	// Default: a recurring task reuses one conversation (no pile-up of one
+	// conversation per firing, and LLM context caching applies); a once task is
+	// standalone. The user can override in the client.
+	if in.ModeExec == "" && st == automation.ScheduleRecurring {
+		mode = automation.ModeReuse
 	}
 	if mode == automation.ModeChat && in.SessionID == "" {
 		return automation.Automation{}, fmt.Errorf("automation: chat mode requires session_id")

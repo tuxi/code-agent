@@ -73,6 +73,32 @@ func (d *TurnDispatcher) Dispatch(ctx context.Context, a Automation) (string, er
 			return "", fmt.Errorf("automation %q: chat mode requires session_id", a.ID)
 		}
 		return d.Submitter.Submit(ctx, a.SessionID, a.Prompt, a.ModelID, perm)
+	case ModeReuse:
+		// Reuse the first firing's conversation: once a session_id is persisted,
+		// every later firing returns to it (context caching, no conversation pile-up).
+		if strings.TrimSpace(a.SessionID) != "" {
+			return d.Submitter.Submit(ctx, a.SessionID, a.Prompt, a.ModelID, perm)
+		}
+		// First firing: create the conversation (same workspace resolution as
+		// standalone) and submit there. The scheduler persists the returned id as
+		// the automation's session_id so later firings reuse it.
+		ws := ""
+		if len(a.CWDs) > 0 {
+			ws = a.CWDs[0]
+		} else if a.CreatedFromWorkspace != "" {
+			ws = a.CreatedFromWorkspace
+		}
+		if d.Creator == nil {
+			return "", fmt.Errorf("automation %q: reuse mode requires a conversation creator", a.ID)
+		}
+		sid, err := d.Creator.CreateConversation(ctx, ws)
+		if err != nil {
+			return "", fmt.Errorf("automation %q: create reuse conversation: %w", a.ID, err)
+		}
+		if _, err := d.Submitter.Submit(ctx, sid, a.Prompt, a.ModelID, perm); err != nil {
+			return "", fmt.Errorf("automation %q: submit reuse turn: %w", a.ID, err)
+		}
+		return sid, nil
 	case ModeStandalone:
 		ws := ""
 		if len(a.CWDs) > 0 {

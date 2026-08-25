@@ -24,13 +24,16 @@ const (
 	ScheduleRecurring ScheduleType = "recurring"
 )
 
-// Run mode: whether each firing starts a new conversation (standalone) or
-// returns to a fixed session to keep its context (chat).
+// Run mode: whether each firing starts a new conversation (standalone), returns
+// to a fixed session (chat), or reuses the first firing's conversation (reuse —
+// the default for recurring tasks, so a periodic task does not pile up one
+// conversation per firing and can benefit from LLM context caching).
 type RunMode string
 
 const (
 	ModeStandalone RunMode = "standalone"
 	ModeChat       RunMode = "chat"
+	ModeReuse      RunMode = "reuse"
 )
 
 // Status of an automation definition.

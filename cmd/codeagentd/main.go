@@ -440,7 +440,7 @@ func (a *daemonAutomationAdapter) Submit(ctx context.Context, sessionID, prompt,
 	case len(perm.Connectors) > 0:
 		a.exec.SetApprover(sessionID, connectorApprover{connectors: perm.Connectors})
 	}
-	res, err := a.exec.Execute(ctx, sessionID, prompt, model)
+	_, err := a.exec.Execute(ctx, sessionID, prompt, model)
 	// Clear the injected approver so it does not leak into later turns of the
 	// same session (chat mode).
 	a.exec.SetApprover(sessionID, nil)
@@ -451,7 +451,10 @@ func (a *daemonAutomationAdapter) Submit(ctx context.Context, sessionID, prompt,
 		a.recordFailure(ctx, sessionID, prompt, err)
 		return "", err
 	}
-	return res.TurnID, nil
+	// Return the conversation id (not the turn id): the scheduler records it as
+	// the run's session and, in reuse mode, persists it as the automation's
+	// session_id so later firings return to the same conversation.
+	return sessionID, nil
 }
 
 // recordFailure appends the automation prompt and the failure reason to the

@@ -205,6 +205,12 @@ func (s *Scheduler) fire(ctx context.Context, a Automation) {
 		RunningTurnID: turnID,
 	})
 
+	// Reuse mode: persist the first firing's conversation id so later firings
+	// return to the same conversation instead of creating a new one each time.
+	if a.ModeExec == ModeReuse && a.SessionID == "" && turnID != "" {
+		_, _ = s.store.Update(ctx, a.ID, AutomationPatch{SessionID: &turnID})
+	}
+
 	// Advance next_run_at for recurring automations; for once automations the
 	// firing is terminal: next_run_at is zeroed (stops rescheduling) and the
 	// status becomes COMPLETED so the control panel shows "finished" instead of

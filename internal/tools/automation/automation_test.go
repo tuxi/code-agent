@@ -92,6 +92,11 @@ func TestAutomationCreate(t *testing.T) {
 	if len(created.CWDs) != 1 || created.CWDs[0] != "/ws" {
 		t.Fatalf("cwds = %v, want [/ws] (defaulted from creating workspace)", created.CWDs)
 	}
+	// A recurring task defaults to reuse mode (one conversation, not one per
+	// firing), so it does not pile up conversations and can use context caching.
+	if created.ModeExec != "reuse" {
+		t.Fatalf("mode_exec = %q, want reuse (default for recurring)", created.ModeExec)
+	}
 }
 
 func TestAutomationCreateValidation(t *testing.T) {
