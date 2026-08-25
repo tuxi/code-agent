@@ -162,10 +162,11 @@ func TestSchedulerFailureOnceCompletes(t *testing.T) {
 	}
 }
 
-// TestDispatcherRollsBackOrphanConversation verifies a standalone firing whose
-// submit fails rolls back the just-created conversation (Problem 3: no leaked
-// orphan session per retry).
-func TestDispatcherRollsBackOrphanConversation(t *testing.T) {
+// TestDispatcherKeepsConversationOnFailure verifies a standalone firing whose
+// submit fails KEEPS the just-created conversation (so the user can open it and
+// see the failure), rather than rolling it back. The retry cap bounds how many
+// such conversations a failing automation can create.
+func TestDispatcherKeepsConversationOnFailure(t *testing.T) {
 	deleted := ""
 	creator := &trackingCreator{onDelete: func(id string) { deleted = id }}
 	sub := &failingSubmitter{}
@@ -179,8 +180,8 @@ func TestDispatcherRollsBackOrphanConversation(t *testing.T) {
 	if _, err := d.Dispatch(context.Background(), a); err == nil {
 		t.Fatal("expected dispatch error")
 	}
-	if deleted != "sess-1" {
-		t.Fatalf("orphan conversation not rolled back; deleted = %q", deleted)
+	if deleted != "" {
+		t.Fatalf("conversation should be kept on failure, but was deleted: %q", deleted)
 	}
 }
 

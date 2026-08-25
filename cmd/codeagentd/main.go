@@ -445,9 +445,28 @@ func (a *daemonAutomationAdapter) Submit(ctx context.Context, sessionID, prompt,
 	// same session (chat mode).
 	a.exec.SetApprover(sessionID, nil)
 	if err != nil {
+		// Record the failure into the session so the user can open the standalone
+		// conversation and see why the automation failed (the conversation is kept,
+		// not rolled back — see dispatcher).
+		a.recordFailure(ctx, sessionID, prompt, err)
 		return "", err
 	}
 	return res.TurnID, nil
+}
+
+// recordFailure appends the automation prompt and the failure reason to the
+// session, so a failed standalone firing leaves a visible, debuggable
+// conversation instead of an empty one.
+func (a *daemonAutomationAdapter) recordFailure(ctx context.Context, sessionID, prompt string, err error) {
+	sess, loadErr := a.repo.Load(ctx, sessionID)
+	if loadErr != nil {
+		return
+	}
+	sess.Messages = append(sess.Messages,
+		model.Message{Role: model.RoleUser, Content: prompt},
+		model.Message{Role: model.RoleAssistant, Content: "⚠️ 自动化任务执行失败：" + err.Error()},
+	)
+	_ = a.repo.Save(ctx, sess)
 }
 
 func (a *daemonAutomationAdapter) CreateConversation(ctx context.Context, workspacePath string) (string, error) {

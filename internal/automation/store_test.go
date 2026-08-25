@@ -143,4 +143,9 @@ func TestStoreRuns(t *testing.T) {
 	if len(runs) != 1 || runs[0].SessionID != "sess-1" {
 		t.Fatalf("unexpected runs: %+v", runs)
 	}
+	// RecordRun must increment the automation's run_count.
+	got, _ := s.Get(context.Background(), a.ID)
+	if got.RunCount != 1 {
+		t.Fatalf("run_count = %d, want 1 after one run", got.RunCount)
+	}
 }

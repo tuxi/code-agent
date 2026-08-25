@@ -149,6 +149,7 @@ func (s *Scheduler) fire(ctx context.Context, a Automation) {
 			LastStatus: strPtr(RunFailed),
 			Status:     &status,
 			RetryCount: &retries,
+			LastRunAt:  timePtr(now),
 		})
 		_ = s.store.UpdateNextRunAt(ctx, a.ID, next)
 		return

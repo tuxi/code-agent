@@ -89,9 +89,10 @@ func (d *TurnDispatcher) Dispatch(ctx context.Context, a Automation) (string, er
 		}
 		if _, err := d.Submitter.Submit(ctx, sid, a.Prompt, a.ModelID, perm); err != nil {
 			// The conversation was created but the turn could not be submitted
-			// (e.g. the model ran out of quota). Roll it back so a failed firing
-			// does not leak an empty orphan conversation.
-			_ = d.Creator.DeleteConversation(ctx, sid)
+			// (e.g. the model ran out of quota). Keep the conversation so the user
+			// can open it and see the failure (the submitter records the error into
+			// the session); the retry cap (MaxRetries) bounds how many such
+			// conversations a failing automation can create.
 			return "", fmt.Errorf("automation %q: submit standalone turn: %w", a.ID, err)
 		}
 		return sid, nil

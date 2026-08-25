@@ -414,7 +414,7 @@ func (s *sqlStore) UpdateNextRunAt(ctx context.Context, id string, next time.Tim
 	return err
 }
 
-// RecordRun inserts one run record.
+// RecordRun inserts one run record and increments the automation's run_count.
 func (s *sqlStore) RecordRun(ctx context.Context, r Run) error {
 	if r.ID == "" {
 		r.ID = newID()
@@ -422,15 +422,22 @@ func (s *sqlStore) RecordRun(ctx context.Context, r Run) error {
 	if r.CreatedAt.IsZero() {
 		r.CreatedAt = time.Now().UTC()
 	}
-	_, err := s.db.ExecContext(ctx, `
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO automation_runs (id, automation_id, session_id, status, read_at, thread_title, source_cwd, result_success, result_summary, created_at)
 		VALUES (?,?,?,?,?,?,?,?,?,?)`,
 		r.ID, r.AutomationID, r.SessionID, r.Status, epochMS(r.ReadAt), r.ThreadTitle, r.SourceCWD,
-		boolToInt(r.ResultSuccess), r.ResultSummary, epochMS(r.CreatedAt))
-	if err != nil {
+		boolToInt(r.ResultSuccess), r.ResultSummary, epochMS(r.CreatedAt)); err != nil {
 		return fmt.Errorf("record run: %w", err)
 	}
-	return nil
+	if _, err := tx.ExecContext(ctx, `UPDATE automations SET run_count = run_count + 1 WHERE id=?`, r.AutomationID); err != nil {
+		return fmt.Errorf("record run: increment run_count: %w", err)
+	}
+	return tx.Commit()
 }
 
 // ListRuns returns runs for an automation, newest first.
