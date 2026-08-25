@@ -87,6 +87,11 @@ func TestAutomationCreate(t *testing.T) {
 	if created.PermissionMode != "full_access" {
 		t.Fatalf("permission_mode = %q, want full_access (default)", created.PermissionMode)
 	}
+	// cwds defaults to the creating session's workspace so the client can show
+	// where the task runs.
+	if len(created.CWDs) != 1 || created.CWDs[0] != "/ws" {
+		t.Fatalf("cwds = %v, want [/ws] (defaulted from creating workspace)", created.CWDs)
+	}
 }
 
 func TestAutomationCreateValidation(t *testing.T) {
@@ -155,10 +160,11 @@ func TestAutomationListViewUpdateDelete(t *testing.T) {
 
 func TestAutomationCreateUsesSessionModel(t *testing.T) {
 	store := newFakeStore()
-	// ec.Model carries the parent turn's resolved model name; when the user does
-	// not pass model_id, it must be used (Problem 1: don't fall to a settings
-	// default whose provider may be out of quota).
-	ec := tools.ExecutionContext{AutomationStore: store, WorkspaceRoot: "/ws", Model: "deepseek-v4-flash"}
+	// ec.Model carries the parent turn's wire model (may include a provider
+	// prefix); when the user does not pass model_id, it must be used verbatim so
+	// the firing resolves back to the same provider (Problem: a bare id like
+	// "deepseek-v4-flash" falls back to the default provider and can 402).
+	ec := tools.ExecutionContext{AutomationStore: store, WorkspaceRoot: "/ws", Model: "opencode-go/deepseek-v4-flash"}
 	tool := &AutomationTool{}
 	res, err := execTool(t, tool, ec, `{"mode":"create","name":"daily","prompt":"p","schedule_type":"recurring","rrule":"FREQ=DAILY","timezone":"UTC"}`)
 	if err != nil {
@@ -168,8 +174,8 @@ func TestAutomationCreateUsesSessionModel(t *testing.T) {
 	if err := json.Unmarshal(res.Output, &created); err != nil {
 		t.Fatal(err)
 	}
-	if created.ModelID != "deepseek-v4-flash" {
-		t.Fatalf("model_id = %q, want deepseek-v4-flash (from ec.Model)", created.ModelID)
+	if created.ModelID != "opencode-go/deepseek-v4-flash" {
+		t.Fatalf("model_id = %q, want opencode-go/deepseek-v4-flash (from ec.Model)", created.ModelID)
 	}
 }
 

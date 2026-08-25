@@ -417,6 +417,13 @@ func (b *ServeRunBuilder) Build(ctx conversation.RuntimeContext) conversation.Tu
 	runner.RequestID = ctx.RequestID
 	runner.SessionControl = control
 	runner.AutomationStore = b.automationStore
+	// Preserve the full wire model (may carry a provider prefix) so tools can
+	// persist a model reference that resolves back to the same provider. Fall
+	// back to the resolved bare id when the turn used the server default.
+	runner.WireModel = ctx.Model
+	if runner.WireModel == "" {
+		runner.WireModel = mc.Model
+	}
 	if workspacePath != "" {
 		runner.WorkspaceRoot = workspacePath
 	}

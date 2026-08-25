@@ -142,6 +142,14 @@ type Runner struct {
 	// the automation tools degrade with a clear error (CLI/TUI without a daemon).
 	AutomationStore tools.AutomationStore
 
+	// WireModel is the client-supplied model identifier for the current turn
+	// (e.g. "opencode-go/deepseek-v4-flash"), which may carry a provider prefix.
+	// ModelName is the resolved bare model id used for provider calls; WireModel
+	// preserves the full identifier so tools (e.g. automation) can persist a model
+	// reference that resolves back to the same provider. Empty when the turn used
+	// the server default.
+	WireModel string
+
 	// PlanState tracks the planning workflow phase. Exported so the TUI and REPL
 	// can toggle plan mode manually (Ctrl+P, /plan).
 	PlanState PlanStatus
@@ -1321,6 +1329,13 @@ func (r *Runner) drive(ctx context.Context, sess *session.Session) (TurnResult, 
 		sess.Messages = append(sess.Messages, resp.AssistantMessage())
 		sess.UpdatedAt = time.Now()
 
+		// The model may have said something before calling tools. Publish it as a
+		// persisted assistant_text event so clients render the intermediate
+		// narration between tool calls, not just the final answer.
+		if assistantText != "" {
+			r.emit(Event{Kind: EventAssistantText, Text: assistantText})
+		}
+
 		// Execute the tool-call batch. Independent read-only calls run
 		// concurrently (P8.8, bounded by MaxParallelTools); side-effecting calls
 		// are serialized barriers; results commit in model order. With
@@ -1865,6 +1880,13 @@ func (r *Runner) executeTool(ctx context.Context, tool tools.Tool, callID string
 	// (emitted after Execute returns) carry the correct correlation IDs.
 	turnID := r.emitTurnID
 	sessionID := r.emitSessionID
+	// Prefer the full wire model (may carry a provider prefix) so tools like
+	// automation persist a model reference that resolves back to the same
+	// provider; fall back to the resolved bare model id.
+	model := r.WireModel
+	if model == "" {
+		model = r.ModelName
+	}
 	ec := tools.ExecutionContext{
 		WorkspaceRoot:      r.WorkspaceRoot,
 		SessionID:          sessionID,
@@ -1874,7 +1896,7 @@ func (r *Runner) executeTool(ctx context.Context, tool tools.Tool, callID string
 		RequestID:          r.RequestID,
 		PlanMode:           r.PlanState == PlanStatusPlanning || r.PlanState == PlanStatusProposing,
 		PathAccessApprover: r.PathAccessApprover,
-		Model:              r.ModelName,
+		Model:              model,
 		SessionIndex:       r.SessionIndex,
 		SessionControl:     r.SessionControl,
 		AutomationStore:    r.AutomationStore,

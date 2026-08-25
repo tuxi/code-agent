@@ -206,6 +206,13 @@ func buildAutomation(in automationInput, ec tools.ExecutionContext) (automation.
 	if modelID == "" {
 		modelID = ec.Model
 	}
+	// If the user did not specify target workspaces, default to the creating
+	// session's workspace so the client can always show where the task runs
+	// (cwds is the display field; createdFromWorkspace is the fallback source).
+	cwds := in.CWDs
+	if len(cwds) == 0 && ec.WorkspaceRoot != "" {
+		cwds = []string{ec.WorkspaceRoot}
+	}
 	return automation.Automation{
 		Name:                 in.Name,
 		Prompt:               in.Prompt,
@@ -216,7 +223,7 @@ func buildAutomation(in automationInput, ec tools.ExecutionContext) (automation.
 		Timezone:             in.Timezone,
 		ModeExec:             mode,
 		SessionID:            in.SessionID,
-		CWDs:                 in.CWDs,
+		CWDs:                 cwds,
 		ModelID:              modelID,
 		Skills:               in.Skills,
 		Connectors:           in.Connectors,
