@@ -2,6 +2,7 @@ package tools
 
 import (
 	"code-agent/internal/assetref"
+	"code-agent/internal/automation"
 	"code-agent/internal/sessionfork"
 	"context"
 	"encoding/json"
@@ -89,6 +90,11 @@ type ExecutionContext struct {
 	// SessionControl routes cross-session work through the target Runtime owner.
 	// Nil means control primitives are unavailable in this host.
 	SessionControl SessionControl
+
+	// AutomationStore is the persistence port for automations (internal/automation).
+	// It is injected by daemon hosts; nil means the automation tools degrade with a
+	// clear error (mirroring SessionIndex's nil handling).
+	AutomationStore AutomationStore
 }
 
 type SessionControl interface {
@@ -97,6 +103,19 @@ type SessionControl interface {
 	PollTurn(context.Context, string, string, int64) (*SessionWaitCompletion, int64, error)
 	CreateSession(context.Context, SessionCreateRequest) (SessionSpawnResult, error)
 	sessionfork.Service
+}
+
+// AutomationStore is the minimal persistence port the automation tools need. It
+// is satisfied by internal/automation.Store. The tools package imports the
+// automation package for its domain types (no cycle: automation does not import
+// tools or conversation).
+type AutomationStore interface {
+	Create(ctx context.Context, a automation.Automation) (automation.Automation, error)
+	Get(ctx context.Context, id string) (automation.Automation, error)
+	List(ctx context.Context) ([]automation.Automation, error)
+	Update(ctx context.Context, id string, patch automation.AutomationPatch) (automation.Automation, error)
+	Delete(ctx context.Context, id string) error
+	ListRuns(ctx context.Context, automationID string, limit int) ([]automation.Run, error)
 }
 
 type SessionCreateRequest struct {

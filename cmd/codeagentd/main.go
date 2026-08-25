@@ -9,6 +9,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
@@ -19,7 +20,9 @@ import (
 	"sync"
 	"time"
 
+	"code-agent/internal/agent"
 	"code-agent/internal/app"
+	"code-agent/internal/automation"
 	"code-agent/internal/buildinfo"
 	"code-agent/internal/controlplane"
 	"code-agent/internal/conversation"
@@ -210,6 +213,31 @@ func run() error {
 		executor.SetTitleGenerator(conversation.NewLLMTitleGenerator(provider, mc.Model))
 	}
 	_ = executor.ReconcileInterrupted(ctx)
+
+	// Automation engine (T1-T2): open the process-wide automation store, wire the
+	// dispatcher (standalone creates a new conversation, chat returns to a fixed
+	// session), and start the scheduler loop. The store is injected into the
+	// runner builder (so the automation tools work in every conversation) and into
+	// the mux (so the /v1/automations control-plane endpoints work).
+	stateDir, stateDirErr := runtime.StateDir()
+	if stateDirErr != nil {
+		return stateDirErr
+	}
+	var automationStore automation.Store
+	automationStore, automationErr := automation.OpenStore(filepath.Join(stateDir, "automations.db"))
+	if automationErr != nil {
+		fmt.Fprintf(os.Stderr, "codeagentd: automation store disabled: %v\n", automationErr)
+	} else {
+		defer automationStore.Close()
+		dispatcher := automation.NewTurnDispatcher(&daemonAutomationAdapter{exec: executor, repo: repo}, &daemonAutomationAdapter{exec: executor, repo: repo})
+		scheduler := automation.NewScheduler(automationStore, dispatcher, 0)
+		if skipped, err := scheduler.Reconcile(ctx); err == nil && skipped > 0 {
+			fmt.Fprintf(os.Stderr, "codeagentd: automation reconcile skipped %d overdue firings\n", skipped)
+		}
+		scheduler.Start()
+		defer scheduler.Stop()
+		rb.SetAutomationStore(automationStore)
+	}
 	managedWorktrees, worktreeReport, worktreeErr := runtime.ConfigureManagedWorktrees(ctx, telemetryStore, repo, executor, true)
 	if worktreeErr != nil {
 		fmt.Fprintf(os.Stderr, "codeagentd: managed worktrees disabled: %v\n", worktreeErr)
@@ -236,7 +264,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	stateDir, err := runtime.StateDir()
+	stateDir, err = runtime.StateDir()
 	if err != nil {
 		return err
 	}
@@ -341,6 +369,7 @@ func run() error {
 		GitBranches:         gitBranches,
 		SessionForks:        owner,
 		WorkflowSnapshot:    runtime.NewWorkflowSnapshotFunc(),
+		AutomationStore:     automationStore,
 	})
 	sharing.SetCoreHandler(handler)
 
@@ -389,4 +418,68 @@ func run() error {
 	}
 	fmt.Fprintln(os.Stderr, "codeagentd: stopped")
 	return nil
+}
+
+// daemonAutomationAdapter adapts the conversation executor + repository to the
+// automation package's narrow TurnSubmitter/ConversationCreator seams. It lives
+// here (not in internal/automation) so the automation package stays free of the
+// conversation import (which would create an import cycle through tools).
+type daemonAutomationAdapter struct {
+	exec *conversation.TurnExecutor
+	repo conversation.ConversationRepository
+}
+
+func (a *daemonAutomationAdapter) Submit(ctx context.Context, sessionID, prompt, model string, perm automation.Perm) (string, error) {
+	// Apply the per-task permission context (WorkBuddy's per-task "Full access" /
+	// "Connectors without confirmation"). full_access auto-approves every
+	// side-effecting call; connectors auto-approve only the named MCP servers;
+	// the zero value leaves the session default approval in place.
+	switch {
+	case perm.PermissionMode == "full_access":
+		a.exec.SetApprover(sessionID, allowAllApprover{})
+	case len(perm.Connectors) > 0:
+		a.exec.SetApprover(sessionID, connectorApprover{connectors: perm.Connectors})
+	}
+	res, err := a.exec.Execute(ctx, sessionID, prompt, model)
+	// Clear the injected approver so it does not leak into later turns of the
+	// same session (chat mode).
+	a.exec.SetApprover(sessionID, nil)
+	if err != nil {
+		return "", err
+	}
+	return res.TurnID, nil
+}
+
+func (a *daemonAutomationAdapter) CreateConversation(ctx context.Context, workspacePath string) (string, error) {
+	sess, err := a.repo.Create(ctx, workspacePath, "")
+	if err != nil {
+		return "", err
+	}
+	return sess.ID, nil
+}
+
+func (a *daemonAutomationAdapter) DeleteConversation(ctx context.Context, sessionID string) error {
+	return a.repo.Delete(ctx, sessionID)
+}
+
+// allowAllApprover auto-approves every side-effecting tool call. It is the
+// "full_access" permission tier for unattended automation firings.
+type allowAllApprover struct{}
+
+func (allowAllApprover) Approve(string, json.RawMessage) agent.Verdict { return agent.VerdictAllow }
+
+// connectorApprover auto-approves tool calls whose name is prefixed by an
+// authorized connector (MCP server), and defers everything else (Ask) so the
+// session default approval still applies to non-connector tools.
+type connectorApprover struct {
+	connectors []string
+}
+
+func (c connectorApprover) Approve(toolName string, _ json.RawMessage) agent.Verdict {
+	for _, conn := range c.connectors {
+		if strings.HasPrefix(toolName, conn+"__") || toolName == conn {
+			return agent.VerdictAllow
+		}
+	}
+	return agent.VerdictAsk
 }

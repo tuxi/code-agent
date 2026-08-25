@@ -138,6 +138,10 @@ type Runner struct {
 	SessionIndex   tools.SessionIndex
 	SessionControl tools.SessionControl
 
+	// AutomationStore is the persistence port for the automation tools. Nil means
+	// the automation tools degrade with a clear error (CLI/TUI without a daemon).
+	AutomationStore tools.AutomationStore
+
 	// PlanState tracks the planning workflow phase. Exported so the TUI and REPL
 	// can toggle plan mode manually (Ctrl+P, /plan).
 	PlanState PlanStatus
@@ -1873,6 +1877,7 @@ func (r *Runner) executeTool(ctx context.Context, tool tools.Tool, callID string
 		Model:              r.ModelName,
 		SessionIndex:       r.SessionIndex,
 		SessionControl:     r.SessionControl,
+		AutomationStore:    r.AutomationStore,
 		OnStdout: func(chunk string) {
 			r.emit(Event{Kind: EventToolStdout, CallID: callID, Chunk: chunk})
 		},

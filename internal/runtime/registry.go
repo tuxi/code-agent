@@ -11,6 +11,7 @@ import (
 	"code-agent/internal/settings"
 	"code-agent/internal/skills"
 	"code-agent/internal/tools"
+	"code-agent/internal/tools/automation"
 	"code-agent/internal/tools/filesystem"
 	"code-agent/internal/tools/git"
 	"code-agent/internal/tools/projectcfg"
@@ -226,6 +227,20 @@ func BuildBaseRegistry(ctx context.Context, cfg settings.Settings, mc settings.M
 	}
 	if cfg.Agent.ToolAllowed("search_session") {
 		if err := registry.Register(&sessions.SearchSession{}); err != nil {
+			return nil, nil, nil, nil, err
+		}
+	}
+
+	// Automation tools (T3): create/list/update/delete scheduled automations and
+	// read the current time. They degrade gracefully when the automation store is
+	// nil (CLI/TUI without a daemon): the tool returns a clear error.
+	if cfg.Agent.ToolAllowed("automation") {
+		if err := registry.Register(&automation.AutomationTool{}); err != nil {
+			return nil, nil, nil, nil, err
+		}
+	}
+	if cfg.Agent.ToolAllowed("get_current_time") {
+		if err := registry.Register(&automation.GetCurrentTimeTool{}); err != nil {
 			return nil, nil, nil, nil, err
 		}
 	}

@@ -54,14 +54,23 @@ type ServeRunBuilder struct {
 	provider   model.Provider
 	credential credential.Resolver
 
-	wsRulesMu sync.Mutex
-	wsRules   map[string]*approve.RuleStore // workspacePath → scoped store
-	control   tools.SessionControl
+	wsRulesMu       sync.Mutex
+	wsRules         map[string]*approve.RuleStore // workspacePath → scoped store
+	control         tools.SessionControl
+	automationStore tools.AutomationStore
 }
 
 func (b *ServeRunBuilder) SetSessionControl(control tools.SessionControl) {
 	b.mu.Lock()
 	b.control = control
+	b.mu.Unlock()
+}
+
+// SetAutomationStore wires the automation persistence port into every turn's
+// ExecutionContext so the automation tools can CRUD scheduled automations.
+func (b *ServeRunBuilder) SetAutomationStore(store tools.AutomationStore) {
+	b.mu.Lock()
+	b.automationStore = store
 	b.mu.Unlock()
 }
 
@@ -407,6 +416,7 @@ func (b *ServeRunBuilder) Build(ctx conversation.RuntimeContext) conversation.Tu
 	runner.ReservedTurnID = ctx.TurnID
 	runner.RequestID = ctx.RequestID
 	runner.SessionControl = control
+	runner.AutomationStore = b.automationStore
 	if workspacePath != "" {
 		runner.WorkspaceRoot = workspacePath
 	}

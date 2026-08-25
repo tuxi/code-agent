@@ -14,6 +14,7 @@ import (
 
 	"code-agent/internal/agent"
 	"code-agent/internal/assetref"
+	"code-agent/internal/automation"
 	"code-agent/internal/conversation"
 	"code-agent/internal/credential"
 	"code-agent/internal/gitworkspace"
@@ -428,6 +429,9 @@ type MuxOptions struct {
 	// Nil disables the GET /v1/conversations/{id}/workflow/{workflow_id}/snapshot
 	// endpoint (returns 404).
 	WorkflowSnapshot runtime.WorkflowSnapshotFunc
+	// AutomationStore serves the /v1/automations control-plane endpoints. Nil
+	// disables them (404), matching the Providers/Granter pattern.
+	AutomationStore automation.Store
 }
 
 // RuntimeCapabilities is the explicit concurrency handshake consumed by
@@ -630,6 +634,7 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 	registerSettingsRoutes(mux, opts)
 	registerPermissionRoutes(mux, opts)
 	registerGitBranchRoutes(mux, opts)
+	registerAutomationRoutes(mux, opts)
 
 	mux.HandleFunc("GET /v1/activity", func(w http.ResponseWriter, r *http.Request) {
 		generatedAt := time.Now().UTC()
