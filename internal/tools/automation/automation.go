@@ -179,6 +179,17 @@ func buildAutomation(in automationInput, ec tools.ExecutionContext) (automation.
 	if in.Enabled != nil && !*in.Enabled {
 		status = automation.StatusPaused
 	}
+	// Default permission: full_access. An automation runs unattended — if it
+	// blocks on a human approval nobody is watching, the automation is useless
+	// (e.g. a nightly BTC check that stalls on an approval prompt). Since the
+	// user explicitly created an automation, default to letting it act; the skill
+	// and the client form surface this so the user knows the task's permission
+	// level, and can narrow it (connectors-only or session default) for
+	// high-risk tasks.
+	permissionMode := in.PermissionMode
+	if permissionMode == "" {
+		permissionMode = "full_access"
+	}
 	var scheduledAt time.Time
 	if in.ScheduledAt != "" {
 		t, err := time.Parse(time.RFC3339, in.ScheduledAt)
@@ -209,7 +220,7 @@ func buildAutomation(in automationInput, ec tools.ExecutionContext) (automation.
 		ModelID:              modelID,
 		Skills:               in.Skills,
 		Connectors:           in.Connectors,
-		PermissionMode:       in.PermissionMode,
+		PermissionMode:       permissionMode,
 		CreatedFromWorkspace: ec.WorkspaceRoot,
 	}, nil
 }

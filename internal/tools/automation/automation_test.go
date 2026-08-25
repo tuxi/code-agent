@@ -82,6 +82,11 @@ func TestAutomationCreate(t *testing.T) {
 	if created.Name != "daily" || created.CreatedFromWorkspace != "/ws" {
 		t.Fatalf("unexpected created: %+v", created)
 	}
+	// Default permission is full_access so an unattended firing never stalls on
+	// an approval nobody is watching.
+	if created.PermissionMode != "full_access" {
+		t.Fatalf("permission_mode = %q, want full_access (default)", created.PermissionMode)
+	}
 }
 
 func TestAutomationCreateValidation(t *testing.T) {
