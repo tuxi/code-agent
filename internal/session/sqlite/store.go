@@ -111,6 +111,7 @@ CREATE TABLE IF NOT EXISTS messages (
 	local_assets TEXT,
 	origin_turn_id TEXT,
 	web_search_calls TEXT,
+	reasoning_content TEXT,
 	PRIMARY KEY (session_id, seq)
 );
 CREATE TABLE IF NOT EXISTS compactions (
@@ -263,6 +264,7 @@ func (s *Store) open() error {
 		`ALTER TABLE messages ADD COLUMN local_assets TEXT`,
 		`ALTER TABLE messages ADD COLUMN origin_turn_id TEXT`,
 		`ALTER TABLE messages ADD COLUMN web_search_calls TEXT`,
+		`ALTER TABLE messages ADD COLUMN reasoning_content TEXT`,
 		`ALTER TABLE turn_inputs ADD COLUMN local_assets TEXT NOT NULL DEFAULT '[]'`,
 		`ALTER TABLE turn_inputs ADD COLUMN sender_session_id TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE turn_inputs ADD COLUMN sender_turn_id TEXT NOT NULL DEFAULT ''`,
@@ -415,9 +417,9 @@ func (s *Store) saveSessionTx(ctx context.Context, tx *sql.Tx, sess *session.Ses
 			webSearchCalls = string(b)
 		}
 		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO messages (session_id, seq, role, content, tool_calls, tool_call_id, assets, local_assets, origin_turn_id, web_search_calls)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			sess.ID, i, string(m.Role), m.Content, toolCalls, m.ToolCallID, assetRefs, localAssetRefs, m.OriginTurnID, webSearchCalls); err != nil {
+			INSERT INTO messages (session_id, seq, role, content, tool_calls, tool_call_id, assets, local_assets, origin_turn_id, web_search_calls, reasoning_content)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			sess.ID, i, string(m.Role), m.Content, toolCalls, m.ToolCallID, assetRefs, localAssetRefs, m.OriginTurnID, webSearchCalls, m.ReasoningContent); err != nil {
 			return fmt.Errorf("save message %d: %w", i, err)
 		}
 	}
@@ -480,17 +482,17 @@ func (s *Store) Load(ctx context.Context, id string) (*session.Session, error) {
 	}
 
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT role, content, tool_calls, tool_call_id, COALESCE(assets, ''), COALESCE(local_assets, ''), COALESCE(origin_turn_id, ''), COALESCE(web_search_calls, '') FROM messages WHERE session_id=? ORDER BY seq`, id)
+		SELECT role, content, tool_calls, tool_call_id, COALESCE(assets, ''), COALESCE(local_assets, ''), COALESCE(origin_turn_id, ''), COALESCE(web_search_calls, ''), COALESCE(reasoning_content, '') FROM messages WHERE session_id=? ORDER BY seq`, id)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var role, content, toolCalls, toolCallID, assetRefs, localAssetRefs, originTurnID, webSearchCalls string
-		if err := rows.Scan(&role, &content, &toolCalls, &toolCallID, &assetRefs, &localAssetRefs, &originTurnID, &webSearchCalls); err != nil {
+		var role, content, toolCalls, toolCallID, assetRefs, localAssetRefs, originTurnID, webSearchCalls, reasoningContent string
+		if err := rows.Scan(&role, &content, &toolCalls, &toolCallID, &assetRefs, &localAssetRefs, &originTurnID, &webSearchCalls, &reasoningContent); err != nil {
 			return nil, err
 		}
-		m := model.Message{Role: model.Role(role), Content: content, ToolCallID: toolCallID, OriginTurnID: originTurnID}
+		m := model.Message{Role: model.Role(role), Content: content, ToolCallID: toolCallID, OriginTurnID: originTurnID, ReasoningContent: reasoningContent}
 		if toolCalls != "" {
 			if err := json.Unmarshal([]byte(toolCalls), &m.ToolCalls); err != nil {
 				return nil, fmt.Errorf("unmarshal tool_calls: %w", err)

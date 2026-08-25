@@ -151,6 +151,10 @@ type wireMessage struct {
 	Assets     []GatewayAssetRef `json:"assets,omitempty"`
 	ToolCalls  []ToolCall        `json:"tool_calls,omitempty"`
 	ToolCallID string            `json:"tool_call_id,omitempty"`
+	// ReasoningContent is echoed back verbatim for DeepSeek-style thinking
+	// models: their API contract requires the assistant's reasoning_content to
+	// be passed back on the next request, or the call fails with a 400.
+	ReasoningContent string `json:"reasoning_content,omitempty"`
 }
 
 func newWireMessages(messages []Message) []wireMessage {
@@ -179,10 +183,11 @@ func newWireMessages(messages []Message) []wireMessage {
 	}
 	for _, m := range messages {
 		w := wireMessage{
-			Role:       m.Role,
-			Assets:     m.Assets,
-			ToolCalls:  m.ToolCalls,
-			ToolCallID: m.ToolCallID,
+			Role:             m.Role,
+			Assets:           m.Assets,
+			ToolCalls:        m.ToolCalls,
+			ToolCallID:       m.ToolCallID,
+			ReasoningContent: m.ReasoningContent,
 		}
 		if len(m.ContentParts) > 0 {
 			parts := make([]ContentPart, len(m.ContentParts))

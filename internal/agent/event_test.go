@@ -111,6 +111,58 @@ func TestRunTurnEmitsEventStream(t *testing.T) {
 	}
 }
 
+// TestRunTurnEmitsAssistantText verifies that intermediate assistant narration
+// (text the model produced alongside a tool-call step) is published as a
+// persisted assistant_text event, so clients can render the between-tool
+// remarks — not just the final answer.
+func TestRunTurnEmitsAssistantText(t *testing.T) {
+	rt := &recordingTool{}
+	reg := tools.NewRegistry()
+	if err := reg.Register(rt); err != nil {
+		t.Fatal(err)
+	}
+	provider := &scriptedProvider{responses: []model.Response{
+		{
+			Content:      "Let me look at the code first.",
+			ToolCalls:    []model.ToolCall{{ID: "call_1", Type: "function", Function: model.FunctionCall{Name: "danger", Arguments: "{}"}}},
+			FinishReason: "tool_calls",
+		},
+		{Content: "all done", FinishReason: "stop"},
+	}}
+	em := &capturingEmitter{}
+	runner := &Runner{Model: provider, Tools: reg, Approver: allowApprover{}, MaxSteps: 5, Emitter: em}
+
+	sess := newSession()
+	sess.ID = "sess-x"
+	if _, err := runner.RunTurn(context.Background(), sess, "do it"); err != nil {
+		t.Fatal(err)
+	}
+
+	at, ok := em.first(EventAssistantText)
+	if !ok {
+		t.Fatalf("assistant_text event missing; kinds=%v", em.kinds())
+	}
+	if at.Text != "Let me look at the code first." {
+		t.Fatalf("assistant_text text = %q, want the intermediate narration", at.Text)
+	}
+	// It must precede the tool_started that follows it.
+	ts, _ := em.first(EventToolStarted)
+	if ts.Step <= at.Step {
+		t.Fatalf("assistant_text step %d not before tool_started step %d", at.Step, ts.Step)
+	}
+	// The narration must also be persisted into history alongside the tool call.
+	// History shape: [0]=system, [1]=user "do it", [2]=assistant (content + tool_calls).
+	if len(sess.Messages) < 3 {
+		t.Fatalf("history too short: %+v", sess.Messages)
+	}
+	if sess.Messages[2].Content != "Let me look at the code first." {
+		t.Fatalf("history assistant content = %q, want the intermediate narration", sess.Messages[2].Content)
+	}
+	if len(sess.Messages[2].ToolCalls) != 1 {
+		t.Fatalf("history assistant tool_calls = %d, want 1", len(sess.Messages[2].ToolCalls))
+	}
+}
+
 func TestNormalizeToolAssetsFillsRuntimeContext(t *testing.T) {
 	got := normalizeToolAssets([]assets.Ref{{
 		ID:                    "asset_client_1",

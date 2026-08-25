@@ -35,6 +35,10 @@ func (consoleEmitter) Emit(e agent.Event) {
 	switch e.Kind {
 	case agent.EventThinking:
 		fmt.Printf("\n[thinking] %s\n", e.Text)
+	case agent.EventAssistantText:
+		// Intermediate narration the model produced before calling tools —
+		// distinct from the final answer (turn_finished).
+		fmt.Printf("\n%s\n", e.Text)
 	case agent.EventToolStarted:
 		fmt.Printf("\n[%d] tool=%s args=%s\n", e.Step, e.ToolName, e.ToolArgs)
 	case agent.EventAutoApproved:

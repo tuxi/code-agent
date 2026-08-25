@@ -122,6 +122,12 @@ func (t *Timeline) Apply(ev agent.Event) {
 		if ev.Text != "" {
 			t.add(Item{Kind: ItemThinking, Text: ev.Text}, ev.At)
 		}
+	case agent.EventAssistantText:
+		// Intermediate narration the model produced before calling tools —
+		// rendered like the final reply but positioned mid-turn.
+		if ev.Text != "" {
+			t.add(Item{Kind: ItemAssistant, Text: ev.Text}, ev.At)
+		}
 	case agent.EventToolStarted:
 		if ev.ToolName == loadSkillTool {
 			return // the Skill card represents this; suppress the raw tool line

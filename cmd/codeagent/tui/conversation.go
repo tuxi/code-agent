@@ -119,6 +119,16 @@ func (c *Conversation) Apply(ev agent.Event) []chat.Message {
 	case agent.EventTokenDelta:
 		return c.stream(ev.Text)
 
+	case agent.EventAssistantText:
+		// Intermediate narration the model produced before calling tools. A
+		// finished assistant message, distinct from the streamed final answer.
+		if ev.Text == "" {
+			return nil
+		}
+		return c.append(c.new(chat.Message{
+			Kind: chat.KindAssistant, Content: ev.Text, Finished: true,
+		}))
+
 	case agent.EventTurnFinished:
 		var out []chat.Message
 		out = append(out, c.closeThinking()...)

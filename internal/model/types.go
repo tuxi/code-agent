@@ -45,6 +45,12 @@ type Message struct {
 	Role    Role   `json:"role"`
 	Content string `json:"content"`
 
+	// ReasoningContent is the provider-visible reasoning text for this message
+	// (DeepSeek/vLLM-style thinking channel). DeepSeek thinking models require
+	// the assistant's reasoning_content to be passed back verbatim on the next
+	// request, so it is persisted with the message and echoed on the wire.
+	ReasoningContent string `json:"reasoning_content,omitempty"`
+
 	// ContentParts carries multimodal content blocks (text + image) for
 	// vision-capable models. It is runtime-only state assembled per request by
 	// the agent loop from LocalAssets; it is never persisted and excluded from
@@ -300,10 +306,11 @@ func (m Message) IsEmptyAssistantNoOp() bool {
 // The tool_calls are preserved verbatim, which the API requires.
 func (r Response) AssistantMessage() Message {
 	return Message{
-		Role:           RoleAssistant,
-		Content:        r.Content,
-		ToolCalls:      r.ToolCalls,
-		WebSearchCalls: r.WebSearchCalls,
+		Role:             RoleAssistant,
+		Content:          r.Content,
+		ReasoningContent: r.ReasoningContent,
+		ToolCalls:        r.ToolCalls,
+		WebSearchCalls:   r.WebSearchCalls,
 	}
 }
 
