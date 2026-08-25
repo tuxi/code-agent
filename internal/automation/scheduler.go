@@ -2,6 +2,7 @@ package automation
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 )
@@ -121,6 +122,42 @@ func (s *Scheduler) fire(ctx context.Context, a Automation) {
 
 	// Always persist a run record and clear running state.
 	if err != nil {
+		// A user-cancelled firing (the user stopped the conversation mid-run) is
+		// NOT a failure: do not retry it. once → COMPLETED (no next firing);
+		// recurring → advance to the next scheduled firing (it will run again at
+		// its normal cadence, but not via the 1-minute retry).
+		if errors.Is(err, context.Canceled) {
+			_ = s.store.RecordRun(ctx, Run{
+				AutomationID: a.ID,
+				Status:       RunCanceled,
+				CreatedAt:    now,
+			})
+			_ = s.store.UpdateRuntimeState(ctx, RuntimeState{
+				AutomationID: a.ID,
+				Running:      false,
+				LastRunAt:    now,
+				LastError:    "cancelled by user",
+			})
+			var next time.Time
+			status := a.Status
+			if a.ScheduleType == ScheduleRecurring {
+				if computed, cerr := computeNextRunAt(a, now); cerr == nil {
+					next = computed
+				} else {
+					next = now.Add(s.interval)
+				}
+			} else {
+				status = StatusCompleted
+			}
+			_, _ = s.store.Update(ctx, a.ID, AutomationPatch{
+				LastStatus: strPtr(RunCanceled),
+				Status:     &status,
+				LastRunAt:  timePtr(now),
+			})
+			_ = s.store.UpdateNextRunAt(ctx, a.ID, next)
+			return
+		}
+
 		_ = s.store.RecordRun(ctx, Run{
 			AutomationID: a.ID,
 			Status:       RunFailed,

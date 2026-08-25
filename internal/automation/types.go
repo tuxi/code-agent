@@ -48,6 +48,7 @@ const (
 	RunSucceeded = "succeeded"
 	RunFailed    = "failed"
 	RunSkipped   = "skipped"
+	RunCanceled  = "canceled" // the user stopped the firing's conversation
 )
 
 // Retry policy for failed firings: a firing that fails is retried up to

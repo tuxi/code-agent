@@ -162,6 +162,73 @@ func TestSchedulerFailureOnceCompletes(t *testing.T) {
 	}
 }
 
+// TestSchedulerCancelDoesNotRetry verifies a user-cancelled firing is NOT
+// retried: once → COMPLETED, recurring → advanced to the next scheduled firing,
+// and retry_count is not incremented (a cancel is not a failure).
+func TestSchedulerCancelDoesNotRetry(t *testing.T) {
+	s := newTestStore(t)
+	a := Automation{
+		Name:         "poll",
+		Prompt:       "query",
+		Status:       StatusActive,
+		ScheduleType: ScheduleRecurring,
+		RRule:        "FREQ=MINUTELY;INTERVAL=5",
+		Timezone:     "UTC",
+		ModeExec:     ModeStandalone,
+	}
+	created, _ := s.Create(context.Background(), a)
+	_ = s.UpdateNextRunAt(context.Background(), created.ID, time.Now().Add(-time.Second))
+
+	disp := &failDispatcher{err: context.Canceled}
+	sched := NewScheduler(s, disp, time.Hour)
+	sched.tick(context.Background())
+
+	got, _ := s.Get(context.Background(), created.ID)
+	if got.RetryCount != 0 {
+		t.Fatalf("retry_count = %d after cancel, want 0 (cancel is not a failure)", got.RetryCount)
+	}
+	if got.LastStatus != RunCanceled {
+		t.Fatalf("last_status = %q, want canceled", got.LastStatus)
+	}
+	// Recurring: next_run_at advanced to the next scheduled firing (not a 1-min
+	// retry), so it is not due again immediately.
+	if got.NextRunAt.IsZero() {
+		t.Fatal("next_run_at should be advanced to the next scheduled firing")
+	}
+	due, _ := s.NextDueAt(context.Background(), time.Now().Add(time.Second))
+	if len(due) != 0 {
+		t.Fatalf("cancelled recurring automation should not be due again this tick, got %d", len(due))
+	}
+}
+
+// TestSchedulerCancelOnceCompletes verifies a cancelled once firing becomes
+// COMPLETED and never fires again.
+func TestSchedulerCancelOnceCompletes(t *testing.T) {
+	s := newTestStore(t)
+	a := Automation{
+		Name:         "once",
+		Prompt:       "do it",
+		Status:       StatusActive,
+		ScheduleType: ScheduleOnce,
+		ScheduledAt:  time.Now().Add(-time.Minute),
+		Timezone:     "UTC",
+		ModeExec:     ModeStandalone,
+	}
+	created, _ := s.Create(context.Background(), a)
+	disp := &failDispatcher{err: context.Canceled}
+	sched := NewScheduler(s, disp, time.Hour)
+	sched.tick(context.Background())
+
+	got, _ := s.Get(context.Background(), created.ID)
+	if got.Status != StatusCompleted {
+		t.Fatalf("cancelled once automation status = %q, want COMPLETED", got.Status)
+	}
+	due, _ := s.NextDueAt(context.Background(), time.Now().Add(time.Hour))
+	if len(due) != 0 {
+		t.Fatalf("completed once automation should not be due, got %d", len(due))
+	}
+}
+
 // TestDispatcherKeepsConversationOnFailure verifies a standalone firing whose
 // submit fails KEEPS the just-created conversation (so the user can open it and
 // see the failure), rather than rolling it back. The retry cap bounds how many
