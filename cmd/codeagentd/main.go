@@ -484,6 +484,15 @@ func (a *daemonAutomationAdapter) DeleteConversation(ctx context.Context, sessio
 	return a.repo.Delete(ctx, sessionID)
 }
 
+func (a *daemonAutomationAdapter) ConversationExists(ctx context.Context, sessionID string) (bool, error) {
+	if _, err := a.repo.Load(ctx, sessionID); err != nil {
+		// A load failure (e.g. session deleted) means the conversation is gone;
+		// reuse mode will create a fresh one.
+		return false, nil
+	}
+	return true, nil
+}
+
 // allowAllApprover auto-approves every side-effecting tool call. It is the
 // "full_access" permission tier for unattended automation firings.
 type allowAllApprover struct{}

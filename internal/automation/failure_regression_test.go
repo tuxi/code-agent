@@ -295,6 +295,24 @@ func TestDispatcherReuseFirstFiring(t *testing.T) {
 	}
 }
 
+// TestDispatcherReuseRecreatesDeletedConversation verifies reuse mode falls back
+// to creating a fresh conversation when the persisted one was deleted.
+func TestDispatcherReuseRecreatesDeletedConversation(t *testing.T) {
+	creator := &trackingCreator{exists: map[string]bool{"sess-1": false}} // deleted
+	sub := &recordingSubmitter{}
+	d := NewTurnDispatcher(sub, creator)
+
+	a := Automation{ID: "auto-1", Prompt: "p", ModeExec: ModeReuse, SessionID: "sess-1"}
+	sid, err := d.Dispatch(context.Background(), a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A fresh conversation was created (sess-1 was reported deleted).
+	if sid != "sess-1" {
+		t.Fatalf("recreated sid = %q, want sess-1 (fresh creation)", sid)
+	}
+}
+
 // TestDispatcherKeepsConversationOnFailure verifies a standalone firing whose
 // submit fails KEEPS the just-created conversation (so the user can open it and
 // see the failure), rather than rolling it back. The retry cap bounds how many
@@ -320,6 +338,7 @@ func TestDispatcherKeepsConversationOnFailure(t *testing.T) {
 
 type trackingCreator struct {
 	onDelete func(id string)
+	exists   map[string]bool // nil = everything exists
 }
 
 func (t *trackingCreator) CreateConversation(ctx context.Context, workspacePath string) (string, error) {
@@ -331,6 +350,13 @@ func (t *trackingCreator) DeleteConversation(ctx context.Context, sessionID stri
 		t.onDelete(sessionID)
 	}
 	return nil
+}
+
+func (t *trackingCreator) ConversationExists(ctx context.Context, sessionID string) (bool, error) {
+	if t.exists == nil {
+		return true, nil
+	}
+	return t.exists[sessionID], nil
 }
 
 type failingSubmitter struct{}

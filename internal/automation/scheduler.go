@@ -205,9 +205,11 @@ func (s *Scheduler) fire(ctx context.Context, a Automation) {
 		RunningTurnID: turnID,
 	})
 
-	// Reuse mode: persist the first firing's conversation id so later firings
-	// return to the same conversation instead of creating a new one each time.
-	if a.ModeExec == ModeReuse && a.SessionID == "" && turnID != "" {
+	// Reuse mode: persist the firing's conversation id so later firings return to
+	// the same conversation. This also covers the case where the persisted
+	// conversation was deleted and the dispatcher created a fresh one (the new id
+	// differs from the stored one and replaces it).
+	if a.ModeExec == ModeReuse && turnID != "" && turnID != a.SessionID {
 		_, _ = s.store.Update(ctx, a.ID, AutomationPatch{SessionID: &turnID})
 	}
 

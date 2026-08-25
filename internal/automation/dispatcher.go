@@ -44,6 +44,9 @@ type ConversationCreator interface {
 	// (e.g. the subsequent submit failed), so a failed firing does not leak an
 	// empty orphan conversation. Optional: a nil implementation skips cleanup.
 	DeleteConversation(ctx context.Context, sessionID string) error
+	// ConversationExists reports whether a conversation still exists. Reuse mode
+	// uses it to detect a deleted session and fall back to creating a new one.
+	ConversationExists(ctx context.Context, sessionID string) (bool, error)
 }
 
 // TurnDispatcher is the default Dispatcher used by the daemon scheduler. It maps
@@ -76,12 +79,17 @@ func (d *TurnDispatcher) Dispatch(ctx context.Context, a Automation) (string, er
 	case ModeReuse:
 		// Reuse the first firing's conversation: once a session_id is persisted,
 		// every later firing returns to it (context caching, no conversation pile-up).
-		if strings.TrimSpace(a.SessionID) != "" {
-			return d.Submitter.Submit(ctx, a.SessionID, a.Prompt, a.ModelID, perm)
+		// If the persisted conversation no longer exists (the user deleted it),
+		// fall through and create a fresh one.
+		if strings.TrimSpace(a.SessionID) != "" && d.Creator != nil {
+			if exists, err := d.Creator.ConversationExists(ctx, a.SessionID); err == nil && exists {
+				return d.Submitter.Submit(ctx, a.SessionID, a.Prompt, a.ModelID, perm)
+			}
 		}
-		// First firing: create the conversation (same workspace resolution as
-		// standalone) and submit there. The scheduler persists the returned id as
-		// the automation's session_id so later firings reuse it.
+		// First firing, or the persisted conversation was deleted: create a new one
+		// (same workspace resolution as standalone) and submit there. The scheduler
+		// persists the returned id as the automation's session_id so later firings
+		// reuse it.
 		ws := ""
 		if len(a.CWDs) > 0 {
 			ws = a.CWDs[0]

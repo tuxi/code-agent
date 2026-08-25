@@ -106,3 +106,7 @@ func (r *recordingCreator) CreateConversation(ctx context.Context, workspacePath
 func (r *recordingCreator) DeleteConversation(ctx context.Context, sessionID string) error {
 	return nil
 }
+
+func (r *recordingCreator) ConversationExists(ctx context.Context, sessionID string) (bool, error) {
+	return true, nil
+}
