@@ -194,6 +194,47 @@ func TestResponsesEmptyContentPartsDegradeToInputText(t *testing.T) {
 	}
 }
 
+// TestWireReasoningContentEcho verifies the reasoning_content wire behavior:
+// an assistant message with reasoning echoes it verbatim; an assistant
+// tool-call message with no reasoning still carries the key as "" (strict
+// gateways like b.ai 400 when the key is absent entirely); other messages
+// omit it.
+func TestWireReasoningContentEcho(t *testing.T) {
+	msgs := []Message{
+		{Role: RoleUser, Content: "check"},
+		{Role: RoleAssistant, Content: "thinking out loud", ReasoningContent: "let me think"},
+		{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "c1", Type: "function", Function: FunctionCall{Name: "read_file"}}}},
+		{Role: RoleTool, ToolCallID: "c1", Content: "ok"},
+		{Role: RoleAssistant, Content: "plain answer"},
+	}
+	var got map[string]any
+	data, err := json.Marshal(chatCompletionRequest{Messages: newWireMessages(msgs)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatal(err)
+	}
+	wm := got["messages"].([]any)
+
+	// [0] user: no reasoning_content key.
+	if _, ok := wm[0].(map[string]any)["reasoning_content"]; ok {
+		t.Errorf("user message must not carry reasoning_content: %v", wm[0])
+	}
+	// [1] assistant with reasoning: verbatim.
+	if rc := wm[1].(map[string]any)["reasoning_content"]; rc != "let me think" {
+		t.Errorf("assistant reasoning_content = %v, want %q", rc, "let me think")
+	}
+	// [2] assistant tool-call, no reasoning: key present as "".
+	if rc, ok := wm[2].(map[string]any)["reasoning_content"]; !ok || rc != "" {
+		t.Errorf("tool-call assistant reasoning_content = %v (present=%v), want present empty string", rc, ok)
+	}
+	// [4] assistant plain answer: key absent (no tool_calls to guard).
+	if _, ok := wm[4].(map[string]any)["reasoning_content"]; ok {
+		t.Errorf("plain assistant answer must not carry reasoning_content: %v", wm[4])
+	}
+}
+
 // TestWireToolImagesPromotedToSyntheticUserMessage verifies the chat
 // completions placement rule: a tool message carrying image parts stays
 // text-only on the wire and its images are promoted into ONE synthetic user

@@ -153,8 +153,13 @@ type wireMessage struct {
 	ToolCallID string            `json:"tool_call_id,omitempty"`
 	// ReasoningContent is echoed back verbatim for DeepSeek-style thinking
 	// models: their API contract requires the assistant's reasoning_content to
-	// be passed back on the next request, or the call fails with a 400.
-	ReasoningContent string `json:"reasoning_content,omitempty"`
+	// be passed back on the next request, or the call fails with a 400. A
+	// pointer lets us distinguish "no reasoning" from "assistant tool-call
+	// message that must still carry the field": some strict gateways (b.ai)
+	// reject an assistant message with tool_calls when the reasoning_content
+	// key is absent entirely, even if the model produced no reasoning that
+	// turn. newWireMessages sets it to "" for those messages.
+	ReasoningContent *string `json:"reasoning_content,omitempty"`
 }
 
 func newWireMessages(messages []Message) []wireMessage {
@@ -183,11 +188,21 @@ func newWireMessages(messages []Message) []wireMessage {
 	}
 	for _, m := range messages {
 		w := wireMessage{
-			Role:             m.Role,
-			Assets:           m.Assets,
-			ToolCalls:        m.ToolCalls,
-			ToolCallID:       m.ToolCallID,
-			ReasoningContent: m.ReasoningContent,
+			Role:       m.Role,
+			Assets:     m.Assets,
+			ToolCalls:  m.ToolCalls,
+			ToolCallID: m.ToolCallID,
+		}
+		// Echo reasoning verbatim when present. Strict thinking-mode gateways
+		// also require the reasoning_content key on assistant tool-call
+		// messages even when the model produced no reasoning — emit "" so the
+		// field is present, not omitted (an absent key is a 400 there).
+		if m.ReasoningContent != "" {
+			rc := m.ReasoningContent
+			w.ReasoningContent = &rc
+		} else if m.Role == RoleAssistant && len(m.ToolCalls) > 0 {
+			empty := ""
+			w.ReasoningContent = &empty
 		}
 		if len(m.ContentParts) > 0 {
 			parts := make([]ContentPart, len(m.ContentParts))
