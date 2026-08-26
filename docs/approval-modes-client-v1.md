@@ -11,7 +11,7 @@
 
 | 权限 | 语义 | 存储位置 | 谁来写 |
 |------|------|---------|--------|
-| **审批档位** `approval_mode`（`ask` / `auto` / `full`） | 未命中规则时怎么办：全部请求批准 / **工作区内文件写入+非网络命令自动，网络命令、MCP 工具、工作区外路径询问** / 全部自动（硬底线仍生效） | **workspace 级**：`<workspace>/.codeagent/settings.local.json` 顶层 `approval_mode`（合并层 user → shared → local，local 最高） | 客户端 `/v1/workspaces/permissions` PUT、TUI `/mode` |
+| **审批档位** `approval_mode`（`ask` / `auto` / `full`） | 未命中规则时怎么办：全部请求批准 / **工作区内文件写入+非网络命令+MCP 工具自动，网络命令、工作区外路径询问** / 全部自动（硬底线仍生效） | **workspace 级**：`<workspace>/.codeagent/settings.local.json` 顶层 `approval_mode`（合并层 user → shared → local，local 最高） | 客户端 `/v1/workspaces/permissions` PUT、TUI `/mode` |
 | **逐条规则** `permissions.allow/deny`（glob，deny 优先） | 审批卡 "Always allow" 落盘；命中即免审批/拒绝 | 三层 union：`~/.codeagent/settings.json`（user）+ `<workspace>/.codeagent/settings.json`（shared）+ `<workspace>/.codeagent/settings.local.json`（local） | 审批卡 `approval_response {decision:"always", scope}` |
 | **自动化任务档位** `permission_mode`（`ask`/`auto`/`full`，`full_access`=旧别名） | 该任务每次触发时的档位；`""` = 继承 workspace 档位 | **per-task**：`~/.codeagent/automations.db` 的 `automations` 表（不是 settings 文件） | `/v1/automations` create/update |
 

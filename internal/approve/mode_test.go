@@ -160,13 +160,21 @@ func TestAutoInWorkspaceEditAutoApproves(t *testing.T) {
 	}
 }
 
-func TestAutoMCPDelegates(t *testing.T) {
+func TestAutoMCPAutoApproves(t *testing.T) {
 	ma, human := modeApprover(t, ModeAuto)
-	if v, _ := ma.ApproveAudited("mcp__github__list_issues", nil); v != agent.VerdictAllow {
-		t.Fatalf("auto: MCP tool verdict=%v, want delegated", v)
+	if v, reason := ma.ApproveAudited("mcp__github__list_issues", nil); v != agent.VerdictAllow || reason == "" {
+		t.Fatalf("auto: MCP tool verdict=%v reason=%q, want allow with audit", v, reason)
+	}
+	if human.called {
+		t.Fatal("auto: human consulted for an MCP tool")
+	}
+	// An unknown (non-MCP, non-builtin) tool still delegates to the human.
+	human.called = false
+	if v, _ := ma.ApproveAudited("custom_side_effect_tool", nil); v != agent.VerdictAllow {
+		t.Fatalf("auto: unknown tool verdict=%v, want delegated (human allow)", v)
 	}
 	if !human.called {
-		t.Fatal("auto: MCP tool did not reach the human")
+		t.Fatal("auto: unknown tool did not reach the human")
 	}
 }
 

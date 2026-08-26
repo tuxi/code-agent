@@ -3,6 +3,7 @@ package approve
 import (
 	"encoding/json"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 
 	"code-agent/internal/agent"
@@ -21,8 +22,8 @@ import (
 //	ask   — every un-matched side-effecting call prompts (the default, today's
 //	        behavior). Matched allow rules still auto-run; deny still wins.
 //	auto  — in-workspace work auto-runs: file writes (edit/create/apply_patch),
-//	        git_commit, and non-network run_command. Network commands, MCP
-//	        tools, and out-of-workspace paths still prompt.
+//	        git_commit, non-network run_command, and MCP server tools. Network
+//	        commands and out-of-workspace paths still prompt.
 //	full  — every side-effecting call auto-runs, including network commands
 //	        and out-of-workspace paths. Hard lines stay: deny rules,
 //	        protected paths, and blocked commands are never auto-crossed.
@@ -219,11 +220,14 @@ func (a *ModeApprover) autoApprove(toolName string, input json.RawMessage) (stri
 }
 
 // autoApproveTier is the "auto" policy: in-workspace file writes (edit/create
-// with a non-protected target, apply_patch, git_commit) and non-network
-// run_command auto-run; network commands, MCP tools, and everything else
-// delegate to the human. run_command reaching the approver is by construction
-// a Confirm-tier command (Allow-tier commands never gate, Block-tier never
-// run) — the network check is what keeps curl / git push / npm install human.
+// with a non-protected target, apply_patch, git_commit), non-network
+// run_command, and MCP server tools auto-run; network commands and everything
+// else delegate to the human. run_command reaching the approver is by
+// construction a Confirm-tier command (Allow-tier commands never gate,
+// Block-tier never run) — the network check is what keeps curl / git push /
+// npm install human. MCP tools are auto-approved because "auto" means "trust
+// the workspace's toolset" to the user; deny rules (Allowlist, outermost)
+// still gate specific MCP tools precisely.
 func (a *ModeApprover) autoApproveTier(toolName string, input json.RawMessage) (string, bool) {
 	switch toolName {
 	case "edit_file", "create_file":
@@ -249,7 +253,11 @@ func (a *ModeApprover) autoApproveTier(toolName string, input json.RawMessage) (
 		}
 		return "approval mode auto: in-workspace command " + cmd, true
 	default:
-		return "", false // MCP and everything else asks
+		// MCP server tools auto-run in auto tier (deny rules still gate them).
+		if strings.HasPrefix(toolName, "mcp__") {
+			return "approval mode auto: mcp tool " + toolName, true
+		}
+		return "", false // unknown tools ask
 	}
 }
 
