@@ -14,6 +14,11 @@ import (
 type ForkSessionTool struct{}
 
 func (*ForkSessionTool) Name() string { return "fork_session" }
+
+// SideEffects marks fork_session as side-effecting: it provisions a new
+// persistent session from a checkpoint (optionally an isolated worktree). The
+// approval chain gates it like any other mutating tool.
+func (*ForkSessionTool) SideEffects() bool { return true }
 func (*ForkSessionTool) Description() string {
 	return "Fork a persistent session from its latest durable, provider-valid checkpoint. The request routes through the source session's owner and preserves text/tool history in the same workspace. " +
 		"Use isolated_worktree for a clean, exact-commit Git snapshot with fresh managed ownership. Gateway/local assets fail closed. The returned child is idle; use send_to_session to continue it."
@@ -67,3 +72,5 @@ func (*ForkSessionTool) Execute(ctx context.Context, ec tools.ExecutionContext, 
 	}
 	return tools.ToolResult{Content: string(out), Output: out}, nil
 }
+
+var _ tools.SideEffecting = (*ForkSessionTool)(nil)

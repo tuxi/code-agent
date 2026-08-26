@@ -503,12 +503,14 @@ func (e *TurnExecutor) AcceptCrossSessionMessage(ctx, executionCtx context.Conte
 	notify := func(admission TurnAdmission, err error) {
 		once.Do(func() { results <- admissionResult{admission: admission, err: err} })
 	}
-	// Workflow-dispatched cross-session requests run without interactive
-	// approval: the supervisor's DAG plan is the approval gate. Run the firing
-	// at the full tier through the normal ModeApprover (deny rules and
-	// protected paths still hold) instead of bypassing the approval chain,
-	// and clear it after the turn so it never leaks into a later interactive
-	// turn of the same conversation.
+	// Cross-session dispatches: the target session may have no active WebSocket
+	// sink (the user sees the conversation in the list but hasn't opened its
+	// detail page). Without a sink, approval requests cannot reach any client and
+	// the blocked turn would hang indefinitely. Run the target turn at the full
+	// tier so side-effecting tools execute without blocking on an unreachable
+	// approval prompt. The source-side send_to_session tool is itself gated by
+	// the source workspace's approval chain (it was declared SideEffecting); the
+	// target's deny rules and protected paths still hold at the full tier.
 	if envelope.Intent == "request" {
 		e.active.SetApprovalMode(sessionID, "full")
 	}

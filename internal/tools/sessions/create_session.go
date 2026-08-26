@@ -12,6 +12,12 @@ import (
 type CreateSessionTool struct{}
 
 func (*CreateSessionTool) Name() string { return "create_session" }
+
+// SideEffects marks create_session as side-effecting: it provisions a persistent
+// child session (optionally an isolated Git worktree). The approval chain gates
+// it like any other mutating tool — ask prompts, auto asks (cross-workspace
+// dispatch is not an in-workspace op), full auto-runs.
+func (*CreateSessionTool) SideEffects() bool { return true }
 func (*CreateSessionTool) Description() string {
 	return "Create a new persistent child session owned by this Runtime. The child starts empty in the requested workspace; use send_to_session to give it work. " +
 		"The parent-child spawn edge is recorded durably. Use isolated_worktree to provision an owned Git worktree from workspace_path."
@@ -76,3 +82,5 @@ func (*CreateSessionTool) Execute(ctx context.Context, ec tools.ExecutionContext
 	}
 	return tools.ToolResult{Content: string(out), Output: out}, nil
 }
+
+var _ tools.SideEffecting = (*CreateSessionTool)(nil)

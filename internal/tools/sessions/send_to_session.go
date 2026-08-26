@@ -16,6 +16,13 @@ import (
 type SendToSessionTool struct{}
 
 func (*SendToSessionTool) Name() string { return "send_to_session" }
+
+// SideEffects marks send_to_session as side-effecting: it dispatches a turn to
+// another session (possibly another workspace), triggering execution there. The
+// approval chain gates it like any other mutating tool — ask prompts, auto asks
+// (cross-workspace dispatch is not an in-workspace op), full auto-runs. The
+// target turn's own permission tier is resolved by the target session.
+func (*SendToSessionTool) SideEffects() bool { return true }
 func (*SendToSessionTool) OutputSchema() json.RawMessage {
 	return json.RawMessage(`{
 	"type": "object",
@@ -88,6 +95,8 @@ func (*SendToSessionTool) Execute(ctx context.Context, ec tools.ExecutionContext
 	}
 	return tools.ToolResult{Content: string(out), Output: out}, nil
 }
+
+var _ tools.SideEffecting = (*SendToSessionTool)(nil)
 
 func randomID() (string, error) {
 	buf := make([]byte, 16)
