@@ -78,7 +78,7 @@ type Automation struct {
 	ModelID              string    // optional model to run with
 	Skills               []string  // skill names to auto-load at firing
 	Connectors           []string  // MCP server names to enable at firing
-	PermissionMode       string    // optional sandbox/approval tier
+	PermissionMode       string    // approval tier: "ask" | "auto" | "full"; "" = inherit the workspace tier (see NormalizePermissionMode)
 	ValidFrom            time.Time // zero = no lower bound
 	ValidUntil           time.Time // zero = no upper bound
 	CreatedFromWorkspace string    // workspace of the creating session (standalone fallback)
@@ -217,6 +217,23 @@ func computeNextRunAt(a Automation, after time.Time) (time.Time, error) {
 		return time.Time{}, err
 	}
 	return r.Next(after, loc)
+}
+
+// NormalizePermissionMode canonicalizes a permission_mode wire value onto the
+// approval-tier vocabulary shared with the runtime: "ask" | "auto" | "full",
+// with "full_access" accepted as the legacy alias of "full". "" is preserved —
+// it means "inherit the workspace tier" (the daemon applies no override, so the
+// firing runs at whatever tier the workspace's settings.local.json declares).
+// ok=false for unknown values, which callers must reject at creation/update.
+func NormalizePermissionMode(mode string) (string, bool) {
+	switch mode {
+	case "", "ask", "auto", "full":
+		return mode, true
+	case "full_access":
+		return "full", true
+	default:
+		return "", false
+	}
 }
 
 func loadLocation(tz string) (*time.Location, error) {

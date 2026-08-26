@@ -29,6 +29,7 @@ type activeTurn struct {
 	askUserApprover agent.AskUserApprover  // set by WS handler; nil = headless fallback
 	clientWaiter    agent.ClientToolWaiter // set by WS handler; nil = no client executor
 	clientTools     []agent.ClientToolDef  // set by register_tools message; nil until registered
+	approvalMode    string                 // per-turn tier override ("" = workspace default); set by headless dispatchers
 
 	// suspended marks that this in-flight turn was cancelled by SuspendAll (app
 	// backgrounding), not by a user stop. The turn goroutine reads it as it unwinds
@@ -178,6 +179,44 @@ func (r *ActiveTurnRegistry) Approver(sessionID string) agent.Approver {
 		return nil
 	}
 	return t.approver
+}
+
+// ApprovalMode returns the per-turn approval-tier override for a session
+// ("" = use the workspace default tier). Set by headless dispatchers
+// (automations, cross-session workflow turns) so the firing runs at a chosen
+// tier while keeping the ModeApprover hard lines.
+func (r *ActiveTurnRegistry) ApprovalMode(sessionID string) string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	t, ok := r.turns[sessionID]
+	if !ok {
+		return ""
+	}
+	return t.approvalMode
+}
+
+// SetApprovalMode associates (or clears, "") a per-turn approval-tier override
+// for a session. The dispatcher clears it after its turn so the override never
+// leaks into a later interactive turn of the same conversation.
+func (r *ActiveTurnRegistry) SetApprovalMode(sessionID, mode string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.shutdown {
+		return
+	}
+	t, ok := r.turns[sessionID]
+	if !ok {
+		if mode == "" {
+			return
+		}
+		t = &activeTurn{}
+		r.turns[sessionID] = t
+	}
+	t.approvalMode = mode
+	// If all connection-owned state is cleared and no turn is active, clean up.
+	if mode == "" && t.approver == nil && t.planApprover == nil && t.clientWaiter == nil && t.cancel == nil {
+		delete(r.turns, sessionID)
+	}
 }
 
 // SetApprover associates (or clears) an approver for a session. The WS handler

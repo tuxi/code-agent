@@ -76,6 +76,13 @@ type RuntimeContext struct {
 	// it from its repository so the Runner can checkpoint at each loop boundary;
 	// nil in headless/test builders keeps turn-boundary-only saving.
 	Checkpointer agent.Checkpointer
+
+	// ApprovalMode is the per-turn approval-tier override ("ask"/"auto"/"full",
+	// "" = workspace default). Set by headless dispatchers — automation firings
+	// and cross-session workflow turns — so an unattended run executes at its
+	// declared tier through the same ModeApprover (hard lines intact) instead of
+	// bypassing the approval chain entirely.
+	ApprovalMode string
 }
 
 // RunBuilder is the seam the transport layer (cmd/codeagent) fills. It assembles

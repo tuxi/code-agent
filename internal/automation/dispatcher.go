@@ -11,8 +11,11 @@ import (
 // permission_mode / connectors / skills fields (WorkBuddy's per-task "Full
 // access" / "Connectors without confirmation").
 type Perm struct {
-	// PermissionMode is the sandbox/approval tier for this firing. "full_access"
-	// auto-approves every side-effecting tool call; "" means the session default.
+	// PermissionMode is the approval tier for this firing: "ask", "auto", or
+	// "full" (canonical values, see NormalizePermissionMode). "full" runs every
+	// side-effecting call through the tier policy with hard lines intact (deny
+	// rules, protected paths, blocked commands); "" means the workspace default
+	// tier applies.
 	PermissionMode string
 	// Connectors are MCP server names authorized for use WITHOUT confirmation
 	// during this firing. Tool calls to these servers are auto-approved.

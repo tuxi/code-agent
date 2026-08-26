@@ -96,13 +96,6 @@ type TurnAdmission struct {
 	Cursor   int64
 }
 
-// allowAllApprover auto-approves every side-effecting tool call. Used for
-// cross-session workflow-dispatched turns, where the supervisor's DAG plan
-// is the approval gate.
-type allowAllApprover struct{}
-
-func (allowAllApprover) Approve(string, json.RawMessage) agent.Verdict { return agent.VerdictAllow }
-
 type admissionResult struct {
 	admission TurnAdmission
 	err       error
@@ -511,11 +504,13 @@ func (e *TurnExecutor) AcceptCrossSessionMessage(ctx, executionCtx context.Conte
 		once.Do(func() { results <- admissionResult{admission: admission, err: err} })
 	}
 	// Workflow-dispatched cross-session requests run without interactive
-	// approval: the supervisor's DAG plan is the approval gate. Install a
-	// permissive approver so tool calls (edit_file, run_command, etc.)
-	// execute without blocking on a non-existent WebSocket sink.
+	// approval: the supervisor's DAG plan is the approval gate. Run the firing
+	// at the full tier through the normal ModeApprover (deny rules and
+	// protected paths still hold) instead of bypassing the approval chain,
+	// and clear it after the turn so it never leaks into a later interactive
+	// turn of the same conversation.
 	if envelope.Intent == "request" {
-		e.active.SetApprover(sessionID, allowAllApprover{})
+		e.active.SetApprovalMode(sessionID, "full")
 	}
 
 	provenance := &session.CrossSessionProvenance{
@@ -543,6 +538,9 @@ func (e *TurnExecutor) AcceptCrossSessionMessage(ctx, executionCtx context.Conte
 		if err == nil {
 			_, err = e.executeWithSessionAssets(executionCtx, sess, envelope.MessageID, envelope.Text, model, nil, nil, provenance, notify)
 		}
+		// Clear the per-turn tier override so a later interactive turn of this
+		// conversation runs at the workspace default, not the workflow's full tier.
+		e.active.SetApprovalMode(sessionID, "")
 		notify(TurnAdmission{}, err)
 	}()
 	select {
@@ -893,6 +891,7 @@ func (e *TurnExecutor) driveTurn(
 		ClientWaiter:    e.active.ClientToolWaiter(sess.ID),
 		ClientTools:     e.active.ClientTools(sess.ID),
 		Credential:      e.sessionCredential(sess.ID),
+		ApprovalMode:    e.active.ApprovalMode(sess.ID),
 		// Mid-turn crash-safety (v1.2 §2): persist at each loop boundary so a hard
 		// kill loses at most the in-progress step. The turn-boundary Save below is
 		// still the backstop.
@@ -1507,6 +1506,14 @@ func (c repoCheckpointer) Checkpoint(ctx context.Context, sess *session.Session)
 // SetApprover associates an approver with a session.
 func (e *TurnExecutor) SetApprover(sessionID string, a agent.Approver) {
 	e.active.SetApprover(sessionID, a)
+}
+
+// SetApprovalMode associates (or clears, "") a per-turn approval-tier override
+// with a session. Used by headless dispatchers — automation firings and
+// cross-session workflow turns — so the firing runs at its declared tier
+// through the normal ModeApprover instead of replacing the approver.
+func (e *TurnExecutor) SetApprovalMode(sessionID, mode string) {
+	e.active.SetApprovalMode(sessionID, mode)
 }
 
 // SetPlanApprover associates a plan approver with a session.

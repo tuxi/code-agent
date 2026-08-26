@@ -340,6 +340,7 @@ func run() error {
 		CloneService:      cloneService,
 		Granter:           rb.Rules(),
 		Providers:         providerStore,
+		Permissions:       server.NewPermissionStore(home),
 		WorkspaceReloader: wsReg.ReloadWorkspace,
 		Prompts:           wsReg,
 		CapabilityResolver: func(ctx context.Context) []string {
@@ -431,18 +432,28 @@ type daemonAutomationAdapter struct {
 
 func (a *daemonAutomationAdapter) Submit(ctx context.Context, sessionID, prompt, model string, perm automation.Perm) (string, error) {
 	// Apply the per-task permission context (WorkBuddy's per-task "Full access" /
-	// "Connectors without confirmation"). full_access auto-approves every
-	// side-effecting call; connectors auto-approve only the named MCP servers;
-	// the zero value leaves the session default approval in place.
-	switch {
-	case perm.PermissionMode == "full_access":
-		a.exec.SetApprover(sessionID, allowAllApprover{})
-	case len(perm.Connectors) > 0:
+	// "Connectors without confirmation"). A declared tier is applied as a
+	// per-turn override through the normal ModeApprover — deny rules and
+	// protected paths still hold, unlike the old replace-the-approver approach —
+	// and cleared after the turn so it never leaks into a later interactive turn.
+	// "" inherits the workspace's tier. Connectors auto-approve only the named
+	// MCP servers.
+	mode := perm.PermissionMode
+	if normalized, ok := automation.NormalizePermissionMode(mode); ok {
+		mode = normalized
+	} else {
+		mode = "" // unknown value: be conservative, inherit the workspace tier
+	}
+	if mode != "" {
+		a.exec.SetApprovalMode(sessionID, mode)
+	}
+	if len(perm.Connectors) > 0 {
 		a.exec.SetApprover(sessionID, connectorApprover{connectors: perm.Connectors})
 	}
 	_, err := a.exec.Execute(ctx, sessionID, prompt, model)
-	// Clear the injected approver so it does not leak into later turns of the
-	// same session (chat mode).
+	// Clear the injected tier override and connector approver so neither leaks
+	// into later turns of the same session (chat/reuse mode).
+	a.exec.SetApprovalMode(sessionID, "")
 	a.exec.SetApprover(sessionID, nil)
 	if err != nil {
 		// Record the failure into the session so the user can open the standalone
@@ -493,15 +504,11 @@ func (a *daemonAutomationAdapter) ConversationExists(ctx context.Context, sessio
 	return true, nil
 }
 
-// allowAllApprover auto-approves every side-effecting tool call. It is the
-// "full_access" permission tier for unattended automation firings.
-type allowAllApprover struct{}
-
-func (allowAllApprover) Approve(string, json.RawMessage) agent.Verdict { return agent.VerdictAllow }
-
 // connectorApprover auto-approves tool calls whose name is prefixed by an
 // authorized connector (MCP server), and defers everything else (Ask) so the
-// session default approval still applies to non-connector tools.
+// session default approval still applies to non-connector tools. It is only
+// installed for firings that declare connectors; a firing without connectors
+// runs through the plain tier chain.
 type connectorApprover struct {
 	connectors []string
 }

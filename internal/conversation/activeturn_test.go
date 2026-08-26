@@ -106,6 +106,31 @@ func TestActiveTurnRegistry_Approver(t *testing.T) {
 	r.FinishTurn("s1") // now both nil → cleanup
 }
 
+func TestActiveTurnRegistry_ApprovalMode(t *testing.T) {
+	r := NewActiveTurnRegistry()
+
+	if m := r.ApprovalMode("s1"); m != "" {
+		t.Errorf("unknown session should return empty mode, got %q", m)
+	}
+
+	r.SetApprovalMode("s1", "full")
+	if m := r.ApprovalMode("s1"); m != "full" {
+		t.Errorf("mode = %q, want full", m)
+	}
+
+	// Clearing "" removes the override.
+	r.SetApprovalMode("s1", "")
+	if m := r.ApprovalMode("s1"); m != "" {
+		t.Errorf("mode after clear = %q, want empty", m)
+	}
+
+	// Clearing a never-set session is a no-op, not a creation.
+	r.SetApprovalMode("never", "")
+	if _, exists := r.turns["never"]; exists {
+		t.Error("clearing a never-set session must not create a registry entry")
+	}
+}
+
 func TestActiveTurnRegistry_Shutdown(t *testing.T) {
 	r := NewActiveTurnRegistry()
 	ctx := context.Background()

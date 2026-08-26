@@ -73,6 +73,16 @@ func TestPermissionsGetAndPut(t *testing.T) {
 	if svc.set != "full" {
 		t.Errorf("SetMode called with %q, want full", svc.set)
 	}
+	// The PUT response reuses the GET shape verbatim (scope/path/available/mode
+	// + applied=true) so the client decodes both endpoints with one model.
+	var putResp permissionResponse
+	decodeResponse(t, rec.Result(), &putResp)
+	if putResp.Scope != "workspace" || putResp.Path != "/foo" || putResp.Mode != "full" || !putResp.Applied {
+		t.Errorf("PUT response = %+v, want scope=workspace path=/foo mode=full applied=true", putResp)
+	}
+	if len(putResp.Available) != 3 || putResp.Available[0] != "ask" {
+		t.Errorf("PUT available = %v, want [ask auto full]", putResp.Available)
+	}
 
 	// PUT with an invalid mode → 400.
 	body = bytes.NewBufferString(`{"mode":"nope"}`)

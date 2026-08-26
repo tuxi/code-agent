@@ -48,15 +48,28 @@ func ValidMode(m Mode) bool {
 	}
 }
 
+// ParseMode maps a wire string to a Mode. "full_access" is accepted as a
+// legacy alias of "full" (the automation permission_mode vocabulary predates
+// the tier rename). ok=false for anything else — callers treat that as
+// "not set" and fall back to the workspace default.
+func ParseMode(s string) (Mode, bool) {
+	switch Mode(s) {
+	case ModeAsk, ModeAuto, ModeFull:
+		return Mode(s), true
+	case "full_access":
+		return ModeFull, true
+	default:
+		return ModeAsk, false
+	}
+}
+
 // ModeFromSettings returns the effective tier from the merged settings view:
 // the highest layer's approval_mode, defaulting to ask for ""/invalid.
 func ModeFromSettings(s settings.Settings) Mode {
-	switch Mode(s.ApprovalMode) {
-	case ModeAuto, ModeFull:
-		return Mode(s.ApprovalMode)
-	default:
-		return ModeAsk
+	if m, ok := ParseMode(s.ApprovalMode); ok {
+		return m
 	}
+	return ModeAsk
 }
 
 // ModeFrom unwraps a possibly-decorated approver chain to find the
@@ -142,10 +155,14 @@ func (a *ModeApprover) Approve(toolName string, input json.RawMessage) agent.Ver
 // ApproveAudited implements agent.AuditedApprover. A call the tier grants is
 // returned with a human-readable reason so the loop emits a correlated
 // EventAutoApproved; everything else delegates to the human (which keeps its
-// own audit when it has one).
+// own audit when it has one). A nil human (headless firing with no connected
+// client) denies — the same fail-safe as a nil runner Approver.
 func (a *ModeApprover) ApproveAudited(toolName string, input json.RawMessage) (agent.Verdict, string) {
 	if reason, ok := a.autoApprove(toolName, input); ok {
 		return agent.VerdictAllow, reason
+	}
+	if a.next == nil {
+		return agent.VerdictDeny, ""
 	}
 	if aa, ok := a.next.(agent.AuditedApprover); ok {
 		return aa.ApproveAudited(toolName, input)

@@ -45,12 +45,49 @@ func TestModeFromSettings(t *testing.T) {
 		{"ask", ModeAsk},
 		{"auto", ModeAuto},
 		{"full", ModeFull},
+		{"full_access", ModeFull},
 		{"bogus", ModeAsk},
 	}
 	for _, c := range cases {
 		if got := ModeFromSettings(settings.Settings{ApprovalMode: c.raw}); got != c.want {
 			t.Errorf("ModeFromSettings(%q) = %q, want %q", c.raw, got, c.want)
 		}
+	}
+}
+
+func TestParseMode(t *testing.T) {
+	cases := []struct {
+		raw  string
+		want Mode
+		ok   bool
+	}{
+		{"", ModeAsk, false}, // empty = inherit, not a valid explicit mode
+		{"ask", ModeAsk, true},
+		{"auto", ModeAuto, true},
+		{"full", ModeFull, true},
+		{"full_access", ModeFull, true}, // legacy alias
+		{"bogus", ModeAsk, false},
+	}
+	for _, c := range cases {
+		got, ok := ParseMode(c.raw)
+		if got != c.want || ok != c.ok {
+			t.Errorf("ParseMode(%q) = (%q, %v), want (%q, %v)", c.raw, got, ok, c.want, c.ok)
+		}
+	}
+}
+
+// A nil human (headless firing with no connected client) must deny in ask mode
+// rather than panic — the same fail-safe as a nil runner Approver.
+func TestNilHumanDeniesInAskMode(t *testing.T) {
+	ma := NewModeApprover(ModeAsk, t.TempDir(), nil)
+	if v, reason := ma.ApproveAudited("run_command", json.RawMessage(`{"command":"rm -rf build"}`)); v != agent.VerdictDeny || reason != "" {
+		t.Fatalf("ask with nil human: verdict=%v reason=%q, want deny", v, reason)
+	}
+	if ma.ApprovePlan(agent.Plan{}) != agent.PlanRejected {
+		t.Fatal("ask with nil human: plan must be rejected")
+	}
+	if ma.ApproveExternalPath("/outside/x", "read") {
+		t.Fatal("ask with nil human: external path must be denied")
 	}
 }
 

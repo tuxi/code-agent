@@ -216,6 +216,13 @@ func (r automationCreateRequest) toAutomation() (automation.Automation, error) {
 	if mode == automation.ModeChat && r.SessionID == "" {
 		return automation.Automation{}, errBadRequest("chat mode requires session_id")
 	}
+	permissionMode, ok := automation.NormalizePermissionMode(r.PermissionMode)
+	if !ok {
+		return automation.Automation{}, errBadRequest("permission_mode must be one of ask, auto, full")
+	}
+	if permissionMode == "" {
+		permissionMode = "full" // unattended default, same as the tool
+	}
 	status := automation.StatusActive
 	if r.Enabled != nil && !*r.Enabled {
 		status = automation.StatusPaused
@@ -242,7 +249,7 @@ func (r automationCreateRequest) toAutomation() (automation.Automation, error) {
 		ModelID:        r.ModelID,
 		Skills:         r.Skills,
 		Connectors:     r.Connectors,
-		PermissionMode: r.PermissionMode,
+		PermissionMode: permissionMode,
 	}, nil
 }
 
@@ -289,7 +296,13 @@ func (r automationPatchRequest) toPatch() (automation.AutomationPatch, error) {
 	p.ModelID = r.ModelID
 	p.Skills = r.Skills
 	p.Connectors = r.Connectors
-	p.PermissionMode = r.PermissionMode
+	if r.PermissionMode != nil {
+		m, ok := automation.NormalizePermissionMode(*r.PermissionMode)
+		if !ok {
+			return automation.AutomationPatch{}, errBadRequest("permission_mode must be one of ask, auto, full")
+		}
+		p.PermissionMode = &m
+	}
 	if r.Enabled != nil {
 		st := automation.StatusActive
 		if !*r.Enabled {

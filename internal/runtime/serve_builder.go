@@ -408,7 +408,14 @@ func (b *ServeRunBuilder) Build(ctx conversation.RuntimeContext) conversation.Tu
 	// wrapper delegates everything in ask mode, so a workspace with no
 	// configured tier behaves exactly as before. The mode is re-read from disk
 	// every turn, so a /v1/permissions PUT lands at the next turn boundary.
-	wrapped := approve.NewModeApprover(b.approvalMode(cfg, workspacePath), workspacePath, ctx.Approver).WithPlanApprover(ctx.PlanApprover)
+	// A per-turn override (ctx.ApprovalMode, set by headless dispatchers such as
+	// automation firings and cross-session workflow turns) takes priority over
+	// the workspace tier.
+	mode := b.approvalMode(cfg, workspacePath)
+	if m, ok := approve.ParseMode(ctx.ApprovalMode); ok {
+		mode = m
+	}
+	wrapped := approve.NewModeApprover(mode, workspacePath, ctx.Approver).WithPlanApprover(ctx.PlanApprover)
 	ctx.Approver = wrapped
 	ctx.PlanApprover = wrapped
 

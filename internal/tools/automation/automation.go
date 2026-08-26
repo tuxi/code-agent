@@ -187,16 +187,22 @@ func buildAutomation(in automationInput, ec tools.ExecutionContext) (automation.
 	if in.Enabled != nil && !*in.Enabled {
 		status = automation.StatusPaused
 	}
-	// Default permission: full_access. An automation runs unattended — if it
+	// Default permission tier: full. An automation runs unattended — if it
 	// blocks on a human approval nobody is watching, the automation is useless
 	// (e.g. a nightly BTC check that stalls on an approval prompt). Since the
-	// user explicitly created an automation, default to letting it act; the skill
-	// and the client form surface this so the user knows the task's permission
-	// level, and can narrow it (connectors-only or session default) for
-	// high-risk tasks.
-	permissionMode := in.PermissionMode
+	// user explicitly created an automation, default to letting it act; the
+	// tier goes through the same ModeApprover as interactive sessions, so deny
+	// rules and protected paths still hold. The skill and the client form
+	// surface this so the user knows the task's permission level, and can
+	// narrow it (auto / ask, or inherit the workspace tier with "") for
+	// high-risk tasks. Values are canonicalized via NormalizePermissionMode
+	// ("full_access" is accepted as the legacy alias of "full").
+	permissionMode, ok := automation.NormalizePermissionMode(in.PermissionMode)
+	if !ok {
+		return automation.Automation{}, fmt.Errorf("automation: permission_mode must be one of ask, auto, full")
+	}
 	if permissionMode == "" {
-		permissionMode = "full_access"
+		permissionMode = "full"
 	}
 	var scheduledAt time.Time
 	if in.ScheduledAt != "" {
@@ -286,7 +292,11 @@ func buildPatch(in automationInput) (automation.AutomationPatch, error) {
 		p.Connectors = &in.Connectors
 	}
 	if in.PermissionMode != "" {
-		p.PermissionMode = &in.PermissionMode
+		m, ok := automation.NormalizePermissionMode(in.PermissionMode)
+		if !ok {
+			return p, fmt.Errorf("automation: permission_mode must be one of ask, auto, full")
+		}
+		p.PermissionMode = &m
 	}
 	if in.Enabled != nil {
 		st := automation.StatusActive

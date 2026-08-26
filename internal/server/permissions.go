@@ -29,11 +29,14 @@ type PermissionService interface {
 // available lists the three selectable tiers; mode is the effective one.
 // scope is always "workspace" in v1 — a user-global tier endpoint
 // (/v1/permissions, scope=user) is a future extension and will reuse this shape.
+// The PUT response reuses this shape verbatim (same required fields plus
+// applied=true) so the client decodes GET and PUT with one model.
 type permissionResponse struct {
 	Scope     string   `json:"scope"`
 	Path      string   `json:"path"`
 	Available []string `json:"available"`
 	Mode      string   `json:"mode"`
+	Applied   bool     `json:"applied,omitempty"` // PUT only
 }
 
 // validApprovalMode reports whether mode is one of the three tiers.
@@ -102,6 +105,8 @@ func registerPermissionRoutes(mux *http.ServeMux, opts MuxOptions) {
 			writeJSON(w, r, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 			return
 		}
-		writeJSON(w, r, http.StatusOK, map[string]any{"mode": body.Mode, "applied": true})
+		writeJSON(w, r, http.StatusOK, permissionResponse{
+			Scope: "workspace", Path: root, Available: available, Mode: body.Mode, Applied: true,
+		})
 	})
 }

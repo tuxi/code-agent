@@ -82,10 +82,10 @@ func TestAutomationCreate(t *testing.T) {
 	if created.Name != "daily" || created.CreatedFromWorkspace != "/ws" {
 		t.Fatalf("unexpected created: %+v", created)
 	}
-	// Default permission is full_access so an unattended firing never stalls on
-	// an approval nobody is watching.
-	if created.PermissionMode != "full_access" {
-		t.Fatalf("permission_mode = %q, want full_access (default)", created.PermissionMode)
+	// Default permission is full so an unattended firing never stalls on an
+	// approval nobody is watching (canonical tier value, not the legacy alias).
+	if created.PermissionMode != "full" {
+		t.Fatalf("permission_mode = %q, want full (default)", created.PermissionMode)
 	}
 	// cwds defaults to the creating session's workspace so the client can show
 	// where the task runs.

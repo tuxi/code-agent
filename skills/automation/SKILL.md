@@ -28,15 +28,15 @@ description: Create, list, view, update, and delete scheduled automations (定�
    - **任务内容**（prompt）：用户只说"11点开始"没说做什么时，必须问。给 2-4 个常见选项
      （如"总结今日工作 / 拉取项目状态 / 生成日报模板 / Other"）。
    - **工作目录**（cwds）：涉及项目文件时问"在哪个工作目录运行？"（选项：当前工作区 / 无特定目录 / Other）。
-   - **权限**：**默认是 full_access（全权）**——自动化无人值守运行，若卡在审批没人看，任务就废了。
+   - **权限**：**默认是 full（全权）**——自动化无人值守运行，若卡在审批没人看，任务就废了。
      创建时向用户说明默认权限，并让用户确认；涉及资金/外部平台/写文件等高风险任务时，
-     提醒用户可收窄为"仅指定连接器免确认"或"默认审批"。
+     提醒用户可收窄为 auto / ask / 继承 workspace 档位（""）。
    用户回答后，把答案填入对应字段再创建。
 3. 调用 `automation` 工具，`mode=create`，填好 name / prompt / schedule_type / rrule 或
    scheduled_at / timezone / mode_exec /（可选）cwds / permission_mode / connectors。
-   **不传 permission_mode 时默认 full_access**。
+   **不传 permission_mode 时默认 full**。
 4. 创建成功后向用户确认：任务名、执行时间、首次触发时间（工具返回的 `next_run_at`）、
-   工作目录、**权限级别（默认 full_access，提醒用户）**。一次性任务要说明"执行一次后自动结束"。
+   工作目录、**权限级别（默认 full，提醒用户）**。一次性任务要说明"执行一次后自动结束"。
 
 ## 自然语言 → 调度规则映射
 
@@ -77,17 +77,22 @@ description: Create, list, view, update, and delete scheduled automations (定�
 
 ## 安全边界（必须遵守）
 
-无人值守任务在无人类在场时运行，**默认 full_access（全权）**——否则任务会卡在审批上没人看，等于废了：
+无人值守任务在无人类在场时运行，**默认 full（全权）**——否则任务会卡在审批上没人看，等于废了：
 
 - 允许：读行情、web_search/web_fetch、生成分析/报告/预警、生成"可一键执行的指令"。
 - **禁止**：未经用户确认的真实下单/资金操作。涉及资金/交易的任务，只能"生成提案 + 等用户确认"，
   绝不默认执行。
-- 创建涉及敏感操作的任务前，提醒用户该任务会无人值守运行，并说明默认权限是 full_access。
-- **per-task 权限**：任务创建时通过 `permission_mode` / `connectors` 显式声明权限级别——
-  - `permission_mode=full_access`（**默认**）：该任务触发时所有工具免确认，不卡审批。
+- 创建涉及敏感操作的任务前，提醒用户该任务会无人值守运行，并说明默认权限是 full。
+- **per-task 权限**：任务创建时通过 `permission_mode` / `connectors` 显式声明权限级别。
+  `permission_mode` 取值与全局审批档位同一套词表（`ask` / `auto` / `full`，
+  `full_access` 是 `full` 的旧别名，向后兼容）：
+  - `permission_mode=full`（**默认**）：该任务触发时所有工具免确认，不卡审批；
+    仍保留硬底线（deny 规则、受保护文件、危险命令）。
+  - `permission_mode=auto`：工作区内操作免确认，网络命令/外部路径仍可能卡审批。
+  - `permission_mode=ask`：触发时走默认审批（最安全，但无人值守时可能卡审批）。
+  - `permission_mode=""`（显式传空）：继承任务所在 workspace 的审批档位。
   - `connectors=[...]`：仅列出的 MCP 连接器在该任务触发时免确认，其余工具仍走默认审批。
-  - `permission_mode=""`（显式传空）：该任务触发时走会话默认审批（最安全，但可能卡审批）。
-  - 创建时用 `ask_user` 让用户明确知道权限级别；默认 full_access，高风险任务提醒用户可收窄。
+  - 创建时用 `ask_user` 让用户明确知道权限级别；默认 full，高风险任务提醒用户可收窄。
 
 ## 示例
 
