@@ -7,6 +7,7 @@ import (
 
 	"github.com/tuxi/flux-workflow/definition"
 	domain "github.com/tuxi/flux-workflow/domain"
+	workflowruntime "github.com/tuxi/flux-workflow/runtime"
 	"gorm.io/gorm"
 )
 
@@ -52,35 +53,40 @@ func NewSaveTemplateFunc() SaveTemplateFunc {
 			return fmt.Errorf("unmarshal definition: %w", err)
 		}
 
-		// Re-register under the friendly name. RegisterWorkflow upserts by name
-		// and auto-versions on hash change (same name + different definition =
-		// new version), so re-saving an existing template iterates it.
-		wfDef.Name = name
-		wfDef.Desc = description
-		if err := rt.RegisterWorkflow(ctx, &wfDef); err != nil {
-			return fmt.Errorf("register template: %w", err)
-		}
-
-		// Persist the manifest and mark the row as a reusable template. The
-		// manifest column is code-agent business data layered on the engine's
-		// workflows table (the engine model is unaware of it, so it survives).
-		if err := ensureWorkflowTemplateColumns(gdb); err != nil {
-			return err
-		}
-		manifest := json.RawMessage(task.InputJSON)
-		if len(manifest) == 0 {
-			manifest = json.RawMessage(`{}`)
-		}
-		var wf domain.Workflow
-		if err := gdb.Where("name = ?", name).First(&wf).Error; err != nil {
-			return fmt.Errorf("template %q not found after register: %w", name, err)
-		}
-		if err := gdb.Table("workflows").Where("id = ?", wf.ID).
-			Updates(map[string]any{"manifest_json": string(manifest), "is_template": 1}).Error; err != nil {
-			return fmt.Errorf("persist manifest: %w", err)
-		}
-		return nil
+		return persistTemplateDefinition(ctx, rt, gdb, name, description, &wfDef, task.InputJSON)
 	}
+}
+
+// persistTemplateDefinition re-registers a compiled definition under a friendly
+// name and stores the source manifest + is_template marker on the workflows
+// row. Shared by save-as-template (from a run) and save_tool_sequence (from a
+// compiled manifest). RegisterWorkflow upserts by name and auto-versions on
+// hash change, so re-saving an existing template iterates it.
+func persistTemplateDefinition(ctx context.Context, rt *workflowruntime.Runtime, gdb *gorm.DB, name, description string, def *definition.WorkflowDefinition, manifest []byte) error {
+	def.Name = name
+	def.Desc = description
+	if err := rt.RegisterWorkflow(ctx, def); err != nil {
+		return fmt.Errorf("register template: %w", err)
+	}
+
+	// Persist the manifest and mark the row as a reusable template. The
+	// manifest column is code-agent business data layered on the engine's
+	// workflows table (the engine model is unaware of it, so it survives).
+	if err := ensureWorkflowTemplateColumns(gdb); err != nil {
+		return err
+	}
+	if len(manifest) == 0 {
+		manifest = []byte(`{}`)
+	}
+	var wf domain.Workflow
+	if err := gdb.Where("name = ?", name).First(&wf).Error; err != nil {
+		return fmt.Errorf("template %q not found after register: %w", name, err)
+	}
+	if err := gdb.Table("workflows").Where("id = ?", wf.ID).
+		Updates(map[string]any{"manifest_json": string(manifest), "is_template": 1}).Error; err != nil {
+		return fmt.Errorf("persist manifest: %w", err)
+	}
+	return nil
 }
 
 // ensureWorkflowTemplateColumns adds the code-agent-only columns to the

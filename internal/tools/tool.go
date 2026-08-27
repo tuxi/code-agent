@@ -160,6 +160,9 @@ type WorkflowRunner interface {
 	Run(ctx context.Context, workspaceRoot, name string, input map[string]any) (int64, error)
 	// Delete soft-deletes a saved template (stops it from being triggered).
 	Delete(ctx context.Context, workspaceRoot, name string) error
+	// SaveToolSequence compiles a tool_sequence manifest and persists it as a
+	// named template (R9), returning the template name.
+	SaveToolSequence(ctx context.Context, workspaceRoot, name string, manifest json.RawMessage) (string, error)
 }
 
 type SessionCreateRequest struct {
