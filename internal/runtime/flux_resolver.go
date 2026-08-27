@@ -19,6 +19,8 @@ import (
 	"github.com/tuxi/flux-workflow/worker"
 
 	"code-agent/internal/controlplane"
+	"code-agent/internal/session"
+	sessionsqlite "code-agent/internal/session/sqlite"
 )
 
 // SetFluxExternalResolver installs the cross-session resolver on the flux
@@ -82,8 +84,11 @@ func (r *externalResolver) ResolveAwait(ctx context.Context, binding *domain.Awa
 		return nil, fmt.Errorf("flux external resolver: missing session_id or turn_id in correlation")
 	}
 
-	// Resolve the workspace path via the index so we can open the session's
-	// per-workspace event store.
+	// Resolve the session's authoritative store via the index. Use the recorded
+	// store_path, not a workspace-derived path: the session may be routed to a
+	// different process's store (supervisor/owner routing), in which case the
+	// workspace-derived store has none of its events and the resolver would
+	// forever report "still running" (see check_turn for the same rule).
 	if IndexDB() == nil {
 		return nil, nil // index unavailable — retry later
 	}
@@ -92,11 +97,22 @@ func (r *externalResolver) ResolveAwait(ctx context.Context, binding *domain.Awa
 		return nil, nil // session not found — retry later
 	}
 
-	store, err := OpenStore(entry.WorkspacePath)
-	if err != nil {
-		return nil, nil // store unavailable — retry later
+	var store session.Store
+	if entry.StorePath != "" {
+		ro, err := sessionsqlite.NewReadOnly(entry.StorePath)
+		if err != nil {
+			return nil, nil // store unavailable — retry later
+		}
+		defer ro.Close()
+		store = ro
+	} else {
+		ws, err := OpenStore(entry.WorkspacePath)
+		if err != nil {
+			return nil, nil // store unavailable — retry later
+		}
+		defer ws.Close()
+		store = ws
 	}
-	defer store.Close()
 
 	// Replay events since the admission cursor, tracking the latest turn
 	// lifecycle event. A turn may pause and resume several times; only the
