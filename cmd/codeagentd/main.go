@@ -373,6 +373,7 @@ func run() error {
 		WorkflowList:           runtime.NewWorkflowListFunc(),
 		WorkflowDetail:         runtime.NewWorkflowDetailFunc(),
 		WorkflowSnapshotByTask: runtime.NewWorkflowSnapshotByTaskFunc(),
+		WorkflowRun:            runtime.NewHeadlessRuntime(owner).SubmitHeadlessRun,
 		AutomationStore:        automationStore,
 	})
 	sharing.SetCoreHandler(handler)

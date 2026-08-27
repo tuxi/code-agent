@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -27,6 +28,9 @@ func fakeWorkflowFuncs(t *testing.T) *MuxOptions {
 				WorkflowID: "wf-a",
 				Task:       &runtime.WorkflowTaskState{ID: taskID, Status: "pending"},
 			}, nil
+		},
+		WorkflowRun: func(ctx context.Context, root, name string, input map[string]any) (int64, error) {
+			return 42, nil
 		},
 	}
 	return opts
@@ -93,6 +97,31 @@ func TestWorkflowRoutes(t *testing.T) {
 
 	t.Run("missing workspace param", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/v1/workflows", nil)
+		rr := httptest.NewRecorder()
+		mux.ServeHTTP(rr, req)
+		if rr.Code != http.StatusBadRequest {
+			t.Fatalf("status=%d", rr.Code)
+		}
+	})
+
+	t.Run("headless trigger run", func(t *testing.T) {
+		body := bytes.NewReader([]byte(`{"goal":"g","agents":[],"parallelism":1}`))
+		req := httptest.NewRequest(http.MethodPost, "/v1/workflows/wf-a/runs"+ws, body)
+		rr := httptest.NewRecorder()
+		mux.ServeHTTP(rr, req)
+		if rr.Code != http.StatusAccepted {
+			t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+		}
+		var resp struct {
+			Data map[string]int64 `json:"data"`
+		}
+		if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil || resp.Data["task_id"] != 42 {
+			t.Fatalf("body=%s", rr.Body.String())
+		}
+	})
+
+	t.Run("headless trigger bad body", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/v1/workflows/wf-a/runs"+ws, bytes.NewReader([]byte(`{`)))
 		rr := httptest.NewRecorder()
 		mux.ServeHTTP(rr, req)
 		if rr.Code != http.StatusBadRequest {

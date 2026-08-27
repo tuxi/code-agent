@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/json"
 	"net/http"
 	"strconv"
 )
@@ -87,5 +88,37 @@ func registerWorkflowRoutes(mux *http.ServeMux, opts MuxOptions) {
 			return
 		}
 		writeJSON(w, r, http.StatusOK, snapshot)
+	})
+
+	// Headless trigger (R5): submit a saved template by name and return the
+	// task id. The run executes asynchronously in the workspace runtime's
+	// workers; the client observes progress via the snapshot endpoint and the
+	// workflow event stream.
+	mux.HandleFunc("POST /v1/workflows/{name}/runs", func(w http.ResponseWriter, r *http.Request) {
+		if opts.WorkflowRun == nil {
+			http.Error(w, "workflow run not available", http.StatusNotFound)
+			return
+		}
+		root, ok := workspaceRoot(r)
+		if !ok {
+			http.Error(w, "missing workspace query parameter", http.StatusBadRequest)
+			return
+		}
+		name := r.PathValue("name")
+		if name == "" {
+			http.Error(w, "missing workflow name", http.StatusBadRequest)
+			return
+		}
+		var input map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+			http.Error(w, "invalid JSON body", http.StatusBadRequest)
+			return
+		}
+		taskID, err := opts.WorkflowRun(r.Context(), root, name, input)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		}
+		writeJSON(w, r, http.StatusAccepted, map[string]int64{"task_id": taskID})
 	})
 }
