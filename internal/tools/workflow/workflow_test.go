@@ -58,6 +58,14 @@ func (f *fakeRunner) ResumeTask(ctx context.Context, root string, taskID int64, 
 	f.resumeCalled = true
 	return f.resumeErr
 }
+func (f *fakeRunner) RunSnapshot(ctx context.Context, root string, taskID int64) (json.RawMessage, error) {
+	return json.RawMessage(`{"workflow_id":"wf-a","task":{"id":` + jsonInt(taskID) + `,"status":"success","output":{"final":{"result_type":"tool_sequence","extras":{"result":"indicator data"}}}}}`), nil
+}
+
+func jsonInt(n int64) string {
+	b, _ := json.Marshal(n)
+	return string(b)
+}
 
 func execute(t *testing.T, runner tools.WorkflowRunner, raw string) tools.ToolResult {
 	t.Helper()
@@ -117,6 +125,23 @@ func TestWorkflowToolModes(t *testing.T) {
 		var out map[string]any
 		if err := json.Unmarshal(result.Output, &out); err != nil || out["task_id"] != float64(42) {
 			t.Fatalf("resume result=%s", result.Content)
+		}
+	})
+
+	t.Run("status", func(t *testing.T) {
+		result := execute(t, &fakeRunner{}, `{"mode":"status","task_id":42}`)
+		var snap struct {
+			Task struct {
+				ID     int64           `json:"id"`
+				Status string          `json:"status"`
+				Output json.RawMessage `json:"output"`
+			} `json:"task"`
+		}
+		if err := json.Unmarshal(result.Output, &snap); err != nil {
+			t.Fatal(err)
+		}
+		if snap.Task.ID != 42 || snap.Task.Status != "success" || len(snap.Task.Output) == 0 {
+			t.Fatalf("snapshot=%s", result.Content)
 		}
 	})
 	t.Run("delete", func(t *testing.T) {

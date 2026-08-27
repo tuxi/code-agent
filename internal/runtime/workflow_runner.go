@@ -169,3 +169,15 @@ func (r *workflowRunner) resolveStepTools(ctx context.Context, workspaceRoot str
 func (r *workflowRunner) ResumeTask(ctx context.Context, workspaceRoot string, taskID int64, resumeFrom string) error {
 	return NewHeadlessRuntime(r.control, r.wsReg).ResumeRun(ctx, workspaceRoot, taskID, resumeFrom)
 }
+
+// RunSnapshot returns a run's full snapshot (task status + output + node
+// states) by task id — the conversation-side read path for headless runs,
+// whose task input carries no workflow_id for the legacy workflow_status
+// matching.
+func (r *workflowRunner) RunSnapshot(ctx context.Context, workspaceRoot string, taskID int64) (json.RawMessage, error) {
+	snap, err := NewWorkflowSnapshotByTaskFunc()(ctx, workspaceRoot, taskID)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(snap)
+}

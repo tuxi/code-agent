@@ -36,7 +36,7 @@ func (*WorkflowTool) InputSchema() json.RawMessage {
 	return json.RawMessage(`{
 		"type": "object",
 		"properties": {
-			"mode": {"type": "string", "enum": ["list", "view", "save", "run", "delete", "extract", "save_tool_sequence", "resume"]},
+			"mode": {"type": "string", "enum": ["list", "view", "save", "run", "delete", "extract", "save_tool_sequence", "resume", "status"]},
 			"name": {"type": "string", "description": "template name; required for view/run/delete/save_tool_sequence, for save it is the new template name"},
 			"description": {"type": "string", "description": "save: human-readable template description"},
 			"source_task_id": {"type": "integer", "description": "save: the run (task id) to persist as a template; large ids can be passed as a string to avoid precision loss"},
@@ -44,7 +44,7 @@ func (*WorkflowTool) InputSchema() json.RawMessage {
 			"input": {"type": "object", "description": "run: the run input manifest {goal, template, agents:[{role, session_id, message, intent, correlation_id}], parallelism, timeout_ms}"},
 			"limit": {"type": "integer", "description": "extract: max number of recent tool calls to return (default 50)"},
 			"manifest": {"type": "object", "description": "save_tool_sequence: the tool_sequence manifest {type:\"tool_sequence\", goal, description, inputs:[{name,type,required,description}], steps:[{tool,args}]}"},
-			"task_id": {"type": "integer", "description": "resume: the run (task id) to recover; large ids can be passed as a string to avoid precision loss"},
+			"task_id": {"type": "integer", "description": "resume/status: the run (task id) to recover or query; large ids can be passed as a string to avoid precision loss"},
 			"resume_from": {"type": "string", "description": "resume: node name to resume from; empty auto-collects failed roots"}
 		},
 		"required": ["mode"],
@@ -216,6 +216,16 @@ func (*WorkflowTool) Execute(ctx context.Context, ec tools.ExecutionContext, raw
 			return tools.ToolResult{}, fmt.Errorf("workflow: resume: %w", err)
 		}
 		out, _ := json.Marshal(map[string]any{"task_id": int64(in.TaskID), "status": "resuming"})
+		return tools.ToolResult{Content: string(out), Output: out}, nil
+
+	case "status":
+		if int64(in.TaskID) <= 0 {
+			return tools.ToolResult{}, fmt.Errorf("workflow: status requires task_id")
+		}
+		out, err := runner.RunSnapshot(ctx, root, int64(in.TaskID))
+		if err != nil {
+			return tools.ToolResult{}, fmt.Errorf("workflow: status: %w", err)
+		}
 		return tools.ToolResult{Content: string(out), Output: out}, nil
 
 	default:

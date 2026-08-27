@@ -166,6 +166,9 @@ type WorkflowRunner interface {
 	// ResumeTask recovers a suspended/failed/canceled run by task id so it can
 	// be re-driven to a terminal state (manual escape hatch).
 	ResumeTask(ctx context.Context, workspaceRoot string, taskID int64, resumeFrom string) error
+	// RunSnapshot returns a run's full snapshot (task status + output + node
+	// states) by task id, so the agent can read a headless run's results.
+	RunSnapshot(ctx context.Context, workspaceRoot string, taskID int64) (json.RawMessage, error)
 }
 
 type SessionCreateRequest struct {
