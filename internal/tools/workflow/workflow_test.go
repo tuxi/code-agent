@@ -237,3 +237,39 @@ func TestWorkflowToolSaveToolSequenceApprovalGate(t *testing.T) {
 		t.Fatal("runner not called despite approval")
 	}
 }
+
+func TestWorkflowToolLargeTaskIDAsString(t *testing.T) {
+	// Snowflake task ids exceed JSON safe integers (2^53); a model must be able
+	// to pass them as strings without precision loss (…1808 → …1800 regression).
+	runner := &fakeRunner{}
+	big := "2092971587752951808"
+	ec := tools.ExecutionContext{WorkspaceRoot: "/ws", WorkflowRunner: runner}
+	_, err := (&WorkflowTool{}).Execute(context.Background(), ec, json.RawMessage(`{"mode":"save","name":"tpl","source_task_id":"`+big+`"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !runner.saveCalled {
+		t.Fatal("save not called")
+	}
+
+	// resume with a string task id.
+	runner2 := &fakeRunner{}
+	ec2 := tools.ExecutionContext{WorkspaceRoot: "/ws", WorkflowRunner: runner2}
+	if _, err := (&WorkflowTool{}).Execute(context.Background(), ec2, json.RawMessage(`{"mode":"resume","task_id":"`+big+`"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if !runner2.resumeCalled {
+		t.Fatal("resume not called")
+	}
+}
+
+func TestWorkflowToolNumericTaskIDStillWorks(t *testing.T) {
+	runner := &fakeRunner{}
+	ec := tools.ExecutionContext{WorkspaceRoot: "/ws", WorkflowRunner: runner}
+	if _, err := (&WorkflowTool{}).Execute(context.Background(), ec, json.RawMessage(`{"mode":"save","name":"tpl","source_task_id":7}`)); err != nil {
+		t.Fatal(err)
+	}
+	if !runner.saveCalled {
+		t.Fatal("save not called")
+	}
+}

@@ -9,6 +9,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
+	"strings"
 
 	"code-agent/internal/tools"
 )
@@ -37,12 +39,12 @@ func (*WorkflowTool) InputSchema() json.RawMessage {
 			"mode": {"type": "string", "enum": ["list", "view", "save", "run", "delete", "extract", "save_tool_sequence", "resume"]},
 			"name": {"type": "string", "description": "template name; required for view/run/delete/save_tool_sequence, for save it is the new template name"},
 			"description": {"type": "string", "description": "save: human-readable template description"},
-			"source_task_id": {"type": "integer", "description": "save: the run (task id) to persist as a template"},
+			"source_task_id": {"type": "integer", "description": "save: the run (task id) to persist as a template; large ids can be passed as a string to avoid precision loss"},
 			"workspace_path": {"type": "string", "description": "optional workspace; defaults to the current one"},
 			"input": {"type": "object", "description": "run: the run input manifest {goal, template, agents:[{role, session_id, message, intent, correlation_id}], parallelism, timeout_ms}"},
 			"limit": {"type": "integer", "description": "extract: max number of recent tool calls to return (default 50)"},
 			"manifest": {"type": "object", "description": "save_tool_sequence: the tool_sequence manifest {type:\"tool_sequence\", goal, description, inputs:[{name,type,required,description}], steps:[{tool,args}]}"},
-			"task_id": {"type": "integer", "description": "resume: the run (task id) to recover"},
+			"task_id": {"type": "integer", "description": "resume: the run (task id) to recover; large ids can be passed as a string to avoid precision loss"},
 			"resume_from": {"type": "string", "description": "resume: node name to resume from; empty auto-collects failed roots"}
 		},
 		"required": ["mode"],
@@ -54,13 +56,46 @@ type workflowInput struct {
 	Mode          string          `json:"mode"`
 	Name          string          `json:"name"`
 	Description   string          `json:"description"`
-	SourceTaskID  int64           `json:"source_task_id"`
+	SourceTaskID  Int64OrString   `json:"source_task_id"`
 	WorkspacePath string          `json:"workspace_path"`
 	Input         map[string]any  `json:"input"`
 	Limit         int             `json:"limit"`
 	Manifest      json.RawMessage `json:"manifest"`
-	TaskID        int64           `json:"task_id"`
+	TaskID        Int64OrString   `json:"task_id"`
 	ResumeFrom    string          `json:"resume_from"`
+}
+
+// Int64OrString accepts a JSON number or a JSON string for a 64-bit integer.
+// Workflow task ids are snowflake ids (~2e18) that exceed JSON's safe integer
+// range (2^53), so a model serializing them as a JSON number silently loses
+// precision (…1808 → …1800). Accepting a string lets the model pass the id
+// verbatim; number form stays supported for small ids and tests.
+type Int64OrString int64
+
+// UnmarshalJSON accepts both a JSON number and a JSON string.
+func (i *Int64OrString) UnmarshalJSON(data []byte) error {
+	if len(data) == 0 || string(data) == "null" {
+		*i = 0
+		return nil
+	}
+	if data[0] == '"' {
+		var s string
+		if err := json.Unmarshal(data, &s); err != nil {
+			return err
+		}
+		n, err := strconv.ParseInt(strings.TrimSpace(s), 10, 64)
+		if err != nil {
+			return fmt.Errorf("invalid int64 %q: %w", s, err)
+		}
+		*i = Int64OrString(n)
+		return nil
+	}
+	var n int64
+	if err := json.Unmarshal(data, &n); err != nil {
+		return err
+	}
+	*i = Int64OrString(n)
+	return nil
 }
 
 func (*WorkflowTool) Execute(ctx context.Context, ec tools.ExecutionContext, raw json.RawMessage) (tools.ToolResult, error) {
@@ -99,10 +134,10 @@ func (*WorkflowTool) Execute(ctx context.Context, ec tools.ExecutionContext, raw
 		return tools.ToolResult{Content: string(out), Output: out}, nil
 
 	case "save":
-		if in.Name == "" || in.SourceTaskID <= 0 {
+		if in.Name == "" || int64(in.SourceTaskID) <= 0 {
 			return tools.ToolResult{}, fmt.Errorf("workflow: save requires name and source_task_id")
 		}
-		if err := runner.SaveTemplate(ctx, root, in.Name, in.Description, in.SourceTaskID); err != nil {
+		if err := runner.SaveTemplate(ctx, root, in.Name, in.Description, int64(in.SourceTaskID)); err != nil {
 			return tools.ToolResult{}, fmt.Errorf("workflow: save: %w", err)
 		}
 		out, _ := json.Marshal(map[string]string{"name": in.Name, "status": "saved"})
@@ -174,13 +209,13 @@ func (*WorkflowTool) Execute(ctx context.Context, ec tools.ExecutionContext, raw
 		return tools.ToolResult{Content: string(out), Output: out}, nil
 
 	case "resume":
-		if in.TaskID <= 0 {
+		if int64(in.TaskID) <= 0 {
 			return tools.ToolResult{}, fmt.Errorf("workflow: resume requires task_id")
 		}
-		if err := runner.ResumeTask(ctx, root, in.TaskID, in.ResumeFrom); err != nil {
+		if err := runner.ResumeTask(ctx, root, int64(in.TaskID), in.ResumeFrom); err != nil {
 			return tools.ToolResult{}, fmt.Errorf("workflow: resume: %w", err)
 		}
-		out, _ := json.Marshal(map[string]any{"task_id": in.TaskID, "status": "resuming"})
+		out, _ := json.Marshal(map[string]any{"task_id": int64(in.TaskID), "status": "resuming"})
 		return tools.ToolResult{Content: string(out), Output: out}, nil
 
 	default:
