@@ -13,7 +13,7 @@ func TestSaveToolSequencePersistsAndTriggerable(t *testing.T) {
 	// Seed a workflow DB so openFluxWorkflowRuntime finds a real store.
 	seedFluxRun(t, root)
 
-	runner := NewWorkflowRunner(nil)
+	runner := NewWorkflowRunner(nil, nil)
 	manifest := json.RawMessage(`{
 		"type": "tool_sequence",
 		"goal": "改简介",
@@ -70,7 +70,7 @@ func TestSaveToolSequencePersistsAndTriggerable(t *testing.T) {
 func TestSaveToolSequenceRejectsBadManifest(t *testing.T) {
 	root := t.TempDir()
 	seedFluxRun(t, root)
-	runner := NewWorkflowRunner(nil)
+	runner := NewWorkflowRunner(nil, nil)
 
 	bad := []json.RawMessage{
 		json.RawMessage(`{"type":"tool_sequence"}`),                                                           // no goal
@@ -85,4 +85,4 @@ func TestSaveToolSequenceRejectsBadManifest(t *testing.T) {
 	}
 }
 
-var _ tools.WorkflowRunner = NewWorkflowRunner(nil)
+var _ tools.WorkflowRunner = NewWorkflowRunner(nil, nil)

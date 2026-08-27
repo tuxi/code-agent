@@ -37,7 +37,7 @@ func TestEnsureToolsRegisteredProjectsSessionTools(t *testing.T) {
 	root := t.TempDir()
 	seedFluxRun(t, root) // create the flux-workflows.db
 
-	rt := NewHeadlessRuntime(fakeHeadlessControl{})
+	rt := NewHeadlessRuntime(fakeHeadlessControl{}, nil)
 	if err := rt.EnsureToolsRegistered(context.Background(), root); err != nil {
 		t.Fatal(err)
 	}

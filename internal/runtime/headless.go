@@ -20,18 +20,21 @@ type HeadlessRunFunc func(ctx context.Context, workspaceRoot, workflowName strin
 
 // HeadlessRuntime synthesizes the execution context a workflow run needs when
 // there is no conversation: session tools are backed by the provided control
-// plane, the tool registry carries only the tools templates may use, and the
-// NestedExecutor executes tools directly (the run is pre-authorized by its
-// trigger — no per-call approval).
+// plane, the tool registry carries the workspace's tools (base + MCP via the
+// workspace registry when wired) plus the session tools templates need, and
+// the NestedExecutor executes tools directly (the run is pre-authorized by
+// its trigger — no per-call approval).
 type HeadlessRuntime struct {
 	control tools.SessionControl
+	wsReg   *WorkspaceRegistry
 }
 
-// NewHeadlessRuntime builds a HeadlessRuntime from a session control plane. A
-// nil control disables session tools (send_to_session etc. return their
-// "control plane is not available" errors).
-func NewHeadlessRuntime(control tools.SessionControl) *HeadlessRuntime {
-	return &HeadlessRuntime{control: control}
+// NewHeadlessRuntime builds a HeadlessRuntime from a session control plane and
+// the workspace registry (for per-workspace MCP tools). A nil control disables
+// session tools; a nil wsReg means the headless registry carries only the
+// built-in session tools (no MCP).
+func NewHeadlessRuntime(control tools.SessionControl, wsReg *WorkspaceRegistry) *HeadlessRuntime {
+	return &HeadlessRuntime{control: control, wsReg: wsReg}
 }
 
 // headlessNestedExecutor runs a tool directly. Unlike the agent loop's
@@ -51,13 +54,23 @@ func (e *headlessNestedExecutor) ExecuteNestedTool(ctx context.Context, _, callI
 }
 
 // BuildHeadlessContext assembles the tools.ExecutionContext a headless run's
-// tool projection needs. The registry mirrors the conversation profile but
-// drops everything that requires an interactive turn: the session tools that
-// v1/v2 templates use (send_to_session/read_session/wait_sessions/check_turn)
-// are included; conversation-only and workflow meta tools are excluded by
-// fluxExcludedTools when projected.
+// tool projection needs. The registry is the workspace's own tool set (base +
+// its MCP tools via the workspace registry) when wired — so tool_sequence
+// steps can call workspace MCP tools like okx-trade — plus the session tools
+// v1/v2 templates use. Conversation-only and workflow meta tools are excluded
+// by fluxExcludedTools when projected. A nil wsReg falls back to session tools
+// only.
 func (r *HeadlessRuntime) BuildHeadlessContext(workspaceRoot, callID string) tools.ExecutionContext {
 	reg := tools.NewRegistry()
+	if r.wsReg != nil {
+		if inst, err := r.wsReg.Get(workspaceRoot); err == nil && inst.ToolReg != nil {
+			for _, tool := range inst.ToolReg.Visible() {
+				if tool != nil {
+					_ = reg.Register(tool)
+				}
+			}
+		}
+	}
 	for _, tool := range []tools.Tool{
 		&sessions.SendToSessionTool{},
 		&sessions.ReadSessionTool{},

@@ -16,13 +16,14 @@ import (
 // cross-session agents exactly like the headless trigger.
 type workflowRunner struct {
 	control tools.SessionControl
+	wsReg   *WorkspaceRegistry
 }
 
 // NewWorkflowRunner builds the tools.WorkflowRunner for the `workflow`
 // conversation tool. control backs the session tools a cross-workspace run
-// needs; nil disables Run (and save/delete still work).
-func NewWorkflowRunner(control tools.SessionControl) tools.WorkflowRunner {
-	return &workflowRunner{control: control}
+// needs; wsReg provides per-workspace MCP tools for tool_sequence steps.
+func NewWorkflowRunner(control tools.SessionControl, wsReg *WorkspaceRegistry) tools.WorkflowRunner {
+	return &workflowRunner{control: control, wsReg: wsReg}
 }
 
 var _ tools.WorkflowRunner = (*workflowRunner)(nil)
@@ -48,7 +49,7 @@ func (r *workflowRunner) SaveTemplate(ctx context.Context, workspaceRoot, name, 
 }
 
 func (r *workflowRunner) Run(ctx context.Context, workspaceRoot, name string, input map[string]any) (int64, error) {
-	return NewHeadlessRuntime(r.control).SubmitHeadlessRun(ctx, workspaceRoot, name, input)
+	return NewHeadlessRuntime(r.control, r.wsReg).SubmitHeadlessRun(ctx, workspaceRoot, name, input)
 }
 
 // Delete soft-deletes a saved template: un-mark it (is_template=0) and drop
@@ -110,5 +111,5 @@ func (r *workflowRunner) SaveToolSequence(ctx context.Context, workspaceRoot, na
 // state asynchronously; tools are re-projected first so a rebuilt runtime
 // after daemon restart does not fail with "tool not found".
 func (r *workflowRunner) ResumeTask(ctx context.Context, workspaceRoot string, taskID int64, resumeFrom string) error {
-	return NewHeadlessRuntime(r.control).ResumeRun(ctx, workspaceRoot, taskID, resumeFrom)
+	return NewHeadlessRuntime(r.control, r.wsReg).ResumeRun(ctx, workspaceRoot, taskID, resumeFrom)
 }

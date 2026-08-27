@@ -279,7 +279,7 @@ func run() error {
 	}
 	owner.SetTarget(controlplane.NewRuntimeTarget(executor, eventStore, repo, managedWorktrees))
 	rb.SetSessionControl(owner)
-	rb.SetWorkflowRunner(runtime.NewWorkflowRunner(owner))
+	rb.SetWorkflowRunner(runtime.NewWorkflowRunner(owner, wsReg))
 	rb.SetSessionTrace(runtime.NewSessionTraceFunc())
 	runtime.SetFluxExternalResolver(owner)
 	if err := owner.Start(ctx); err != nil {
@@ -375,9 +375,9 @@ func run() error {
 		WorkflowList:           runtime.NewWorkflowListFunc(),
 		WorkflowDetail:         runtime.NewWorkflowDetailFunc(),
 		WorkflowSnapshotByTask: runtime.NewWorkflowSnapshotByTaskFunc(),
-		WorkflowRun:            runtime.NewHeadlessRuntime(owner).SubmitHeadlessRun,
+		WorkflowRun:            runtime.NewHeadlessRuntime(owner, wsReg).SubmitHeadlessRun,
 		WorkflowSaveTemplate:   runtime.NewSaveTemplateFunc(),
-		WorkflowResume:         runtime.NewHeadlessRuntime(owner).ResumeRun,
+		WorkflowResume:         runtime.NewHeadlessRuntime(owner, wsReg).ResumeRun,
 		AutomationStore:        automationStore,
 	})
 	sharing.SetCoreHandler(handler)

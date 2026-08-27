@@ -42,11 +42,24 @@ type ToolSequenceStep struct {
 	Args map[string]any `json:"args,omitempty"`
 }
 
-// varRefPattern matches an entire string that is a pure {{name}} variable
-// reference. R9 v1 only supports whole-value references (no prefix/suffix
-// text); mixed values must be split by the compiler prompt into static +
-// variable parts.
-var varRefPattern = regexp.MustCompile(`^\{\{([a-zA-Z0-9_]+)\}\}$`)
+// varRefPattern matches an entire string that is a pure variable reference in
+// either {{name}} or ${name} syntax (models emit both; note the different
+// closing braces). R9 v1 only supports whole-value references (no prefix/
+// suffix text); mixed values must be split by the compiler prompt into static
+// + variable parts.
+var varRefPattern = regexp.MustCompile(`^(?:\{\{([a-zA-Z0-9_]+)\}\}|\$\{([a-zA-Z0-9_]+)\})$`)
+
+// varRefName returns the variable name when s is a pure variable reference.
+func varRefName(s string) (string, bool) {
+	mm := varRefPattern.FindStringSubmatch(s)
+	if mm == nil {
+		return "", false
+	}
+	if mm[1] != "" {
+		return mm[1], true
+	}
+	return mm[2], true
+}
 
 // CompileToolSequence compiles a tool_sequence manifest into a serial DAG:
 //
@@ -78,8 +91,8 @@ func CompileToolSequence(m *ToolSequenceManifest) (*definition.WorkflowDefinitio
 			if !ok {
 				continue
 			}
-			if mm := varRefPattern.FindStringSubmatch(s); mm != nil && !declared[mm[1]] {
-				return nil, fmt.Errorf("tool_sequence: step %d arg %q references undeclared input %q", i+1, k, mm[1])
+			if name, isRef := varRefName(s); isRef && !declared[name] {
+				return nil, fmt.Errorf("tool_sequence: step %d arg %q references undeclared input %q", i+1, k, name)
 			}
 		}
 	}
@@ -97,8 +110,8 @@ func CompileToolSequence(m *ToolSequenceManifest) (*definition.WorkflowDefinitio
 		inputMapping := map[string]string{}
 		for k, v := range step.Args {
 			if s, ok := v.(string); ok {
-				if mm := varRefPattern.FindStringSubmatch(s); mm != nil {
-					inputMapping[k] = "input." + mm[1]
+				if name, isRef := varRefName(s); isRef {
+					inputMapping[k] = "input." + name
 					continue
 				}
 			}

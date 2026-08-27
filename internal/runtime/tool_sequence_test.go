@@ -55,6 +55,34 @@ func TestCompileToolSequenceSerialDAG(t *testing.T) {
 	}
 }
 
+func TestCompileToolSequenceDollarVarSyntax(t *testing.T) {
+	// Models commonly emit ${name} as well as {{name}}; both must route to
+	// input_mapping expressions.
+	m := &ToolSequenceManifest{
+		Goal: "拉指标",
+		Inputs: []ToolSequenceInput{
+			{Name: "instId", Type: "string", Required: true},
+			{Name: "bar", Type: "string"},
+		},
+		Steps: []ToolSequenceStep{
+			{Tool: "market_get_indicator", Args: map[string]any{
+				"instId": "${instId}", "bar": "${bar}", "indicator": "ma",
+			}},
+		},
+	}
+	def, err := CompileToolSequence(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	step := def.Nodes[1]
+	if step.InputMapping["instId"] != "input.instId" || step.InputMapping["bar"] != "input.bar" {
+		t.Fatalf("input_mapping=%v", step.InputMapping)
+	}
+	if step.Config["indicator"] != "ma" {
+		t.Fatalf("static arg not in config: %v", step.Config)
+	}
+}
+
 func TestCompileToolSequenceValidation(t *testing.T) {
 	cases := []struct {
 		name string
