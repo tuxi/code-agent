@@ -20,8 +20,8 @@ func TestSaveToolSequencePersistsAndTriggerable(t *testing.T) {
 		"description": "fixed steps",
 		"inputs": [{"name": "bio", "type": "string", "required": true}],
 		"steps": [
-			{"tool": "mobile_launch_app", "args": {"bundle_id": "com.atebits.Tweetie2"}},
-			{"tool": "mobile_type_keys", "args": {"text": "{{bio}}"}}
+			{"tool": "send_to_session", "args": {"id": "target", "message": "{{bio}}"}},
+			{"tool": "read_session", "args": {"id": "target"}}
 		]
 	}`)
 	name, err := runner.SaveToolSequence(context.Background(), root, "seq-tpl", manifest)
