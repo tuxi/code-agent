@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
+	"strings"
 
 	"code-agent/internal/tools"
 )
@@ -81,6 +83,13 @@ func (r *workflowRunner) Delete(ctx context.Context, workspaceRoot, name string)
 // named template (R9 extract flow): the model produced the manifest from a
 // successful conversation's tool trace, this compiles it to a serial DAG and
 // registers it under name so it can be triggered like any template.
+//
+// Step tool names are resolved against the workspace's tool registry before
+// compilation: models often emit the bare tool name (market_get_indicator)
+// while MCP tools register under their full wire name
+// (mcp__okx-trade-mcp__market_get_indicator). A bare name that uniquely
+// matches one wire name is rewritten; ambiguous or missing names fail with
+// candidates so the model can correct the manifest.
 func (r *workflowRunner) SaveToolSequence(ctx context.Context, workspaceRoot, name string, manifest json.RawMessage) (string, error) {
 	def, m, err := toolSequenceFromManifestJSON(manifest, name)
 	if err != nil {
@@ -89,6 +98,12 @@ func (r *workflowRunner) SaveToolSequence(ctx context.Context, workspaceRoot, na
 	if workspaceRoot == "" || name == "" {
 		return "", fmt.Errorf("workspaceRoot and name are required")
 	}
+
+	// Resolve step tool names against the workspace registry (short → wire).
+	if err := r.resolveStepTools(ctx, workspaceRoot, m); err != nil {
+		return "", err
+	}
+
 	rt, err := openFluxWorkflowRuntime(workspaceRoot)
 	if err != nil {
 		return "", err
@@ -104,6 +119,47 @@ func (r *workflowRunner) SaveToolSequence(ctx context.Context, workspaceRoot, na
 		return "", err
 	}
 	return name, nil
+}
+
+// resolveStepTools rewrites each step's tool name to its full wire name when
+// the step used a bare name. Exact matches pass through; a bare name that
+// suffix-matches exactly one mcp__<server>__<tool> wire name is rewritten;
+// zero or multiple matches fail with candidates.
+func (r *workflowRunner) resolveStepTools(ctx context.Context, workspaceRoot string, m *ToolSequenceManifest) error {
+	hr := NewHeadlessRuntime(r.control, r.wsReg)
+	ec := hr.BuildHeadlessContext(workspaceRoot, "resolve-tools")
+	available := map[string]bool{}
+	for _, tool := range ec.ToolRegistry.Visible() {
+		if tool != nil {
+			available[tool.Name()] = true
+		}
+	}
+
+	for i := range m.Steps {
+		step := &m.Steps[i]
+		if step.Tool == "" || available[step.Tool] {
+			continue // exact match (or empty — compiler validates later)
+		}
+		// Bare name: find wire names ending in __<tool>.
+		suffix := "__" + step.Tool
+		var candidates []string
+		for wireName := range available {
+			if strings.HasSuffix(wireName, suffix) {
+				candidates = append(candidates, wireName)
+			}
+		}
+		switch len(candidates) {
+		case 1:
+			step.Tool = candidates[0] // unique — rewrite to the wire name
+		case 0:
+			return fmt.Errorf("tool_sequence: step %d tool %q not found in workspace registry", i+1, step.Tool)
+		default:
+			sort.Strings(candidates)
+			return fmt.Errorf("tool_sequence: step %d tool %q is ambiguous, candidates: %s",
+				i+1, step.Tool, strings.Join(candidates, ", "))
+		}
+	}
+	return nil
 }
 
 // ResumeTask recovers a suspended/failed/canceled run by task id. It requires
