@@ -1,9 +1,6 @@
 package runtime
 
-import (
-	"context"
-	"fmt"
-)
+import "context"
 
 // ── Workflow run recovery (resume/retry) ────────────────────────────
 //
@@ -13,27 +10,11 @@ import (
 // connection, resolver bug) is addressed. Retry resets the failed/suspended
 // subtree and re-enqueues; the workspace runtime's workers drive it to the
 // next terminal or suspend point.
+//
+// The resume entry point is HeadlessRuntime.ResumeRun (headless.go): it first
+// ensures the tool projection is registered, because a rebuilt runtime after
+// daemon restart has an empty tool registry and re-driving the DAG would fail
+// with "tool not found".
 
 // ResumeRunFunc recovers a non-terminal workflow run by task id.
 type ResumeRunFunc func(ctx context.Context, workspaceRoot string, taskID int64, resumeFrom string) error
-
-// NewResumeRunFunc returns a ResumeRunFunc backed by the workspace's started
-// runtime (task + await-poll workers), so the recovered run executes
-// asynchronously after re-enqueue.
-func NewResumeRunFunc() ResumeRunFunc {
-	return func(ctx context.Context, workspaceRoot string, taskID int64, resumeFrom string) error {
-		if workspaceRoot == "" || taskID <= 0 {
-			return fmt.Errorf("workspaceRoot and task_id are required")
-		}
-		rt, err := getOrCreateRuntime(ctx, workspaceRoot)
-		if err != nil {
-			return fmt.Errorf("resume run: %w", err)
-		}
-		// flux-workflow Retry validates status (failed/canceled/suspended only)
-		// and re-enqueues; empty resumeFrom auto-collects failed root nodes.
-		if err := rt.Retry(ctx, taskID, resumeFrom, nil); err != nil {
-			return fmt.Errorf("resume run: %w", err)
-		}
-		return nil
-	}
-}

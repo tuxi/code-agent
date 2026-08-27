@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"code-agent/internal/controlplane"
 	"code-agent/internal/tools"
 	"code-agent/internal/tools/sessions"
 )
@@ -20,18 +19,18 @@ import (
 type HeadlessRunFunc func(ctx context.Context, workspaceRoot, workflowName string, input map[string]any) (int64, error)
 
 // HeadlessRuntime synthesizes the execution context a workflow run needs when
-// there is no conversation: session tools are backed by the control plane
-// manager, the tool registry carries only the tools templates may use, and
-// the NestedExecutor executes tools directly (the run is pre-authorized by
-// its trigger — no per-call approval).
+// there is no conversation: session tools are backed by the provided control
+// plane, the tool registry carries only the tools templates may use, and the
+// NestedExecutor executes tools directly (the run is pre-authorized by its
+// trigger — no per-call approval).
 type HeadlessRuntime struct {
-	control *controlplane.Manager
+	control tools.SessionControl
 }
 
-// NewHeadlessRuntime builds a HeadlessRuntime from the control plane manager.
-// A nil manager disables session tools (send_to_session etc. return their
+// NewHeadlessRuntime builds a HeadlessRuntime from a session control plane. A
+// nil control disables session tools (send_to_session etc. return their
 // "control plane is not available" errors).
-func NewHeadlessRuntime(control *controlplane.Manager) *HeadlessRuntime {
+func NewHeadlessRuntime(control tools.SessionControl) *HeadlessRuntime {
 	return &HeadlessRuntime{control: control}
 }
 
@@ -82,6 +81,32 @@ func (r *HeadlessRuntime) BuildHeadlessContext(workspaceRoot, callID string) too
 	return ec
 }
 
+// EnsureToolsRegistered idempotently registers the headless tool projection
+// (session tools + check_turn) into the workspace runtime's tool registry.
+// Task workers resolve tool nodes through this registry, so every execution
+// path — Submit AND resume/retry — must have it populated before a run drives
+// the DAG; a rebuilt runtime after daemon restart starts with an empty
+// registry and would fail with "tool not found". fluxtool.Register is
+// idempotent, so re-projecting is safe.
+func (r *HeadlessRuntime) EnsureToolsRegistered(ctx context.Context, workspaceRoot string) error {
+	if r == nil || r.control == nil {
+		return fmt.Errorf("headless tools unavailable: control plane not wired")
+	}
+	rt, err := getOrCreateRuntime(ctx, workspaceRoot)
+	if err != nil {
+		return fmt.Errorf("ensure tools: %w", err)
+	}
+	ec := r.BuildHeadlessContext(workspaceRoot, "headless:ensure")
+	fluxReg := projectFluxTools(ctx, ec, &nestedUsageCollector{})
+	if len(fluxReg.List()) == 0 {
+		return fmt.Errorf("ensure tools: no eligible tools are available")
+	}
+	for _, projected := range fluxReg.List() {
+		rt.ToolRegistry().Register(projected)
+	}
+	return nil
+}
+
 // SubmitHeadlessRun registers the template's tool projection into the
 // workspace runtime's tool registry, then submits the workflow by name. The
 // definition must already be persisted (a saved template); Submit resolves
@@ -98,20 +123,37 @@ func (r *HeadlessRuntime) SubmitHeadlessRun(ctx context.Context, workspaceRoot, 
 	if workflowName == "" {
 		return 0, fmt.Errorf("workflow name is required")
 	}
+	if err := r.EnsureToolsRegistered(ctx, workspaceRoot); err != nil {
+		return 0, fmt.Errorf("headless run: %w", err)
+	}
 
 	rt, err := getOrCreateRuntime(ctx, workspaceRoot)
 	if err != nil {
 		return 0, fmt.Errorf("headless run: %w", err)
 	}
-
-	ec := r.BuildHeadlessContext(workspaceRoot, "headless:"+workflowName)
-	fluxReg := projectFluxTools(ctx, ec, &nestedUsageCollector{})
-	if len(fluxReg.List()) == 0 {
-		return 0, fmt.Errorf("headless run: no eligible tools are available")
-	}
-	for _, projected := range fluxReg.List() {
-		rt.ToolRegistry().Register(projected)
-	}
-
 	return rt.Submit(ctx, workflowName, input)
+}
+
+// ResumeRun recovers a suspended/failed/canceled run by task id. It first
+// ensures the headless tool projection is registered (a rebuilt runtime after
+// daemon restart has an empty tool registry — without this, re-driving the DAG
+// fails with "tool not found: send_to_session"), then retries the task so the
+// workers execute it asynchronously.
+func (r *HeadlessRuntime) ResumeRun(ctx context.Context, workspaceRoot string, taskID int64, resumeFrom string) error {
+	if taskID <= 0 {
+		return fmt.Errorf("task_id is required")
+	}
+	if err := r.EnsureToolsRegistered(ctx, workspaceRoot); err != nil {
+		return fmt.Errorf("resume run: %w", err)
+	}
+	rt, err := getOrCreateRuntime(ctx, workspaceRoot)
+	if err != nil {
+		return fmt.Errorf("resume run: %w", err)
+	}
+	// flux-workflow Retry validates status (failed/canceled/suspended only)
+	// and re-enqueues; empty resumeFrom auto-collects failed root nodes.
+	if err := rt.Retry(ctx, taskID, resumeFrom, nil); err != nil {
+		return fmt.Errorf("resume run: %w", err)
+	}
+	return nil
 }
