@@ -135,7 +135,7 @@ func v1Definitions(childName, parentName string, parallelism int) (*definition.W
 					"cursor":     "nodes.dispatch.output.cursor",
 				},
 				Config: map[string]any{
-					"await_type":      "external_task",
+					"await_type":      "external",
 					"source":          "webhook_or_poll",
 					"timeout_seconds": 86400,
 					"correlation": map[string]any{
@@ -239,7 +239,7 @@ func v2Definitions(childName, parentName string, parallelism int) (*definition.W
 					"cursor":     "nodes.dispatch.output.cursor",
 				},
 				Config: map[string]any{
-					"await_type":      "external_task",
+					"await_type":      "external",
 					"source":          "webhook_or_poll",
 					"timeout_seconds": 86400,
 					"correlation":     map[string]any{"session_id": "session_id", "turn_id": "turn_id", "cursor": "cursor"},
@@ -270,7 +270,7 @@ func v2Definitions(childName, parentName string, parallelism int) (*definition.W
 					"cursor":     "nodes.dispatch_review.output.cursor",
 				},
 				Config: map[string]any{
-					"await_type":      "external_task",
+					"await_type":      "external",
 					"source":          "webhook_or_poll",
 					"timeout_seconds": 86400,
 					"correlation":     map[string]any{"session_id": "session_id", "turn_id": "turn_id", "cursor": "cursor"},
