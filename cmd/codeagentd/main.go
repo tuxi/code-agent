@@ -279,6 +279,8 @@ func run() error {
 	}
 	owner.SetTarget(controlplane.NewRuntimeTarget(executor, eventStore, repo, managedWorktrees))
 	rb.SetSessionControl(owner)
+	rb.SetWorkflowRunner(runtime.NewWorkflowRunner(owner))
+	rb.SetSessionTrace(runtime.NewSessionTraceFunc())
 	runtime.SetFluxExternalResolver(owner)
 	if err := owner.Start(ctx); err != nil {
 		_ = owner.Close()
@@ -365,10 +367,10 @@ func run() error {
 				fmt.Fprintf(os.Stderr, "[control-plane] ownership reconcile: %v\n", err)
 			}
 		},
-		RuntimeCapabilities: runtimeCapabilities,
-		ManagedWorktrees:    managedWorktrees,
-		GitBranches:         gitBranches,
-		SessionForks:        owner,
+		RuntimeCapabilities:    runtimeCapabilities,
+		ManagedWorktrees:       managedWorktrees,
+		GitBranches:            gitBranches,
+		SessionForks:           owner,
 		WorkflowSnapshot:       runtime.NewWorkflowSnapshotFunc(),
 		WorkflowList:           runtime.NewWorkflowListFunc(),
 		WorkflowDetail:         runtime.NewWorkflowDetailFunc(),

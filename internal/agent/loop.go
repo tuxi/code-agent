@@ -142,6 +142,14 @@ type Runner struct {
 	// the automation tools degrade with a clear error (CLI/TUI without a daemon).
 	AutomationStore tools.AutomationStore
 
+	// WorkflowRunner is the port for the conversation workflow tool. Nil means
+	// the workflow tool degrades with a clear error.
+	WorkflowRunner tools.WorkflowRunner
+
+	// SessionTrace reads a session's recent tool calls for the workflow tool's
+	// extract mode (R9). Nil means extract degrades with a clear error.
+	SessionTrace tools.SessionTraceFunc
+
 	// WireModel is the client-supplied model identifier for the current turn
 	// (e.g. "opencode-go/deepseek-v4-flash"), which may carry a provider prefix.
 	// ModelName is the resolved bare model id used for provider calls; WireModel
@@ -1900,6 +1908,8 @@ func (r *Runner) executeTool(ctx context.Context, tool tools.Tool, callID string
 		SessionIndex:       r.SessionIndex,
 		SessionControl:     r.SessionControl,
 		AutomationStore:    r.AutomationStore,
+		WorkflowRunner:     r.WorkflowRunner,
+		SessionTrace:       r.SessionTrace,
 		OnStdout: func(chunk string) {
 			r.emit(Event{Kind: EventToolStdout, CallID: callID, Chunk: chunk})
 		},

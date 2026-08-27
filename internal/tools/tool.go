@@ -95,7 +95,33 @@ type ExecutionContext struct {
 	// It is injected by daemon hosts; nil means the automation tools degrade with a
 	// clear error (mirroring SessionIndex's nil handling).
 	AutomationStore AutomationStore
+
+	// WorkflowRunner is the port for the conversation workflow tool (list/view/
+	// save/run/delete templates). Injected by daemon hosts; nil means the
+	// workflow tool degrades with a clear error.
+	WorkflowRunner WorkflowRunner
+
+	// SessionTrace reads a session's recent tool-call sequence (truncated),
+	// used by the workflow tool's extract mode (R9) to compile a successful
+	// conversation into a tool_sequence template. Injected by daemon hosts;
+	// nil means extract degrades with a clear error.
+	SessionTrace SessionTraceFunc
 }
+
+// TraceStep is one truncated tool call in a session's recent history, as the
+// R9 extract mode hands it to the model for compiling a tool_sequence
+// template. Args and Result are truncated to bounded sizes so a long phone
+// automation session does not blow the context window.
+type TraceStep struct {
+	Tool   string         `json:"tool"`
+	Args   map[string]any `json:"args,omitempty"`
+	Result string         `json:"result,omitempty"`
+}
+
+// SessionTraceFunc reads the most recent tool calls from a session's message
+// history. limit bounds how many steps are returned (newest last); <=0 means a
+// host default (50).
+type SessionTraceFunc func(ctx context.Context, sessionID string, limit int) ([]TraceStep, error)
 
 type SessionControl interface {
 	Send(context.Context, SessionSendRequest) (SessionDelivery, error)
@@ -116,6 +142,24 @@ type AutomationStore interface {
 	Update(ctx context.Context, id string, patch automation.AutomationPatch) (automation.Automation, error)
 	Delete(ctx context.Context, id string) error
 	ListRuns(ctx context.Context, automationID string, limit int) ([]automation.Run, error)
+}
+
+// WorkflowRunner is the persistence/execution port the workflow tool needs. It
+// is satisfied by internal/runtime (no cycle: runtime imports tools, tools must
+// not import runtime). Methods return marshaled JSON (List/Detail) so the tool
+// can surface them to the model without depending on runtime's DTO types.
+// Run submits a saved template by name and returns the task id.
+type WorkflowRunner interface {
+	// List returns the workspace's workflow catalog as JSON.
+	List(ctx context.Context, workspaceRoot string) (json.RawMessage, error)
+	// Detail returns one workflow's versions, run history, and manifest as JSON.
+	Detail(ctx context.Context, workspaceRoot, name string) (json.RawMessage, error)
+	// SaveTemplate persists a run under a user-chosen name.
+	SaveTemplate(ctx context.Context, workspaceRoot, name, description string, sourceTaskID int64) error
+	// Run submits a saved template by name (async) and returns the task id.
+	Run(ctx context.Context, workspaceRoot, name string, input map[string]any) (int64, error)
+	// Delete soft-deletes a saved template (stops it from being triggered).
+	Delete(ctx context.Context, workspaceRoot, name string) error
 }
 
 type SessionCreateRequest struct {

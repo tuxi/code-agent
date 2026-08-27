@@ -58,6 +58,8 @@ type ServeRunBuilder struct {
 	wsRules         map[string]*approve.RuleStore // workspacePath → scoped store
 	control         tools.SessionControl
 	automationStore tools.AutomationStore
+	workflowRunner  tools.WorkflowRunner
+	sessionTrace    tools.SessionTraceFunc
 }
 
 func (b *ServeRunBuilder) SetSessionControl(control tools.SessionControl) {
@@ -71,6 +73,23 @@ func (b *ServeRunBuilder) SetSessionControl(control tools.SessionControl) {
 func (b *ServeRunBuilder) SetAutomationStore(store tools.AutomationStore) {
 	b.mu.Lock()
 	b.automationStore = store
+	b.mu.Unlock()
+}
+
+// SetWorkflowRunner wires the workflow template port into every turn's
+// ExecutionContext so the workflow tool can list/view/save/run/delete
+// templates in conversation.
+func (b *ServeRunBuilder) SetWorkflowRunner(runner tools.WorkflowRunner) {
+	b.mu.Lock()
+	b.workflowRunner = runner
+	b.mu.Unlock()
+}
+
+// SetSessionTrace wires the session trace reader into every turn's
+// ExecutionContext for the workflow tool's extract mode (R9).
+func (b *ServeRunBuilder) SetSessionTrace(trace tools.SessionTraceFunc) {
+	b.mu.Lock()
+	b.sessionTrace = trace
 	b.mu.Unlock()
 }
 
@@ -424,6 +443,8 @@ func (b *ServeRunBuilder) Build(ctx conversation.RuntimeContext) conversation.Tu
 	runner.RequestID = ctx.RequestID
 	runner.SessionControl = control
 	runner.AutomationStore = b.automationStore
+	runner.WorkflowRunner = b.workflowRunner
+	runner.SessionTrace = b.sessionTrace
 	// Preserve the full wire model (may carry a provider prefix) so tools can
 	// persist a model reference that resolves back to the same provider. Fall
 	// back to the resolved bare id when the turn used the server default.
