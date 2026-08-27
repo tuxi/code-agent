@@ -137,7 +137,7 @@ func v1Definitions(childName, parentName string, parallelism int) (*definition.W
 				Config: map[string]any{
 					"await_type":      "external_task",
 					"source":          "webhook_or_poll",
-					"timeout_seconds": 3600,
+					"timeout_seconds": 86400,
 					"correlation": map[string]any{
 						"session_id": "session_id",
 						"turn_id":    "turn_id",
@@ -148,7 +148,7 @@ func v1Definitions(childName, parentName string, parallelism int) (*definition.W
 						"tool":         "check_turn",
 						"start_after":  10,
 						"interval":     15,
-						"max_attempts": 240,
+						"max_attempts": 5760,
 					},
 				},
 			},
@@ -241,9 +241,9 @@ func v2Definitions(childName, parentName string, parallelism int) (*definition.W
 				Config: map[string]any{
 					"await_type":      "external_task",
 					"source":          "webhook_or_poll",
-					"timeout_seconds": 3600,
+					"timeout_seconds": 86400,
 					"correlation":     map[string]any{"session_id": "session_id", "turn_id": "turn_id", "cursor": "cursor"},
-					"fallback_poll":   map[string]any{"enabled": true, "tool": "check_turn", "start_after": 10, "interval": 15, "max_attempts": 240},
+					"fallback_poll":   map[string]any{"enabled": true, "tool": "check_turn", "start_after": 10, "interval": 15, "max_attempts": 5760},
 				},
 			},
 			{
@@ -272,9 +272,9 @@ func v2Definitions(childName, parentName string, parallelism int) (*definition.W
 				Config: map[string]any{
 					"await_type":      "external_task",
 					"source":          "webhook_or_poll",
-					"timeout_seconds": 1800,
+					"timeout_seconds": 86400,
 					"correlation":     map[string]any{"session_id": "session_id", "turn_id": "turn_id", "cursor": "cursor"},
-					"fallback_poll":   map[string]any{"enabled": true, "tool": "check_turn", "start_after": 10, "interval": 15, "max_attempts": 120},
+					"fallback_poll":   map[string]any{"enabled": true, "tool": "check_turn", "start_after": 10, "interval": 15, "max_attempts": 5760},
 				},
 			},
 			{
