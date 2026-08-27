@@ -369,8 +369,11 @@ func run() error {
 		ManagedWorktrees:    managedWorktrees,
 		GitBranches:         gitBranches,
 		SessionForks:        owner,
-		WorkflowSnapshot:    runtime.NewWorkflowSnapshotFunc(),
-		AutomationStore:     automationStore,
+		WorkflowSnapshot:       runtime.NewWorkflowSnapshotFunc(),
+		WorkflowList:           runtime.NewWorkflowListFunc(),
+		WorkflowDetail:         runtime.NewWorkflowDetailFunc(),
+		WorkflowSnapshotByTask: runtime.NewWorkflowSnapshotByTaskFunc(),
+		AutomationStore:        automationStore,
 	})
 	sharing.SetCoreHandler(handler)
 

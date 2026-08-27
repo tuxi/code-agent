@@ -429,6 +429,13 @@ type MuxOptions struct {
 	// Nil disables the GET /v1/conversations/{id}/workflow/{workflow_id}/snapshot
 	// endpoint (returns 404).
 	WorkflowSnapshot runtime.WorkflowSnapshotFunc
+	// WorkflowList/WorkflowDetail/WorkflowSnapshotByTask serve the workspace-
+	// scoped workflow panel endpoints (/v1/workspaces/{path}/workflows...).
+	// Nil WorkflowList disables them all (404), matching the AutomationStore
+	// pattern.
+	WorkflowList           runtime.WorkflowListFunc
+	WorkflowDetail         runtime.WorkflowDetailFunc
+	WorkflowSnapshotByTask runtime.WorkflowSnapshotByTaskFunc
 	// AutomationStore serves the /v1/automations control-plane endpoints. Nil
 	// disables them (404), matching the Providers/Granter pattern.
 	AutomationStore automation.Store
@@ -635,6 +642,7 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 	registerPermissionRoutes(mux, opts)
 	registerGitBranchRoutes(mux, opts)
 	registerAutomationRoutes(mux, opts)
+	registerWorkflowRoutes(mux, opts)
 
 	mux.HandleFunc("GET /v1/activity", func(w http.ResponseWriter, r *http.Request) {
 		generatedAt := time.Now().UTC()
