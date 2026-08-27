@@ -190,3 +190,33 @@ func TestWorkflowToolSaveToolSequenceMissingManifest(t *testing.T) {
 		t.Fatal("expected error when manifest missing")
 	}
 }
+
+func TestWorkflowToolSaveToolSequenceApprovalGate(t *testing.T) {
+	manifest := `{"type":"tool_sequence","goal":"g","steps":[{"tool":"read_file"}]}`
+	runner := &fakeRunner{}
+
+	// Approval rejects → cancelled, runner not called.
+	reject := tools.ExecutionContext{WorkspaceRoot: "/ws", WorkflowRunner: runner,
+		WorkflowPlanApproval: func(_, _, _ string) bool { return false }}
+	result, err := (&WorkflowTool{}).Execute(context.Background(), reject, json.RawMessage(`{"mode":"save_tool_sequence","name":"tpl","manifest":`+manifest+`}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runner.stsCalled {
+		t.Fatal("runner called despite approval rejection")
+	}
+	if result.Content == "" {
+		t.Fatal("expected a cancelled notice")
+	}
+
+	// Approval accepts → saved.
+	runner2 := &fakeRunner{}
+	accept := tools.ExecutionContext{WorkspaceRoot: "/ws", WorkflowRunner: runner2,
+		WorkflowPlanApproval: func(_, _, _ string) bool { return true }}
+	if _, err := (&WorkflowTool{}).Execute(context.Background(), accept, json.RawMessage(`{"mode":"save_tool_sequence","name":"tpl","manifest":`+manifest+`}`)); err != nil {
+		t.Fatal(err)
+	}
+	if !runner2.stsCalled {
+		t.Fatal("runner not called despite approval")
+	}
+}

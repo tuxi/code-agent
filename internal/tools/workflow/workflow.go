@@ -153,6 +153,15 @@ func (*WorkflowTool) Execute(ctx context.Context, ec tools.ExecutionContext, raw
 		if len(in.Manifest) == 0 {
 			return tools.ToolResult{}, fmt.Errorf("workflow: save_tool_sequence requires manifest (tool_sequence definition)")
 		}
+		// R9 decision: an extracted template is a compilation of the user's own
+		// conversation — still gate the save with the approval card so the user
+		// sees what will be persisted (goal + step tools) before it becomes a
+		// triggerable template. Nil (headless/test) auto-approves.
+		if ec.WorkflowPlanApproval != nil {
+			if !ec.WorkflowPlanApproval("tool_sequence:"+in.Name, "保存 tool_sequence 模板 "+in.Name, toolSequenceApprovalSummary(in.Manifest)) {
+				return tools.ToolResult{Content: "workflow: save cancelled by user"}, nil
+			}
+		}
 		savedName, err := runner.SaveToolSequence(ctx, root, in.Name, in.Manifest)
 		if err != nil {
 			return tools.ToolResult{}, fmt.Errorf("workflow: save_tool_sequence: %w", err)
@@ -163,4 +172,25 @@ func (*WorkflowTool) Execute(ctx context.Context, ec tools.ExecutionContext, raw
 	default:
 		return tools.ToolResult{}, fmt.Errorf("workflow: unsupported mode %q", in.Mode)
 	}
+}
+
+// toolSequenceApprovalSummary renders a compact JSON summary of a
+// tool_sequence manifest (goal + step tools) for the approval card. Invalid
+// manifests still get a best-effort summary — the compiler validates later.
+func toolSequenceApprovalSummary(raw json.RawMessage) string {
+	var m struct {
+		Goal  string `json:"goal"`
+		Steps []struct {
+			Tool string `json:"tool"`
+		} `json:"steps"`
+	}
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return `{"error":"unparsable manifest"}`
+	}
+	tools := make([]string, 0, len(m.Steps))
+	for _, s := range m.Steps {
+		tools = append(tools, s.Tool)
+	}
+	out, _ := json.Marshal(map[string]any{"goal": m.Goal, "steps": tools})
+	return string(out)
 }
