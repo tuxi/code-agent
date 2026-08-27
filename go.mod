@@ -33,6 +33,11 @@ require (
 	modernc.org/sqlite v1.52.0
 )
 
+// Local replace while R7 (await suspend semantics) is developed in
+// /Users/xiaoyuan/Documents/work/git/flux-workflow (commit 0bb3e7f). Remove
+// and bump to a released version once the sentinel lands upstream.
+replace github.com/tuxi/flux-workflow => /Users/xiaoyuan/Documents/work/git/flux-workflow
+
 require (
 	dario.cat/mergo v1.0.0 // indirect
 	filippo.io/edwards25519 v1.1.0 // indirect

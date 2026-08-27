@@ -98,11 +98,14 @@ func (r *externalResolver) ResolveAwait(ctx context.Context, binding *domain.Awa
 	}
 	defer store.Close()
 
-	// Replay events since the admission cursor.
+	// Replay events since the admission cursor, tracking the latest turn
+	// lifecycle event. A turn may pause and resume several times; only the
+	// most recent state decides the outcome.
 	records, err := store.SessionEventsSince(ctx, sessionID, cursor)
 	if err != nil {
 		return nil, nil
 	}
+	latestLifecycle := ""
 	for _, record := range records {
 		if record.TurnID != turnID {
 			continue
@@ -119,7 +122,15 @@ func (r *externalResolver) ResolveAwait(ctx context.Context, binding *domain.Awa
 			return nil, fmt.Errorf("turn %s failed", turnID)
 		case "turn_cancelled":
 			return nil, fmt.Errorf("turn %s cancelled", turnID)
+		case "turn_started", "turn_resumed", "turn_paused":
+			latestLifecycle = record.Kind
 		}
+	}
+	// The child turn is suspended (stalled waiting for user / disconnected /
+	// manual intervention), not failed. Report it so the await poll worker
+	// suspends the workflow (resumable) instead of failing it — R7.
+	if latestLifecycle == "turn_paused" {
+		return nil, worker.ErrAwaitSuspended
 	}
 	return nil, nil // still running
 }
