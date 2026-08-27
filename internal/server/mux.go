@@ -439,6 +439,9 @@ type MuxOptions struct {
 	// WorkflowRun submits a saved template by name (headless trigger, R5). Nil
 	// disables POST /v1/workflows/{name}/runs (404).
 	WorkflowRun runtime.HeadlessRunFunc
+	// WorkflowSaveTemplate persists a run as a named reusable template (R4).
+	// Nil disables POST /v1/workflows/{name}/template (404).
+	WorkflowSaveTemplate runtime.SaveTemplateFunc
 	// AutomationStore serves the /v1/automations control-plane endpoints. Nil
 	// disables them (404), matching the Providers/Granter pattern.
 	AutomationStore automation.Store

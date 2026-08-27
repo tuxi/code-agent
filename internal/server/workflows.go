@@ -121,4 +121,42 @@ func registerWorkflowRoutes(mux *http.ServeMux, opts MuxOptions) {
 		}
 		writeJSON(w, r, http.StatusAccepted, map[string]int64{"task_id": taskID})
 	})
+
+	// Save as template (R4): persist a run under a user-chosen name so it can
+	// be triggered by name and edited conversationally. The body carries the
+	// source run's task id; the manifest and compiled definition are copied
+	// from that run and re-registered under {name}.
+	mux.HandleFunc("POST /v1/workflows/{name}/template", func(w http.ResponseWriter, r *http.Request) {
+		if opts.WorkflowSaveTemplate == nil {
+			http.Error(w, "workflow save-template not available", http.StatusNotFound)
+			return
+		}
+		root, ok := workspaceRoot(r)
+		if !ok {
+			http.Error(w, "missing workspace query parameter", http.StatusBadRequest)
+			return
+		}
+		name := r.PathValue("name")
+		if name == "" {
+			http.Error(w, "missing template name", http.StatusBadRequest)
+			return
+		}
+		var req struct {
+			SourceTaskID int64  `json:"source_task_id"`
+			Description  string `json:"description"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "invalid JSON body", http.StatusBadRequest)
+			return
+		}
+		if req.SourceTaskID <= 0 {
+			http.Error(w, "source_task_id is required", http.StatusBadRequest)
+			return
+		}
+		if err := opts.WorkflowSaveTemplate(r.Context(), root, name, req.Description, req.SourceTaskID); err != nil {
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		}
+		writeJSON(w, r, http.StatusCreated, map[string]string{"name": name})
+	})
 }

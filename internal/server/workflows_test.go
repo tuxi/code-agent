@@ -32,6 +32,9 @@ func fakeWorkflowFuncs(t *testing.T) *MuxOptions {
 		WorkflowRun: func(ctx context.Context, root, name string, input map[string]any) (int64, error) {
 			return 42, nil
 		},
+		WorkflowSaveTemplate: func(ctx context.Context, root, name, description string, sourceTaskID int64) error {
+			return nil
+		},
 	}
 	return opts
 }
@@ -122,6 +125,25 @@ func TestWorkflowRoutes(t *testing.T) {
 
 	t.Run("headless trigger bad body", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPost, "/v1/workflows/wf-a/runs"+ws, bytes.NewReader([]byte(`{`)))
+		rr := httptest.NewRecorder()
+		mux.ServeHTTP(rr, req)
+		if rr.Code != http.StatusBadRequest {
+			t.Fatalf("status=%d", rr.Code)
+		}
+	})
+
+	t.Run("save as template", func(t *testing.T) {
+		body := bytes.NewReader([]byte(`{"source_task_id":7,"description":"saved from run 7"}`))
+		req := httptest.NewRequest(http.MethodPost, "/v1/workflows/friendly-name/template"+ws, body)
+		rr := httptest.NewRecorder()
+		mux.ServeHTTP(rr, req)
+		if rr.Code != http.StatusCreated {
+			t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+		}
+	})
+
+	t.Run("save as template missing source", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/v1/workflows/friendly-name/template"+ws, bytes.NewReader([]byte(`{}`)))
 		rr := httptest.NewRecorder()
 		mux.ServeHTTP(rr, req)
 		if rr.Code != http.StatusBadRequest {
