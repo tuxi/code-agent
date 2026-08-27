@@ -69,9 +69,14 @@ func TestWorkflowListFunc(t *testing.T) {
 }
 
 func TestWorkflowListFuncMissingDB(t *testing.T) {
+	// A workspace that never ran plan_workflow lazily creates an empty store
+	// instead of failing: list returns an empty catalog.
 	items, err := NewWorkflowListFunc()(context.Background(), t.TempDir())
-	if err == nil {
-		t.Fatalf("expected error for empty workspace, got %v", items)
+	if err != nil {
+		t.Fatalf("expected empty list, got error: %v", err)
+	}
+	if len(items) != 0 {
+		t.Fatalf("expected empty catalog, got %d", len(items))
 	}
 }
 

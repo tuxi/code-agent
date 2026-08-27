@@ -72,18 +72,21 @@ type WorkflowDetailFunc func(ctx context.Context, workspaceRoot, workflowName st
 
 // ── Shared DB access ────────────────────────────────────────────────
 
-// openFluxWorkflowRuntime opens the workspace's durable workflow DB and
-// returns the runtime. The caller must Shutdown it when done; Shutdown closes
-// the underlying SQLite connection, so queries must finish first.
+// openFluxWorkflowRuntime opens (creating if needed) the workspace's durable
+// workflow DB and returns the runtime. The DB is created lazily — a workspace
+// that has never run plan_workflow gets an empty store on first use, so the
+// workflow panel / tools work everywhere instead of failing with "workflow
+// not found". The caller must Shutdown it when done; Shutdown closes the
+// underlying SQLite connection, so queries must finish first.
 func openFluxWorkflowRuntime(workspaceRoot string) (*workflowruntime.Runtime, error) {
 	if workspaceRoot == "" {
 		return nil, fmt.Errorf("workspaceRoot is required")
 	}
-	dbPath := filepath.Join(workspaceRoot, ".codeagent", "flux-workflows", "flux-workflows.db")
-	if _, err := os.Stat(dbPath); err != nil {
-		return nil, fmt.Errorf("workflow not found: %w", err)
+	dir := filepath.Join(workspaceRoot, ".codeagent", "flux-workflows")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return nil, fmt.Errorf("create workflow db dir: %w", err)
 	}
-	rt, err := workflowruntime.NewLocal(dbPath)
+	rt, err := workflowruntime.NewLocal(filepath.Join(dir, "flux-workflows.db"))
 	if err != nil {
 		return nil, fmt.Errorf("open workflow db: %w", err)
 	}
@@ -202,8 +205,8 @@ func NewWorkflowDetailFunc() WorkflowDetailFunc {
 			ID           int64
 			Name         string
 			Description  string
-			IsTemplate   int            `gorm:"column:is_template"`
-			ManifestJSON *string        `gorm:"column:manifest_json"`
+			IsTemplate   int     `gorm:"column:is_template"`
+			ManifestJSON *string `gorm:"column:manifest_json"`
 		}
 		if err := gdb.Table("workflows").Where("name = ?", workflowName).Scan(&wfRaw).Error; err != nil {
 			return nil, fmt.Errorf("workflow %q not found: %w", workflowName, err)
