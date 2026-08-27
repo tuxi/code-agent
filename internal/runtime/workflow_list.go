@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -17,11 +18,13 @@ import (
 // WorkflowSummary is one catalog row for the panel directory: the workflow's
 // metadata plus its latest definition hash and latest run state. The latest
 // run state is what lets the panel show red/green status without opening any
-// run.
+// run. IsTemplate distinguishes user-named reusable templates (R4) from
+// one-off plan_workflow runs.
 type WorkflowSummary struct {
 	ID           int64  `json:"id"`
 	Name         string `json:"name"`
 	Description  string `json:"description"`
+	IsTemplate   bool   `json:"is_template"`
 	LatestHash   string `json:"latest_hash,omitempty"`
 	LatestTaskID int64  `json:"latest_task_id,omitempty"`
 	LatestStatus string `json:"latest_status,omitempty"`
@@ -46,11 +49,15 @@ type TaskSummary struct {
 }
 
 // WorkflowDetail is the full history of one named workflow: its definition
-// versions and every run that linked to one of them.
+// versions and every run that linked to one of them. Manifest carries the
+// template's source manifest (goal/template/agents[]/parallelism) so the
+// client can prefill a trigger form; empty for one-off runs.
 type WorkflowDetail struct {
 	ID          int64            `json:"id"`
 	Name        string           `json:"name"`
 	Description string           `json:"description"`
+	IsTemplate  bool             `json:"is_template"`
+	Manifest    json.RawMessage  `json:"manifest,omitempty"`
 	Versions    []VersionSummary `json:"versions"`
 	Runs        []TaskSummary    `json:"runs"`
 }
@@ -150,8 +157,18 @@ func NewWorkflowListFunc() WorkflowListFunc {
 		}
 
 		items := make([]WorkflowSummary, 0, len(wfs))
+		// Load is_template flags for all workflows (code-agent business column).
+		var wfFlags []struct {
+			ID         int64
+			IsTemplate int `gorm:"column:is_template"`
+		}
+		_ = gdb.Table("workflows").Select("id, is_template").Scan(&wfFlags)
+		templateMap := make(map[int64]bool, len(wfFlags))
+		for _, f := range wfFlags {
+			templateMap[f.ID] = f.IsTemplate == 1
+		}
 		for _, wf := range wfs {
-			item := WorkflowSummary{ID: wf.ID, Name: wf.Name, Description: wf.Description}
+			item := WorkflowSummary{ID: wf.ID, Name: wf.Name, Description: wf.Description, IsTemplate: templateMap[wf.ID]}
 			if v, ok := latestVersion[wf.ID]; ok {
 				item.LatestHash = v.Hash
 			}
@@ -180,13 +197,23 @@ func NewWorkflowDetailFunc() WorkflowDetailFunc {
 		defer rt.Shutdown()
 		gdb := rt.DB().WithContext(ctx)
 
-		var wf domain.Workflow
-		if err := gdb.Where("name = ?", workflowName).First(&wf).Error; err != nil {
+		// Read the workflow row with our business columns (is_template, manifest_json).
+		var wfRaw struct {
+			ID           int64
+			Name         string
+			Description  string
+			IsTemplate   int            `gorm:"column:is_template"`
+			ManifestJSON *string        `gorm:"column:manifest_json"`
+		}
+		if err := gdb.Table("workflows").Where("name = ?", workflowName).Scan(&wfRaw).Error; err != nil {
 			return nil, fmt.Errorf("workflow %q not found: %w", workflowName, err)
+		}
+		if wfRaw.ID == 0 {
+			return nil, fmt.Errorf("workflow %q not found", workflowName)
 		}
 
 		var versions []domain.WorkflowVersion
-		if err := gdb.Where("workflow_id = ?", wf.ID).Order("id DESC").Find(&versions).Error; err != nil {
+		if err := gdb.Where("workflow_id = ?", wfRaw.ID).Order("id DESC").Find(&versions).Error; err != nil {
 			return nil, fmt.Errorf("query workflow_versions: %w", err)
 		}
 
@@ -201,7 +228,13 @@ func NewWorkflowDetailFunc() WorkflowDetailFunc {
 			}
 		}
 
-		d := &WorkflowDetail{ID: wf.ID, Name: wf.Name, Description: wf.Description}
+		d := &WorkflowDetail{
+			ID: wfRaw.ID, Name: wfRaw.Name, Description: wfRaw.Description,
+			IsTemplate: wfRaw.IsTemplate == 1,
+		}
+		if wfRaw.ManifestJSON != nil {
+			d.Manifest = json.RawMessage(*wfRaw.ManifestJSON)
+		}
 		for _, v := range versions {
 			d.Versions = append(d.Versions, VersionSummary{
 				ID: v.ID, Version: v.Version, Hash: v.Hash,
