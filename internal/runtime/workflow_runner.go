@@ -104,3 +104,10 @@ func (r *workflowRunner) SaveToolSequence(ctx context.Context, workspaceRoot, na
 	}
 	return name, nil
 }
+
+// ResumeTask recovers a suspended/failed/canceled run by task id. It requires
+// the started runtime (workers) so the re-enqueued run drives to a terminal
+// state asynchronously.
+func (r *workflowRunner) ResumeTask(ctx context.Context, workspaceRoot string, taskID int64, resumeFrom string) error {
+	return NewResumeRunFunc()(ctx, workspaceRoot, taskID, resumeFrom)
+}

@@ -34,14 +34,16 @@ func (*WorkflowTool) InputSchema() json.RawMessage {
 	return json.RawMessage(`{
 		"type": "object",
 		"properties": {
-			"mode": {"type": "string", "enum": ["list", "view", "save", "run", "delete", "extract", "save_tool_sequence"]},
+			"mode": {"type": "string", "enum": ["list", "view", "save", "run", "delete", "extract", "save_tool_sequence", "resume"]},
 			"name": {"type": "string", "description": "template name; required for view/run/delete/save_tool_sequence, for save it is the new template name"},
 			"description": {"type": "string", "description": "save: human-readable template description"},
 			"source_task_id": {"type": "integer", "description": "save: the run (task id) to persist as a template"},
 			"workspace_path": {"type": "string", "description": "optional workspace; defaults to the current one"},
 			"input": {"type": "object", "description": "run: the run input manifest {goal, template, agents:[{role, session_id, message, intent, correlation_id}], parallelism, timeout_ms}"},
 			"limit": {"type": "integer", "description": "extract: max number of recent tool calls to return (default 50)"},
-			"manifest": {"type": "object", "description": "save_tool_sequence: the tool_sequence manifest {type:\"tool_sequence\", goal, description, inputs:[{name,type,required,description}], steps:[{tool,args}]}"}
+			"manifest": {"type": "object", "description": "save_tool_sequence: the tool_sequence manifest {type:\"tool_sequence\", goal, description, inputs:[{name,type,required,description}], steps:[{tool,args}]}"},
+			"task_id": {"type": "integer", "description": "resume: the run (task id) to recover"},
+			"resume_from": {"type": "string", "description": "resume: node name to resume from; empty auto-collects failed roots"}
 		},
 		"required": ["mode"],
 		"additionalProperties": false
@@ -57,6 +59,8 @@ type workflowInput struct {
 	Input         map[string]any  `json:"input"`
 	Limit         int             `json:"limit"`
 	Manifest      json.RawMessage `json:"manifest"`
+	TaskID        int64           `json:"task_id"`
+	ResumeFrom    string          `json:"resume_from"`
 }
 
 func (*WorkflowTool) Execute(ctx context.Context, ec tools.ExecutionContext, raw json.RawMessage) (tools.ToolResult, error) {
@@ -167,6 +171,16 @@ func (*WorkflowTool) Execute(ctx context.Context, ec tools.ExecutionContext, raw
 			return tools.ToolResult{}, fmt.Errorf("workflow: save_tool_sequence: %w", err)
 		}
 		out, _ := json.Marshal(map[string]string{"name": savedName, "status": "saved"})
+		return tools.ToolResult{Content: string(out), Output: out}, nil
+
+	case "resume":
+		if in.TaskID <= 0 {
+			return tools.ToolResult{}, fmt.Errorf("workflow: resume requires task_id")
+		}
+		if err := runner.ResumeTask(ctx, root, in.TaskID, in.ResumeFrom); err != nil {
+			return tools.ToolResult{}, fmt.Errorf("workflow: resume: %w", err)
+		}
+		out, _ := json.Marshal(map[string]any{"task_id": in.TaskID, "status": "resuming"})
 		return tools.ToolResult{Content: string(out), Output: out}, nil
 
 	default:

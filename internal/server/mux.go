@@ -442,6 +442,9 @@ type MuxOptions struct {
 	// WorkflowSaveTemplate persists a run as a named reusable template (R4).
 	// Nil disables POST /v1/workflows/{name}/template (404).
 	WorkflowSaveTemplate runtime.SaveTemplateFunc
+	// WorkflowResume recovers a suspended/failed/canceled run (manual escape
+	// hatch). Nil disables POST /v1/workflows/{name}/runs/{task_id}/resume.
+	WorkflowResume runtime.ResumeRunFunc
 	// AutomationStore serves the /v1/automations control-plane endpoints. Nil
 	// disables them (404), matching the Providers/Granter pattern.
 	AutomationStore automation.Store

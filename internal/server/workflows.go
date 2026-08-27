@@ -159,4 +159,33 @@ func registerWorkflowRoutes(mux *http.ServeMux, opts MuxOptions) {
 		}
 		writeJSON(w, r, http.StatusCreated, map[string]string{"name": name})
 	})
+
+	// Resume/retry a run (manual escape hatch): recovers a suspended, failed,
+	// or canceled task by id. The run re-executes asynchronously in the
+	// workspace runtime's workers.
+	mux.HandleFunc("POST /v1/workflows/{name}/runs/{task_id}/resume", func(w http.ResponseWriter, r *http.Request) {
+		if opts.WorkflowResume == nil {
+			http.Error(w, "workflow resume not available", http.StatusNotFound)
+			return
+		}
+		root, ok := workspaceRoot(r)
+		if !ok {
+			http.Error(w, "missing workspace query parameter", http.StatusBadRequest)
+			return
+		}
+		taskID, err := strconv.ParseInt(r.PathValue("task_id"), 10, 64)
+		if err != nil || taskID <= 0 {
+			http.Error(w, "invalid task_id", http.StatusBadRequest)
+			return
+		}
+		var req struct {
+			ResumeFrom string `json:"resume_from"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		if err := opts.WorkflowResume(r.Context(), root, taskID, req.ResumeFrom); err != nil {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
+		writeJSON(w, r, http.StatusAccepted, map[string]int64{"task_id": taskID})
+	})
 }

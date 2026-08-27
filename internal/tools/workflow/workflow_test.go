@@ -15,11 +15,13 @@ type fakeRunner struct {
 	runErr       error
 	deleteErr    error
 	stsErr       error
+	resumeErr    error
 	listCalled   bool
 	saveCalled   bool
 	runCalled    bool
 	deleteCalled bool
 	stsCalled    bool
+	resumeCalled bool
 	runTaskID    int64
 }
 
@@ -51,6 +53,10 @@ func (f *fakeRunner) Delete(ctx context.Context, root, name string) error {
 func (f *fakeRunner) SaveToolSequence(ctx context.Context, root, name string, manifest json.RawMessage) (string, error) {
 	f.stsCalled = true
 	return name, f.stsErr
+}
+func (f *fakeRunner) ResumeTask(ctx context.Context, root string, taskID int64, resumeFrom string) error {
+	f.resumeCalled = true
+	return f.resumeErr
 }
 
 func execute(t *testing.T, runner tools.WorkflowRunner, raw string) tools.ToolResult {
@@ -102,6 +108,17 @@ func TestWorkflowToolModes(t *testing.T) {
 		}
 	})
 
+	t.Run("resume", func(t *testing.T) {
+		runner := &fakeRunner{}
+		result := execute(t, runner, `{"mode":"resume","task_id":42,"resume_from":"wait"}`)
+		if !runner.resumeCalled {
+			t.Fatal("resume not called")
+		}
+		var out map[string]any
+		if err := json.Unmarshal(result.Output, &out); err != nil || out["task_id"] != float64(42) {
+			t.Fatalf("resume result=%s", result.Content)
+		}
+	})
 	t.Run("delete", func(t *testing.T) {
 		runner := &fakeRunner{}
 		result := execute(t, runner, `{"mode":"delete","name":"old-tpl"}`)

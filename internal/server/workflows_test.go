@@ -35,6 +35,9 @@ func fakeWorkflowFuncs(t *testing.T) *MuxOptions {
 		WorkflowSaveTemplate: func(ctx context.Context, root, name, description string, sourceTaskID int64) error {
 			return nil
 		},
+		WorkflowResume: func(ctx context.Context, root string, taskID int64, resumeFrom string) error {
+			return nil
+		},
 	}
 	return opts
 }
@@ -144,6 +147,31 @@ func TestWorkflowRoutes(t *testing.T) {
 
 	t.Run("save as template missing source", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPost, "/v1/workflows/friendly-name/template"+ws, bytes.NewReader([]byte(`{}`)))
+		rr := httptest.NewRecorder()
+		mux.ServeHTTP(rr, req)
+		if rr.Code != http.StatusBadRequest {
+			t.Fatalf("status=%d", rr.Code)
+		}
+	})
+
+	t.Run("resume run", func(t *testing.T) {
+		body := bytes.NewReader([]byte(`{"resume_from":"wait"}`))
+		req := httptest.NewRequest(http.MethodPost, "/v1/workflows/update-bio/runs/42/resume"+ws, body)
+		rr := httptest.NewRecorder()
+		mux.ServeHTTP(rr, req)
+		if rr.Code != http.StatusAccepted {
+			t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+		}
+		var resp struct {
+			Data map[string]int64 `json:"data"`
+		}
+		if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil || resp.Data["task_id"] != 42 {
+			t.Fatalf("body=%s", rr.Body.String())
+		}
+	})
+
+	t.Run("resume run bad task id", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/v1/workflows/update-bio/runs/abc/resume"+ws, bytes.NewReader([]byte(`{}`)))
 		rr := httptest.NewRecorder()
 		mux.ServeHTTP(rr, req)
 		if rr.Code != http.StatusBadRequest {

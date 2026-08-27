@@ -163,6 +163,9 @@ type WorkflowRunner interface {
 	// SaveToolSequence compiles a tool_sequence manifest and persists it as a
 	// named template (R9), returning the template name.
 	SaveToolSequence(ctx context.Context, workspaceRoot, name string, manifest json.RawMessage) (string, error)
+	// ResumeTask recovers a suspended/failed/canceled run by task id so it can
+	// be re-driven to a terminal state (manual escape hatch).
+	ResumeTask(ctx context.Context, workspaceRoot string, taskID int64, resumeFrom string) error
 }
 
 type SessionCreateRequest struct {
