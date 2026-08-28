@@ -24,7 +24,7 @@ require (
 	github.com/muesli/termenv v0.16.0
 	github.com/pmezard/go-difflib v1.0.0
 	github.com/tuxi/flux v1.0.8
-	github.com/tuxi/flux-workflow v1.0.6
+	github.com/tuxi/flux-workflow v1.0.7
 	golang.org/x/net v0.56.0
 	golang.org/x/sys v0.46.0
 	golang.org/x/term v0.44.0
@@ -32,11 +32,6 @@ require (
 	gorm.io/gorm v1.31.1
 	modernc.org/sqlite v1.52.0
 )
-
-// Local replace while R7 (await suspend semantics) is developed in
-// /Users/xiaoyuan/Documents/work/git/flux-workflow (commit 0bb3e7f). Remove
-// and bump to a released version once the sentinel lands upstream.
-replace github.com/tuxi/flux-workflow => /Users/xiaoyuan/Documents/work/git/flux-workflow
 
 require (
 	dario.cat/mergo v1.0.0 // indirect
