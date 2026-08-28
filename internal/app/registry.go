@@ -121,7 +121,7 @@ var builtinConnections = map[string]builtinConnection{
 		WireModel: "glm-4.7", ProviderType: "openai",
 		DisplayName: "Zhipu GLM", Summary: "使用智谱 OpenAI 兼容接口", Kind: "api_key",
 		Models: []builtinModelTemplate{
-			{ID: "glm-4.7", ContextWindow: 128_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text"}},
+			{ID: "glm-5.3-flash", RuntimeAlias: "glm", ContextWindow: 1_000_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text", "image"}, InputPricePerM: 0.16, OutputPricePerM: 0.32},
 		},
 	},
 	"openrouter": {
@@ -130,6 +130,19 @@ var builtinConnections = map[string]builtinConnection{
 		DisplayName:  "OpenRouter", Summary: "通过一个 API 密钥使用多个模型", Kind: "api_key",
 		Models: []builtinModelTemplate{
 			{ID: "openrouter/auto", RuntimeAlias: "openrouter", ContextWindow: 200_000, SupportsTools: true, InputModalities: []string{"text"}},
+			{ID: "openrouter/free", RuntimeAlias: "openrouter", ContextWindow: 200_000, SupportsTools: true, InputModalities: []string{"text"}},
+			{ID: "nvidia/nemotron-3-ultra-550b-a55b:free", RuntimeAlias: "openrouter", ContextWindow: 1_000_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text"}, Temperature: 0.2},
+			{ID: "glm-5.3-flash", RuntimeAlias: "openrouter", ContextWindow: 1_000_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text", "image"}, Temperature: 0.2},
+		},
+	},
+	"bai": {
+		BaseURL: "https://api.b.ai/v1/", Env: "BAI_API_KEY",
+		ProviderType: "openai",
+		DisplayName:  "B.ai", Summary: "通过一个 API 密钥使用多个模型", Kind: "api_key",
+		Models: []builtinModelTemplate{
+			{ID: "deepseek-v4-flash", RuntimeAlias: "deepseek", ContextWindow: 1_000_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text"}, WebSearch: true, InputPricePerM: 0.16, OutputPricePerM: 0.32},
+			{ID: "deepseek-v4-pro", RuntimeAlias: "deepseek-pro", ContextWindow: 1_000_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text"}, InputPricePerM: 0.45, OutputPricePerM: 0.90},
+			{ID: "deepseek-v4-flash-vision-exp", RuntimeAlias: "deepseek-vision", ContextWindow: 1_000_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text", "image"}, InputPricePerM: 0.16, OutputPricePerM: 0.32},
 		},
 	},
 	"ollama": {
