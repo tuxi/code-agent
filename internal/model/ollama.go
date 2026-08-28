@@ -69,8 +69,9 @@ func NewOllamaProvider(baseURL string) *OllamaProvider {
 // tool-call arguments as a JSON object, whereas the canonical Message type
 // stores them as a JSON-encoded string (OpenAI wire format).
 type ollamaChatRequest struct {
-	Model     string           `json:"model"`
-	Think     string           `json:"think,omitempty"`
+	Model string `json:"model"`
+	// error model api error: status=400 body={"error":"invalid think value: \"false\" (must be \"high\", \"medium\", \"low\", \"max\", true, or false)"}
+	Think     any              `json:"think,omitempty"`
 	Messages  []ollamaMessage  `json:"messages"`
 	Stream    bool             `json:"stream"`
 	Tools     []ToolDefinition `json:"tools,omitempty"`
@@ -324,8 +325,9 @@ func parseOneQwenFunc(block string) ToolCall {
 // Complete sends a non-streaming chat request to Ollama's /api/chat.
 func (p *OllamaProvider) Complete(ctx context.Context, req Request) (Response, error) {
 	body := ollamaChatRequest{
-		Model:     req.Model,
-		Think:     "low",
+		Model: req.Model,
+		//Think:     "low",
+		Think:     false,
 		Messages:  toOllamaMessages(req.Messages),
 		Tools:     req.Tools,
 		KeepAlive: "5m",
