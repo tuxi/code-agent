@@ -24,7 +24,8 @@ func (*AutomationTool) Description() string {
 	return "Create, list, view, update, or delete scheduled automations. " +
 		"An automation runs a prompt on a schedule (once or recurring) in the background. " +
 		"mode is required: list (summaries), view (full config), create, update (only provided fields change), delete (soft). " +
-		"create requires name, prompt, schedule_type (once|recurring), and timezone; once needs scheduled_at, recurring needs rrule. " +
+		"create requires name, prompt (or workflow_ref), schedule_type (once|recurring), and timezone; once needs scheduled_at, recurring needs rrule. " +
+		"prompt and workflow_ref are mutually exclusive — set only one. " +
 		"Call get_current_time first to confirm the timezone before creating."
 }
 
@@ -157,6 +158,9 @@ func buildAutomation(in automationInput, ec tools.ExecutionContext) (automation.
 	// Either a prompt turn or a workflow template must drive the firing.
 	if in.Prompt == "" && in.WorkflowRef == "" {
 		return automation.Automation{}, fmt.Errorf("automation: create requires prompt or workflow_ref")
+	}
+	if in.Prompt != "" && in.WorkflowRef != "" {
+		return automation.Automation{}, fmt.Errorf("automation: prompt and workflow_ref are mutually exclusive — set only one")
 	}
 	if in.Timezone == "" {
 		return automation.Automation{}, fmt.Errorf("automation: create requires timezone (call get_current_time first)")

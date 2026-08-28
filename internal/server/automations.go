@@ -207,6 +207,9 @@ func (r automationCreateRequest) toAutomation() (automation.Automation, error) {
 	if r.Prompt == "" && r.WorkflowRef == "" {
 		return automation.Automation{}, errBadRequest("prompt or workflow_ref is required")
 	}
+	if r.Prompt != "" && r.WorkflowRef != "" {
+		return automation.Automation{}, errBadRequest("prompt and workflow_ref are mutually exclusive — set only one")
+	}
 	st := automation.ScheduleRecurring
 	if r.ScheduleType == "once" {
 		st = automation.ScheduleOnce
