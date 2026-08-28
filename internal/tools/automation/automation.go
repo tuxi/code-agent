@@ -47,6 +47,9 @@ func (*AutomationTool) InputSchema() json.RawMessage {
 			"skills": {"type": "array", "items": {"type": "string"}},
 			"connectors": {"type": "array", "items": {"type": "string"}},
 			"permission_mode": {"type": "string"},
+			"workflow_ref": {"type": "string", "description": "workflow execution mode: \"workspace_path#workflow_name\". When set, each firing triggers the workflow template directly (zero LLM cost) instead of a prompt turn; prompt is ignored"},
+			"workflow_input": {"type": "object", "description": "workflow mode: trigger input JSON for the template (e.g. {\"instId\":\"BTC-USDT-SWAP\"})"},
+			"overlap_policy": {"type": "string", "enum": ["skip", "allow_all"], "description": "workflow mode: skip = skip a firing while a previous run is active (default); allow_all = always trigger"},
 			"enabled": {"type": "boolean", "description": "create/update: ACTIVE (true) or PAUSED (false)"}
 		},
 		"additionalProperties": false
@@ -54,22 +57,25 @@ func (*AutomationTool) InputSchema() json.RawMessage {
 }
 
 type automationInput struct {
-	Mode           string   `json:"mode"`
-	ID             string   `json:"id"`
-	Name           string   `json:"name"`
-	Prompt         string   `json:"prompt"`
-	ScheduleType   string   `json:"schedule_type"`
-	RRule          string   `json:"rrule"`
-	ScheduledAt    string   `json:"scheduled_at"`
-	Timezone       string   `json:"timezone"`
-	ModeExec       string   `json:"mode_exec"`
-	SessionID      string   `json:"session_id"`
-	CWDs           []string `json:"cwds"`
-	ModelID        string   `json:"model_id"`
-	Skills         []string `json:"skills"`
-	Connectors     []string `json:"connectors"`
-	PermissionMode string   `json:"permission_mode"`
-	Enabled        *bool    `json:"enabled"`
+	Mode           string         `json:"mode"`
+	ID             string         `json:"id"`
+	Name           string         `json:"name"`
+	Prompt         string         `json:"prompt"`
+	ScheduleType   string         `json:"schedule_type"`
+	RRule          string         `json:"rrule"`
+	ScheduledAt    string         `json:"scheduled_at"`
+	Timezone       string         `json:"timezone"`
+	ModeExec       string         `json:"mode_exec"`
+	SessionID      string         `json:"session_id"`
+	CWDs           []string       `json:"cwds"`
+	ModelID        string         `json:"model_id"`
+	Skills         []string       `json:"skills"`
+	Connectors     []string       `json:"connectors"`
+	PermissionMode string         `json:"permission_mode"`
+	WorkflowRef    string         `json:"workflow_ref"`
+	WorkflowInput  map[string]any `json:"workflow_input"`
+	OverlapPolicy  string         `json:"overlap_policy"`
+	Enabled        *bool          `json:"enabled"`
 }
 
 func (*AutomationTool) Execute(ctx context.Context, ec tools.ExecutionContext, raw json.RawMessage) (tools.ToolResult, error) {
@@ -148,8 +154,9 @@ func buildAutomation(in automationInput, ec tools.ExecutionContext) (automation.
 	if in.Name == "" {
 		return automation.Automation{}, fmt.Errorf("automation: create requires name")
 	}
-	if in.Prompt == "" {
-		return automation.Automation{}, fmt.Errorf("automation: create requires prompt")
+	// Either a prompt turn or a workflow template must drive the firing.
+	if in.Prompt == "" && in.WorkflowRef == "" {
+		return automation.Automation{}, fmt.Errorf("automation: create requires prompt or workflow_ref")
 	}
 	if in.Timezone == "" {
 		return automation.Automation{}, fmt.Errorf("automation: create requires timezone (call get_current_time first)")
@@ -243,7 +250,23 @@ func buildAutomation(in automationInput, ec tools.ExecutionContext) (automation.
 		Connectors:           in.Connectors,
 		PermissionMode:       permissionMode,
 		CreatedFromWorkspace: ec.WorkspaceRoot,
+		WorkflowRef:          in.WorkflowRef,
+		WorkflowInput:        workflowInputJSON(in.WorkflowInput),
+		OverlapPolicy:        in.OverlapPolicy,
 	}, nil
+}
+
+// workflowInputJSON marshals a workflow-mode trigger input to its persisted
+// JSON string; empty map yields "".
+func workflowInputJSON(input map[string]any) string {
+	if len(input) == 0 {
+		return ""
+	}
+	b, err := json.Marshal(input)
+	if err != nil {
+		return ""
+	}
+	return string(b)
 }
 
 // buildPatch maps update inputs onto a partial patch (only provided fields).

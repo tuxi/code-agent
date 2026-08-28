@@ -39,6 +39,10 @@ func OpenStore(path string) (*sqlStore, error) {
 	// is idempotent — "duplicate column" just means it already applied.
 	for _, stmt := range []string{
 		`ALTER TABLE automations ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE automations ADD COLUMN workflow_ref TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE automations ADD COLUMN workflow_input TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE automations ADD COLUMN overlap_policy TEXT NOT NULL DEFAULT 'skip'`,
+		`ALTER TABLE automation_runs ADD COLUMN task_id TEXT NOT NULL DEFAULT ''`,
 	} {
 		if _, err := db.Exec(stmt); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			db.Close()
@@ -141,13 +145,15 @@ func (s *sqlStore) Create(ctx context.Context, a Automation) (Automation, error)
 			id, name, prompt, status, schedule_type, rrule, scheduled_at, timezone, mode_exec,
 			session_id, cwds, model_id, skills_json, connector_ids_json, permission_mode,
 			valid_from, valid_until, created_from_workspace,
-			last_run_at, next_run_at, run_count, last_status, retry_count, created_at, updated_at, deleted_at
-		) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			last_run_at, next_run_at, run_count, last_status, retry_count, created_at, updated_at, deleted_at,
+			workflow_ref, workflow_input, overlap_policy
+		) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		a.ID, a.Name, a.Prompt, string(a.Status), string(a.ScheduleType), a.RRule, fmtTime(a.ScheduledAt),
 		a.Timezone, string(a.ModeExec), a.SessionID, jsonStr(a.CWDs), a.ModelID, jsonStr(a.Skills),
 		jsonStr(a.Connectors), a.PermissionMode, fmtTime(a.ValidFrom), fmtTime(a.ValidUntil),
 		a.CreatedFromWorkspace, epochMS(a.LastRunAt), epochMS(a.NextRunAt), a.RunCount, a.LastStatus,
-		a.RetryCount, epochMS(a.CreatedAt), epochMS(a.UpdatedAt), epochMSOrNil(a.DeletedAt))
+		a.RetryCount, epochMS(a.CreatedAt), epochMS(a.UpdatedAt), epochMSOrNil(a.DeletedAt),
+		a.WorkflowRef, a.WorkflowInput, a.OverlapPolicy)
 	if err != nil {
 		return Automation{}, fmt.Errorf("create automation: %w", err)
 	}
@@ -161,7 +167,8 @@ func (s *sqlStore) Get(ctx context.Context, id string) (Automation, error) {
 		       mode_exec, COALESCE(session_id,''), cwds, COALESCE(model_id,''), skills_json,
 		       connector_ids_json, COALESCE(permission_mode,''), COALESCE(valid_from,''), COALESCE(valid_until,''),
 		       COALESCE(created_from_workspace,''), last_run_at, next_run_at, run_count, COALESCE(last_status,''),
-		       retry_count, created_at, updated_at, deleted_at
+		       retry_count, created_at, updated_at, deleted_at,
+		       COALESCE(workflow_ref,''), COALESCE(workflow_input,''), COALESCE(overlap_policy,'skip')
 		FROM automations WHERE id=?`, id)
 	a, err := scanAutomation(row)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -177,7 +184,8 @@ func (s *sqlStore) List(ctx context.Context) ([]Automation, error) {
 		       mode_exec, COALESCE(session_id,''), cwds, COALESCE(model_id,''), skills_json,
 		       connector_ids_json, COALESCE(permission_mode,''), COALESCE(valid_from,''), COALESCE(valid_until,''),
 		       COALESCE(created_from_workspace,''), last_run_at, next_run_at, run_count, COALESCE(last_status,''),
-		       retry_count, created_at, updated_at, deleted_at
+		       retry_count, created_at, updated_at, deleted_at,
+		       COALESCE(workflow_ref,''), COALESCE(workflow_input,''), COALESCE(overlap_policy,'skip')
 		FROM automations WHERE deleted_at IS NULL
 		ORDER BY created_at DESC`)
 	if err != nil {
@@ -204,12 +212,13 @@ type scanner interface {
 func scanAutomation(sc scanner) (Automation, error) {
 	var a Automation
 	var status, scheduleType, rrule, scheduledAt, timezone, modeExec, sessionID, cwds, modelID, skills, connectors, permissionMode, validFrom, validUntil, createdFromWorkspace, lastStatus string
+	var workflowRef, workflowInput, overlapPolicy string
 	var lastRunAt, nextRunAt, createdAt, updatedAt, deletedAt sql.NullInt64
 	var runCount, retryCount int64
 	err := sc.Scan(&a.ID, &a.Name, &a.Prompt, &status, &scheduleType, &rrule, &scheduledAt, &timezone,
 		&modeExec, &sessionID, &cwds, &modelID, &skills, &connectors, &permissionMode, &validFrom,
 		&validUntil, &createdFromWorkspace, &lastRunAt, &nextRunAt, &runCount, &lastStatus, &retryCount,
-		&createdAt, &updatedAt, &deletedAt)
+		&createdAt, &updatedAt, &deletedAt, &workflowRef, &workflowInput, &overlapPolicy)
 	if err != nil {
 		return Automation{}, err
 	}
@@ -239,6 +248,9 @@ func scanAutomation(sc scanner) (Automation, error) {
 	if deletedAt.Valid && deletedAt.Int64 != 0 {
 		a.DeletedAt = time.UnixMilli(deletedAt.Int64).UTC()
 	}
+	a.WorkflowRef = workflowRef
+	a.WorkflowInput = workflowInput
+	a.OverlapPolicy = overlapPolicy
 	return a, nil
 }
 
@@ -315,6 +327,15 @@ func (s *sqlStore) Update(ctx context.Context, id string, patch AutomationPatch)
 	if patch.RetryCount != nil {
 		existing.RetryCount = *patch.RetryCount
 	}
+	if patch.WorkflowRef != nil {
+		existing.WorkflowRef = *patch.WorkflowRef
+	}
+	if patch.WorkflowInput != nil {
+		existing.WorkflowInput = *patch.WorkflowInput
+	}
+	if patch.OverlapPolicy != nil {
+		existing.OverlapPolicy = *patch.OverlapPolicy
+	}
 
 	existing.UpdatedAt = time.Now().UTC()
 	if scheduleChanged {
@@ -329,14 +350,16 @@ func (s *sqlStore) Update(ctx context.Context, id string, patch AutomationPatch)
 		UPDATE automations SET
 			name=?, prompt=?, status=?, schedule_type=?, rrule=?, scheduled_at=?, timezone=?, mode_exec=?,
 			session_id=?, cwds=?, model_id=?, skills_json=?, connector_ids_json=?, permission_mode=?,
-			valid_from=?, valid_until=?, created_from_workspace=?, next_run_at=?, last_run_at=?, last_status=?, retry_count=?, updated_at=?
+			valid_from=?, valid_until=?, created_from_workspace=?, next_run_at=?, last_run_at=?, last_status=?, retry_count=?, updated_at=?,
+			workflow_ref=?, workflow_input=?, overlap_policy=?
 		WHERE id=?`,
 		existing.Name, existing.Prompt, string(existing.Status), string(existing.ScheduleType), existing.RRule,
 		fmtTime(existing.ScheduledAt), existing.Timezone, string(existing.ModeExec), existing.SessionID,
 		jsonStr(existing.CWDs), existing.ModelID, jsonStr(existing.Skills), jsonStr(existing.Connectors),
 		existing.PermissionMode, fmtTime(existing.ValidFrom), fmtTime(existing.ValidUntil),
 		existing.CreatedFromWorkspace, epochMS(existing.NextRunAt), epochMS(existing.LastRunAt),
-		existing.LastStatus, existing.RetryCount, epochMS(existing.UpdatedAt), id); err != nil {
+		existing.LastStatus, existing.RetryCount, epochMS(existing.UpdatedAt),
+		existing.WorkflowRef, existing.WorkflowInput, existing.OverlapPolicy, id); err != nil {
 		return Automation{}, fmt.Errorf("update automation: %w", err)
 	}
 	return existing, nil
@@ -365,7 +388,8 @@ func (s *sqlStore) NextDueAt(ctx context.Context, now time.Time) ([]Automation, 
 		       mode_exec, COALESCE(session_id,''), cwds, COALESCE(model_id,''), skills_json,
 		       connector_ids_json, COALESCE(permission_mode,''), COALESCE(valid_from,''), COALESCE(valid_until,''),
 		       COALESCE(created_from_workspace,''), last_run_at, next_run_at, run_count, COALESCE(last_status,''),
-		       retry_count, created_at, updated_at, deleted_at
+		       retry_count, created_at, updated_at, deleted_at,
+		       COALESCE(workflow_ref,''), COALESCE(workflow_input,''), COALESCE(overlap_policy,'skip')
 		FROM automations
 		WHERE deleted_at IS NULL AND status='ACTIVE' AND next_run_at IS NOT NULL AND next_run_at <= ?
 		ORDER BY next_run_at ASC`, epochMS(now))
@@ -428,9 +452,9 @@ func (s *sqlStore) RecordRun(ctx context.Context, r Run) error {
 	}
 	defer tx.Rollback()
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO automation_runs (id, automation_id, session_id, status, read_at, thread_title, source_cwd, result_success, result_summary, created_at)
-		VALUES (?,?,?,?,?,?,?,?,?,?)`,
-		r.ID, r.AutomationID, r.SessionID, r.Status, epochMS(r.ReadAt), r.ThreadTitle, r.SourceCWD,
+		INSERT INTO automation_runs (id, automation_id, session_id, task_id, status, read_at, thread_title, source_cwd, result_success, result_summary, created_at)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+		r.ID, r.AutomationID, r.SessionID, r.TaskID, r.Status, epochMS(r.ReadAt), r.ThreadTitle, r.SourceCWD,
 		boolToInt(r.ResultSuccess), r.ResultSummary, epochMS(r.CreatedAt)); err != nil {
 		return fmt.Errorf("record run: %w", err)
 	}
@@ -446,7 +470,7 @@ func (s *sqlStore) ListRuns(ctx context.Context, automationID string, limit int)
 		limit = 50
 	}
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, automation_id, COALESCE(session_id,''), status, read_at, COALESCE(thread_title,''), COALESCE(source_cwd,''), result_success, COALESCE(result_summary,''), created_at
+		SELECT id, automation_id, COALESCE(session_id,''), COALESCE(task_id,''), status, read_at, COALESCE(thread_title,''), COALESCE(source_cwd,''), result_success, COALESCE(result_summary,''), created_at
 		FROM automation_runs WHERE automation_id=? ORDER BY created_at DESC LIMIT ?`, automationID, limit)
 	if err != nil {
 		return nil, err
@@ -456,11 +480,12 @@ func (s *sqlStore) ListRuns(ctx context.Context, automationID string, limit int)
 	for rows.Next() {
 		var r Run
 		var readAt, createdAt int64
-		var sessionID, threadTitle, sourceCWD, resultSummary, status string
-		if err := rows.Scan(&r.ID, &r.AutomationID, &sessionID, &status, &readAt, &threadTitle, &sourceCWD, &r.ResultSuccess, &resultSummary, &createdAt); err != nil {
+		var sessionID, taskID, threadTitle, sourceCWD, resultSummary, status string
+		if err := rows.Scan(&r.ID, &r.AutomationID, &sessionID, &taskID, &status, &readAt, &threadTitle, &sourceCWD, &r.ResultSuccess, &resultSummary, &createdAt); err != nil {
 			return nil, err
 		}
 		r.SessionID = sessionID
+		r.TaskID = taskID
 		r.Status = status
 		r.ThreadTitle = threadTitle
 		r.SourceCWD = sourceCWD

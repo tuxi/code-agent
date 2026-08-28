@@ -224,12 +224,13 @@ func run() error {
 		return stateDirErr
 	}
 	var automationStore automation.Store
+	var dispatcher *automation.TurnDispatcher
 	automationStore, automationErr := automation.OpenStore(filepath.Join(stateDir, "automations.db"))
 	if automationErr != nil {
 		fmt.Fprintf(os.Stderr, "codeagentd: automation store disabled: %v\n", automationErr)
 	} else {
 		defer automationStore.Close()
-		dispatcher := automation.NewTurnDispatcher(&daemonAutomationAdapter{exec: executor, repo: repo}, &daemonAutomationAdapter{exec: executor, repo: repo})
+		dispatcher = automation.NewTurnDispatcher(&daemonAutomationAdapter{exec: executor, repo: repo}, &daemonAutomationAdapter{exec: executor, repo: repo})
 		scheduler := automation.NewScheduler(automationStore, dispatcher, 0)
 		if skipped, err := scheduler.Reconcile(ctx); err == nil && skipped > 0 {
 			fmt.Fprintf(os.Stderr, "codeagentd: automation reconcile skipped %d overdue firings\n", skipped)
@@ -281,6 +282,8 @@ func run() error {
 	rb.SetSessionControl(owner)
 	rb.SetWorkflowRunner(runtime.NewWorkflowRunner(owner, wsReg))
 	rb.SetSessionTrace(runtime.NewSessionTraceFunc())
+	// Workflow-mode automations (workflow_ref) trigger a template directly.
+	dispatcher.SetWorkflowRunner(runtime.NewAutomationWorkflowRunner(runtime.NewHeadlessRuntime(owner, wsReg)))
 	runtime.SetFluxExternalResolver(owner)
 	if err := owner.Start(ctx); err != nil {
 		_ = owner.Close()

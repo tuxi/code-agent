@@ -90,6 +90,14 @@ type Automation struct {
 	CreatedAt            time.Time
 	UpdatedAt            time.Time
 	DeletedAt            time.Time // zero = not deleted (soft delete)
+
+	// Workflow execution mode (P3): when WorkflowRef is set, a firing triggers the
+	// named workflow template directly instead of a prompt turn — zero LLM cost,
+	// deterministic execution. "workspace_path#workflow_name". Mutually exclusive
+	// with Prompt (Prompt is ignored when WorkflowRef is set).
+	WorkflowRef   string
+	WorkflowInput string // trigger input JSON for the template (e.g. {"instId":"BTC-USDT-SWAP"})
+	OverlapPolicy string // skip | allow_all; "" = skip
 }
 
 // RuntimeState is the hot, mutable 1:1 state for an automation. It lives in a
@@ -111,7 +119,8 @@ type RuntimeState struct {
 type Run struct {
 	ID            string
 	AutomationID  string
-	SessionID     string    // the conversation this firing ran in
+	SessionID     string    // the conversation this firing ran in (empty for workflow runs)
+	TaskID        string    // workflow mode: the triggered workflow task id (empty for prompt turns)
 	Status        string    // running | succeeded | failed | skipped
 	ReadAt        time.Time // zero = unread (inbox indicator)
 	ThreadTitle   string
@@ -195,6 +204,9 @@ type AutomationPatch struct {
 	LastRunAt            *time.Time
 	LastStatus           *string
 	RetryCount           *int
+	WorkflowRef          *string
+	WorkflowInput        *string
+	OverlapPolicy        *string
 }
 
 // computeNextRunAt returns the next firing time for an automation, in its

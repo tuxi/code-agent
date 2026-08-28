@@ -192,9 +192,45 @@ func (s *Scheduler) fire(ctx context.Context, a Automation) {
 		return
 	}
 
+	// A workflow-mode skip (overlap policy) returns ("", nil): record it as
+	// skipped, not running, and advance to the next firing.
+	if a.WorkflowRef != "" && turnID == "" {
+		_ = s.store.RecordRun(ctx, Run{
+			AutomationID: a.ID,
+			Status:       RunSkipped,
+			CreatedAt:    now,
+		})
+		_ = s.store.UpdateRuntimeState(ctx, RuntimeState{
+			AutomationID: a.ID,
+			Running:      false,
+			LastRunAt:    now,
+			LastError:    "skipped: active workflow run",
+		})
+		var next time.Time
+		status := a.Status
+		if a.ScheduleType == ScheduleRecurring {
+			if computed, cerr := computeNextRunAt(a, now); cerr == nil {
+				next = computed
+			} else {
+				next = now.Add(s.interval)
+			}
+		} else {
+			status = StatusCompleted
+		}
+		_, _ = s.store.Update(ctx, a.ID, AutomationPatch{
+			LastRunAt:  timePtr(now),
+			LastStatus: strPtr(RunSkipped),
+			Status:     &status,
+			RetryCount: intPtr(0),
+		})
+		_ = s.store.UpdateNextRunAt(ctx, a.ID, next)
+		return
+	}
+
 	_ = s.store.RecordRun(ctx, Run{
 		AutomationID: a.ID,
 		SessionID:    turnID,
+		TaskID:       taskIDField(turnID),
 		Status:       RunRunning,
 		CreatedAt:    now,
 	})
@@ -208,8 +244,9 @@ func (s *Scheduler) fire(ctx context.Context, a Automation) {
 	// Reuse mode: persist the firing's conversation id so later firings return to
 	// the same conversation. This also covers the case where the persisted
 	// conversation was deleted and the dispatcher created a fresh one (the new id
-	// differs from the stored one and replaces it).
-	if a.ModeExec == ModeReuse && turnID != "" && turnID != a.SessionID {
+	// differs from the stored one and replaces it). Workflow mode returns a task
+	// id, never a session id — never persist it as the reuse session.
+	if a.WorkflowRef == "" && a.ModeExec == ModeReuse && turnID != "" && turnID != a.SessionID {
 		_, _ = s.store.Update(ctx, a.ID, AutomationPatch{SessionID: &turnID})
 	}
 

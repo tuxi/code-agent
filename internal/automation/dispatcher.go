@@ -2,6 +2,7 @@ package automation
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 )
@@ -52,19 +53,39 @@ type ConversationCreator interface {
 	ConversationExists(ctx context.Context, sessionID string) (bool, error)
 }
 
+// WorkflowRunner is the counterpart of TurnSubmitter for the workflow execution
+// mode. When an automation's WorkflowRef is set, the dispatcher calls this
+// instead of the prompt turn path — zero LLM cost, deterministic execution.
+type WorkflowRunner interface {
+	// SubmitWorkflowRun triggers a saved workflow template by name. Returns the
+	// task id of the asynchronous workflow run.
+	SubmitWorkflowRun(ctx context.Context, workspaceRoot, workflowName string, input map[string]any) (int64, error)
+	// HasActiveWorkflowRun reports whether the workflow has a non-terminal run
+	// (pending/running/suspended) — the overlap-policy basis.
+	HasActiveWorkflowRun(ctx context.Context, workspaceRoot, workflowName string) (bool, error)
+}
+
 // TurnDispatcher is the default Dispatcher used by the daemon scheduler. It maps
 // an Automation onto either a new standalone conversation or an existing chat
-// session, then submits the prompt as a turn.
+// session, then submits the prompt as a turn. When WorkflowRef is set, it
+// dispatches a workflow run instead — zero LLM cost, deterministic execution.
 type TurnDispatcher struct {
-	Submitter TurnSubmitter
-	Creator   ConversationCreator
+	Submitter      TurnSubmitter
+	Creator        ConversationCreator
+	WorkflowRunner WorkflowRunner
 }
 
 // Dispatch fires the automation once. For standalone mode it creates a new
 // conversation (in cwds[0], else CreatedFromWorkspace) and submits there; for
-// chat mode it submits into the fixed SessionID. Returns the conversation id the
+// chat mode it submits into the fixed SessionID. When WorkflowRef is set, it
+// triggers a workflow template directly instead of a prompt turn (zero LLM
+// cost, deterministic execution). Returns the conversation id or task id the
 // firing ran in.
 func (d *TurnDispatcher) Dispatch(ctx context.Context, a Automation) (string, error) {
+	// Workflow execution mode: trigger a template directly, zero LLM.
+	if a.WorkflowRef != "" {
+		return d.dispatchWorkflow(ctx, a)
+	}
 	if d.Submitter == nil {
 		return "", fmt.Errorf("automation: dispatcher has no submitter")
 	}
@@ -138,11 +159,64 @@ func (d *TurnDispatcher) Dispatch(ctx context.Context, a Automation) (string, er
 	}
 }
 
+// dispatchWorkflow triggers a workflow template. It enforces the overlap policy,
+// then calls SubmitWorkflowRun and returns the task id as the firing identifier.
+func (d *TurnDispatcher) dispatchWorkflow(ctx context.Context, a Automation) (string, error) {
+	parts := strings.SplitN(a.WorkflowRef, "#", 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return "", fmt.Errorf("automation %q: invalid workflow_ref %q, expected workspace_path#workflow_name", a.ID, a.WorkflowRef)
+	}
+	ws, name := parts[0], parts[1]
+
+	var input map[string]any
+	if a.WorkflowInput != "" {
+		if err := json.Unmarshal([]byte(a.WorkflowInput), &input); err != nil {
+			return "", fmt.Errorf("automation %q: parse workflow_input: %w", a.ID, err)
+		}
+	}
+
+	// Overlap policy: skip if a run is already active.
+	policy := a.OverlapPolicy
+	if policy == "" {
+		policy = "skip"
+	}
+	if policy == "skip" && d.WorkflowRunner != nil {
+		active, err := d.WorkflowRunner.HasActiveWorkflowRun(ctx, ws, name)
+		if err != nil {
+			return "", fmt.Errorf("automation %q: overlap check: %w", a.ID, err)
+		}
+		if active {
+			return "", nil // skip — handled by scheduler as "no error, no turn id"
+		}
+	}
+
+	taskID, err := d.WorkflowRunner.SubmitWorkflowRun(ctx, ws, name, input)
+	if err != nil {
+		return "", fmt.Errorf("automation %q: workflow run: %w", a.ID, err)
+	}
+	return fmt.Sprintf("wf_%d", taskID), nil
+}
+
+// taskIDField extracts the workflow task id from a dispatcher return value
+// ("wf_<taskID>"), empty for prompt-turn firings (conversation ids).
+func taskIDField(dispatchResult string) string {
+	if strings.HasPrefix(dispatchResult, "wf_") {
+		return strings.TrimPrefix(dispatchResult, "wf_")
+	}
+	return ""
+}
+
 // NewTurnDispatcher builds a Dispatcher from the narrow seams. The daemon wiring
 // provides conversation-backed implementations of TurnSubmitter and
 // ConversationCreator.
 func NewTurnDispatcher(submitter TurnSubmitter, creator ConversationCreator) *TurnDispatcher {
 	return &TurnDispatcher{Submitter: submitter, Creator: creator}
+}
+
+// SetWorkflowRunner wires the workflow execution mode into the dispatcher. Nil
+// (or unset) leaves workflow_ref automations failing with a clear error.
+func (d *TurnDispatcher) SetWorkflowRunner(runner WorkflowRunner) {
+	d.WorkflowRunner = runner
 }
 
 var _ Dispatcher = (*TurnDispatcher)(nil)
