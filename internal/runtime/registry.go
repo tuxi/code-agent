@@ -23,6 +23,7 @@ import (
 	"code-agent/internal/tools/todo"
 	"code-agent/internal/tools/webfetch"
 	"code-agent/internal/tools/websearch"
+	workflowtool "code-agent/internal/tools/workflow"
 	"context"
 	"fmt"
 	"os"
@@ -241,6 +242,15 @@ func BuildBaseRegistry(ctx context.Context, cfg settings.Settings, mc settings.M
 	}
 	if cfg.Agent.ToolAllowed("get_current_time") {
 		if err := registry.Register(&automation.GetCurrentTimeTool{}); err != nil {
+			return nil, nil, nil, nil, err
+		}
+	}
+
+	// Workflow template tool (R8): list/view/save/run/delete named workflow
+	// templates in conversation. Degrades with a clear error when the daemon
+	// did not inject a WorkflowRunner.
+	if cfg.Agent.ToolAllowed("workflow") {
+		if err := registry.Register(&workflowtool.WorkflowTool{}); err != nil {
 			return nil, nil, nil, nil, err
 		}
 	}
