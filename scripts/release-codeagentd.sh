@@ -13,7 +13,7 @@
 #     (the chater repo's build-codeagentd.sh also works)
 #
 # Steps:
-#   1. Build codeagentd for macOS arm64 (if not already built)
+#   1. Build codeagentd as a universal binary (arm64 + x86_64)
 #   2. Create a GitHub Release and upload the binary
 #   3. Print the Talkify Build Phase snippet
 set -euo pipefail
@@ -38,11 +38,22 @@ command -v gh >/dev/null 2>&1 || { echo "error: gh CLI not found (brew install g
 gh auth status >/dev/null 2>&1 || { echo "error: gh not authenticated (run: gh auth login)"; exit 1; }
 
 # --- build ---------------------------------------------------------------------
-echo "==> building codeagentd for macOS arm64..."
-GOOS=darwin GOARCH=arm64 go build \
+# Universal binary (arm64 + x86_64) so the daemon runs on both Apple Silicon
+# and Intel Macs. The non-native slice is cross-compiled with CGO_ENABLED=1
+# and "clang -arch <target>" (Go disables cgo by default when cross-compiling).
+echo "==> building codeagentd for macOS universal (arm64 + x86_64)..."
+CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 CC="clang -arch arm64" go build \
     -ldflags="-s -w -X code-agent/internal/buildinfo.Version=${VERSION}" \
-    -o "build/${BINARY_NAME}" \
+    -o "build/${BINARY_NAME}.arm64" \
     ./cmd/codeagentd
+
+CGO_ENABLED=1 GOOS=darwin GOARCH=amd64 CC="clang -arch x86_64" go build \
+    -ldflags="-s -w -X code-agent/internal/buildinfo.Version=${VERSION}" \
+    -o "build/${BINARY_NAME}.x86_64" \
+    ./cmd/codeagentd
+
+lipo -create -output "build/${BINARY_NAME}" "build/${BINARY_NAME}.arm64" "build/${BINARY_NAME}.x86_64"
+rm -f "build/${BINARY_NAME}.arm64" "build/${BINARY_NAME}.x86_64"
 
 echo "    done: build/${BINARY_NAME} ($(du -sh "build/${BINARY_NAME}" | cut -f1))"
 file "build/${BINARY_NAME}"

@@ -97,6 +97,13 @@ type tlsIdentity struct {
 	created                   string
 }
 
+// OpenDaemonRuntimeSharing opens (or creates) the daemon's runtime sharing
+// state in dir. dir must be the per-workspace state directory that also holds
+// the project's runtime-server-state.json: the persisted state is bound to
+// that server_id, and one dir serves exactly one server. Sharing a single
+// dir between workspaces makes the second daemon fail with "sharing state
+// belongs to another server" — deliberately, since the state contains the
+// TLS identity and the paired-device registry.
 func OpenDaemonRuntimeSharing(dir, serverID, displayName string) (*DaemonRuntimeSharing, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err

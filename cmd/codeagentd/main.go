@@ -269,7 +269,16 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	sharing, err := server.OpenDaemonRuntimeSharing(stateDir, runtimeInfo.ServerID, runtimeInfo.DisplayName)
+	// Sharing state is per-workspace (same directory as the project's session
+	// store and runtime-server-state.json) so its server_id binding always
+	// matches the project-local server identity. A single global file would be
+	// claimed by whichever workspace started a daemon first and reject every
+	// other workspace ("sharing state belongs to another server").
+	sharingDir, err := runtime.RuntimeStateDir(root)
+	if err != nil {
+		return fmt.Errorf("resolve sharing state directory: %w", err)
+	}
+	sharing, err := server.OpenDaemonRuntimeSharing(sharingDir, runtimeInfo.ServerID, runtimeInfo.DisplayName)
 	if err != nil {
 		return fmt.Errorf("open runtime sharing state: %w", err)
 	}
