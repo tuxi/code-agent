@@ -212,6 +212,7 @@ type ConversationDetail struct {
 	BaseWorkspaceID string              `json:"base_workspace_id,omitempty"`
 	Worktree        *ManagedWorktreeDTO `json:"worktree,omitempty"`
 	Warnings        []APIWarning        `json:"warnings,omitempty"`
+	TurnStatus      string              `json:"turn_status,omitempty"`
 }
 
 // ContextSnapshot is GET /v1/conversations/{id}/context. It is a point-in-time
@@ -1037,6 +1038,7 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 			detail.WorkspaceID, _ = s.Metadata[session.MetaWorkspaceID].(string)
 			detail.BaseWorkspaceID, _ = s.Metadata[session.MetaBaseWorkspaceID].(string)
 			detail.Warnings = sessionWorktreeWarnings(s)
+			detail.TurnStatus = s.TurnStatus()
 			if s.Workspace.Root != "" {
 				detail.WorkspaceRef = &WorkspaceRefDTO{
 					Root:  s.Workspace.Root,
