@@ -125,6 +125,9 @@ type automationDTO struct {
 	RunCount             int64    `json:"run_count"`
 	LastStatus           string   `json:"last_status,omitempty"`
 	RetryCount           int      `json:"retry_count"`
+	WorkflowRef          string   `json:"workflow_ref,omitempty"`
+	WorkflowInput        string   `json:"workflow_input,omitempty"`
+	OverlapPolicy        string   `json:"overlap_policy,omitempty"`
 	CreatedAt            string   `json:"created_at"`
 	UpdatedAt            string   `json:"updated_at"`
 }
@@ -152,6 +155,9 @@ func toAutomationDTO(a automation.Automation) automationDTO {
 		RunCount:             a.RunCount,
 		LastStatus:           a.LastStatus,
 		RetryCount:           a.RetryCount,
+		WorkflowRef:          a.WorkflowRef,
+		WorkflowInput:        a.WorkflowInput,
+		OverlapPolicy:        a.OverlapPolicy,
 		CreatedAt:            a.CreatedAt.UTC().Format(time.RFC3339),
 		UpdatedAt:            a.UpdatedAt.UTC().Format(time.RFC3339),
 	}
@@ -175,25 +181,31 @@ func fmtTimeOrEmpty(t time.Time) string {
 // --- request bodies ---
 
 type automationCreateRequest struct {
-	Name           string   `json:"name"`
-	Prompt         string   `json:"prompt"`
-	ScheduleType   string   `json:"schedule_type"`
-	RRule          string   `json:"rrule"`
-	ScheduledAt    string   `json:"scheduled_at"`
-	Timezone       string   `json:"timezone"`
-	ModeExec       string   `json:"mode_exec"`
-	SessionID      string   `json:"session_id"`
-	CWDs           []string `json:"cwds"`
-	ModelID        string   `json:"model_id"`
-	Skills         []string `json:"skills"`
-	Connectors     []string `json:"connectors"`
-	PermissionMode string   `json:"permission_mode"`
-	Enabled        *bool    `json:"enabled"`
+	Name           string         `json:"name"`
+	Prompt         string         `json:"prompt"`
+	ScheduleType   string         `json:"schedule_type"`
+	RRule          string         `json:"rrule"`
+	ScheduledAt    string         `json:"scheduled_at"`
+	Timezone       string         `json:"timezone"`
+	ModeExec       string         `json:"mode_exec"`
+	SessionID      string         `json:"session_id"`
+	CWDs           []string       `json:"cwds"`
+	ModelID        string         `json:"model_id"`
+	Skills         []string       `json:"skills"`
+	Connectors     []string       `json:"connectors"`
+	PermissionMode string         `json:"permission_mode"`
+	WorkflowRef    string         `json:"workflow_ref"`
+	WorkflowInput  map[string]any `json:"workflow_input"`
+	OverlapPolicy  string         `json:"overlap_policy"`
+	Enabled        *bool          `json:"enabled"`
 }
 
 func (r automationCreateRequest) toAutomation() (automation.Automation, error) {
-	if r.Name == "" || r.Prompt == "" || r.Timezone == "" {
-		return automation.Automation{}, errBadRequest("name, prompt, and timezone are required")
+	if r.Name == "" || r.Timezone == "" {
+		return automation.Automation{}, errBadRequest("name, timezone, and (prompt or workflow_ref) are required")
+	}
+	if r.Prompt == "" && r.WorkflowRef == "" {
+		return automation.Automation{}, errBadRequest("prompt or workflow_ref is required")
 	}
 	st := automation.ScheduleRecurring
 	if r.ScheduleType == "once" {
@@ -250,24 +262,43 @@ func (r automationCreateRequest) toAutomation() (automation.Automation, error) {
 		Skills:         r.Skills,
 		Connectors:     r.Connectors,
 		PermissionMode: permissionMode,
+		WorkflowRef:    r.WorkflowRef,
+		WorkflowInput:  workflowInputJSON(r.WorkflowInput),
+		OverlapPolicy:  r.OverlapPolicy,
 	}, nil
 }
 
+// workflowInputJSON marshals a workflow-mode trigger input to its persisted
+// JSON string; empty map yields "". (Same helper as the automation tool.)
+func workflowInputJSON(input map[string]any) string {
+	if len(input) == 0 {
+		return ""
+	}
+	b, err := json.Marshal(input)
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
 type automationPatchRequest struct {
-	Name           *string   `json:"name"`
-	Prompt         *string   `json:"prompt"`
-	ScheduleType   *string   `json:"schedule_type"`
-	RRule          *string   `json:"rrule"`
-	ScheduledAt    *string   `json:"scheduled_at"`
-	Timezone       *string   `json:"timezone"`
-	ModeExec       *string   `json:"mode_exec"`
-	SessionID      *string   `json:"session_id"`
-	CWDs           *[]string `json:"cwds"`
-	ModelID        *string   `json:"model_id"`
-	Skills         *[]string `json:"skills"`
-	Connectors     *[]string `json:"connectors"`
-	PermissionMode *string   `json:"permission_mode"`
-	Enabled        *bool     `json:"enabled"`
+	Name           *string         `json:"name"`
+	Prompt         *string         `json:"prompt"`
+	ScheduleType   *string         `json:"schedule_type"`
+	RRule          *string         `json:"rrule"`
+	ScheduledAt    *string         `json:"scheduled_at"`
+	Timezone       *string         `json:"timezone"`
+	ModeExec       *string         `json:"mode_exec"`
+	SessionID      *string         `json:"session_id"`
+	CWDs           *[]string       `json:"cwds"`
+	ModelID        *string         `json:"model_id"`
+	Skills         *[]string       `json:"skills"`
+	Connectors     *[]string       `json:"connectors"`
+	PermissionMode *string         `json:"permission_mode"`
+	WorkflowRef    *string         `json:"workflow_ref"`
+	WorkflowInput  *map[string]any `json:"workflow_input"`
+	OverlapPolicy  *string         `json:"overlap_policy"`
+	Enabled        *bool           `json:"enabled"`
 }
 
 func (r automationPatchRequest) toPatch() (automation.AutomationPatch, error) {
@@ -310,6 +341,12 @@ func (r automationPatchRequest) toPatch() (automation.AutomationPatch, error) {
 		}
 		p.Status = &st
 	}
+	p.WorkflowRef = r.WorkflowRef
+	if r.WorkflowInput != nil {
+		wi := workflowInputJSON(*r.WorkflowInput)
+		p.WorkflowInput = &wi
+	}
+	p.OverlapPolicy = r.OverlapPolicy
 	return p, nil
 }
 
