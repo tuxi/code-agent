@@ -103,30 +103,56 @@ Workflow 的正确定位是**计划收敛之后的执行形态**。生命周期�
 
 ### R4 模板化（P2｜来源：GitHub Actions reusable workflows）
 
-- 「保存为模板」：把某次运行的 manifest 固化为用户命名的可复用模板
-- 版本化复用 `workflow_versions`（hash 去重；同 hash 不重复建版）
-- RegisterWorkflow 目前对同名容忍 "already registered"，需明确 upsert 语义（见开放问题 Q4）
-- **模板更新路径**：面板/对话可对已保存模板发起新版本（`WorkflowVersionRepository.UpdateDefinitionJSON` → 新 version），旧版本保留（评审 C4）
-- **目录区分**：`workflows` 表加 `is_template`/`source` 标记，区分「可复用模板」与「一次性 run 痕迹」（评审 C1）
-- 验收：任意完成的 run 可保存为命名模板，出现在目录中且可被触发；模板可更新出新版本
+**模板数据模型（已定）**——不引入新格式，不建新表：
+
+```
+workflows 表（命名实体）: name / description / is_template / source / manifest_json(新列)
+  ├─ workflow_versions.definition_json   ← 编译后 WorkflowDefinition（引擎执行事实源，hash 版本化）
+  └─ workflows.manifest_json             ← 源 manifest（goal/template/agents[]/parallelism，code-agent 业务事实源）
+```
+
+- **格式**：definition_json（声明式 JSON）= 执行事实源；manifest_json = 编辑/表单生成事实源。**不用 md/yaml 作存储**——yaml 仅可选作「人写模板」的输入格式，md 仅作描述文档（workflows.description 已覆盖）。
+- **「保存为模板」**：从 run 的 `task.input_json` 恢复源 manifest → 用户命名 → `RegisterWorkflow(def)`（落定义+版本）+ 持久化 manifest。零新表。
+- **版本化**：复用 `workflow_versions` hash 机制——同 hash 跳过、JSON 变更（非语义）UpdateDefinitionJSON、hash 变更发新版本。
+- **对话修改模板**（R8 workflow 工具 `edit` 模式）：读最新 definition + manifest → LLM 修改 manifest → dry-run compile 校验 → 审批门 → `RegisterWorkflow` 自动发新版本，旧版本保留。
+- **目录区分**：`is_template`/`source` 标记区分「可复用模板」与「一次性 run 痕迹」（评审 C1）。
+- 与 R9 的 `tool_sequence` 模板共用同一存储（workflows/workflow_versions），仅 definition 来源不同。
+- 验收：任意完成的 run 可保存为命名模板；模板可对话修改出新版本；可被触发
 
 ### R5 参数化触发（P2｜来源：Windmill）
 
-- 运行表单**从 manifest schema 自动生成**（agents[]/parallelism/timeout_ms 本来就是结构化的），不为每个模板手写表单
-- 每个模板一个触发端点（webhook 思路）：`POST /v1/workspaces/{path}/workflows/{name}/runs`
+- 运行表单**从 manifest 声明字段自动生成**——v1/v2 模板固定 schema：`goal` + `template` + `agents[]`（角色/会话/消息/验收标准的花名册表单）+ `parallelism` + `timeout_ms`，不为每个模板手写表单
+- **v1 不做内嵌变量槽位**（如消息里的 `{{date}}`）；manifest_json 预留 `input_schema` 字段（Windmill 式声明式表单 schema），作为 v2 增强，届时从该字段渲染表单
+- 每个模板一个触发端点（webhook 思路）：`POST /v1/workflows/{name}/runs?workspace=<abs_path>`
 - 触发走「headless run seam」（见 §6）：注册定义 → 投影工具入 ToolRegistry → 接事件桥与 ExternalResolver → Submit，全程脱离会话回合
 - 触发端点鉴权：继承 workspace 权限 + 防滥用（节流/配额），模型待定（评审遗漏项 2 → Q13）
 - 验收：在 App 表单填参数直接起一个 run，进度实时可见
 
 ### R6 自动化组合（P3｜来源：Temporal Schedules）
 
-- automation 新增可选 workflow 引用字段（workspace_path + workflow_name）；dispatcher 分支：有引用时直接拉起 workflow run，否则维持投 prompt turn
-- **Overlap Policy**（当前完全缺失）：Skip / BufferOne / BufferAll / AllowAll 四档。**判定机制落任务表**（`tasks` 活跃行），不能复用调度器 Running 标志（dispatch 后即清除，回答不了「上个 run 是否仍在跑」，评审 B5）；Buffer 档位需新增队列表（现有 runs 表是审计日志不是队列），上限待定（Q15）
-- 面板操作：Pause / Trigger now / Backfill（补跑错过的调度）；**Pause 复用既有 automation status=PAUSED，不新增 paused 字段**（评审 B4）
-- **workflow 模式失败策略**：run 中途失败 ≠ 投递失败，现有 MaxRetries 重投逻辑不适用；需定义「run 失败后：重试整 run / 跳过等下次调度」，默认跳过（评审 B6）
-- dispatcher 分支返回值语义：workflow 分支返回 taskID，scheduler 不得将其写入 Run.SessionID / reuse 会话 id（评审 B6）
-- 权限沿用 Perm（permission_mode/connectors）；无人在场的审批策略见 Q2
-- 验收：一条 automation 可绑定模板按 rrule 触发，重叠行为符合所选策略，run 失败按所选策略处理
+**数据模型（automations 表新增，已定）**：
+
+```sql
+workflow_ref    TEXT  -- "workspace_path#workflow_name"，空 = 维持 prompt turn
+workflow_input  TEXT  -- 触发参数 JSON（如 {"instId":"BTC-USDT-SWAP"}），每次触发传给模板
+overlap_policy  TEXT  -- skip | buffer_one | buffer_all | allow_all，默认 skip
+```
+
+**Dispatcher workflow 分支**（workflow_ref 非空时）：
+1. **Overlap 判定**：查 flux-workflows.db `tasks` 表该 workflow 最新版本的活跃 run（pending/running/suspended）——有活跃 run 时按 overlap_policy 处理（评审 B5：不能复用调度器 Running 标志，dispatch 后即清除）
+   - skip：跳过本次触发，记 run 记录（status=skipped）
+   - buffer_one/buffer_all：v2 再做（需队列表，Q15）；v1 仅实现 skip + allow_all
+   - allow_all：无条件触发
+2. **触发**：`SubmitHeadlessRun(workspace, name, workflow_input)`（R5 seam，含工具投影）
+3. **失败策略**：run 中途失败 ≠ 投递失败，MaxRetries 不适用；**默认跳过等下次调度**（评审 B6）。run 失败详情在 workflow 面板可见（用户可手动 resume）
+4. **返回值语义**：Dispatch 返回的标识写入 automation_runs.task_id（新列），**不写入 Run.SessionID / reuse 会话 id**（评审 B6）
+5. **Pause**：复用既有 status=PAUSED（评审 B4）；Trigger now = 立即 dispatch 一次
+
+**automation 工具扩展**：create/update 支持 workflow 模式——`workflow_ref` + `workflow_input` + `overlap_policy` 三个新字段；prompt 与 workflow_ref 互斥（二选一）
+
+**App Automation 面板**：创建/编辑表单支持 workflow 模式——选模板（workflow 列表选择器）+ 填触发参数（从模板 manifest 生成表单，复用 Workflow 触发表单的 manifest 预填逻辑）+ overlap policy 选择
+
+**验收**：一条 automation 绑定模板按 rrule 定时触发（无人值守、0 LLM token），重叠行为符合所选策略，run 失败跳过等下次调度，面板可 Pause/Trigger now
 
 ### R7 挂起与恢复（P2/P3｜来源：LangGraph）
 
