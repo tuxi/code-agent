@@ -174,6 +174,7 @@ func (s *SubAgent) Run(ctx context.Context, ec tools.ExecutionContext, taskPromp
 	sub := &agent.Runner{
 		Model:             s.Provider,
 		ModelName:         modelName,
+		ProviderName:      subMC.ProviderName(),
 		Temperature:       s.MC.Temperature,
 		Tools:             s.ReadOnly,
 		MaxSteps:          SubAgentMaxSteps,

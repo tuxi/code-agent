@@ -168,7 +168,7 @@ func cases() map[string]wireCase {
 		"model_request": {ev: agent.Event{
 			Kind: agent.EventModelRequest, At: fixedAt,
 			SessionID: "sess_root", TurnID: "turn_7", InvocationID: "inv_1",
-			ModelName: "deepseek/deepseek-v4-flash", Provider: "openai_compatible",
+			ModelName: "deepseek-v4-flash", Provider: "deepseek",
 			ToolNames:         []string{"run_command", "read_file", "grep"},
 			MessageCount:      42,
 			SystemPromptChars: 18320, ToolsPromptChars: 9600,

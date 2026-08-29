@@ -167,6 +167,20 @@ func (mc ModelConfig) SupportsVision() bool {
 	return false
 }
 
+// ProviderName returns the display provider brand behind this model config —
+// the service id (e.g. "deepseek", "openrouter", "qwen") when known, falling
+// back to the friendly config key. It is distinct from Provider, which is the
+// wire transport type ("openai" | "responses" | "ollama"), and from Model,
+// which is the wire model string. Clients use it to show which provider
+// actually served a conversation and to offer a model correction in the
+// session detail.
+func (mc ModelConfig) ProviderName() string {
+	if mc.Catalog.ProviderID != "" {
+		return mc.Catalog.ProviderID
+	}
+	return mc.Name
+}
+
 // ServiceConfig is one grouped service (design-providers-grouped-config.md
 // §3.1). Fields at this level inherit to every model in Models. Headers hold
 // ENV references only (e.g. "Bearer ${OPENROUTER_API_KEY}") — values never

@@ -5,8 +5,8 @@
   "session_id": "sess_root",
   "turn_id": "turn_7",
   "invocation_id": "inv_1",
-  "model": "deepseek/deepseek-v4-flash",
-  "provider": "openai_compatible",
+  "model": "deepseek-v4-flash",
+  "provider": "deepseek",
   "tool_names": [
     "run_command",
     "read_file",

@@ -69,6 +69,7 @@ func BuildRunner(cfg settings.Settings, mc settings.ModelConfig, provider model.
 	runner := &agent.Runner{
 		Model:            provider,
 		ModelName:        mc.Model,
+		ProviderName:     mc.ProviderName(),
 		Temperature:      mc.Temperature,
 		Tools:            registry,
 		MaxSteps:         cfg.Agent.MaxSteps,

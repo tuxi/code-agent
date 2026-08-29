@@ -35,11 +35,16 @@ type cooldownSample struct {
 }
 
 type Runner struct {
-	Model       model.Provider
-	ModelName   string
-	Temperature float64
-	Tools       *tools.Registry
-	MaxSteps    int
+	Model     model.Provider
+	ModelName string
+	// ProviderName is the display provider brand behind Model (e.g. "deepseek",
+	// "openrouter", "openai") — set by the runner builder from the resolved model
+	// config, distinct from the wire transport type. Carried on model_request
+	// events so a trajectory view can show which provider served each call.
+	ProviderName string
+	Temperature  float64
+	Tools        *tools.Registry
+	MaxSteps     int
 
 	// MaxWebSearches caps web_search calls within one user turn (0 = default).
 	// A search-happy model that keeps reformulating instead of answering gets a
@@ -1803,7 +1808,7 @@ func (r *Runner) complete(ctx context.Context, req model.Request, streamedText, 
 	r.emit(Event{
 		Kind:              EventModelRequest,
 		ModelName:         req.Model,
-		Provider:          providerName(r.Model),
+		Provider:          r.ProviderName,
 		ToolNames:         toolNames,
 		MessageCount:      len(req.Messages),
 		SystemPromptChars: systemChars,
@@ -1836,23 +1841,6 @@ func (r *Runner) complete(ctx context.Context, req model.Request, streamedText, 
 		r.recordCacheSample(resp.Usage.PromptTokens, resp.Usage.CachedPromptTokens)
 	}
 	return resp, err
-}
-
-// providerName returns a best-effort display name for the provider behind a
-// model call, for the model_request envelope event. It reads only the concrete
-// types the runtime constructs — never a tool or model name — so the loop stays
-// provider-agnostic (an unknown provider degrades to "provider").
-func providerName(p model.Provider) string {
-	switch p.(type) {
-	case *model.OpenAICompatibleProvider:
-		return "openai_compatible"
-	case *model.ResilientProvider:
-		return "resilient"
-	case *model.ResponsesProvider:
-		return "responses"
-	default:
-		return "provider"
-	}
 }
 
 // workflowPlanApproval returns a PlanApproval callback wired to the Runner's

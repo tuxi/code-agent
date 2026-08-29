@@ -245,12 +245,18 @@ token cost" into one card. Persisted with `seq`; recoverable on replay/reconnect
 Context shape is summarized as counts/chars only — the full message text lives in
 the session store, never duplicated here.
 
+**`tool_names` is the ADVERTISED tool set for this request (the tools the model
+was allowed to call), NOT the tools it actually invoked.** The actual invocation
+comes from the `tool_started` / `tool_finished` events carrying the same
+`invocation_id` — a trajectory view must render tool cards from those, and may
+collapse `tool_names` to a "N tools available" summary.
+
 ```json
 {
   "kind": "model_request",
   "invocation_id": "inv_...",
-  "model": "deepseek/deepseek-v4-flash",
-  "provider": "openai_compatible",
+  "model": "deepseek-v4-flash",
+  "provider": "deepseek",
   "tool_names": ["run_command", "read_file", "grep"],
   "message_count": 42,
   "system_prompt_chars": 18320,
@@ -264,9 +270,9 @@ the session store, never duplicated here.
 | Field | Type | Description |
 |-------|------|-------------|
 | `invocation_id` | string | Same id as the paired `model_finished` (and any `thinking` snapshot) |
-| `model` | string | Model id requested |
-| `provider` | string | Provider adapter class (`openai_compatible`, `responses`, …); unknown providers degrade to a generic name |
-| `tool_names` | string[] | Tools advertised on this request, in advertisement order; absent when none |
+| `model` | string | Wire model string requested |
+| `provider` | string | Display provider brand that served the call — the service id from the model config (e.g. `deepseek`, `openrouter`, `openai`, `ollama`), NOT the wire transport type. Clients can use it to show which provider actually ran the conversation and to offer a model correction in the session detail |
+| `tool_names` | string[] | Advertised tools on this request (allowed to be called), in advertisement order; absent when none. NOT the invoked tools — see note above |
 | `message_count` | int | Messages in the request context |
 | `system_prompt_chars` | int | Rendered system prompt length in characters |
 | `tools_prompt_chars` | int | Total tool-schema size (descriptions + parameters) in characters |
