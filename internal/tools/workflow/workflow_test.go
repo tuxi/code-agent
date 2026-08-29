@@ -109,10 +109,10 @@ func TestWorkflowToolModes(t *testing.T) {
 			t.Fatal("run not called")
 		}
 		var out struct {
-			TaskID int64 `json:"task_id"`
+			TaskID string `json:"task_id"`
 		}
-		if err := json.Unmarshal(result.Output, &out); err != nil || out.TaskID != 99 {
-			t.Fatalf("run result=%s", result.Content)
+		if err := json.Unmarshal(result.Output, &out); err != nil || out.TaskID != "99" {
+			t.Fatalf("run result=%s (task_id must be a string to survive 64-bit precision)", result.Content)
 		}
 	})
 

@@ -154,7 +154,10 @@ func (*WorkflowTool) Execute(ctx context.Context, ec tools.ExecutionContext, raw
 		if err != nil {
 			return tools.ToolResult{}, fmt.Errorf("workflow: run: %w", err)
 		}
-		out, _ := json.Marshal(map[string]any{"task_id": taskID, "name": in.Name})
+		// Return task_id as a string so the model always passes it back as a
+		// string via the next tool call, avoiding 64-bit precision loss when the
+		// model serializes a JSON number (float64 → …041 → …000).
+		out, _ := json.Marshal(map[string]any{"task_id": strconv.FormatInt(taskID, 10), "name": in.Name})
 		return tools.ToolResult{Content: string(out), Output: out}, nil
 
 	case "delete":
