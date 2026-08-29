@@ -78,13 +78,21 @@ func NewResponsesProviderWithKey(baseURL, apiKey string) *ResponsesProvider {
 // parameters are silently ignored by compliant providers (OpenAI and DeepSeek
 // both), so this universal subset works against either.
 type responsesRequest struct {
-	Model        string           `json:"model"`
-	Instructions string           `json:"instructions,omitempty"`
-	Input        []responseItem   `json:"input"`
-	Temperature  float64          `json:"temperature,omitempty"`
-	Tools        *[]responsesTool `json:"tools,omitempty"`
-	ToolChoice   string           `json:"tool_choice,omitempty"`
-	Stream       bool             `json:"stream,omitempty"`
+	Model        string              `json:"model"`
+	Instructions string              `json:"instructions,omitempty"`
+	Input        []responseItem      `json:"input"`
+	Temperature  float64             `json:"temperature,omitempty"`
+	Reasoning    *responsesReasoning `json:"reasoning,omitempty"`
+	Tools        *[]responsesTool    `json:"tools,omitempty"`
+	ToolChoice   string              `json:"tool_choice,omitempty"`
+	Stream       bool                `json:"stream,omitempty"`
+}
+
+// responsesReasoning is the Responses API reasoning-config block: the thinking
+// budget is expressed as {effort: "low"|"medium"|"high"}. Absent when the model
+// config leaves reasoning_effort unset (provider default).
+type responsesReasoning struct {
+	Effort string `json:"effort"`
 }
 
 // responsesTool is the FLAT function-tool shape the Responses API expects.
@@ -280,9 +288,19 @@ func toResponsesRequest(req Request, webSearch bool) responsesRequest {
 		Instructions: strings.Join(instructions, "\n\n"),
 		Input:        items,
 		Temperature:  req.Temperature,
+		Reasoning:    reasoningEffortToResponses(req.ReasoningEffort),
 		Tools:        tools,
 		ToolChoice:   req.ToolChoice,
 	}
+}
+
+// reasoningEffortToResponses converts the generic reasoning_effort string into
+// the Responses API's {effort: ...} block. Returns nil when unset.
+func reasoningEffortToResponses(effort string) *responsesReasoning {
+	if effort == "" {
+		return nil
+	}
+	return &responsesReasoning{Effort: effort}
 }
 
 // filterLocalWebSearch removes code-agent's local web_search function tool from

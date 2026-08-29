@@ -42,9 +42,18 @@ type Runner struct {
 	// config, distinct from the wire transport type. Carried on model_request
 	// events so a trajectory view can show which provider served each call.
 	ProviderName string
-	Temperature  float64
-	Tools        *tools.Registry
-	MaxSteps     int
+	// BaseURL is the API endpoint the provider dials (e.g.
+	// "https://api.deepseek.com/v1"), set by the runner builder from the model
+	// config. Carried on model_request events so a trajectory view can show which
+	// endpoint served each call.
+	BaseURL     string
+	Temperature float64
+	// ReasoningEffort is the model's thinking budget ("low"|"medium"|"high"|"max";
+	// "" = provider default). Set by the runner builder from the model config,
+	// forwarded on every model request, and surfaced on model_request events.
+	ReasoningEffort string
+	Tools           *tools.Registry
+	MaxSteps        int
 
 	// MaxWebSearches caps web_search calls within one user turn (0 = default).
 	// A search-happy model that keeps reformulating instead of answering gets a
@@ -1179,10 +1188,11 @@ func (r *Runner) drive(ctx context.Context, sess *session.Session) (TurnResult, 
 		modelStart := time.Now()
 		var streamedText, streamedReasoning strings.Builder
 		resp, err := r.complete(ctx, model.Request{
-			Model:       r.ModelName,
-			Temperature: r.Temperature,
-			Messages:    msgs,
-			Tools:       toolDefs,
+			Model:           r.ModelName,
+			Temperature:     r.Temperature,
+			ReasoningEffort: r.ReasoningEffort,
+			Messages:        msgs,
+			Tools:           toolDefs,
 		}, &streamedText, &streamedReasoning)
 
 		// Ordinary assistant content and provider reasoning are independent
@@ -1628,9 +1638,10 @@ func (r *Runner) finalAnswerAfterLimit(ctx context.Context, sess *session.Sessio
 	r.emit(Event{Kind: EventModelStarted})
 	start := time.Now()
 	resp, err := r.complete(ctx, model.Request{
-		Model:       r.ModelName,
-		Temperature: r.Temperature,
-		Messages:    msgs,
+		Model:           r.ModelName,
+		Temperature:     r.Temperature,
+		ReasoningEffort: r.ReasoningEffort,
+		Messages:        msgs,
 		// No Tools: the model must answer with text, not request more tools.
 	}, nil, nil)
 	if resp.ReasoningContent != "" && !errors.Is(err, context.Canceled) {
@@ -1809,11 +1820,13 @@ func (r *Runner) complete(ctx context.Context, req model.Request, streamedText, 
 		Kind:              EventModelRequest,
 		ModelName:         req.Model,
 		Provider:          r.ProviderName,
+		BaseURL:           r.BaseURL,
 		ToolNames:         toolNames,
 		MessageCount:      len(req.Messages),
 		SystemPromptChars: systemChars,
 		ToolsPromptChars:  toolsChars,
 		Temperature:       req.Temperature,
+		ReasoningEffort:   req.ReasoningEffort,
 		ToolChoice:        req.ToolChoice,
 		Streamed:          streamed,
 	})

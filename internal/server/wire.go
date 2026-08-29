@@ -66,11 +66,13 @@ type wireEvent struct {
 	Text               string   `json:"text,omitempty"`
 	ModelName          string   `json:"model,omitempty"`
 	Provider           string   `json:"provider,omitempty"`
+	BaseURL            string   `json:"base_url,omitempty"`
 	ToolNames          []string `json:"tool_names,omitempty"`
 	MessageCount       int      `json:"message_count,omitempty"`
 	SystemPromptChars  int      `json:"system_prompt_chars,omitempty"`
 	ToolsPromptChars   int      `json:"tools_prompt_chars,omitempty"`
 	Temperature        float64  `json:"temperature,omitempty"`
+	ReasoningEffort    string   `json:"reasoning_effort,omitempty"`
 	ToolChoice         string   `json:"tool_choice,omitempty"`
 	Streamed           bool     `json:"streamed,omitempty"`
 	CachedPromptTokens int      `json:"cached_prompt_tokens,omitempty"`
@@ -149,11 +151,13 @@ func toWire(e agent.Event) wireEvent {
 		Text:               e.Text,
 		ModelName:          e.ModelName,
 		Provider:           e.Provider,
+		BaseURL:            e.BaseURL,
 		ToolNames:          e.ToolNames,
 		MessageCount:       e.MessageCount,
 		SystemPromptChars:  e.SystemPromptChars,
 		ToolsPromptChars:   e.ToolsPromptChars,
 		Temperature:        e.Temperature,
+		ReasoningEffort:    e.ReasoningEffort,
 		ToolChoice:         e.ToolChoice,
 		Streamed:           e.Streamed,
 		CachedPromptTokens: e.CachedPromptTokens,

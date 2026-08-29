@@ -168,11 +168,11 @@ func cases() map[string]wireCase {
 		"model_request": {ev: agent.Event{
 			Kind: agent.EventModelRequest, At: fixedAt,
 			SessionID: "sess_root", TurnID: "turn_7", InvocationID: "inv_1",
-			ModelName: "deepseek-v4-flash", Provider: "deepseek",
+			ModelName: "deepseek-v4-flash", Provider: "deepseek", BaseURL: "https://api.deepseek.com/v1",
 			ToolNames:         []string{"run_command", "read_file", "grep"},
 			MessageCount:      42,
 			SystemPromptChars: 18320, ToolsPromptChars: 9600,
-			Temperature: 0.3, ToolChoice: "auto", Streamed: true,
+			Temperature: 0.3, ReasoningEffort: "high", ToolChoice: "auto", Streamed: true,
 		}},
 		"model_finished": {ev: agent.Event{
 			Kind: agent.EventModelFinished, At: fixedAt,

@@ -175,7 +175,9 @@ func (s *SubAgent) Run(ctx context.Context, ec tools.ExecutionContext, taskPromp
 		Model:             s.Provider,
 		ModelName:         modelName,
 		ProviderName:      subMC.ProviderName(),
+		BaseURL:           subMC.BaseURL,
 		Temperature:       s.MC.Temperature,
+		ReasoningEffort:   subMC.ReasoningEffort,
 		Tools:             s.ReadOnly,
 		MaxSteps:          SubAgentMaxSteps,
 		Approver:          DenyAllApprover{}, // fail-closed; should be unreachable (read-only set)

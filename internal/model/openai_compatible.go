@@ -126,17 +126,18 @@ func defaultHTTPClient() *http.Client {
 }
 
 type chatCompletionRequest struct {
-	SessionID     string            `json:"session_id,omitempty"`
-	TurnID        string            `json:"turn_id,omitempty"`
-	RequestID     string            `json:"request_id,omitempty"`
-	ExecutionID   string            `json:"execution_id,omitempty"`
-	Model         string            `json:"model"`
-	Messages      []wireMessage     `json:"messages"`
-	Temperature   float64           `json:"temperature,omitempty"`
-	Tools         *[]ToolDefinition `json:"tools,omitempty"`
-	ToolChoice    string            `json:"tool_choice,omitempty"`
-	Stream        bool              `json:"stream,omitempty"`
-	StreamOptions *streamOptions    `json:"stream_options,omitempty"`
+	SessionID       string            `json:"session_id,omitempty"`
+	TurnID          string            `json:"turn_id,omitempty"`
+	RequestID       string            `json:"request_id,omitempty"`
+	ExecutionID     string            `json:"execution_id,omitempty"`
+	Model           string            `json:"model"`
+	Messages        []wireMessage     `json:"messages"`
+	Temperature     float64           `json:"temperature,omitempty"`
+	ReasoningEffort string            `json:"reasoning_effort,omitempty"`
+	Tools           *[]ToolDefinition `json:"tools,omitempty"`
+	ToolChoice      string            `json:"tool_choice,omitempty"`
+	Stream          bool              `json:"stream,omitempty"`
+	StreamOptions   *streamOptions    `json:"stream_options,omitempty"`
 }
 
 // wireMessage is the on-the-wire form of a Message. Content is a plain string
@@ -410,7 +411,8 @@ func (p *OpenAICompatibleProvider) CompleteStream(ctx context.Context, req Reque
 	data, err := json.Marshal(chatCompletionRequest{
 		SessionID: req.SessionID, TurnID: req.TurnID, RequestID: req.RequestID, ExecutionID: req.ExecutionID,
 		Model: req.Model, Messages: newWireMessages(req.Messages), Temperature: req.Temperature,
-		Tools: toolsForGatewayRequest(req.Messages, req.Tools), ToolChoice: req.ToolChoice,
+		ReasoningEffort: req.ReasoningEffort,
+		Tools:           toolsForGatewayRequest(req.Messages, req.Tools), ToolChoice: req.ToolChoice,
 		Stream: true, StreamOptions: &streamOptions{IncludeUsage: true},
 	})
 	if err != nil {
@@ -576,15 +578,16 @@ func (p *OpenAICompatibleProvider) Complete(ctx context.Context, req Request) (R
 	// Non-Gateway providers reject empty models at the API level.
 
 	body := chatCompletionRequest{
-		SessionID:   req.SessionID,
-		TurnID:      req.TurnID,
-		RequestID:   req.RequestID,
-		ExecutionID: req.ExecutionID,
-		Model:       req.Model,
-		Messages:    newWireMessages(req.Messages),
-		Temperature: req.Temperature,
-		Tools:       toolsForGatewayRequest(req.Messages, req.Tools),
-		ToolChoice:  req.ToolChoice,
+		SessionID:       req.SessionID,
+		TurnID:          req.TurnID,
+		RequestID:       req.RequestID,
+		ExecutionID:     req.ExecutionID,
+		Model:           req.Model,
+		Messages:        newWireMessages(req.Messages),
+		Temperature:     req.Temperature,
+		ReasoningEffort: req.ReasoningEffort,
+		Tools:           toolsForGatewayRequest(req.Messages, req.Tools),
+		ToolChoice:      req.ToolChoice,
 	}
 
 	data, err := json.Marshal(body)

@@ -150,6 +150,13 @@ type ModelConfig struct {
 
 	CompactRatio float64 `json:"compact_ratio,omitempty"`
 
+	// ReasoningEffort is the model's thinking budget ("low" | "medium" | "high"
+	// | "max"; "" = provider default). Passed through to providers that support
+	// it (OpenAI-compatible reasoning_effort, Responses reasoning.effort, Ollama
+	// think) and surfaced on model_request events so a trajectory view can show
+	// which thinking level served each call.
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
+
 	// Resolved at load time, not read from YAML.
 	Name string `json:"-"` // the friendly name (the map key)
 }

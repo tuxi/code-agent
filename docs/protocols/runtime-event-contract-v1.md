@@ -257,11 +257,13 @@ collapse `tool_names` to a "N tools available" summary.
   "invocation_id": "inv_...",
   "model": "deepseek-v4-flash",
   "provider": "deepseek",
+  "base_url": "https://api.deepseek.com/v1",
   "tool_names": ["run_command", "read_file", "grep"],
   "message_count": 42,
   "system_prompt_chars": 18320,
   "tools_prompt_chars": 9600,
   "temperature": 0.3,
+  "reasoning_effort": "high",
   "tool_choice": "auto",
   "streamed": true
 }
@@ -272,11 +274,13 @@ collapse `tool_names` to a "N tools available" summary.
 | `invocation_id` | string | Same id as the paired `model_finished` (and any `thinking` snapshot) |
 | `model` | string | Wire model string requested |
 | `provider` | string | Display provider brand that served the call — the service id from the model config (e.g. `deepseek`, `openrouter`, `openai`, `ollama`), NOT the wire transport type. Clients can use it to show which provider actually ran the conversation and to offer a model correction in the session detail |
+| `base_url` | string | API endpoint the provider dials (e.g. `https://api.deepseek.com/v1`); omitted for the Gateway server-default path. Lets a trajectory view show exactly which endpoint served each call |
 | `tool_names` | string[] | Advertised tools on this request (allowed to be called), in advertisement order; absent when none. NOT the invoked tools — see note above |
 | `message_count` | int | Messages in the request context |
 | `system_prompt_chars` | int | Rendered system prompt length in characters |
 | `tools_prompt_chars` | int | Total tool-schema size (descriptions + parameters) in characters |
 | `temperature` | float | Sampling temperature; omitted when zero |
+| `reasoning_effort` | string | Thinking budget used for this call: `"low"` / `"medium"` / `"high"` / `"max"`, or omitted when the model config leaves it unset (provider default). The same value was forwarded to the provider (OpenAI-compatible `reasoning_effort`, Responses `reasoning.effort`, Ollama `think`) |
 | `tool_choice` | string | `"auto"` / `"none"` / `"required"`; omitted when unset |
 | `streamed` | bool | True when the response was streamed |
 

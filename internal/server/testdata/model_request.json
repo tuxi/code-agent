@@ -7,6 +7,7 @@
   "invocation_id": "inv_1",
   "model": "deepseek-v4-flash",
   "provider": "deepseek",
+  "base_url": "https://api.deepseek.com/v1",
   "tool_names": [
     "run_command",
     "read_file",
@@ -16,6 +17,7 @@
   "system_prompt_chars": 18320,
   "tools_prompt_chars": 9600,
   "temperature": 0.3,
+  "reasoning_effort": "high",
   "tool_choice": "auto",
   "streamed": true
 }

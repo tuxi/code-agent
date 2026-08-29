@@ -252,12 +252,14 @@ type Event struct {
 	// describe the context shape without duplicating its (large) content.
 	ModelName         string
 	Provider          string
+	BaseURL           string
 	ToolNames         []string
 	MessageCount      int
 	SystemPromptChars int
 	ToolsPromptChars  int
 	Streamed          bool
 	Temperature       float64
+	ReasoningEffort   string
 	ToolChoice        string
 }
 

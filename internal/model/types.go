@@ -222,6 +222,11 @@ type Request struct {
 	Model       string    `json:"model"`
 	Temperature float64   `json:"temperature,omitempty"`
 
+	// ReasoningEffort is the model's thinking budget: "low" | "medium" | "high"
+	// | "max", or "" to use the provider default. Adapters map it to their own
+	// parameter (reasoning_effort / reasoning.effort / think).
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
+
 	// Tools is the set of tools the model may call this turn. When empty, the
 	// request behaves exactly like the old text-only completion.
 	Tools []ToolDefinition `json:"tools,omitempty"`

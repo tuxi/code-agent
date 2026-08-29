@@ -326,8 +326,8 @@ func parseOneQwenFunc(block string) ToolCall {
 func (p *OllamaProvider) Complete(ctx context.Context, req Request) (Response, error) {
 	body := ollamaChatRequest{
 		Model: req.Model,
-		//Think:     "low",
-		Think:     false,
+		// Think: "low", // previously hardcoded per mode; now configurable
+		Think:     reasoningEffortOrDefault(req.ReasoningEffort, false),
 		Messages:  toOllamaMessages(req.Messages),
 		Tools:     req.Tools,
 		KeepAlive: "5m",
@@ -414,7 +414,7 @@ func (p *OllamaProvider) Complete(ctx context.Context, req Request) (Response, e
 func (p *OllamaProvider) CompleteStream(ctx context.Context, req Request, onText, onReasoning func(string)) (Response, error) {
 	body := ollamaChatRequest{
 		Model:     req.Model,
-		Think:     "low",
+		Think:     reasoningEffortOrDefault(req.ReasoningEffort, "low"),
 		Messages:  toOllamaMessages(req.Messages),
 		Stream:    true,
 		Tools:     req.Tools,
@@ -523,4 +523,15 @@ func (p *OllamaProvider) CompleteStream(ctx context.Context, req Request, onText
 		FinishReason:     finish,
 		Usage:            usage,
 	}, nil
+}
+
+// reasoningEffortOrDefault maps the generic reasoning_effort string onto Ollama's
+// think parameter (accepts "high"|"medium"|"low"|"max"|true|false). An unset
+// effort keeps the legacy per-mode default (false for Complete, "low" for
+// CompleteStream), so existing behavior is unchanged until a level is configured.
+func reasoningEffortOrDefault(effort string, fallback any) any {
+	if effort == "" {
+		return fallback
+	}
+	return effort
 }
