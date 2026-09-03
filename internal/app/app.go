@@ -58,11 +58,23 @@ func FromSettings(set settings.Settings) (settings.Settings, error) {
 	// bare "{pid}" shortcut.
 	// Fields inherit from the service; per-model differences override.
 	for pid, pc := range cfg.Providers {
-		if len(pc.Models) == 0 {
-			continue
+		// Model source resolution: an explicit models list always wins. A
+		// KNOWN built-in connection with no models on disk follows the
+		// registry dynamically — when the provider ships new models, a runtime
+		// upgrade picks them up with zero settings.json changes (the persisted
+		// section stays snapshot-free). Custom (unknown) ids and known
+		// connections without suggested models (ollama) skip with no models,
+		// as before.
+		models := pc.Models
+		if len(models) == 0 {
+			ids, known := BuiltinProviderModelIDs(pid)
+			if !known || len(ids) == 0 {
+				continue
+			}
+			for _, id := range ids {
+				models = append(models, settings.ProviderModel{ID: id})
+			}
 		}
-		// OQ1: a disabled service keeps its config but its models are skipped at
-		// expansion — they do not appear in the available model space.
 		if pc.Enabled != nil && !*pc.Enabled {
 			continue
 		}
@@ -80,7 +92,7 @@ func FromSettings(set settings.Settings) (settings.Settings, error) {
 		}
 		valid := 0
 		var firstAlias string
-		for _, pm := range pc.Models {
+		for _, pm := range models {
 			if pm.ID == "" {
 				continue
 			}
@@ -104,14 +116,17 @@ func FromSettings(set settings.Settings) (settings.Settings, error) {
 				Credential:          cred,
 				WebSearch:           pm.WebSearch,
 				CompactRatio:        pm.CompactRatio,
+				ReasoningEffort:     pm.ReasoningEffort,
 				Catalog: settings.ModelCatalogMetadata{
-					ConnectionID:          pid,
-					ProviderID:            pid,
-					ConnectionDisplayName: pid,
-					DisplayName:           pm.ID,
-					SupportsTools:         pm.SupportsTools,
-					SupportsReasoning:     pm.SupportsReasoning != nil && *pm.SupportsReasoning,
-					InputModalities:       pm.InputModalities,
+					ConnectionID:              pid,
+					ProviderID:                pid,
+					ConnectionDisplayName:     pid,
+					DisplayName:               pm.ID,
+					SupportsTools:             pm.SupportsTools,
+					SupportsReasoning:         pm.SupportsReasoning,
+					SupportedReasoningEfforts: pm.SupportedReasoningEfforts,
+					CanDisableReasoning:       pm.CanDisableReasoning,
+					InputModalities:           pm.InputModalities,
 				},
 			}
 

@@ -76,6 +76,18 @@ type RuntimeModelDescriptor struct {
 	// UnavailableReason explains why Available is false (wire v2). Omitted when
 	// the model is available.
 	UnavailableReason string `json:"unavailable_reason,omitempty"`
+
+	// ReasoningEffort is the model's configured default thinking budget
+	// ("low"|"medium"|"high"|"x-high"|"max"; omitted = auto/provider default).
+	// The host pre-selects it in the effort picker; the same value is forwarded
+	// on every model request until overridden.
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
+	// SupportedReasoningEfforts lists the effort levels this model accepts
+	// (empty = toggle only, no standardized effort control).
+	SupportedReasoningEfforts []string `json:"supported_reasoning_efforts,omitempty"`
+	// CanDisableReasoning reports whether reasoning may be turned off entirely
+	// (false = reasoner-only; nil/true = the off position is allowed).
+	CanDisableReasoning *bool `json:"can_disable_reasoning,omitempty"`
 }
 
 // BuildRuntimeModelCatalog rebuilds the runtime model catalog with the given
@@ -201,9 +213,12 @@ func buildRuntimeModelCatalog(cfg settings.Settings, injected credential.Resolve
 		group.connection.Models = append(group.connection.Models, RuntimeModelDescriptor{
 			RuntimeAlias: alias, WireModelID: mc.Model, DisplayName: displayName,
 			ContextWindow: mc.ContextWindow, SupportsTools: supportsTools,
-			SupportsReasoning: mc.Catalog.SupportsReasoning,
-			InputModalities:   modalities, Available: available,
-			UnavailableReason: reason,
+			SupportsReasoning:         mc.Catalog.SupportsReasoning != nil && *mc.Catalog.SupportsReasoning,
+			InputModalities:           modalities, Available: available,
+			UnavailableReason:         reason,
+			ReasoningEffort:           mc.ReasoningEffort,
+			SupportedReasoningEfforts: mc.Catalog.SupportedReasoningEfforts,
+			CanDisableReasoning:       mc.Catalog.CanDisableReasoning,
 		})
 		included[alias] = struct{}{}
 	}

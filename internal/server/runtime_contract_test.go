@@ -25,11 +25,18 @@ func TestRuntimeContractPersistsIdentityAndCatalogRevisionWithoutSecrets(t *test
 				BaseURL: "https://secret-provider.example/v1", Model: "deepseek-chat",
 				ContextWindow: 128000,
 				Credential:    settings.CredentialRef{Namespace: "llm", Name: "deepseek-prod"},
+				// ReasoningEffort is the model's configured default thinking
+				// budget; the catalog carries the supported levels and whether
+				// reasoning can be turned off.
+				ReasoningEffort: "high",
 				Catalog: settings.ModelCatalogMetadata{
 					ConnectionID: "deepseek-prod", ProviderID: "deepseek",
 					ConnectionDisplayName: "DeepSeek Production",
 					DisplayName:           "DeepSeek Chat", SupportsTools: boolPointer(true),
-					InputModalities: []string{"image", "text"},
+					SupportsReasoning:         boolPointer(true),
+					SupportedReasoningEfforts: []string{"low", "medium", "high", "x-high", "max"},
+					CanDisableReasoning:       boolPointer(false),
+					InputModalities:           []string{"image", "text"},
 				},
 			},
 		},
@@ -60,6 +67,20 @@ func TestRuntimeContractPersistsIdentityAndCatalogRevisionWithoutSecrets(t *test
 	if model.RuntimeAlias != alias || model.WireModelID != "deepseek-chat" ||
 		!model.SupportsTools || len(model.InputModalities) != 2 {
 		t.Fatalf("catalog model = %+v", model)
+	}
+	// Reasoning capability surfaces on the descriptor so the host can render
+	// the reasoning toggle and effort picker.
+	if !model.SupportsReasoning {
+		t.Errorf("supports_reasoning = false, want true")
+	}
+	if model.ReasoningEffort != "high" {
+		t.Errorf("reasoning_effort = %q, want high (configured default)", model.ReasoningEffort)
+	}
+	if len(model.SupportedReasoningEfforts) != 5 || model.SupportedReasoningEfforts[3] != "x-high" {
+		t.Errorf("supported_reasoning_efforts = %v, want low..max incl. x-high", model.SupportedReasoningEfforts)
+	}
+	if model.CanDisableReasoning == nil || *model.CanDisableReasoning {
+		t.Errorf("can_disable_reasoning = %v, want false (reasoner-only)", model.CanDisableReasoning)
 	}
 	// R3.1: availability is real. The test config has no credential for the
 	// model, so it must be listed-but-unavailable with a reason (not the old

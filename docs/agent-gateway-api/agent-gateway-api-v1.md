@@ -715,6 +715,9 @@ Authorization: Bearer <access_token>
 | `supports_streaming` | bool | 是否支持 SSE 流式 |
 | `supports_tool_calls` | bool | 是否支持 tool/function calling |
 | `category` | string | 模型分类：`reasoning` / `coding` / `fast` / `vision` |
+| `reasoning_effort` | string | 模型默认思考档位：`low` / `medium` / `high` / `x-high` / `max`；缺省 = 跟随 provider 默认 |
+| `supported_reasoning_efforts` | []string | 支持的思考档位列表；空 = 只有思考开关、无标准化档位控制 |
+| `can_disable_reasoning` | bool | 能否完全关闭思考；`false` = reasoner-only 模型（开关无"关"位），缺省/`true` = 允许关闭 |
 | `recommended_for` | []string | 推荐使用场景，由 Gateway 控制，客户端无需硬编码 |
 | `input_billing_factor` | float | 输入 token 的计费系数（billing factor） |
 | `output_billing_factor` | float | 输出 token 的计费系数 |

@@ -48,7 +48,7 @@ type Runner struct {
 	// endpoint served each call.
 	BaseURL     string
 	Temperature float64
-	// ReasoningEffort is the model's thinking budget ("low"|"medium"|"high"|"max";
+	// ReasoningEffort is the model's thinking budget ("low"|"medium"|"high"|"x-high"|"max";
 	// "" = provider default). Set by the runner builder from the model config,
 	// forwarded on every model request, and surfaced on model_request events.
 	ReasoningEffort string

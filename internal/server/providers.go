@@ -62,6 +62,16 @@ type ProviderModelDTO struct {
 	SupportsReasoning   *bool    `json:"supports_reasoning,omitempty"`
 	InputModalities     []string `json:"input_modalities,omitempty"`
 	WebSearch           bool     `json:"web_search,omitempty"`
+
+	// ReasoningEffort is the model's default thinking budget
+	// ("low"|"medium"|"high"|"x-high"|"max"; "" = auto/provider default).
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
+	// SupportedReasoningEfforts lists the effort levels this model accepts
+	// (empty = toggle only, no standardized effort control).
+	SupportedReasoningEfforts []string `json:"supported_reasoning_efforts,omitempty"`
+	// CanDisableReasoning reports whether reasoning may be turned off entirely
+	// (false = reasoner-only; nil/true = the off position is allowed).
+	CanDisableReasoning *bool `json:"can_disable_reasoning,omitempty"`
 }
 
 // ProviderSpec is the write shape accepted by PUT (may carry headers as env
@@ -132,10 +142,10 @@ func registerProviderRoutes(mux *http.ServeMux, opts MuxOptions) {
 			writeJSON(w, r, http.StatusBadRequest, map[string]any{"error": "invalid body: " + err.Error()})
 			return
 		}
-		if len(spec.Models) == 0 {
-			writeJSON(w, r, http.StatusBadRequest, map[string]any{"error": "models must not be empty"})
-			return
-		}
+		// NOTE: an empty models list is allowed here — Upsert fills it from the
+		// built-in registry for known connections (api-key-only onboarding) and
+		// rejects it for custom ids. Per-model id validation happens after the
+		// fill so registry-derived ids are covered too.
 		for _, m := range spec.Models {
 			if strings.TrimSpace(m.ID) == "" {
 				writeJSON(w, r, http.StatusBadRequest, map[string]any{"error": "model id must not be empty"})

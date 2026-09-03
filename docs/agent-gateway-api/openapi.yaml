@@ -470,6 +470,23 @@ components:
           type: boolean
         supports_reasoning:
           type: boolean
+        reasoning_effort:
+          type: string
+          description: >-
+            Model default thinking budget: low | medium | high | x-high | max.
+            Omitted when unset (provider default).
+        supported_reasoning_efforts:
+          type: array
+          items:
+            type: string
+          description: >-
+            Effort levels this model accepts. Empty = toggle only (no
+            standardized effort control).
+        can_disable_reasoning:
+          type: boolean
+          description: >-
+            Whether reasoning may be turned off entirely. false = reasoner-only
+            model; omitted/true = the off position is allowed.
         input_billing_factor:
           type: number
           format: double

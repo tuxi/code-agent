@@ -330,6 +330,272 @@ func TestProviderStoreUpsertCustomProviderNoCredential(t *testing.T) {
 	}
 }
 
+// Reasoning capability fields round-trip through PUT → settings file → GET,
+// so the client's Add Model sheet can persist the reasoning toggle, default
+// effort, and supported effort levels for custom providers.
+func TestProviderStoreRoundTripsReasoningFields(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "s.json")
+	store := NewProviderStore(path, nil)
+	handler := testProviderMux(t, store)
+
+	body := `{"base_url":"https://api.custom.example/v1","api":"openai","models":[{"id":"reasoner-x","reasoning_effort":"high","supported_reasoning_efforts":["low","medium","high","x-high","max"],"can_disable_reasoning":false},{"id":"thinker-y","supports_reasoning":true}]}`
+	req := httptest.NewRequest(http.MethodPut, "/v1/providers/custom-svc", bytes.NewBufferString(body))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PUT status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+
+	got, err := store.Get("custom-svc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Models) != 2 {
+		t.Fatalf("models = %+v, want 2", got.Models)
+	}
+	m := got.Models[0]
+	if m.ReasoningEffort != "high" {
+		t.Errorf("reasoning_effort = %q, want high", m.ReasoningEffort)
+	}
+	if len(m.SupportedReasoningEfforts) != 5 || m.SupportedReasoningEfforts[3] != "x-high" {
+		t.Errorf("supported_reasoning_efforts = %v, want low..max incl. x-high", m.SupportedReasoningEfforts)
+	}
+	if m.CanDisableReasoning == nil || *m.CanDisableReasoning {
+		t.Errorf("can_disable_reasoning = %v, want false", m.CanDisableReasoning)
+	}
+	if got.Models[1].SupportsReasoning == nil || !*got.Models[1].SupportsReasoning {
+		t.Errorf("supports_reasoning = %v, want true", got.Models[1].SupportsReasoning)
+	}
+	// Persisted on disk in the settings file (the canonical source).
+	f, err := settings.ParseJSON(mustRead(t, path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pm := f.Providers["custom-svc"].Models[0]
+	if pm.ReasoningEffort != "high" || len(pm.SupportedReasoningEfforts) != 5 {
+		t.Errorf("persisted model = %+v, want reasoning fields intact", pm)
+	}
+}
+
+// GET /v1/provider-templates carries the official reasoning capability of each
+// suggested model so the Add Model sheet can pre-fill the reasoning toggle,
+// default effort, and supported effort levels.
+func TestProviderTemplatesExposeReasoningCapability(t *testing.T) {
+	templates := buildProviderTemplates()
+	byID := make(map[string]ProviderTemplateDTO, len(templates))
+	for _, tpl := range templates {
+		byID[tpl.ID] = tpl
+	}
+
+	deepseek := byID["deepseek"]
+	if len(deepseek.Models) == 0 {
+		t.Fatal("deepseek template has no models")
+	}
+	flash := deepseek.Models[0]
+	if !flash.SupportsReasoning {
+		t.Errorf("deepseek-v4-flash supports_reasoning = false, want true")
+	}
+	if len(flash.SupportedReasoningEfforts) != 3 {
+		t.Errorf("supported_reasoning_efforts = %v, want [low medium high]", flash.SupportedReasoningEfforts)
+	}
+	if flash.CanDisableReasoning == nil || !*flash.CanDisableReasoning {
+		t.Errorf("can_disable_reasoning = %v, want true", flash.CanDisableReasoning)
+	}
+
+	// A model with a toggle but no standardized effort control (qwen3-coder)
+	// exposes an empty efforts list — the host shows the toggle only.
+	qwen := byID["qwen"]
+	if len(qwen.Models) == 0 || !qwen.Models[0].SupportsReasoning {
+		t.Fatalf("qwen template = %+v, want a reasoning-capable model", qwen.Models)
+	}
+	if len(qwen.Models[0].SupportedReasoningEfforts) != 0 {
+		t.Errorf("qwen supported_reasoning_efforts = %v, want empty (toggle only)", qwen.Models[0].SupportedReasoningEfforts)
+	}
+}
+
+// API-key-only onboarding: PUT of a built-in connection WITHOUT a models list
+// persists an EMPTY (snapshot-free) models section — FromSettings merges the
+// registry's models at expansion, so provider-side model releases reach
+// existing settings.json files with zero changes. The GET view surfaces the
+// registry ids. ollama (no suggested models) and custom ids still require an
+// explicit list.
+func TestProviderStoreUpsertBuiltinFillsModelsFromRegistry(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "s.json")
+	store := NewProviderStore(path, nil)
+	handler := testProviderMux(t, store)
+
+	// deepseek: no models in the body.
+	req := httptest.NewRequest(http.MethodPut, "/v1/providers/deepseek", bytes.NewBufferString(`{"credential":{"namespace":"llm","name":"deepseek"}}`))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PUT status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	// Persisted section stays snapshot-free: no model ids on disk.
+	f, err := settings.ParseJSON(mustRead(t, path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := f.Providers["deepseek"].Models; len(got) != 0 {
+		t.Fatalf("persisted models = %+v, want empty (registry merges at expansion)", got)
+	}
+	// The GET view surfaces the registry ids so clients see the effective list.
+	got, err := store.Get("deepseek")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Models) != 3 || got.Models[0].ID != "deepseek-v4-flash" {
+		t.Fatalf("GET view models = %+v, want 3 registry ids", got.Models)
+	}
+
+	// ollama has no suggested models → explicit list still required.
+	req = httptest.NewRequest(http.MethodPut, "/v1/providers/ollama", bytes.NewBufferString(`{}`))
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("PUT ollama without models status = %d, want 400", rec.Code)
+	}
+
+	// Custom (unknown) ids keep the explicit-models requirement.
+	req = httptest.NewRequest(http.MethodPut, "/v1/providers/custom-svc", bytes.NewBufferString(`{"base_url":"http://x"}`))
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("PUT custom without models status = %d, want 400", rec.Code)
+	}
+
+	// An explicit models list always wins over the registry merge.
+	store2 := NewProviderStore(filepath.Join(t.TempDir(), "s.json"), nil)
+	handler2 := testProviderMux(t, store2)
+	req = httptest.NewRequest(http.MethodPut, "/v1/providers/deepseek", bytes.NewBufferString(`{"models":[{"id":"deepseek-v4-pro"}]}`))
+	rec = httptest.NewRecorder()
+	handler2.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PUT with explicit models status = %d; body=%s", rec.Code, rec.Body.String())
+	}
+	got2, err := store2.Get("deepseek")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got2.Models) != 1 || got2.Models[0].ID != "deepseek-v4-pro" {
+		t.Errorf("explicit models = %+v, want only deepseek-v4-pro", got2.Models)
+	}
+}
+
+// DELETE of a built-in provider removes its auto-declared credential entry
+// (credentials.llm.glm → {env:GLM_API_KEY}) from the file when it is no
+// longer referenced by any other provider — disconnecting leaves no residue.
+func TestProviderStoreDeleteRemovesOrphanedCredential(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "s.json")
+	store := NewProviderStore(path, nil)
+
+	// Seed: glm provider with its auto-declared credential.
+	root := `{"providers":{"glm":{"base_url":"https://open.bigmodel.cn/api/paas/v4","api":"openai","credentials":{"namespace":"llm","name":"glm"},"models":[{"id":"glm-5.3"}]}},"credentials":{"llm":{"glm":{"source":"env","env":"GLM_API_KEY"}}}}`
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(root), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	handler := testProviderMux(t, store)
+
+	req := httptest.NewRequest(http.MethodDelete, "/v1/providers/glm", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("DELETE status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+
+	f, err := settings.ParseJSON(mustRead(t, path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := f.Providers["glm"]; ok {
+		t.Error("provider glm still present after DELETE")
+	}
+	if _, ok := f.Credentials["llm"]["glm"]; ok {
+		t.Errorf("credentials.llm.glm still present, want removed (orphaned)")
+	}
+}
+
+// DELETE keeps the credential entry when another provider shares the same ref.
+func TestProviderStoreDeleteKeepsSharedCredential(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "s.json")
+	store := NewProviderStore(path, nil)
+
+	// glm and sharer both reference llm/glm — deleting glm must not orphan the
+	// credential because sharer still uses it.
+	root := `{"providers":{"glm":{"base_url":"https://open.bigmodel.cn/api/paas/v4","api":"openai","credential":{"namespace":"llm","name":"glm"},"models":[{"id":"glm-5.3"}]},"sharer":{"base_url":"https://example.com/v1","api":"openai","credential":{"namespace":"llm","name":"glm"},"models":[{"id":"shared-model"}]}},"credentials":{"llm":{"glm":{"source":"env","env":"GLM_API_KEY"}}}}`
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(root), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	handler := testProviderMux(t, store)
+
+	req := httptest.NewRequest(http.MethodDelete, "/v1/providers/glm", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("DELETE status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+
+	f, err := settings.ParseJSON(mustRead(t, path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := f.Providers["glm"]; ok {
+		t.Error("provider glm still present after DELETE")
+	}
+	if _, ok := f.Credentials["llm"]["glm"]; !ok {
+		t.Error("credentials.llm.glm removed, want kept (still referenced by sharer)")
+	}
+}
+
+// DELETE rolls the removed credential back when reconfigure fails, so disk
+// never diverges from the runtime state.
+func TestProviderStoreDeleteRollbackRestoresCredential(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "s.json")
+	store := NewProviderStore(path, func() error { return errProviderApplyFailed })
+
+	root := `{"providers":{"glm":{"base_url":"https://open.bigmodel.cn/api/paas/v4","api":"openai","credential":{"namespace":"llm","name":"glm"},"models":[{"id":"glm-5.3"}]}},"credentials":{"llm":{"glm":{"source":"env","env":"GLM_API_KEY"}}}}`
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(root), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	handler := testProviderMux(t, store)
+
+	req := httptest.NewRequest(http.MethodDelete, "/v1/providers/glm", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("DELETE status = %d, want 400 (reconfigure failed)", rec.Code)
+	}
+	// Disk must show the OLD state: provider AND credential restored.
+	f, err := settings.ParseJSON(mustRead(t, path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := f.Providers["glm"]; !ok {
+		t.Error("provider glm not restored after rollback")
+	}
+	cc, ok := f.Credentials["llm"]["glm"]
+	if !ok {
+		t.Fatal("credentials.llm.glm not restored after rollback")
+	}
+	if cc.Source != "env" || cc.Env != "GLM_API_KEY" {
+		t.Errorf("restored credential = %+v, want {env GLM_API_KEY}", cc)
+	}
+}
+
 func mustRead(t *testing.T, path string) []byte {
 	t.Helper()
 	data, err := os.ReadFile(path)
