@@ -83,7 +83,10 @@ type RuntimeModelDescriptor struct {
           "display_name": "DeepSeek V4 Pro",
           "context_window": 128000,
           "supports_tools": true,
-          "supports_reasoning": false,
+          "supports_reasoning": true,
+          "reasoning_effort": "medium",          // 新增：模型配置的默认思考档位（"" = 跟随 provider 默认）
+          "supported_reasoning_efforts": ["low", "medium", "high", "x-high", "max"],  // 新增：支持的档位列表；空 = 只有开关、无标准化档位
+          "can_disable_reasoning": true,         // 新增：能否完全关闭思考（false = reasoner-only，开关无"关"位）
           "input_modalities": ["text"],
           "available": true,             // 语义变化：真实认证状态，非硬编码
           "unavailable_reason": null     // 新增：available=false 时的原因（"no_auth" | "unknown_model"）
@@ -104,6 +107,9 @@ type RuntimeModelDescriptor struct {
 | `descriptor.display_name` | host 手写 | host catalog 注入（展示元数据） | 分层合并（§8.3） |
 | `descriptor.available` | 硬编码 true | **真实认证状态** | 两级凭证解析 |
 | `descriptor.unavailable_reason` | 无 | no_auth/unknown_model | 新增 |
+| `descriptor.reasoning_effort` | 无 | 模型配置的默认思考档位（low/medium/high/x-high/max；空 = provider 默认） | settings providers 模型条目 / registry 官方能力 |
+| `descriptor.supported_reasoning_efforts` | 无 | 支持的档位列表；空 = 只有开关、无标准化档位 | 同上 |
+| `descriptor.can_disable_reasoning` | 无 | 能否完全关闭思考（false = reasoner-only） | 同上 |
 | `billing_source` | 硬编码 | 保留（gateway 为 server_managed） | — |
 
 **不在 wire 上的**（§13.2 N1.2）：base_url、credential 值、pricing——目录只发布能力与展示，不发布路由与机密。

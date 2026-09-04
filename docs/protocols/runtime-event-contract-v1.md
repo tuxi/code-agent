@@ -280,7 +280,7 @@ collapse `tool_names` to a "N tools available" summary.
 | `system_prompt_chars` | int | Rendered system prompt length in characters |
 | `tools_prompt_chars` | int | Total tool-schema size (descriptions + parameters) in characters |
 | `temperature` | float | Sampling temperature; omitted when zero |
-| `reasoning_effort` | string | Thinking budget used for this call: `"low"` / `"medium"` / `"high"` / `"max"`, or omitted when the model config leaves it unset (provider default). The same value was forwarded to the provider (OpenAI-compatible `reasoning_effort`, Responses `reasoning.effort`, Ollama `think`) |
+| `reasoning_effort` | string | Thinking budget used for this call: `"low"` / `"medium"` / `"high"` / `"x-high"` / `"max"`, or omitted when the model config leaves it unset (provider default). The same value was forwarded to the provider (OpenAI-compatible `reasoning_effort`, Responses `reasoning.effort`, Ollama `think`) |
 | `tool_choice` | string | `"auto"` / `"none"` / `"required"`; omitted when unset |
 | `streamed` | bool | True when the response was streamed |
 

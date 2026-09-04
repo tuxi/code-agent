@@ -150,11 +150,11 @@ type ModelConfig struct {
 
 	CompactRatio float64 `json:"compact_ratio,omitempty"`
 
-	// ReasoningEffort is the model's thinking budget ("low" | "medium" | "high"
-	// | "max"; "" = provider default). Passed through to providers that support
-	// it (OpenAI-compatible reasoning_effort, Responses reasoning.effort, Ollama
-	// think) and surfaced on model_request events so a trajectory view can show
-	// which thinking level served each call.
+	// ReasoningEffort is the model's default thinking budget ("low" | "medium"
+	// | "high" | "x-high" | "max"; "" = provider default). Passed through to
+	// providers that support it (OpenAI-compatible reasoning_effort, Responses
+	// reasoning.effort, Ollama think) and surfaced on model_request events so a
+	// trajectory view can show which thinking level served each call.
 	ReasoningEffort string `json:"reasoning_effort,omitempty"`
 
 	// Resolved at load time, not read from YAML.
@@ -221,6 +221,21 @@ type ProviderModel struct {
 	InputModalities     []string `json:"input_modalities,omitempty"`
 	WebSearch           bool     `json:"web_search,omitempty"`
 	CompactRatio        float64  `json:"compact_ratio,omitempty"`
+
+	// ReasoningEffort is the model's default thinking budget ("low" | "medium"
+	// | "high" | "x-high" | "max"; "" = auto/provider default). It becomes the
+	// expanded ModelConfig.ReasoningEffort — the value forwarded on every
+	// request until a client overrides it.
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
+	// SupportedReasoningEfforts lists the effort levels this model accepts
+	// ("low"/"medium"/"high"/"x-high"/"max"). Empty = unknown/provider default:
+	// the host falls back to a generic set or hides effort control and shows
+	// only the reasoning toggle.
+	SupportedReasoningEfforts []string `json:"supported_reasoning_efforts,omitempty"`
+	// CanDisableReasoning reports whether reasoning may be turned off entirely.
+	// False = reasoner-only model (e.g. deepseek-reasoner): the reasoning
+	// toggle has no "off" position. Nil/true = the off position is allowed.
+	CanDisableReasoning *bool `json:"can_disable_reasoning,omitempty"`
 }
 
 // CredentialRef points to a credential entry in Config.Credentials.
@@ -416,8 +431,15 @@ type ModelCatalogMetadata struct {
 	ConnectionDisplayName string   `json:"connection_display_name,omitempty"`
 	DisplayName           string   `json:"display_name,omitempty"`
 	SupportsTools         *bool    `json:"supports_tools,omitempty"`
-	SupportsReasoning     bool     `json:"supports_reasoning,omitempty"`
-	InputModalities       []string `json:"input_modalities,omitempty"`
+	// SupportsReasoning is a pointer so an UNSET declaration (nil) stays
+	// distinguishable from an explicit false — the built-in registry fills
+	// official model capabilities only when the config leaves it unset.
+	SupportsReasoning         *bool    `json:"supports_reasoning,omitempty"`
+	SupportedReasoningEfforts []string `json:"supported_reasoning_efforts,omitempty"`
+	// CanDisableReasoning reports whether reasoning may be turned off entirely
+	// (false = reasoner-only model; nil/true = the off position is allowed).
+	CanDisableReasoning *bool    `json:"can_disable_reasoning,omitempty"`
+	InputModalities     []string `json:"input_modalities,omitempty"`
 }
 
 // Profile is the platform capability set the runtime assembles for. The default
@@ -793,36 +815,7 @@ func bootstrapUserSettings(path string) bool {
       "credential": {
         "namespace": "llm",
         "name": "deepseek"
-      },
-      "models": [
-        {
-          "id": "deepseek-v4-flash",
-          "context_window": 1000000,
-          "runtime_alias": "deepseek v4 flash",
-          "temperature": 0.2,
-          "input_price_per_million": 0.16,
-          "output_price_per_million": 0.32,
-          "cache_input_price_per_million": 0.003,
-          "web_search": true,
-          "supports_tools": true,
-          "input_modalities": [
-            "text"
-          ]
-        },
-        {
-          "id": "deepseek-v4-pro",
-          "context_window": 1000000,
-          "runtime_alias": "deepseek v4 pro",
-          "temperature": 0.2,
-          "input_price_per_million": 0.45,
-          "output_price_per_million": 0.9,
-          "cache_input_price_per_million": 0.0038,
-          "supports_tools": true,
-          "input_modalities": [
-            "text"
-          ]
-        }
-      ]
+      }
     }
   },
   "web": {

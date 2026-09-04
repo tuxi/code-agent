@@ -18,7 +18,7 @@ func (r rejectionRecorder) RejectInput(rejected AgentInputRejected) { r.ch <- re
 
 type conflictCommands struct{ *fakeCommands }
 
-func (c conflictCommands) SendMessageWithRequestIDAndAssets(context.Context, string, string, string, []model.GatewayAssetRef) (agent.TurnResult, error) {
+func (c conflictCommands) SendMessageWithRequestIDAndAssets(context.Context, string, string, string, string, []model.GatewayAssetRef) (agent.TurnResult, error) {
 	return agent.TurnResult{}, testInputError{}
 }
 
@@ -36,7 +36,7 @@ type localAssetCommands struct {
 	received chan []model.LocalAssetRef
 }
 
-func (c localAssetCommands) SendMessageWithRequestIDAndAllAssets(_ context.Context, _ string, _ string, _ string, _ []model.GatewayAssetRef, localAssets []model.LocalAssetRef) (agent.TurnResult, error) {
+func (c localAssetCommands) SendMessageWithRequestIDAndAllAssets(_ context.Context, _ string, _ string, _ string, _ string, _ []model.GatewayAssetRef, localAssets []model.LocalAssetRef) (agent.TurnResult, error) {
 	c.received <- localAssets
 	return agent.TurnResult{}, nil
 }

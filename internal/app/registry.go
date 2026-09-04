@@ -49,14 +49,15 @@ func validateFlatModelKey(name string) error {
 //
 // Known connections get their base URL and conventional env-var name for the
 // API key from here, so a user does not have to remember endpoint URLs. The
-// registry fills fields ONLY when a model config leaves them empty — an
-// explicit base_url or api_key_env in YAML always wins. Context window and
-// pricing are deliberately NOT in the registry yet: the generated model
-// catalog (a post-PRD work item) owns capability data; until then the generic
-// defaultContextWindow / unpriced defaults apply.
+// registry is the SINGLE SOURCE OF TRUTH for built-in providers: it fills
+// fields ONLY when a model config leaves them unset (explicit base_url /
+// api_key_env / context window / pricing / capability in YAML always win), so
+// a runtime upgrade updates instance data and capabilities without touching
+// persisted settings.
 
 type builtinModelTemplate struct {
 	ID                string   // wire model id
+	API               string   // openai、responses、claude、ollama，默认为空，使用厂商provider 的配置ProviderType
 	RuntimeAlias      string   // short friendly name (optional)
 	ContextWindow     int      // token limit
 	SupportsTools     bool     // tool calling
@@ -66,6 +67,18 @@ type builtinModelTemplate struct {
 	InputPricePerM    float64  // USD per million input tokens
 	OutputPricePerM   float64  // USD per million output tokens
 	Temperature       float64  // provider-recommended default (0 = use global default)
+
+	// ReasoningEffort is the model's official default thinking budget
+	// ("low"|"medium"|"high"|"x-high"|"max"; "" = provider default). Filled
+	// into ModelConfig.ReasoningEffort when the config leaves it empty.
+	ReasoningEffort string
+	// SupportedReasoningEfforts lists the effort levels the provider's API
+	// accepts for this model. Empty = the model has a reasoning toggle but no
+	// standardized effort control (the host shows the toggle only).
+	SupportedReasoningEfforts []string
+	// CanDisableReasoning reports whether reasoning may be turned off entirely
+	// (false = reasoner-only; nil = allowed).
+	CanDisableReasoning *bool
 }
 
 type builtinConnection struct {
@@ -97,15 +110,19 @@ type builtinConnection struct {
 	Models []builtinModelTemplate
 }
 
+// boolPtr returns a pointer to b — registry literals cannot take the address
+// of a constant.
+func boolPtr(b bool) *bool { return &b }
+
 var builtinConnections = map[string]builtinConnection{
 	"deepseek": {
 		BaseURL: "https://api.deepseek.com", Env: "DEEPSEEK_API_KEY",
 		WireModel: "deepseek-v4-flash", ProviderType: "openai",
 		DisplayName: "DeepSeek", Summary: "使用 DeepSeek API 密钥连接", Kind: "api_key",
 		Models: []builtinModelTemplate{
-			{ID: "deepseek-v4-flash", RuntimeAlias: "deepseek", ContextWindow: 1_000_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text"}, WebSearch: true, InputPricePerM: 0.16, OutputPricePerM: 0.32},
-			{ID: "deepseek-v4-pro", RuntimeAlias: "deepseek-pro", ContextWindow: 1_000_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text"}, InputPricePerM: 0.45, OutputPricePerM: 0.90},
-			{ID: "deepseek-v4-flash-vision-exp", RuntimeAlias: "deepseek-vision", ContextWindow: 1_000_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text", "image"}, InputPricePerM: 0.16, OutputPricePerM: 0.32},
+			{ID: "deepseek-v4-flash", RuntimeAlias: "deepseek", ContextWindow: 1_000_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text"}, WebSearch: true, InputPricePerM: 0.16, OutputPricePerM: 0.32, SupportedReasoningEfforts: []string{"low", "medium", "high"}, CanDisableReasoning: boolPtr(true), ReasoningEffort: "low"},
+			{ID: "deepseek-v4-pro", RuntimeAlias: "deepseek-pro", ContextWindow: 1_000_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text"}, InputPricePerM: 0.45, OutputPricePerM: 0.90, SupportedReasoningEfforts: []string{"low", "medium", "high"}, CanDisableReasoning: boolPtr(true), ReasoningEffort: "low"},
+			{ID: "deepseek-v4-flash-vision-exp", RuntimeAlias: "deepseek-vision", ContextWindow: 1_000_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text", "image"}, InputPricePerM: 0.16, OutputPricePerM: 0.32, SupportedReasoningEfforts: []string{"low", "medium", "high"}, CanDisableReasoning: boolPtr(true), ReasoningEffort: "low"},
 		},
 	},
 	"qwen": {
@@ -113,7 +130,10 @@ var builtinConnections = map[string]builtinConnection{
 		WireModel: "qwen3-coder-plus", ProviderType: "openai",
 		DisplayName: "Alibaba Qwen", Summary: "使用阿里云百炼 OpenAI 兼容接口", Kind: "api_key",
 		Models: []builtinModelTemplate{
-			{ID: "qwen3-coder-plus", ContextWindow: 128_000, SupportsTools: true, InputModalities: []string{"text"}},
+			// qwen3-coder thinks via a boolean enable_thinking switch — the
+			// DashScope compatible endpoint has no standardized effort levels,
+			// so the host shows the reasoning toggle only.
+			{ID: "qwen3-coder-plus", ContextWindow: 128_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text"}, CanDisableReasoning: boolPtr(true)},
 		},
 	},
 	"glm": {
@@ -121,7 +141,7 @@ var builtinConnections = map[string]builtinConnection{
 		WireModel: "glm-4.7", ProviderType: "openai",
 		DisplayName: "Zhipu GLM", Summary: "使用智谱 OpenAI 兼容接口", Kind: "api_key",
 		Models: []builtinModelTemplate{
-			{ID: "glm-5.3-flash", RuntimeAlias: "glm", ContextWindow: 1_000_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text", "image"}, InputPricePerM: 0.16, OutputPricePerM: 0.32},
+			{ID: "glm-5.3-flash", RuntimeAlias: "glm", ContextWindow: 1_000_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text", "image"}, InputPricePerM: 0.16, OutputPricePerM: 0.32, SupportedReasoningEfforts: []string{"low", "medium", "high"}, CanDisableReasoning: boolPtr(true), ReasoningEffort: "medium"},
 		},
 	},
 	"openrouter": {
@@ -131,8 +151,6 @@ var builtinConnections = map[string]builtinConnection{
 		Models: []builtinModelTemplate{
 			{ID: "openrouter/auto", RuntimeAlias: "openrouter", ContextWindow: 200_000, SupportsTools: true, InputModalities: []string{"text"}},
 			{ID: "openrouter/free", RuntimeAlias: "openrouter", ContextWindow: 200_000, SupportsTools: true, InputModalities: []string{"text"}},
-			{ID: "nvidia/nemotron-3-ultra-550b-a55b:free", RuntimeAlias: "openrouter", ContextWindow: 1_000_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text"}, Temperature: 0.2},
-			{ID: "glm-5.3-flash", RuntimeAlias: "openrouter", ContextWindow: 1_000_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text", "image"}, Temperature: 0.2},
 		},
 	},
 	"bai": {
@@ -140,9 +158,12 @@ var builtinConnections = map[string]builtinConnection{
 		ProviderType: "openai",
 		DisplayName:  "B.ai", Summary: "通过一个 API 密钥使用多个模型", Kind: "api_key",
 		Models: []builtinModelTemplate{
-			{ID: "deepseek-v4-flash", RuntimeAlias: "deepseek", ContextWindow: 1_000_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text"}, WebSearch: true, InputPricePerM: 0.16, OutputPricePerM: 0.32},
-			{ID: "deepseek-v4-pro", RuntimeAlias: "deepseek-pro", ContextWindow: 1_000_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text"}, InputPricePerM: 0.45, OutputPricePerM: 0.90},
-			{ID: "deepseek-v4-flash-vision-exp", RuntimeAlias: "deepseek-vision", ContextWindow: 1_000_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text", "image"}, InputPricePerM: 0.16, OutputPricePerM: 0.32},
+			{ID: "deepseek-v4-flash", RuntimeAlias: "deepseek", ContextWindow: 1_000_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text"}, WebSearch: true, InputPricePerM: 0.16, OutputPricePerM: 0.32, SupportedReasoningEfforts: []string{"low", "medium", "high"}, CanDisableReasoning: boolPtr(true), ReasoningEffort: "low"},
+			{ID: "deepseek-v4-pro", RuntimeAlias: "deepseek-pro", ContextWindow: 1_000_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text"}, InputPricePerM: 0.45, OutputPricePerM: 0.90, SupportedReasoningEfforts: []string{"low", "medium", "high"}, CanDisableReasoning: boolPtr(true), ReasoningEffort: "low"},
+			{ID: "deepseek-v4-flash-vision-exp", RuntimeAlias: "deepseek-vision", ContextWindow: 1_000_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text", "image"}, InputPricePerM: 0.16, OutputPricePerM: 0.32, SupportedReasoningEfforts: []string{"low", "medium", "high"}, CanDisableReasoning: boolPtr(true), ReasoningEffort: "low"},
+			{ID: "glm-5.3-flash", RuntimeAlias: "glm-flash", ContextWindow: 1_000_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text", "image"}, InputPricePerM: 0.16, OutputPricePerM: 0.32, SupportedReasoningEfforts: []string{"low", "medium", "high"}, CanDisableReasoning: boolPtr(true), ReasoningEffort: "medium"},
+			{ID: "mimo-v2.5", RuntimeAlias: "mino-v2.5", ContextWindow: 1_000_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text"}, InputPricePerM: 0.16, OutputPricePerM: 0.32, SupportedReasoningEfforts: []string{"low", "medium", "high"}, CanDisableReasoning: boolPtr(true), ReasoningEffort: "medium"},
+			{ID: "qwen3.8-flash", RuntimeAlias: "qwen3.8-flash", ContextWindow: 1_000_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text"}, InputPricePerM: 0.16, OutputPricePerM: 0.32, SupportedReasoningEfforts: []string{"low", "medium", "high"}, CanDisableReasoning: boolPtr(true), ReasoningEffort: "medium"},
 		},
 	},
 	"ollama": {
@@ -158,9 +179,9 @@ var builtinConnections = map[string]builtinConnection{
 		WireModel: "deepseek-v4-flash", ProviderType: "openai",
 		DisplayName: "OpenCode Go", Summary: "低订阅费开源编程模型（首月 $5，之后 $10/月）", Kind: "api_key",
 		Models: []builtinModelTemplate{
-			{ID: "gpt-5.6-luna", RuntimeAlias: "opencode gpt 5.6 luna", ContextWindow: 1_000_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text"}, InputPricePerM: 0.22, OutputPricePerM: 0.66},
-			{ID: "deepseek-v4-flash", RuntimeAlias: "opencode deepseek flash", ContextWindow: 1_000_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text"}, InputPricePerM: 0.22, OutputPricePerM: 0.66},
-			{ID: "deepseek-v4-pro", RuntimeAlias: "opencode deepseek pro", ContextWindow: 1_000_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text"}, InputPricePerM: 0.66, OutputPricePerM: 1.98},
+			{ID: "gpt-5.6-luna", RuntimeAlias: "opencode gpt 5.6 luna", ContextWindow: 1_000_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text"}, InputPricePerM: 0.22, OutputPricePerM: 0.66, SupportedReasoningEfforts: []string{"low", "medium", "high", "x-high", "max"}, CanDisableReasoning: boolPtr(true), ReasoningEffort: "medium"},
+			{ID: "deepseek-v4-flash", RuntimeAlias: "opencode deepseek flash", ContextWindow: 1_000_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text"}, InputPricePerM: 0.22, OutputPricePerM: 0.66, SupportedReasoningEfforts: []string{"low", "medium", "high"}, CanDisableReasoning: boolPtr(true), ReasoningEffort: "low"},
+			{ID: "deepseek-v4-pro", RuntimeAlias: "opencode deepseek pro", ContextWindow: 1_000_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text"}, InputPricePerM: 0.66, OutputPricePerM: 1.98, SupportedReasoningEfforts: []string{"low", "medium", "high"}, CanDisableReasoning: boolPtr(true), ReasoningEffort: "low"},
 			{ID: "kimi-k3", RuntimeAlias: "opencode kimi k3", ContextWindow: 1_000_000, SupportsTools: true, InputModalities: []string{"text"}, InputPricePerM: 3.00, OutputPricePerM: 15.00, Temperature: 1.0},
 			{ID: "kimi-k2.7-code", RuntimeAlias: "opencode kimi k2.7 code", ContextWindow: 256_000, SupportsTools: true, InputModalities: []string{"text"}, InputPricePerM: 1.2, OutputPricePerM: 5.6, Temperature: 1.0},
 			{ID: "glm-5.2", RuntimeAlias: "opencode glm 5.2", ContextWindow: 128_000, SupportsTools: true, InputModalities: []string{"text"}, InputPricePerM: 1.40, OutputPricePerM: 4.40, Temperature: 0.2},
@@ -170,8 +191,11 @@ var builtinConnections = map[string]builtinConnection{
 }
 
 // applyRegistryDefaults fills unset BaseURL/APIKeyEnv from the built-in
-// connection registry, keyed by the model's friendly name. Explicit values in
-// the config are never overwritten.
+// connection registry. The connection is resolved by the model's friendly
+// name, falling back to Catalog.ConnectionID so grouped-provider models
+// (whose names are alias/friendly keys, not connection ids) get the same
+// official capability defaults. Explicit values in the config are never
+// overwritten.
 //
 // design-provider-id-model.md: when the user writes a known service id (e.g.
 // "provider: deepseek" with a model also named deepseek), the registry also
@@ -179,7 +203,11 @@ var builtinConnections = map[string]builtinConnection{
 // service id in Catalog.ProviderID for /v1/runtime/models. A generic api type
 // (openai/responses/ollama) or an explicit base_url is never overwritten.
 func applyRegistryDefaults(mc *settings.ModelConfig) {
-	conn, ok := builtinConnections[mc.Name]
+	connID := mc.Name
+	if mc.Catalog.ConnectionID != "" {
+		connID = mc.Catalog.ConnectionID
+	}
+	conn, ok := builtinConnections[connID]
 	if !ok {
 		return
 	}
@@ -195,16 +223,73 @@ func applyRegistryDefaults(mc *settings.ModelConfig) {
 	if mc.Catalog.ProviderID == "" {
 		mc.Catalog.ProviderID = mc.Name
 	}
-	// Per-model temperature: some providers (e.g. OpenCode Go / Kimi K3)
-	// reject the global default of 0.2 and require a specific value.
-	if mc.Temperature <= 0 && mc.Model != "" && len(conn.Models) > 0 {
+	// Per-model defaults: temperature (some providers, e.g. OpenCode Go /
+	// Kimi K3, reject the global default of 0.2 and require a specific value)
+	// and the official reasoning capability — default effort, supported
+	// effort levels, and whether reasoning can be turned off. Registry values
+	// fill ONLY unset fields; an explicit config value always wins.
+	if mc.Model != "" && len(conn.Models) > 0 {
 		for _, m := range conn.Models {
-			if m.ID == mc.Model && m.Temperature > 0 {
-				mc.Temperature = m.Temperature
-				break
+			if m.ID != mc.Model {
+				continue
 			}
+			if mc.Temperature <= 0 && m.Temperature > 0 {
+				mc.Temperature = m.Temperature
+			}
+			if mc.ContextWindow <= 0 && m.ContextWindow > 0 {
+				mc.ContextWindow = m.ContextWindow
+			}
+			if mc.InputPricePerM == 0 && m.InputPricePerM > 0 {
+				mc.InputPricePerM = m.InputPricePerM
+			}
+			if mc.OutputPricePerM == 0 && m.OutputPricePerM > 0 {
+				mc.OutputPricePerM = m.OutputPricePerM
+			}
+			// Web search is a plain bool (no unset state): fill it on when the
+			// registry declares it, never force it off.
+			if !mc.WebSearch && m.WebSearch {
+				mc.WebSearch = true
+			}
+			if mc.ReasoningEffort == "" {
+				mc.ReasoningEffort = m.ReasoningEffort
+			}
+			if len(mc.Catalog.SupportedReasoningEfforts) == 0 {
+				mc.Catalog.SupportedReasoningEfforts = m.SupportedReasoningEfforts
+			}
+			if mc.Catalog.CanDisableReasoning == nil {
+				mc.Catalog.CanDisableReasoning = m.CanDisableReasoning
+			}
+			if mc.Catalog.SupportsReasoning == nil && m.SupportsReasoning {
+				mc.Catalog.SupportsReasoning = boolPtr(true)
+			}
+			break
 		}
 	}
+}
+
+// BuiltinProviderModelIDs returns the suggested model ids for a known
+// connection — the payload PUT /v1/providers/{id} needs when a client
+// connects a built-in provider with ONLY an API key: the server fills the
+// model list from the registry, so the registry stays the single source of
+// truth (WorkBuddy/OpenCode-style api-key-only onboarding).
+//
+// Persisted entries carry ids ONLY; instance data (context window, pricing,
+// temperature) and capabilities (tool calling, reasoning, modalities) are
+// filled at expansion time by applyRegistryDefaults from the same registry,
+// so a runtime upgrade updates everything without touching settings.json.
+//
+// ok=false for unknown (custom) ids. ids=false (empty, ok=true) for known
+// connections without suggested models (ollama) — those still require the
+// client to declare models explicitly.
+func BuiltinProviderModelIDs(id string) (ids []string, ok bool) {
+	conn, known := builtinConnections[id]
+	if !known {
+		return nil, false
+	}
+	for _, m := range conn.Models {
+		ids = append(ids, m.ID)
+	}
+	return ids, true
 }
 
 // AvailableModelNames returns the model names the TUI/REPL should offer: the
@@ -245,6 +330,7 @@ type BuiltinProviderTemplate struct {
 // BuiltinProviderTemplateModel is one suggested model in a provider template.
 type BuiltinProviderTemplateModel struct {
 	ID                string
+	API               string
 	RuntimeAlias      string
 	ContextWindow     int
 	SupportsTools     bool
@@ -254,6 +340,16 @@ type BuiltinProviderTemplateModel struct {
 	InputPricePerM    float64
 	OutputPricePerM   float64
 	Temperature       float64
+
+	// ReasoningEffort is the model's official default thinking budget
+	// ("" = provider default).
+	ReasoningEffort string
+	// SupportedReasoningEfforts lists the effort levels the provider's API
+	// accepts (empty = toggle only, no standardized effort control).
+	SupportedReasoningEfforts []string
+	// CanDisableReasoning reports whether reasoning may be turned off entirely
+	// (nil = allowed).
+	CanDisableReasoning *bool
 }
 
 // BuiltinConnection returns the built-in template for a known connection id.
@@ -291,16 +387,20 @@ func BuiltinProviderTemplates() []BuiltinProviderTemplate {
 		}
 		for _, m := range conn.Models {
 			t.Models = append(t.Models, BuiltinProviderTemplateModel{
-				ID:                m.ID,
-				RuntimeAlias:      m.RuntimeAlias,
-				ContextWindow:     m.ContextWindow,
-				SupportsTools:     m.SupportsTools,
-				SupportsReasoning: m.SupportsReasoning,
-				InputModalities:   m.InputModalities,
-				WebSearch:         m.WebSearch,
-				InputPricePerM:    m.InputPricePerM,
-				OutputPricePerM:   m.OutputPricePerM,
-				Temperature:       m.Temperature,
+				ID:                        m.ID,
+				API:                       m.API,
+				RuntimeAlias:              m.RuntimeAlias,
+				ContextWindow:             m.ContextWindow,
+				SupportsTools:             m.SupportsTools,
+				SupportsReasoning:         m.SupportsReasoning,
+				InputModalities:           m.InputModalities,
+				WebSearch:                 m.WebSearch,
+				InputPricePerM:            m.InputPricePerM,
+				OutputPricePerM:           m.OutputPricePerM,
+				Temperature:               m.Temperature,
+				ReasoningEffort:           m.ReasoningEffort,
+				SupportedReasoningEfforts: m.SupportedReasoningEfforts,
+				CanDisableReasoning:       m.CanDisableReasoning,
 			})
 		}
 		out = append(out, t)

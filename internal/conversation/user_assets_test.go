@@ -116,14 +116,14 @@ func newDurableExecutor(t *testing.T) (*TurnExecutor, session.TurnInputStore, Co
 func TestDurableRequestHashUsesWireModelAndDeduplicatesUserMessage(t *testing.T) {
 	executor, store, repo, builder := newDurableExecutor(t)
 	asset := model.GatewayAssetRef{AssetID: 7, SHA256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Kind: "image", MIMEType: "image/png", Filename: "a.png"}
-	first, err := executor.ExecuteWithRequestIDAndAssets(context.Background(), "s", "req", "look", "", []model.GatewayAssetRef{asset})
+	first, err := executor.ExecuteWithRequestIDAndAssets(context.Background(), "s", "req", "look", "", "", []model.GatewayAssetRef{asset})
 	if err != nil {
 		t.Fatal(err)
 	}
 	builder.resolved.Store("resolved-B")
 	live, unsubscribe := executor.subs.Subscribe("s")
 	defer unsubscribe()
-	duplicate, err := executor.ExecuteWithRequestIDAndAssets(context.Background(), "s", "req", "look", "", []model.GatewayAssetRef{asset})
+	duplicate, err := executor.ExecuteWithRequestIDAndAssets(context.Background(), "s", "req", "look", "", "", []model.GatewayAssetRef{asset})
 	if err != nil || !duplicate.Deduplicated || duplicate.TurnID != first.TurnID {
 		t.Fatalf("duplicate=%+v err=%v", duplicate, err)
 	}
@@ -135,7 +135,7 @@ func TestDurableRequestHashUsesWireModelAndDeduplicatesUserMessage(t *testing.T)
 	case <-time.After(time.Second):
 		t.Fatal("duplicate retry did not re-acknowledge turn_accepted")
 	}
-	_, err = executor.ExecuteWithRequestIDAndAssets(context.Background(), "s", "req", "changed", "", []model.GatewayAssetRef{asset})
+	_, err = executor.ExecuteWithRequestIDAndAssets(context.Background(), "s", "req", "changed", "", "", []model.GatewayAssetRef{asset})
 	var conflict RequestConflictError
 	if !errors.As(err, &conflict) {
 		t.Fatalf("conflict err=%v", err)

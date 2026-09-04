@@ -65,6 +65,14 @@ type RuntimeContext struct {
 	ResolvedModel string
 	RequestID     string
 
+	// ReasoningEffort is a per-turn override of the resolved model's default
+	// thinking budget ("low"|"medium"|"high"|"x-high"|"max"). When non-empty it
+	// replaces the model config's reasoning_effort for THIS turn's requests
+	// (the runner is rebuilt per turn, so the override never leaks); empty
+	// keeps the model's configured default. Set from the client's
+	// agent_input.reasoning_effort field.
+	ReasoningEffort string
+
 	// Credential is the per-session credential resolver. When non-nil, the
 	// turn runner uses this resolver (chained with the base resolver) for
 	// model calls. In server mode this carries the client's JWT extracted

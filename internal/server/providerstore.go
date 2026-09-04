@@ -114,6 +114,18 @@ func (s *ProviderStore) Upsert(id string, spec ProviderSpec) (bool, error) {
 	// Resolve the credential entry to auto-declare, if any. The credential ref
 	// name defaults to the provider id when the spec leaves it empty.
 	credNS, credName, credCfg, declare := credentialFor(id, spec)
+	// API-key-only onboarding: a built-in connection may be upserted WITHOUT a
+	// model list. The ids are NOT persisted — the models section stays
+	// snapshot-free and FromSettings merges the registry's models at expansion
+	// time, so a provider shipping new models reaches existing settings.json
+	// files with zero changes. Custom (unknown) ids and connections without
+	// suggested models (ollama) still require an explicit list.
+	if len(spec.Models) == 0 {
+		ids, known := app.BuiltinProviderModelIDs(id)
+		if !known || len(ids) == 0 {
+			return false, errors.New("models must not be empty")
+		}
+	}
 	// Capture whether the credential entry already existed, so a reconfigure
 	// rollback removes only what this upsert created (never a user's pre-existing
 	// keychain/injected entry).
@@ -139,18 +151,21 @@ func (s *ProviderStore) Upsert(id string, spec ProviderSpec) (bool, error) {
 	}
 	for _, m := range spec.Models {
 		pc.Models = append(pc.Models, settings.ProviderModel{
-			ID:                  m.ID,
-			RuntimeAlias:        m.RuntimeAlias,
-			API:                 m.API,
-			ContextWindow:       m.ContextWindow,
-			Temperature:         m.Temperature,
-			InputPricePerM:      m.InputPricePerM,
-			OutputPricePerM:     m.OutputPricePerM,
-			CacheInputPricePerM: m.CacheInputPricePerM,
-			SupportsTools:       m.SupportsTools,
-			SupportsReasoning:   m.SupportsReasoning,
-			InputModalities:     m.InputModalities,
-			WebSearch:           m.WebSearch,
+			ID:                        m.ID,
+			RuntimeAlias:              m.RuntimeAlias,
+			API:                       m.API,
+			ContextWindow:             m.ContextWindow,
+			Temperature:               m.Temperature,
+			InputPricePerM:            m.InputPricePerM,
+			OutputPricePerM:           m.OutputPricePerM,
+			CacheInputPricePerM:       m.CacheInputPricePerM,
+			SupportsTools:             m.SupportsTools,
+			SupportsReasoning:         m.SupportsReasoning,
+			InputModalities:           m.InputModalities,
+			WebSearch:                 m.WebSearch,
+			ReasoningEffort:           m.ReasoningEffort,
+			SupportedReasoningEfforts: m.SupportedReasoningEfforts,
+			CanDisableReasoning:       m.CanDisableReasoning,
 		})
 	}
 
@@ -209,8 +224,11 @@ func credentialFor(id string, spec ProviderSpec) (ns, name string, cfg settings.
 }
 
 // Delete implements ProviderService. Refuses when the provider is referenced
-// by default_model/subagent_model (dangling default). Returns applied=true
-// when the removal is hot-effective, false when it needs a restart (OQ2).
+// by default_model/subagent_model (dangling default). Also removes the
+// credentials entry the provider carried when it becomes orphaned (no
+// remaining provider references the ref), so disconnecting a provider leaves
+// no residue in settings.json. Returns applied=true when the removal is
+// hot-effective, false when it needs a restart (OQ2).
 func (s *ProviderStore) Delete(id string) (bool, error) {
 	s.applyMu.Lock()
 	defer s.applyMu.Unlock()
@@ -219,7 +237,8 @@ func (s *ProviderStore) Delete(id string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	if _, ok := providers[id]; !ok {
+	pc, ok := providers[id]
+	if !ok {
 		return false, fmt.Errorf("%w %q", ErrProviderNotFound, id)
 	}
 	// Reference check: if the current default/subagent model belongs to this
@@ -227,9 +246,25 @@ func (s *ProviderStore) Delete(id string) (bool, error) {
 	if s.referencedByDefault(id) {
 		return false, ErrProviderInUse
 	}
+	// The credential ref this provider effectively uses (provider-level
+	// declaration, else the conventional llm/<id>).
+	credNS, credName := pc.Credential.Namespace, pc.Credential.Name
+	if credName == "" {
+		credNS, credName = "llm", id
+	}
 	before := providers
+	var removedCred *settings.CredentialConfig
 	if err := s.writeProviders(func(doc map[string]any, providers map[string]settings.ServiceConfig) {
 		delete(providers, id)
+		// Only remove the credentials entry when it is now orphaned — a ref
+		// still used by another provider (or a user-keychain entry backing one)
+		// must survive the delete.
+		if !credentialStillReferenced(providers, credNS, credName) {
+			if cc, present := credentialFromDoc(doc, credNS, credName); present {
+				removedCred = &cc
+				removeCredential(doc, credNS, credName)
+			}
+		}
 	}); err != nil {
 		return false, err
 	}
@@ -241,10 +276,41 @@ func (s *ProviderStore) Delete(id string) (bool, error) {
 			for k, v := range before {
 				providers[k] = v
 			}
+			if removedCred != nil {
+				ensureCredential(doc, credNS, credName, *removedCred)
+			}
 		})
 		return false, fmt.Errorf("apply delete failed; rolled back: %w", rerr)
 	}
 	return true, nil
+}
+
+// credentialStillReferenced reports whether any remaining provider (enabled or
+// disabled — a disabled one may be re-enabled) uses the given credential ref,
+// either explicitly or via the conventional llm/<id> default.
+func credentialStillReferenced(providers map[string]settings.ServiceConfig, ns, name string) bool {
+	for pid, pc := range providers {
+		rns, rname := pc.Credential.Namespace, pc.Credential.Name
+		if rname == "" {
+			rns, rname = "llm", pid
+		}
+		if rns == ns && rname == name {
+			return true
+		}
+	}
+	return false
+}
+
+// credentialFromDoc reads one credentials entry from a decoded settings
+// document (empty when absent).
+func credentialFromDoc(doc map[string]any, ns, name string) (settings.CredentialConfig, bool) {
+	creds := decodeCredentials(doc)
+	entries, ok := creds[ns]
+	if !ok {
+		return settings.CredentialConfig{}, false
+	}
+	cc, ok := entries[name]
+	return cc, ok
 }
 
 // writeProviders applies mutate under the settings cross-process lock and
@@ -385,20 +451,54 @@ func toProviderDTO(id string, pc settings.ServiceConfig) ProviderDTO {
 		API:        pc.API,
 		Credential: ProviderCred{Namespace: pc.Credential.Namespace, Name: pc.Credential.Name},
 	}
-	for _, m := range pc.Models {
+	models := pc.Models
+	if len(models) == 0 {
+		// Read-only view fill: a built-in connection persisted without a model
+		// list follows the registry dynamically (see Upsert). The GET response
+		// surfaces the registry ids so clients see the effective list, while
+		// settings.json stays snapshot-free.
+		templates := app.BuiltinProviderTemplates()
+		for _, template := range templates {
+			if id == template.ID {
+				for _, m := range template.Models {
+					dto.Models = append(dto.Models, ProviderModelDTO{
+						ID:                        m.ID,
+						RuntimeAlias:              m.RuntimeAlias,
+						API:                       m.API,
+						ContextWindow:             m.ContextWindow,
+						Temperature:               m.Temperature,
+						InputPricePerM:            m.InputPricePerM,
+						OutputPricePerM:           m.OutputPricePerM,
+						SupportsTools:             &m.SupportsTools,
+						SupportsReasoning:         &m.SupportsReasoning,
+						InputModalities:           m.InputModalities,
+						WebSearch:                 m.WebSearch,
+						ReasoningEffort:           m.ReasoningEffort,
+						SupportedReasoningEfforts: m.SupportedReasoningEfforts,
+						CanDisableReasoning:       m.CanDisableReasoning,
+					})
+				}
+			}
+		}
+		return dto
+	}
+	for _, m := range models {
 		dto.Models = append(dto.Models, ProviderModelDTO{
-			ID:                  m.ID,
-			RuntimeAlias:        m.RuntimeAlias,
-			API:                 m.API,
-			ContextWindow:       m.ContextWindow,
-			Temperature:         m.Temperature,
-			InputPricePerM:      m.InputPricePerM,
-			OutputPricePerM:     m.OutputPricePerM,
-			CacheInputPricePerM: m.CacheInputPricePerM,
-			SupportsTools:       m.SupportsTools,
-			SupportsReasoning:   m.SupportsReasoning,
-			InputModalities:     m.InputModalities,
-			WebSearch:           m.WebSearch,
+			ID:                        m.ID,
+			RuntimeAlias:              m.RuntimeAlias,
+			API:                       m.API,
+			ContextWindow:             m.ContextWindow,
+			Temperature:               m.Temperature,
+			InputPricePerM:            m.InputPricePerM,
+			OutputPricePerM:           m.OutputPricePerM,
+			CacheInputPricePerM:       m.CacheInputPricePerM,
+			SupportsTools:             m.SupportsTools,
+			SupportsReasoning:         m.SupportsReasoning,
+			InputModalities:           m.InputModalities,
+			WebSearch:                 m.WebSearch,
+			ReasoningEffort:           m.ReasoningEffort,
+			SupportedReasoningEfforts: m.SupportedReasoningEfforts,
+			CanDisableReasoning:       m.CanDisableReasoning,
 		})
 	}
 	return dto

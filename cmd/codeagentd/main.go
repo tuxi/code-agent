@@ -470,7 +470,7 @@ func (a *daemonAutomationAdapter) Submit(ctx context.Context, sessionID, prompt,
 	if len(perm.Connectors) > 0 {
 		a.exec.SetApprover(sessionID, connectorApprover{connectors: perm.Connectors})
 	}
-	_, err := a.exec.Execute(ctx, sessionID, prompt, model)
+	_, err := a.exec.Execute(ctx, sessionID, prompt, model, "")
 	// Clear the injected tier override and connector approver so neither leaks
 	// into later turns of the same session (chat/reuse mode).
 	a.exec.SetApprovalMode(sessionID, "")

@@ -37,7 +37,8 @@ type Session struct {
 	Name string
 	// Model is the wire model string this session last ran with — stored so a
 	// listing can show it and a resume can report it.
-	Model string
+	Model           string
+	ReasoningEffort string
 
 	Messages []model.Message
 	Metadata map[string]any

@@ -348,3 +348,97 @@ type runtimeTestApprover struct{}
 func (runtimeTestApprover) Approve(string, json.RawMessage) agent.Verdict {
 	return agent.VerdictAllow
 }
+
+func bptr(b bool) *bool { return &b }
+
+// applyReasoningEffort validates a per-turn effort override against the model's
+// declared capability and applies it onto the resolved model config.
+func TestApplyReasoningEffort(t *testing.T) {
+	cases := []struct {
+		name   string
+		mc     settings.ModelConfig
+		effort string
+		want   string // expected mc.ReasoningEffort after a successful apply
+		wantErr bool
+	}{
+		{"empty effort is a no-op even for non-reasoning model",
+			settings.ModelConfig{Model: "m", Catalog: settings.ModelCatalogMetadata{SupportsReasoning: bptr(false)}}, "", "", false},
+		{"valid effort in supported list overrides",
+			settings.ModelConfig{Model: "m", Catalog: settings.ModelCatalogMetadata{SupportsReasoning: bptr(true), SupportedReasoningEfforts: []string{"low", "medium", "high"}}}, "high", "high", false},
+		{"reasoning model with no declared efforts accepts any level",
+			settings.ModelConfig{Model: "m", Catalog: settings.ModelCatalogMetadata{SupportsReasoning: bptr(true)}}, "x-high", "x-high", false},
+		{"unknown capability (nil supports, no list) allows pass-through",
+			settings.ModelConfig{Model: "m"}, "low", "low", false},
+		{"non-reasoning model rejects an effort",
+			settings.ModelConfig{Model: "m", Catalog: settings.ModelCatalogMetadata{SupportsReasoning: bptr(false)}}, "high", "", true},
+		{"effort outside supported list rejects",
+			settings.ModelConfig{Model: "m", Catalog: settings.ModelCatalogMetadata{SupportsReasoning: bptr(true), SupportedReasoningEfforts: []string{"low", "medium"}}}, "x-high", "", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mc := tc.mc
+			err := applyReasoningEffort(&mc, tc.effort)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("applyReasoningEffort(%q) succeeded, want error", tc.effort)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("applyReasoningEffort(%q) = %v, want nil", tc.effort, err)
+			}
+			if mc.ReasoningEffort != tc.want {
+				t.Errorf("mc.ReasoningEffort = %q, want %q", mc.ReasoningEffort, tc.want)
+			}
+		})
+	}
+}
+
+// The per-turn override reaches the built runner: ServeRunBuilder.Build applies
+// ctx.ReasoningEffort to the resolved model's reasoning budget.
+func TestServeRunBuilderBuildAppliesReasoningEffortOverride(t *testing.T) {
+	alias := "provider.Y29ycA.model.Y2hhdA"
+	base := settings.ModelConfig{
+		Name: alias, Provider: "openai", BaseURL: "https://direct.example/v1", Model: "chat",
+		ReasoningEffort: "low",
+		Credential:      settings.CredentialRef{Namespace: "llm", Name: "corp"},
+		Catalog: settings.ModelCatalogMetadata{
+			SupportsReasoning:         bptr(true),
+			SupportedReasoningEfforts: []string{"low", "medium", "high"},
+		},
+	}
+	cfg := settings.Settings{Models: map[string]settings.ModelConfig{alias: base}}
+	builder := NewServeRunBuilder(cfg, base, nil, nil, tools.NewRegistry(), NewWorkspaceRegistry(""), nil)
+	runner := builder.Build(conversation.RuntimeContext{
+		Session:         &session.Session{ID: "s", WorkspacePath: t.TempDir()},
+		Model:           alias,
+		ReasoningEffort: "high",
+	}).(*agent.Runner)
+	if runner.ReasoningEffort != "high" {
+		t.Errorf("runner.ReasoningEffort = %q, want per-turn override high", runner.ReasoningEffort)
+	}
+}
+
+// An unsupported per-turn effort fails the turn before any provider call, so the
+// client's effort picker gets explicit feedback instead of a silent provider error.
+func TestServeRunBuilderBuildRejectsUnsupportedReasoningEffort(t *testing.T) {
+	alias := "provider.Y29ycA.model.Y2hhdA"
+	base := settings.ModelConfig{
+		Name: alias, Provider: "openai", BaseURL: "https://direct.example/v1", Model: "chat",
+		Credential: settings.CredentialRef{Namespace: "llm", Name: "corp"},
+		Catalog: settings.ModelCatalogMetadata{
+			SupportsReasoning:         bptr(true),
+			SupportedReasoningEfforts: []string{"low", "medium"},
+		},
+	}
+	cfg := settings.Settings{Models: map[string]settings.ModelConfig{alias: base}}
+	builder := NewServeRunBuilder(cfg, base, nil, nil, tools.NewRegistry(), NewWorkspaceRegistry(""), nil)
+	tr := builder.Build(conversation.RuntimeContext{
+		Session:         &session.Session{ID: "s", WorkspacePath: t.TempDir()},
+		Model:           alias,
+		ReasoningEffort: "max",
+	})
+	if _, ok := tr.(*agent.Runner); ok {
+		t.Fatalf("Build with unsupported effort returned a live runner, want a failed runner")
+	}
+}

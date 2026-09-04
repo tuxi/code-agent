@@ -31,6 +31,16 @@ type ProviderTemplateModelDTO struct {
 	WebSearch         bool     `json:"web_search,omitempty"`
 	InputPricePerM    float64  `json:"input_price_per_million,omitempty"`
 	OutputPricePerM   float64  `json:"output_price_per_million,omitempty"`
+
+	// ReasoningEffort is the model's official default thinking budget
+	// ("low"|"medium"|"high"|"x-high"|"max"; "" = provider default).
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
+	// SupportedReasoningEfforts lists the effort levels the provider's API
+	// accepts (empty = toggle only, no standardized effort control).
+	SupportedReasoningEfforts []string `json:"supported_reasoning_efforts,omitempty"`
+	// CanDisableReasoning reports whether reasoning may be turned off entirely
+	// (false = reasoner-only; nil/true = the off position is allowed).
+	CanDisableReasoning *bool `json:"can_disable_reasoning,omitempty"`
 }
 
 // buildProviderTemplates converts the built-in registry to template DTOs.
@@ -49,16 +59,19 @@ func buildProviderTemplates() []ProviderTemplateDTO {
 		}
 		for _, m := range b.Models {
 			dto.Models = append(dto.Models, ProviderTemplateModelDTO{
-				ID:                m.ID,
-				RuntimeAlias:      m.RuntimeAlias,
-				ContextWindow:     m.ContextWindow,
-				Temperature:       m.Temperature,
-				SupportsTools:     m.SupportsTools,
-				SupportsReasoning: m.SupportsReasoning,
-				InputModalities:   m.InputModalities,
-				WebSearch:         m.WebSearch,
-				InputPricePerM:    m.InputPricePerM,
-				OutputPricePerM:   m.OutputPricePerM,
+				ID:                        m.ID,
+				RuntimeAlias:              m.RuntimeAlias,
+				ContextWindow:             m.ContextWindow,
+				Temperature:               m.Temperature,
+				SupportsTools:             m.SupportsTools,
+				SupportsReasoning:         m.SupportsReasoning,
+				InputModalities:           m.InputModalities,
+				WebSearch:                 m.WebSearch,
+				InputPricePerM:            m.InputPricePerM,
+				OutputPricePerM:           m.OutputPricePerM,
+				ReasoningEffort:           m.ReasoningEffort,
+				SupportedReasoningEfforts: m.SupportedReasoningEfforts,
+				CanDisableReasoning:       m.CanDisableReasoning,
 			})
 		}
 		out = append(out, dto)

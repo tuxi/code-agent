@@ -59,7 +59,12 @@ v1 入站消息按 `type` 字段平铺分发：
 {
   "type": "agent_input",
   "kind": "text",
-  "text": "分析这个项目"
+  "request_id": "uuid-123",              // 稳定幂等键
+  "text": "分析这个项目",
+  "model": "deepseek/deepseek-v4-flash", // 可选：本 turn 模型
+  "reasoning_effort": "high"             // 可选：本 turn 思考档位覆写
+                                         //   low|medium|high|x-high|max；
+                                         //   缺省=模型配置默认，服务端校验模型支持性
 }
 
 // kind: "tool_result" — 客户端工具执行结果回传（execution graph continuation）

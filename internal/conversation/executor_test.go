@@ -203,7 +203,7 @@ func TestTurnExecutorDeleteConversationRejectsActiveAndPausedTurns(t *testing.T)
 
 	done := make(chan error, 1)
 	go func() {
-		_, err := executor.Execute(context.Background(), running.ID, "work", "")
+		_, err := executor.Execute(context.Background(), running.ID, "work", "", "")
 		done <- err
 	}()
 	assertReady(t, started)
@@ -243,7 +243,7 @@ func TestTurnExecutorDeleteConversationExcludesNewTurnAtomically(t *testing.T) {
 	deleted := make(chan error, 1)
 	go func() { deleted <- executor.DeleteConversation(context.Background(), "delete-race") }()
 	assertReady(t, repo.deleteStarted)
-	if _, err := executor.Execute(context.Background(), "delete-race", "must not run", ""); !errors.Is(err, ErrConversationDeleting) {
+	if _, err := executor.Execute(context.Background(), "delete-race", "must not run", "", ""); !errors.Is(err, ErrConversationDeleting) {
 		t.Fatalf("turn racing with delete error=%v, want ErrConversationDeleting", err)
 	}
 	close(repo.continueDelete)
@@ -293,7 +293,7 @@ func TestTurnExecutorArchiveIsIdempotentAndBlocksArchivedTurns(t *testing.T) {
 			t.Fatalf("idempotent archive timestamps differ: %s / %s", first, at)
 		}
 	}
-	if _, err := executor.Execute(context.Background(), sess.ID, "must not run", ""); !errors.Is(err, ErrConversationArchived) {
+	if _, err := executor.Execute(context.Background(), sess.ID, "must not run", "", ""); !errors.Is(err, ErrConversationArchived) {
 		t.Fatalf("archived Execute error=%v", err)
 	}
 	if _, err := executor.ExecuteWithSession(context.Background(), sess, "stale handle", ""); !errors.Is(err, ErrConversationArchived) {
@@ -305,7 +305,7 @@ func TestTurnExecutorArchiveIsIdempotentAndBlocksArchivedTurns(t *testing.T) {
 	if err := executor.RestoreConversation(context.Background(), sess.ID); err != nil {
 		t.Fatalf("idempotent restore: %v", err)
 	}
-	if _, err := executor.Execute(context.Background(), sess.ID, "runs after restore", ""); err != nil {
+	if _, err := executor.Execute(context.Background(), sess.ID, "runs after restore", "", ""); err != nil {
 		t.Fatalf("restored Execute: %v", err)
 	}
 }
@@ -322,7 +322,7 @@ func TestTurnExecutorArchiveRejectsActiveTurn(t *testing.T) {
 	executor := NewTurnExecutor(repo, &fakeEventStore{}, NewActiveTurnRegistry(), NewSubscriptionManager(), &schedulerBlockingRunBuilder{started: started, release: release})
 	done := make(chan error, 1)
 	go func() {
-		_, err := executor.Execute(context.Background(), sess.ID, "work", "")
+		_, err := executor.Execute(context.Background(), sess.ID, "work", "", "")
 		done <- err
 	}()
 	assertReady(t, started)
@@ -349,7 +349,7 @@ func TestTurnExecutorExecutionGuardEmitsStructuredTerminalFailure(t *testing.T) 
 	executor.SetExecutionGuard(func(context.Context, string) (func(), error) {
 		return nil, executionGuardError{}
 	})
-	result, err := executor.Execute(context.Background(), sess.ID, "run", "")
+	result, err := executor.Execute(context.Background(), sess.ID, "run", "", "")
 	if err == nil || result.TurnID == "" {
 		t.Fatalf("result=%+v err=%v", result, err)
 	}
@@ -573,7 +573,7 @@ func TestTurnExecutor_Execute_LoadsAndSaves(t *testing.T) {
 	// Use a stub runner so we control the turn.
 	// We can't easily replace the runner in TurnExecutor (it builds via RunBuilder),
 	// so we test through Execute and verify side effects.
-	_, err := exec.Execute(context.Background(), "test-session", "hello", "")
+	_, err := exec.Execute(context.Background(), "test-session", "hello", "", "")
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -597,7 +597,7 @@ func TestTurnExecutor_Execute_MissingSession(t *testing.T) {
 	repo := newFakeRepo()
 	exec := NewTurnExecutor(repo, &fakeEventStore{}, NewActiveTurnRegistry(), NewSubscriptionManager(), &fakeRunBuilder{})
 
-	_, err := exec.Execute(context.Background(), "nonexistent", "hello", "")
+	_, err := exec.Execute(context.Background(), "nonexistent", "hello", "", "")
 	if err == nil {
 		t.Fatal("expected error for missing session")
 	}
@@ -624,7 +624,7 @@ func TestTurnExecutor_Execute_Concurrency(t *testing.T) {
 	ctx := context.Background()
 	_, cancel1, _ := active.BeginTurn("busy-session", ctx)
 	// Don't finish — second Execute should get ErrBusy.
-	_, err := exec.Execute(ctx, "busy-session", "msg", "")
+	_, err := exec.Execute(ctx, "busy-session", "msg", "", "")
 	if err != ErrBusy {
 		t.Errorf("want ErrBusy, got %v", err)
 	}
@@ -647,13 +647,13 @@ func TestTurnExecutor_AllowsSameWorkspaceConcurrentTurns(t *testing.T) {
 	exec.SetTurnScheduler(NewTurnScheduler(2))
 
 	firstDone := make(chan error, 1)
-	go func() { _, err := exec.Execute(context.Background(), first.ID, "first", ""); firstDone <- err }()
+	go func() { _, err := exec.Execute(context.Background(), first.ID, "first", "", ""); firstDone <- err }()
 	if got := assertReady(t, started); got != first.ID {
 		t.Fatalf("first started session = %q", got)
 	}
 
 	secondDone := make(chan error, 1)
-	go func() { _, err := exec.Execute(context.Background(), second.ID, "second", ""); secondDone <- err }()
+	go func() { _, err := exec.Execute(context.Background(), second.ID, "second", "", ""); secondDone <- err }()
 
 	// Second turn must start immediately — no workspace lease queuing.
 	if got := assertReady(t, started); got != second.ID {
@@ -685,7 +685,7 @@ func TestTurnExecutor_QueuedCancelEmitsCancelledWithReason(t *testing.T) {
 
 	// Turn A fills the only slot.
 	aDone := make(chan error, 1)
-	go func() { _, err := exec.Execute(context.Background(), "a", "A", ""); aDone <- err }()
+	go func() { _, err := exec.Execute(context.Background(), "a", "A", "", ""); aDone <- err }()
 	if got := assertReady(t, started); got != "a" {
 		t.Fatalf("started = %q", got)
 	}
@@ -693,7 +693,7 @@ func TestTurnExecutor_QueuedCancelEmitsCancelledWithReason(t *testing.T) {
 	// Turn B queues. Use a cancellable context to simulate cancel_turn.
 	ctx, cancel := context.WithCancel(context.Background())
 	bDone := make(chan error, 1)
-	go func() { _, err := exec.Execute(ctx, "b", "B", ""); bDone <- err }()
+	go func() { _, err := exec.Execute(ctx, "b", "B", "", ""); bDone <- err }()
 
 	// Wait for B to be queued.
 	deadline := time.Now().Add(time.Second)
@@ -750,7 +750,7 @@ func TestTurnExecutor_RunningCancelPersistsExactlyOneTerminal(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		_, err := exec.Execute(context.Background(), "running", "work", "")
+		_, err := exec.Execute(context.Background(), "running", "work", "", "")
 		done <- err
 	}()
 	if got := assertReady(t, started); got != "running" {
@@ -785,7 +785,7 @@ func TestTurnExecutor_TerminalPersistenceFailureIsObservable(t *testing.T) {
 	}}
 	exec := NewTurnExecutor(repo, events, NewActiveTurnRegistry(), subs, builder)
 
-	_, err := exec.Execute(context.Background(), "s", "work", "")
+	_, err := exec.Execute(context.Background(), "s", "work", "", "")
 	if err == nil || !strings.Contains(err.Error(), "persist turn_finished") {
 		t.Fatalf("error=%v want terminal persistence failure", err)
 	}
@@ -823,11 +823,11 @@ func TestTurnExecutor_RequestIDIsIdempotentAcrossRestart(t *testing.T) {
 	firstBuilder := &requestCountingBuilder{}
 	firstExecutor := NewTurnExecutor(repo, events, NewActiveTurnRegistry(), NewSubscriptionManager(), firstBuilder)
 
-	first, err := firstExecutor.ExecuteWithRequestID(context.Background(), "s", "request-1", "hello", "")
+	first, err := firstExecutor.ExecuteWithRequestID(context.Background(), "s", "request-1", "hello", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	duplicate, err := firstExecutor.ExecuteWithRequestID(context.Background(), "s", "request-1", "hello", "")
+	duplicate, err := firstExecutor.ExecuteWithRequestID(context.Background(), "s", "request-1", "hello", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -840,7 +840,7 @@ func TestTurnExecutor_RequestIDIsIdempotentAcrossRestart(t *testing.T) {
 
 	restartedBuilder := &requestCountingBuilder{}
 	restarted := NewTurnExecutor(repo, events, NewActiveTurnRegistry(), NewSubscriptionManager(), restartedBuilder)
-	afterRestart, err := restarted.ExecuteWithRequestID(context.Background(), "s", "request-1", "hello", "")
+	afterRestart, err := restarted.ExecuteWithRequestID(context.Background(), "s", "request-1", "hello", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -883,7 +883,7 @@ func TestTurnExecutor_ConcurrentDuplicateRequestIDBuildsOneTurn(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-start
-			result, err := executor.ExecuteWithRequestID(context.Background(), "s", "same-request", "hello", "")
+			result, err := executor.ExecuteWithRequestID(context.Background(), "s", "same-request", "hello", "", "")
 			results <- result
 			errs <- err
 		}()
@@ -931,7 +931,7 @@ func TestTurnExecutor_OnSaveError(t *testing.T) {
 	sess.Messages = append(sess.Messages, model.Message{}, model.Message{})
 	repo.sessions["s"] = sess
 
-	_, _ = exec.Execute(context.Background(), "s", "msg", "")
+	_, _ = exec.Execute(context.Background(), "s", "msg", "", "")
 	if saveErr == nil {
 		t.Error("OnSaveError should be called")
 	}
@@ -950,7 +950,7 @@ func TestTurnExecutor_PersistsEventsAfterCallerContextCanceled(t *testing.T) {
 	rb := &emitAfterCancelBuilder{cancelParent: cancel}
 	exec := NewTurnExecutor(repo, events, NewActiveTurnRegistry(), NewSubscriptionManager(), rb)
 
-	if _, err := exec.Execute(ctx, "s1", "hello", ""); err != nil {
+	if _, err := exec.Execute(ctx, "s1", "hello", "", ""); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 
@@ -983,7 +983,7 @@ func TestTurnExecutor_LiveEventsReachResubscribedClient(t *testing.T) {
 	}}
 
 	exec := NewTurnExecutor(repo, &fakeEventStore{}, NewActiveTurnRegistry(), subs, rb)
-	if _, err := exec.Execute(context.Background(), "s1", "hello", ""); err != nil {
+	if _, err := exec.Execute(context.Background(), "s1", "hello", "", ""); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 
@@ -1005,7 +1005,7 @@ func TestTurnExecutor_Shutdown(t *testing.T) {
 
 	exec.Shutdown()
 	// Post-shutdown Execute should fail.
-	_, err := exec.Execute(context.Background(), "any", "msg", "")
+	_, err := exec.Execute(context.Background(), "any", "msg", "", "")
 	if err == nil {
 		t.Error("Execute should fail after Shutdown")
 	}
@@ -1019,4 +1019,110 @@ type failingSaveRepo struct {
 
 func (r *failingSaveRepo) Save(ctx context.Context, s *session.Session) error {
 	return &notFoundError{"save failed"}
+}
+
+// stickyResolveBuilder resolves any wire model to a fixed, controllable model
+// config and records the RuntimeContext each turn built with (for asserting the
+// effective reasoning effort reached the runner).
+type stickyResolveBuilder struct {
+	fakeRunBuilder
+	resolved settings.ModelConfig
+}
+
+func (b *stickyResolveBuilder) ResolveModel(string) (*settings.ModelConfig, error) {
+	return &b.resolved, nil
+}
+
+func boolP(b bool) *bool { return &b }
+
+// The session's reasoning effort is STICKY: an explicit per-turn override is
+// persisted onto the session, later turns without an override reuse it (resume /
+// automation behavior), and a model switch that no longer supports it clears it
+// (falling back to the config default) instead of failing the turn.
+func TestTurnExecutorReasoningEffortSticky(t *testing.T) {
+	store := session.NewMemoryStore()
+	repo := NewSQLiteRepository(store, 128000, 90000, "main", "", nil)
+	sess, err := repo.Create(context.Background(), t.TempDir(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	builder := &stickyResolveBuilder{resolved: settings.ModelConfig{
+		Name: "m1", Model: "m1",
+		Catalog: settings.ModelCatalogMetadata{SupportsReasoning: boolP(true), SupportedReasoningEfforts: []string{"low", "medium", "high"}},
+	}}
+	executor := NewTurnExecutor(repo, &fakeEventStore{}, NewActiveTurnRegistry(), NewSubscriptionManager(), builder)
+
+	// Turn 1: an explicit override persists onto the session.
+	if _, err := executor.Execute(context.Background(), sess.ID, "task", "m1", "high"); err != nil {
+		t.Fatalf("turn1: %v", err)
+	}
+	if builder.lastCtx.ReasoningEffort != "high" {
+		t.Errorf("turn1 runner effort = %q, want override high", builder.lastCtx.ReasoningEffort)
+	}
+	loaded, err := repo.Load(context.Background(), sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.ReasoningEffort != "high" {
+		t.Errorf("session reasoning_effort = %q, want persisted high", loaded.ReasoningEffort)
+	}
+
+	// Turn 2: no override — the session's sticky effort applies (resume/automation).
+	if _, err := executor.Execute(context.Background(), sess.ID, "task", "m1", ""); err != nil {
+		t.Fatalf("turn2: %v", err)
+	}
+	if builder.lastCtx.ReasoningEffort != "high" {
+		t.Errorf("turn2 runner effort = %q, want sticky high", builder.lastCtx.ReasoningEffort)
+	}
+
+	// Turn 3: a new override replaces the session sticky value.
+	if _, err := executor.Execute(context.Background(), sess.ID, "task", "m1", "medium"); err != nil {
+		t.Fatalf("turn3: %v", err)
+	}
+	if builder.lastCtx.ReasoningEffort != "medium" {
+		t.Errorf("turn3 runner effort = %q, want override medium", builder.lastCtx.ReasoningEffort)
+	}
+	loaded, _ = repo.Load(context.Background(), sess.ID)
+	if loaded.ReasoningEffort != "medium" {
+		t.Errorf("session reasoning_effort = %q, want updated medium", loaded.ReasoningEffort)
+	}
+
+	// Turn 4: model switched to one that does NOT support reasoning. The stale
+	// session effort "medium" must be cleared and the turn must NOT fail.
+	builder.resolved = settings.ModelConfig{
+		Name: "m2", Model: "m2",
+		Catalog: settings.ModelCatalogMetadata{SupportsReasoning: boolP(false)},
+	}
+	if _, err := executor.Execute(context.Background(), sess.ID, "task", "m2", ""); err != nil {
+		t.Fatalf("turn4 (model switch) must not fail: %v", err)
+	}
+	if builder.lastCtx.ReasoningEffort != "" {
+		t.Errorf("turn4 runner effort = %q, want cleared (config default)", builder.lastCtx.ReasoningEffort)
+	}
+	loaded, _ = repo.Load(context.Background(), sess.ID)
+	if loaded.ReasoningEffort != "" {
+		t.Errorf("session reasoning_effort = %q, want cleared after model switch", loaded.ReasoningEffort)
+	}
+}
+
+func TestModelSupportsEffort(t *testing.T) {
+	cases := []struct {
+		name    string
+		catalog settings.ModelCatalogMetadata
+		effort  string
+		want    bool
+	}{
+		{"supports false rejects", settings.ModelCatalogMetadata{SupportsReasoning: boolP(false)}, "high", false},
+		{"in supported list", settings.ModelCatalogMetadata{SupportsReasoning: boolP(true), SupportedReasoningEfforts: []string{"low", "medium", "high"}}, "high", true},
+		{"not in supported list", settings.ModelCatalogMetadata{SupportsReasoning: boolP(true), SupportedReasoningEfforts: []string{"low", "medium"}}, "x-high", false},
+		{"unknown capability allows", settings.ModelCatalogMetadata{}, "low", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mc := settings.ModelConfig{Catalog: tc.catalog}
+			if got := modelSupportsEffort(mc, tc.effort); got != tc.want {
+				t.Errorf("modelSupportsEffort(%q) = %v, want %v", tc.effort, got, tc.want)
+			}
+		})
+	}
 }

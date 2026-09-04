@@ -199,14 +199,14 @@ id（稳定连接 ID）+ providerID（模板类目）+ transport + authenticatio
 
 **映射**（AgentKit 通过 HTTP 管理时）：
 
-| ProviderConnection | settings providers 段 |
-|---|---|
-| `id` | `providers.<id>` 的 key |
-| `baseURL` | `base_url` |
-| `transport` | `api`（openai_chat_completions → openai） |
+| ProviderConnection | settings providers 段                                               |
+|---|--------------------------------------------------------------------|
+| `id` | `providers.<id>` 的 key                                             |
+| `baseURL` | `base_url`                                                         |
+| `transport` | `api`（openai → openai）                                                |
 | `authentication` | `credential`（gateway_account → gateway/default，api_key → llm/<id>） |
-| `models` | `models[]` |
-| `isEnabled` | 存在 = 启用；删除 = 禁用 |
+| `models` | `models[]`                                                         |
+| `isEnabled` | 存在 = 启用；删除 = 禁用                                                    |
 
 **关键转变**：客户端从「本地 registry 为唯一事实源 + 重启注入」改为「runtime settings.json 为单一事实源 + HTTP 管理」。`ProviderConnectionRegistry` 可降级为「HTTP 结果的本地缓存」（或直接移除，改为每次 HTTP 查询）。
 

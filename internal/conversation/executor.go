@@ -444,26 +444,28 @@ func (e *TurnExecutor) sessionCredential(sessionID string) credential.Resolver {
 // sessionID. It loads the session from the Repository, claims the turn slot,
 // builds a fresh Runner, runs, saves, and releases the slot.
 // model is the optional model profile name; empty means "use the server default".
-func (e *TurnExecutor) Execute(ctx context.Context, sessionID string, input string, model string) (agent.TurnResult, error) {
-	return e.ExecuteWithAssets(ctx, sessionID, input, model, nil)
+// effort is an optional per-turn reasoning-effort override; empty keeps the
+// model's configured default.
+func (e *TurnExecutor) Execute(ctx context.Context, sessionID string, input string, model string, effort string) (agent.TurnResult, error) {
+	return e.ExecuteWithAssets(ctx, sessionID, input, model, effort, nil)
 }
 
-func (e *TurnExecutor) ExecuteWithRequestID(ctx context.Context, sessionID, requestID, input, modelName string) (agent.TurnResult, error) {
-	return e.ExecuteWithRequestIDAndAssets(ctx, sessionID, requestID, input, modelName, nil)
+func (e *TurnExecutor) ExecuteWithRequestID(ctx context.Context, sessionID, requestID, input, modelName, effort string) (agent.TurnResult, error) {
+	return e.ExecuteWithRequestIDAndAssets(ctx, sessionID, requestID, input, modelName, effort, nil)
 }
 
 // ExecuteWithAssets carries Gateway-owned user asset references into the next
 // turn. The caller owns validation of their source; Gateway validates ownership
 // again when it receives the chat request.
-func (e *TurnExecutor) ExecuteWithAssets(ctx context.Context, sessionID string, input string, model string, assets []model.GatewayAssetRef) (agent.TurnResult, error) {
-	return e.ExecuteWithRequestIDAndAssets(ctx, sessionID, "", input, model, assets)
+func (e *TurnExecutor) ExecuteWithAssets(ctx context.Context, sessionID string, input string, model string, effort string, assets []model.GatewayAssetRef) (agent.TurnResult, error) {
+	return e.ExecuteWithRequestIDAndAssets(ctx, sessionID, "", input, model, effort, assets)
 }
 
-func (e *TurnExecutor) ExecuteWithRequestIDAndAssets(ctx context.Context, sessionID, requestID, input, modelName string, assets []model.GatewayAssetRef) (agent.TurnResult, error) {
-	return e.ExecuteWithRequestIDAndAllAssets(ctx, sessionID, requestID, input, modelName, assets, nil)
+func (e *TurnExecutor) ExecuteWithRequestIDAndAssets(ctx context.Context, sessionID, requestID, input, modelName, effort string, assets []model.GatewayAssetRef) (agent.TurnResult, error) {
+	return e.ExecuteWithRequestIDAndAllAssets(ctx, sessionID, requestID, input, modelName, effort, assets, nil)
 }
 
-func (e *TurnExecutor) ExecuteWithRequestIDAndAllAssets(ctx context.Context, sessionID, requestID, input, modelName string, assets []model.GatewayAssetRef, localAssets []model.LocalAssetRef) (agent.TurnResult, error) {
+func (e *TurnExecutor) ExecuteWithRequestIDAndAllAssets(ctx context.Context, sessionID, requestID, input, modelName, effort string, assets []model.GatewayAssetRef, localAssets []model.LocalAssetRef) (agent.TurnResult, error) {
 	release, err := e.beginSessionTurn(sessionID)
 	if err != nil {
 		return agent.TurnResult{}, err
@@ -477,7 +479,7 @@ func (e *TurnExecutor) ExecuteWithRequestIDAndAllAssets(ctx context.Context, ses
 	if !sess.ArchivedAt.IsZero() {
 		return agent.TurnResult{}, ErrConversationArchived
 	}
-	return e.executeWithSessionAssets(ctx, sess, requestID, input, modelName, assets, localAssets, nil, nil)
+	return e.executeWithSessionAssets(ctx, sess, requestID, input, modelName, effort, assets, localAssets, nil, nil)
 }
 
 // AcceptCrossSessionMessage returns after durable acceptance and target-side
@@ -538,7 +540,7 @@ func (e *TurnExecutor) AcceptCrossSessionMessage(ctx, executionCtx context.Conte
 			model = sess.Model
 		}
 		if err == nil {
-			_, err = e.executeWithSessionAssets(executionCtx, sess, envelope.MessageID, envelope.Text, model, nil, nil, provenance, notify)
+			_, err = e.executeWithSessionAssets(executionCtx, sess, envelope.MessageID, envelope.Text, model, "", nil, nil, provenance, notify)
 		}
 		// Clear the per-turn tier override so a later interactive turn of this
 		// conversation runs at the workspace default, not the workflow's full tier.
@@ -573,7 +575,7 @@ func (e *TurnExecutor) ExecuteWithSessionAssets(parentCtx context.Context, sess 
 	if archived {
 		return agent.TurnResult{}, ErrConversationArchived
 	}
-	return e.executeWithSessionAssets(parentCtx, sess, "", input, model, assets, nil, nil, nil)
+	return e.executeWithSessionAssets(parentCtx, sess, "", input, model, "", assets, nil, nil, nil)
 }
 
 func (e *TurnExecutor) conversationArchived(ctx context.Context, fallback *session.Session) (bool, error) {
@@ -591,8 +593,28 @@ func (e *TurnExecutor) conversationArchived(ctx context.Context, fallback *sessi
 	return !stored.ArchivedAt.IsZero(), nil
 }
 
-func (e *TurnExecutor) executeWithSessionAssets(parentCtx context.Context, sess *session.Session, requestID, input, modelName string, assets []model.GatewayAssetRef, localAssets []model.LocalAssetRef, provenance *session.CrossSessionProvenance, admitted func(TurnAdmission, error)) (agent.TurnResult, error) {
-	res, runErr := e.driveTurn(parentCtx, sess, requestID, input, modelName, assets, localAssets, nil, provenance, admitted,
+// modelSupportsEffort reports whether the given model config can honor the
+// reasoning effort — used to decide whether a session-cached sticky effort is
+// still valid for the resolved model. An unknown capability (nil supports,
+// empty supported list) is treated as allowing pass-through, matching
+// applyReasoningEffort's behavior for gateway legacy wire models.
+func modelSupportsEffort(mc settings.ModelConfig, effort string) bool {
+	if mc.Catalog.SupportsReasoning != nil && !*mc.Catalog.SupportsReasoning {
+		return false
+	}
+	if len(mc.Catalog.SupportedReasoningEfforts) > 0 {
+		for _, lvl := range mc.Catalog.SupportedReasoningEfforts {
+			if lvl == effort {
+				return true
+			}
+		}
+		return false
+	}
+	return true
+}
+
+func (e *TurnExecutor) executeWithSessionAssets(parentCtx context.Context, sess *session.Session, requestID, input, modelName, effort string, assets []model.GatewayAssetRef, localAssets []model.LocalAssetRef, provenance *session.CrossSessionProvenance, admitted func(TurnAdmission, error)) (agent.TurnResult, error) {
+	res, runErr := e.driveTurn(parentCtx, sess, requestID, input, modelName, effort, assets, localAssets, nil, provenance, admitted,
 		session.TurnStatusRunning,
 		func(ctx context.Context, runner TurnRunner, prepared bool) (agent.TurnResult, error) {
 			if prepared {
@@ -683,7 +705,7 @@ func (e *TurnExecutor) Resume(parentCtx context.Context, sessionID string) (agen
 		requestID, inputText, wireModel, assets = recovered.RequestID, recovered.Text, recovered.WireModel, recovered.Assets
 		localAssets = recovered.LocalAssets
 	}
-	return e.driveTurn(parentCtx, sess, requestID, inputText, wireModel, assets, localAssets, recovered, nil, nil, session.TurnStatusResuming,
+	return e.driveTurn(parentCtx, sess, requestID, inputText, wireModel, "", assets, localAssets, recovered, nil, nil, session.TurnStatusResuming,
 		func(ctx context.Context, runner TurnRunner, _ bool) (agent.TurnResult, error) {
 			return runner.ResumeTurn(ctx, sess)
 		},
@@ -702,6 +724,7 @@ func (e *TurnExecutor) driveTurn(
 	requestID string,
 	inputText string,
 	wireModel string,
+	effort string,
 	assets []model.GatewayAssetRef,
 	localAssets []model.LocalAssetRef,
 	preclaimed *session.TurnInput,
@@ -726,12 +749,28 @@ func (e *TurnExecutor) driveTurn(
 	pub := &sequencingEmitter{ctx: context.WithoutCancel(parentCtx), events: e.events, live: e.subs.Emitter(sess.ID), toolStreams: agent.NewToolStreamCapper()}
 	resolver, ok := e.rb.(ModelResolver)
 	var resolvedModel settings.ModelConfig
+	// Effective reasoning effort for this turn: an explicit per-turn override
+	// wins; otherwise the session's persisted (sticky) effort applies — a model
+	// selection choice that survives resume/automation turns — else "" lets the
+	// model config default stand.
+	effectiveEffort := effort
 	if ok {
 		rm, resolveErr := resolver.ResolveModel(wireModel)
 		if resolveErr != nil {
 			return agent.TurnResult{}, resolveErr
 		}
 		resolvedModel = *rm
+		// A session-cached effort must be validated against the RESOLVED model:
+		// after a model switch the old effort may no longer be supported, in which
+		// case it is dropped (persisted below) and the config default applies —
+		// never fail the turn on a stale session value.
+		if effectiveEffort == "" && sess.ReasoningEffort != "" {
+			if modelSupportsEffort(resolvedModel, sess.ReasoningEffort) {
+				effectiveEffort = sess.ReasoningEffort
+			} else {
+				sess.ReasoningEffort = ""
+			}
+		}
 		// Refresh the session's model metadata from the resolved config so
 		// compaction thresholds stay model-aware even when the config changed
 		// since the session was created. CompactRatio/ContextWindow of 0 means
@@ -744,11 +783,18 @@ func (e *TurnExecutor) driveTurn(
 			compactThreshold = int(float64(resolvedModel.ContextWindow) * resolvedModel.CompactRatio)
 			modelChanged = modelChanged || sess.CompactThreshold != compactThreshold
 		}
+		// Persist the effective reasoning effort alongside the model so a later
+		// turn (resume/automation) reuses it — unless a per-turn override already
+		// matched, in which case there is nothing to persist.
+		if sess.ReasoningEffort != effectiveEffort {
+			modelChanged = true
+		}
 		if modelChanged {
 			if resolvedModel.ContextWindow > 0 {
 				sess.ContextWindow = resolvedModel.ContextWindow
 			}
 			sess.Model = resolvedModel.Name
+			sess.ReasoningEffort = effectiveEffort
 			sess.CompactThreshold = compactThreshold
 			sess.UpdatedAt = time.Now()
 			if serr := e.repo.Save(context.WithoutCancel(parentCtx), sess); serr != nil && e.OnSaveError != nil {
@@ -885,6 +931,7 @@ func (e *TurnExecutor) driveTurn(
 		TurnID:          turnID,
 		Model:           wireModel,
 		ResolvedModel:   resolvedModel.Model,
+		ReasoningEffort: effectiveEffort,
 		RequestID:       requestID,
 		Publisher:       pub,
 		Approver:        e.active.Approver(sess.ID),
@@ -1400,7 +1447,7 @@ func (e *TurnExecutor) executeRecoveredTurn(ctx context.Context, input session.T
 	if err != nil {
 		return agent.TurnResult{}, err
 	}
-	return e.driveTurn(ctx, sess, input.RequestID, input.Text, input.WireModel, input.Assets, input.LocalAssets, &input, input.Provenance, nil,
+	return e.driveTurn(ctx, sess, input.RequestID, input.Text, input.WireModel, "", input.Assets, input.LocalAssets, &input, input.Provenance, nil,
 		session.TurnStatusRunning,
 		func(runCtx context.Context, runner TurnRunner, prepared bool) (agent.TurnResult, error) {
 			if !prepared {
