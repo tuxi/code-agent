@@ -39,7 +39,7 @@ func (s *approvalSession) SetAskUserApprover(agent.AskUserApprover)   {}
 func (s *approvalSession) SetClientToolWaiter(agent.ClientToolWaiter) {}
 func (s *approvalSession) RegisterTools([]agent.ClientToolDef)        {}
 
-func (s *approvalSession) SendMessage(context.Context, string, string) (agent.TurnResult, error) {
+func (s *approvalSession) SendMessage(context.Context, string, string, string) (agent.TurnResult, error) {
 	s.mu.Lock()
 	a := s.appr
 	s.mu.Unlock()
@@ -153,7 +153,7 @@ func (s *clientToolSession) SetClientToolWaiter(w agent.ClientToolWaiter) {
 
 func (s *clientToolSession) RegisterTools([]agent.ClientToolDef) {}
 
-func (s *clientToolSession) SendMessage(ctx context.Context, _ string, _ string) (agent.TurnResult, error) {
+func (s *clientToolSession) SendMessage(ctx context.Context, _ string, _ string, _ string) (agent.TurnResult, error) {
 	s.mu.Lock()
 	w := s.w
 	s.mu.Unlock()

@@ -63,6 +63,11 @@ type AgentInput struct {
 	RequestID   string                  `json:"request_id,omitempty"`   // stable client idempotency key for a turn-starting input
 	Text        string                  `json:"text,omitempty"`         // kind="text" | "command"
 	Model       string                  `json:"model,omitempty"`        // optional: model profile name to use this turn
+	// ReasoningEffort overrides the resolved model's default thinking budget for
+	// THIS turn ("low"|"medium"|"high"|"x-high"|"max"). Empty keeps the model's
+	// configured default. Validated against the model's supported efforts; an
+	// unsupported value rejects the turn. Only meaningful on kind="text".
+	ReasoningEffort string                  `json:"reasoning_effort,omitempty"` // kind="text": per-turn thinking budget override
 	Assets      []model.GatewayAssetRef `json:"assets,omitempty"`       // kind="text": Gateway-owned user asset refs
 	LocalAssets []model.LocalAssetRef   `json:"local_assets,omitempty"` // kind="text": workspace-local attachment refs
 	ToolResult  *ToolResult             `json:"tool_result,omitempty"`  // kind="tool_result"

@@ -27,26 +27,26 @@ func (s *TransportSession) Subscribe() (<-chan agent.Event, func()) {
 }
 
 // SendMessage drives one turn. Satisfies server.CommandTarget.
-func (s *TransportSession) SendMessage(ctx context.Context, text string, model string) (agent.TurnResult, error) {
-	return s.ex.Execute(ctx, s.id, text, model)
+func (s *TransportSession) SendMessage(ctx context.Context, text string, model string, effort string) (agent.TurnResult, error) {
+	return s.ex.Execute(ctx, s.id, text, model, effort)
 }
 
 // SendMessageWithAssets is the asset-first command-plane extension. It leaves
 // the legacy CommandTarget method untouched for older clients.
-func (s *TransportSession) SendMessageWithAssets(ctx context.Context, text, modelName string, assets []model.GatewayAssetRef) (agent.TurnResult, error) {
-	return s.ex.ExecuteWithAssets(ctx, s.id, text, modelName, assets)
+func (s *TransportSession) SendMessageWithAssets(ctx context.Context, text, model, effort string, assets []model.GatewayAssetRef) (agent.TurnResult, error) {
+	return s.ex.ExecuteWithAssets(ctx, s.id, text, model, effort, assets)
 }
 
-func (s *TransportSession) SendMessageWithRequestID(ctx context.Context, requestID, text, modelName string) (agent.TurnResult, error) {
-	return s.ex.ExecuteWithRequestID(ctx, s.id, requestID, text, modelName)
+func (s *TransportSession) SendMessageWithRequestID(ctx context.Context, requestID, text, model, effort string) (agent.TurnResult, error) {
+	return s.ex.ExecuteWithRequestID(ctx, s.id, requestID, text, model, effort)
 }
 
-func (s *TransportSession) SendMessageWithRequestIDAndAssets(ctx context.Context, requestID, text, modelName string, assets []model.GatewayAssetRef) (agent.TurnResult, error) {
-	return s.ex.ExecuteWithRequestIDAndAssets(ctx, s.id, requestID, text, modelName, assets)
+func (s *TransportSession) SendMessageWithRequestIDAndAssets(ctx context.Context, requestID, text, model, effort string, assets []model.GatewayAssetRef) (agent.TurnResult, error) {
+	return s.ex.ExecuteWithRequestIDAndAssets(ctx, s.id, requestID, text, model, effort, assets)
 }
 
-func (s *TransportSession) SendMessageWithRequestIDAndAllAssets(ctx context.Context, requestID, text, modelName string, assets []model.GatewayAssetRef, localAssets []model.LocalAssetRef) (agent.TurnResult, error) {
-	return s.ex.ExecuteWithRequestIDAndAllAssets(ctx, s.id, requestID, text, modelName, assets, localAssets)
+func (s *TransportSession) SendMessageWithRequestIDAndAllAssets(ctx context.Context, requestID, text, model, effort string, assets []model.GatewayAssetRef, localAssets []model.LocalAssetRef) (agent.TurnResult, error) {
+	return s.ex.ExecuteWithRequestIDAndAllAssets(ctx, s.id, requestID, text, model, effort, assets, localAssets)
 }
 
 // Cancel stops the in-flight turn. Satisfies server.CommandTarget.

@@ -16,8 +16,9 @@ import (
 // any transport.
 type CommandTarget interface {
 	// SendMessage drives one turn. model is the config profile name; empty means
-	// "use the server's default model".
-	SendMessage(ctx context.Context, text string, model string) (agent.TurnResult, error)
+	// "use the server's default model". effort is a per-turn reasoning-effort
+	// override; empty keeps the model's configured default.
+	SendMessage(ctx context.Context, text string, model string, effort string) (agent.TurnResult, error)
 	Cancel()
 	RegisterTools(tools []agent.ClientToolDef)
 }
@@ -25,24 +26,24 @@ type CommandTarget interface {
 // AssetMessageTarget is the optional asset-first extension of CommandTarget.
 // Kept separate so pre-v1.4 hosts continue to satisfy CommandTarget unchanged.
 type AssetMessageTarget interface {
-	SendMessageWithAssets(ctx context.Context, text, model string, assets []model.GatewayAssetRef) (agent.TurnResult, error)
+	SendMessageWithAssets(ctx context.Context, text, model, effort string, assets []model.GatewayAssetRef) (agent.TurnResult, error)
 }
 
 // RequestMessageTarget is the idempotent turn-starting extension. Legacy
 // transports continue through CommandTarget; AgentInput clients should provide a
 // stable request_id and use this path.
 type RequestMessageTarget interface {
-	SendMessageWithRequestID(ctx context.Context, requestID, text, model string) (agent.TurnResult, error)
+	SendMessageWithRequestID(ctx context.Context, requestID, text, model, effort string) (agent.TurnResult, error)
 }
 
 type RequestAssetMessageTarget interface {
-	SendMessageWithRequestIDAndAssets(ctx context.Context, requestID, text, model string, assets []model.GatewayAssetRef) (agent.TurnResult, error)
+	SendMessageWithRequestIDAndAssets(ctx context.Context, requestID, text, model, effort string, assets []model.GatewayAssetRef) (agent.TurnResult, error)
 }
 
 // RequestLocalAssetMessageTarget accepts the complete attachment submission.
 // Local assets are intentionally independent from the image_input capability.
 type RequestLocalAssetMessageTarget interface {
-	SendMessageWithRequestIDAndAllAssets(ctx context.Context, requestID, text, model string, assets []model.GatewayAssetRef, localAssets []model.LocalAssetRef) (agent.TurnResult, error)
+	SendMessageWithRequestIDAndAllAssets(ctx context.Context, requestID, text, model, effort string, assets []model.GatewayAssetRef, localAssets []model.LocalAssetRef) (agent.TurnResult, error)
 }
 
 // ApprovalResolver is the control plane: deliver a client's approval verdict to
@@ -100,7 +101,7 @@ func (r Router) Route(ctx context.Context, data []byte) {
 			// lifetime is owned by the session registry — cancel_turn,
 			// SuspendAll, Shutdown — never by the transport.
 			turnCtx := context.WithoutCancel(ctx)
-			go func() { _, _ = r.Commands.SendMessage(turnCtx, m.Text, "") }()
+			go func() { _, _ = r.Commands.SendMessage(turnCtx, m.Text, "", "") }()
 		}
 	case MsgTypeRegisterTools:
 		var m RegisterTools
@@ -120,6 +121,7 @@ func (r Router) Route(ctx context.Context, data []byte) {
 				// connection closing.
 				turnCtx := context.WithoutCancel(ctx)
 				modelName := m.Model
+				effort := m.ReasoningEffort
 				if len(m.LocalAssets) > 0 {
 					withAllAssets, ok := r.Commands.(RequestLocalAssetMessageTarget)
 					if !ok {
@@ -129,7 +131,7 @@ func (r Router) Route(ctx context.Context, data []byte) {
 					assets := copyGatewayAssetRefs(m.Assets)
 					localAssets := copyLocalAssetRefs(m.LocalAssets)
 					go func() {
-						result, err := withAllAssets.SendMessageWithRequestIDAndAllAssets(turnCtx, m.RequestID, m.Text, modelName, assets, localAssets)
+						result, err := withAllAssets.SendMessageWithRequestIDAndAllAssets(turnCtx, m.RequestID, m.Text, modelName, effort, assets, localAssets)
 						r.rejectTurnError(m.RequestID, result, err)
 					}()
 					return
@@ -137,23 +139,23 @@ func (r Router) Route(ctx context.Context, data []byte) {
 				if withRequestAssets, ok := r.Commands.(RequestAssetMessageTarget); ok && m.RequestID != "" && len(m.Assets) > 0 {
 					assets := copyGatewayAssetRefs(m.Assets)
 					go func() {
-						result, err := withRequestAssets.SendMessageWithRequestIDAndAssets(turnCtx, m.RequestID, m.Text, modelName, assets)
+						result, err := withRequestAssets.SendMessageWithRequestIDAndAssets(turnCtx, m.RequestID, m.Text, modelName, effort, assets)
 						r.rejectTurnError(m.RequestID, result, err)
 					}()
 				} else if withRequest, ok := r.Commands.(RequestMessageTarget); ok && m.RequestID != "" && len(m.Assets) == 0 {
 					go func() {
-						result, err := withRequest.SendMessageWithRequestID(turnCtx, m.RequestID, m.Text, modelName)
+						result, err := withRequest.SendMessageWithRequestID(turnCtx, m.RequestID, m.Text, modelName, effort)
 						r.rejectTurnError(m.RequestID, result, err)
 					}()
 				} else if withAssets, ok := r.Commands.(AssetMessageTarget); ok && len(m.Assets) > 0 {
 					assets := copyGatewayAssetRefs(m.Assets)
 					go func() {
-						result, err := withAssets.SendMessageWithAssets(turnCtx, m.Text, modelName, assets)
+						result, err := withAssets.SendMessageWithAssets(turnCtx, m.Text, modelName, effort, assets)
 						r.rejectTurnError(m.RequestID, result, err)
 					}()
 				} else {
 					go func() {
-						result, err := r.Commands.SendMessage(turnCtx, m.Text, modelName)
+						result, err := r.Commands.SendMessage(turnCtx, m.Text, modelName, effort)
 						r.rejectTurnError(m.RequestID, result, err)
 					}()
 				}
@@ -190,7 +192,7 @@ func (r Router) Route(ctx context.Context, data []byte) {
 				if err != nil {
 					return // bad command / missing arg: client validates against GET /v1/prompts
 				}
-				_, _ = r.Commands.SendMessage(turnCtx, text, "")
+				_, _ = r.Commands.SendMessage(turnCtx, text, "", "")
 			}()
 		}
 	case MsgTypeCancelTurn:

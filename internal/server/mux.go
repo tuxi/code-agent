@@ -228,7 +228,10 @@ type ContextSnapshot struct {
 // ContextModel is the static budget: how much headroom the model provides and
 // at what point compaction kicks in. Both values are in tokens.
 type ContextModel struct {
-	Name             string  `json:"name"`
+	Name string `json:"name"`
+	// ReasoningEffort is the session's sticky reasoning budget ("" = the model
+	// config default applies) — the effective level this conversation runs at.
+	ReasoningEffort  string  `json:"reasoning_effort"`
 	ContextWindow    int     `json:"context_window"`
 	CompactThreshold int     `json:"compact_threshold"`
 	CompactRatio     float64 `json:"compact_ratio"`
@@ -287,6 +290,7 @@ func contextSnapshotFromSession(s *session.Session) ContextSnapshot {
 	snap := ContextSnapshot{
 		Model: ContextModel{
 			Name:             s.Model,
+			ReasoningEffort:  s.ReasoningEffort,
 			ContextWindow:    cw,
 			CompactThreshold: ct,
 			CompactRatio:     ratio,

@@ -33,7 +33,7 @@ type requestCommands struct {
 	requestIDs chan string
 }
 
-func (f *requestCommands) SendMessageWithRequestID(_ context.Context, requestID, text, _ string) (agent.TurnResult, error) {
+func (f *requestCommands) SendMessageWithRequestID(_ context.Context, requestID, text, _, _ string) (agent.TurnResult, error) {
 	f.requestIDs <- requestID
 	f.text <- text
 	return agent.TurnResult{}, nil
@@ -43,7 +43,7 @@ func newFakeCommands() *fakeCommands {
 	return &fakeCommands{text: make(chan string, 1), canceled: make(chan struct{}, 1)}
 }
 
-func (f *fakeCommands) SendMessage(_ context.Context, text string, _ string) (agent.TurnResult, error) {
+func (f *fakeCommands) SendMessage(_ context.Context, text string, _ string, _ string) (agent.TurnResult, error) {
 	f.text <- text
 	return agent.TurnResult{}, nil
 }
@@ -94,12 +94,63 @@ type ctxCapturingCommands struct {
 	ctxs chan context.Context
 }
 
-func (f *ctxCapturingCommands) SendMessage(ctx context.Context, _ string, _ string) (agent.TurnResult, error) {
+func (f *ctxCapturingCommands) SendMessage(ctx context.Context, _ string, _ string, _ string) (agent.TurnResult, error) {
 	f.ctxs <- ctx
 	return agent.TurnResult{}, nil
 }
 func (f *ctxCapturingCommands) Cancel()                             {}
 func (f *ctxCapturingCommands) RegisterTools([]agent.ClientToolDef) {}
+
+// effortCapturingCommands satisfies both CommandTarget and RequestMessageTarget,
+// recording the model + per-turn reasoning-effort override it receives.
+type effortCapturingCommands struct {
+	req chan effortReq
+}
+type effortReq struct{ requestID, text, model, effort string }
+
+func (e *effortCapturingCommands) SendMessage(_ context.Context, _ string, _ string, effort string) (agent.TurnResult, error) {
+	e.req <- effortReq{effort: effort}
+	return agent.TurnResult{}, nil
+}
+func (e *effortCapturingCommands) SendMessageWithRequestID(_ context.Context, requestID, text, model, effort string) (agent.TurnResult, error) {
+	e.req <- effortReq{requestID: requestID, text: text, model: model, effort: effort}
+	return agent.TurnResult{}, nil
+}
+func (e *effortCapturingCommands) Cancel()                             {}
+func (e *effortCapturingCommands) RegisterTools([]agent.ClientToolDef) {}
+
+// A per-turn reasoning_effort on an agent_input text message routes to the
+// command target alongside the model, so the executor can override the resolved
+// model's default effort for that turn.
+func TestRouterRoutesReasoningEffortToRequestTarget(t *testing.T) {
+	cmds := &effortCapturingCommands{req: make(chan effortReq, 1)}
+	r := Router{Commands: cmds}
+	r.Route(context.Background(), []byte(`{"type":"agent_input","kind":"text","request_id":"r-1","model":"deepseek/deepseek-v4-flash","reasoning_effort":"high","text":"refactor this"}`))
+	select {
+	case got := <-cmds.req:
+		if got.requestID != "r-1" || got.model != "deepseek/deepseek-v4-flash" || got.effort != "high" || got.text != "refactor this" {
+			t.Errorf("effort routing = %+v, want request_id/model/effort/text carried", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("agent_input text did not reach the request command target")
+	}
+}
+
+// An agent_input WITHOUT reasoning_effort routes an empty override (the target
+// keeps the model's configured default — the effort field is backward-safe).
+func TestRouterRoutesNoEffortWhenAbsent(t *testing.T) {
+	cmds := &effortCapturingCommands{req: make(chan effortReq, 1)}
+	r := Router{Commands: cmds}
+	r.Route(context.Background(), []byte(`{"type":"agent_input","kind":"text","text":"hi"}`))
+	select {
+	case got := <-cmds.req:
+		if got.effort != "" {
+			t.Errorf("effort = %q, want empty", got.effort)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("agent_input text did not reach the command target")
+	}
+}
 
 // A turn must survive the connection that started it: switching conversations
 // closes the WS and cancels the read-loop ctx, but the in-flight turn (often

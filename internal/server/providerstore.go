@@ -457,11 +457,30 @@ func toProviderDTO(id string, pc settings.ServiceConfig) ProviderDTO {
 		// list follows the registry dynamically (see Upsert). The GET response
 		// surfaces the registry ids so clients see the effective list, while
 		// settings.json stays snapshot-free.
-		if ids, ok := app.BuiltinProviderModelIDs(id); ok {
-			for _, mid := range ids {
-				models = append(models, settings.ProviderModel{ID: mid})
+		templates := app.BuiltinProviderTemplates()
+		for _, template := range templates {
+			if id == template.ID {
+				for _, m := range template.Models {
+					dto.Models = append(dto.Models, ProviderModelDTO{
+						ID:                        m.ID,
+						RuntimeAlias:              m.RuntimeAlias,
+						API:                       m.API,
+						ContextWindow:             m.ContextWindow,
+						Temperature:               m.Temperature,
+						InputPricePerM:            m.InputPricePerM,
+						OutputPricePerM:           m.OutputPricePerM,
+						SupportsTools:             &m.SupportsTools,
+						SupportsReasoning:         &m.SupportsReasoning,
+						InputModalities:           m.InputModalities,
+						WebSearch:                 m.WebSearch,
+						ReasoningEffort:           m.ReasoningEffort,
+						SupportedReasoningEfforts: m.SupportedReasoningEfforts,
+						CanDisableReasoning:       m.CanDisableReasoning,
+					})
+				}
 			}
 		}
+		return dto
 	}
 	for _, m := range models {
 		dto.Models = append(dto.Models, ProviderModelDTO{

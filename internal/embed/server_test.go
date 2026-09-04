@@ -157,7 +157,7 @@ func TestStartServerWithZeroModelsSupportsReadOnlyWorkspace(t *testing.T) {
 	}
 
 	_, err = h.rt.Executor.ExecuteWithRequestID(
-		context.Background(), sess.ID, "request-zero-model", "hello", "",
+		context.Background(), sess.ID, "request-zero-model", "hello", "", "",
 	)
 	var notConfigured runtime.ModelNotConfiguredError
 	if !errors.As(err, &notConfigured) {

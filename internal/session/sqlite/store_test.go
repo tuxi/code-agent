@@ -25,9 +25,10 @@ func newStore(t *testing.T) *Store {
 func sampleSession() *session.Session {
 	now := time.Now().Truncate(time.Millisecond)
 	return &session.Session{
-		ID:      "20260616-101500-deadbeef",
-		Model:   "glm-5.1",
-		Summary: "DIGEST",
+		ID:              "20260616-101500-deadbeef",
+		Model:           "glm-5.1",
+		ReasoningEffort: "high",
+		Summary:         "DIGEST",
 		Messages: []model.Message{
 			{Role: model.RoleSystem, Content: "sys"},
 			{Role: model.RoleUser, Content: "look at loop.go"},
@@ -72,6 +73,9 @@ func TestStoreRoundTrip(t *testing.T) {
 
 	if got.Model != "glm-5.1" || got.Summary != "DIGEST" {
 		t.Fatalf("scalar fields lost: model=%q summary=%q", got.Model, got.Summary)
+	}
+	if got.ReasoningEffort != "high" {
+		t.Fatalf("reasoning_effort lost: %q, want high", got.ReasoningEffort)
 	}
 	if got.PromptTokens != 27000 || got.ContextWindow != 128000 || got.CompactThreshold != 89600 {
 		t.Fatalf("budget lost: %+v", got)

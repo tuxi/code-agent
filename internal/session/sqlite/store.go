@@ -84,6 +84,7 @@ const schema = `
 CREATE TABLE IF NOT EXISTS sessions (
 	id                TEXT PRIMARY KEY,
 	model             TEXT,
+	reasoning_effort  TEXT,
 	summary           TEXT,
 	prompt_tokens     INTEGER,
 	context_window    INTEGER,
@@ -257,6 +258,7 @@ func (s *Store) open() error {
 		`ALTER TABLE sessions ADD COLUMN workspace_rel TEXT`,
 		`ALTER TABLE sessions ADD COLUMN workspace_ext_id TEXT`,
 		`ALTER TABLE sessions ADD COLUMN name TEXT`,
+		`ALTER TABLE sessions ADD COLUMN reasoning_effort TEXT`,
 		`ALTER TABLE sessions ADD COLUMN gateway_assets TEXT`,
 		`ALTER TABLE sessions ADD COLUMN reference_ledger TEXT`,
 		`ALTER TABLE sessions ADD COLUMN archived_at TEXT`,
@@ -365,16 +367,16 @@ func (s *Store) saveSessionTx(ctx context.Context, tx *sql.Tx, sess *session.Ses
 		ledgerJSON = string(b)
 	}
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO sessions (id, model, summary, prompt_tokens, context_window, compact_threshold, workspace_path, workspace_root, workspace_rel, workspace_ext_id, name, created_at, updated_at, archived_at, metadata, gateway_assets, reference_ledger)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO sessions (id, model, reasoning_effort, summary, prompt_tokens, context_window, compact_threshold, workspace_path, workspace_root, workspace_rel, workspace_ext_id, name, created_at, updated_at, archived_at, metadata, gateway_assets, reference_ledger)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
-			model=excluded.model, summary=excluded.summary, prompt_tokens=excluded.prompt_tokens,
+			model=excluded.model, reasoning_effort=excluded.reasoning_effort, summary=excluded.summary, prompt_tokens=excluded.prompt_tokens,
 			context_window=excluded.context_window, compact_threshold=excluded.compact_threshold,
 			workspace_path=excluded.workspace_path, workspace_root=excluded.workspace_root,
 			workspace_rel=excluded.workspace_rel, workspace_ext_id=excluded.workspace_ext_id,
 			name=excluded.name, updated_at=excluded.updated_at, archived_at=sessions.archived_at, metadata=excluded.metadata,
 			gateway_assets=excluded.gateway_assets, reference_ledger=excluded.reference_ledger`,
-		sess.ID, sess.Model, sess.Summary, sess.PromptTokens, sess.ContextWindow, sess.CompactThreshold,
+		sess.ID, sess.Model, sess.ReasoningEffort, sess.Summary, sess.PromptTokens, sess.ContextWindow, sess.CompactThreshold,
 		sess.WorkspacePath, sess.Workspace.Root, sess.Workspace.Rel, sess.Workspace.ExtID,
 		sess.Name, formatTime(sess.CreatedAt), formatTime(sess.UpdatedAt), formatTime(sess.ArchivedAt), metaJSON, cacheJSON, ledgerJSON); err != nil {
 		return fmt.Errorf("save session row: %w", err)
@@ -444,11 +446,11 @@ func (s *Store) Load(ctx context.Context, id string) (*session.Session, error) {
 	var sess session.Session
 	var createdAt, updatedAt, archivedAt, metaJSON, cacheJSON, ledgerJSON, name string
 	err := s.db.QueryRowContext(ctx, `
-		SELECT id, model, summary, prompt_tokens, context_window, compact_threshold, COALESCE(workspace_path, ''),
+		SELECT id, model, reasoning_effort, summary, prompt_tokens, context_window, compact_threshold, COALESCE(workspace_path, ''),
 		       COALESCE(workspace_root, ''), COALESCE(workspace_rel, ''), COALESCE(workspace_ext_id, ''),
 		       COALESCE(name, ''), created_at, updated_at, COALESCE(archived_at, ''), COALESCE(metadata, ''), COALESCE(gateway_assets, ''), COALESCE(reference_ledger, '')
 		FROM sessions WHERE id=?`, id).
-		Scan(&sess.ID, &sess.Model, &sess.Summary, &sess.PromptTokens, &sess.ContextWindow,
+		Scan(&sess.ID, &sess.Model, &sess.ReasoningEffort, &sess.Summary, &sess.PromptTokens, &sess.ContextWindow,
 			&sess.CompactThreshold, &sess.WorkspacePath,
 			&sess.Workspace.Root, &sess.Workspace.Rel, &sess.Workspace.ExtID,
 			&name, &createdAt, &updatedAt, &archivedAt, &metaJSON, &cacheJSON, &ledgerJSON)

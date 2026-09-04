@@ -270,6 +270,35 @@ func resolveTurnModel(cfg settings.Settings, defaultMC settings.ModelConfig, req
 	return legacy, nil
 }
 
+// applyReasoningEffort applies a per-turn reasoning-effort override onto the
+// resolved model config. An empty effort is a no-op (the model's configured
+// default stands). A non-empty effort is validated against the model's declared
+// capability and rejected when the model cannot honor it, so the caller (a
+// client effort picker fed by /v1/runtime/models) gets explicit feedback
+// instead of a silent provider-side error.
+func applyReasoningEffort(mc *settings.ModelConfig, effort string) error {
+	if effort == "" {
+		return nil
+	}
+	if mc.Catalog.SupportsReasoning != nil && !*mc.Catalog.SupportsReasoning {
+		return fmt.Errorf("model %q does not support reasoning, cannot apply reasoning_effort %q", mc.Model, effort)
+	}
+	if len(mc.Catalog.SupportedReasoningEfforts) > 0 {
+		supported := false
+		for _, lvl := range mc.Catalog.SupportedReasoningEfforts {
+			if lvl == effort {
+				supported = true
+				break
+			}
+		}
+		if !supported {
+			return fmt.Errorf("model %q does not support reasoning_effort %q (supports: %v)", mc.Model, effort, mc.Catalog.SupportedReasoningEfforts)
+		}
+	}
+	mc.ReasoningEffort = effort
+	return nil
+}
+
 // effectiveCredentialResolver gives a connection-scoped session credential
 // priority without hiding AgentKit-injected Direct Provider credentials.
 func effectiveCredentialResolver(session, base credential.Resolver) credential.Resolver {
@@ -353,6 +382,13 @@ func (b *ServeRunBuilder) Build(ctx conversation.RuntimeContext) conversation.Tu
 	}
 	if ctx.ResolvedModel != "" {
 		mc.Model = ctx.ResolvedModel
+	}
+	// Per-turn reasoning effort override: the client picked a thinking budget
+	// for this model selection. Validated against the resolved model's declared
+	// capability; an unsupported request fails the turn before any provider
+	// call so the client's effort picker gets explicit feedback.
+	if effortErr := applyReasoningEffort(&mc, ctx.ReasoningEffort); effortErr != nil {
+		return failedTurnRunner{err: effortErr}
 	}
 
 	// Rebuild whenever the turn selected a model or supplied a session
