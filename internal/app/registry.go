@@ -141,7 +141,8 @@ var builtinConnections = map[string]builtinConnection{
 		WireModel: "glm-4.7", ProviderType: "openai",
 		DisplayName: "Zhipu GLM", Summary: "使用智谱 OpenAI 兼容接口", Kind: "api_key",
 		Models: []builtinModelTemplate{
-			{ID: "glm-5.3-flash", RuntimeAlias: "glm", ContextWindow: 1_000_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text", "image"}, InputPricePerM: 0.16, OutputPricePerM: 0.32, SupportedReasoningEfforts: []string{"low", "medium", "high"}, CanDisableReasoning: boolPtr(true), ReasoningEffort: "medium"},
+			// error model api error: status=400 type=invalid_request_error message=The request is invalid: 该模型始终思考，不支持关闭思考；请使用 low、high 或 max。. Please check the request body, required fields, and request format.
+			{ID: "glm-5.3-flash", RuntimeAlias: "glm-flash", ContextWindow: 1_000_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text", "image"}, InputPricePerM: 0.16, OutputPricePerM: 0.32, SupportedReasoningEfforts: []string{"low", "high", "max"}, CanDisableReasoning: boolPtr(false), ReasoningEffort: "high"},
 		},
 	},
 	"openrouter": {
@@ -161,7 +162,7 @@ var builtinConnections = map[string]builtinConnection{
 			{ID: "deepseek-v4-flash", RuntimeAlias: "deepseek", ContextWindow: 1_000_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text"}, WebSearch: true, InputPricePerM: 0.16, OutputPricePerM: 0.32, SupportedReasoningEfforts: []string{"low", "medium", "high"}, CanDisableReasoning: boolPtr(true), ReasoningEffort: "low"},
 			{ID: "deepseek-v4-pro", RuntimeAlias: "deepseek-pro", ContextWindow: 1_000_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text"}, InputPricePerM: 0.45, OutputPricePerM: 0.90, SupportedReasoningEfforts: []string{"low", "medium", "high"}, CanDisableReasoning: boolPtr(true), ReasoningEffort: "low"},
 			{ID: "deepseek-v4-flash-vision-exp", RuntimeAlias: "deepseek-vision", ContextWindow: 1_000_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text", "image"}, InputPricePerM: 0.16, OutputPricePerM: 0.32, SupportedReasoningEfforts: []string{"low", "medium", "high"}, CanDisableReasoning: boolPtr(true), ReasoningEffort: "low"},
-			{ID: "glm-5.3-flash", RuntimeAlias: "glm-flash", ContextWindow: 1_000_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text", "image"}, InputPricePerM: 0.16, OutputPricePerM: 0.32, SupportedReasoningEfforts: []string{"low", "medium", "high"}, CanDisableReasoning: boolPtr(true), ReasoningEffort: "medium"},
+			{ID: "glm-5.3-flash", RuntimeAlias: "glm-flash", ContextWindow: 1_000_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text", "image"}, InputPricePerM: 0.16, OutputPricePerM: 0.32, SupportedReasoningEfforts: []string{"low", "high", "max"}, CanDisableReasoning: boolPtr(false), ReasoningEffort: "high"},
 			{ID: "mimo-v2.5", RuntimeAlias: "mino-v2.5", ContextWindow: 1_000_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text"}, InputPricePerM: 0.16, OutputPricePerM: 0.32, SupportedReasoningEfforts: []string{"low", "medium", "high"}, CanDisableReasoning: boolPtr(true), ReasoningEffort: "medium"},
 			{ID: "qwen3.8-flash", RuntimeAlias: "qwen3.8-flash", ContextWindow: 1_000_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text"}, InputPricePerM: 0.16, OutputPricePerM: 0.32, SupportedReasoningEfforts: []string{"low", "medium", "high"}, CanDisableReasoning: boolPtr(true), ReasoningEffort: "medium"},
 		},
