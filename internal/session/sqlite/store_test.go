@@ -57,6 +57,43 @@ func sampleSession() *session.Session {
 	}
 }
 
+// TestStoreLoadNullReasoningEffort guards against a regression where the
+// reasoning_effort column (added after launch) is NULL for conversations
+// created before the migration. Without COALESCE in the SELECT, store.Load
+// fails with "converting NULL to string is unsupported", the daemon returns
+// HTTP 404 on the WebSocket stream upgrade, and the client sees -1011 for
+// every legacy conversation.
+func TestStoreLoadNullReasoningEffort(t *testing.T) {
+	store := newStore(t)
+	ctx := context.Background()
+
+	// Legacy row mirrors a real pre-migration conversation (e.g. the
+	// 20260828/20260830 sessions in production): reasoning_effort is NULL
+	// because the column did not exist at creation time, but every original
+	// column — id, model, summary, prompt_tokens, context_window,
+	// compact_threshold, created_at, updated_at — was always written by Save,
+	// so it is populated (summary may be the empty string, not NULL). The
+	// remaining nullable columns are COALESCE'd in the SELECT and need not be
+	// set. This is the exact shape that previously blew up store.Load.
+	if _, err := store.db.ExecContext(ctx,
+		`INSERT INTO sessions (id, model, summary, prompt_tokens, context_window, compact_threshold, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		"20260101-000000-legacy", "glm-5.1", "", 27000, 128000, 89600,
+		"2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z"); err != nil {
+		t.Fatalf("seed legacy row: %v", err)
+	}
+
+	got, err := store.Load(ctx, "20260101-000000-legacy")
+	if err != nil {
+		t.Fatalf("load legacy row with NULL reasoning_effort: %v", err)
+	}
+	if got.ID != "20260101-000000-legacy" {
+		t.Fatalf("id = %q, want legacy", got.ID)
+	}
+	if got.ReasoningEffort != "" {
+		t.Fatalf("reasoning_effort = %q, want empty string for NULL", got.ReasoningEffort)
+	}
+}
+
 func TestStoreRoundTrip(t *testing.T) {
 	store := newStore(t)
 	ctx := context.Background()

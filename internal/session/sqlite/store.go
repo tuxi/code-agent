@@ -446,7 +446,7 @@ func (s *Store) Load(ctx context.Context, id string) (*session.Session, error) {
 	var sess session.Session
 	var createdAt, updatedAt, archivedAt, metaJSON, cacheJSON, ledgerJSON, name string
 	err := s.db.QueryRowContext(ctx, `
-		SELECT id, model, reasoning_effort, summary, prompt_tokens, context_window, compact_threshold, COALESCE(workspace_path, ''),
+		SELECT id, model, COALESCE(reasoning_effort, ''), summary, prompt_tokens, context_window, compact_threshold, COALESCE(workspace_path, ''),
 		       COALESCE(workspace_root, ''), COALESCE(workspace_rel, ''), COALESCE(workspace_ext_id, ''),
 		       COALESCE(name, ''), created_at, updated_at, COALESCE(archived_at, ''), COALESCE(metadata, ''), COALESCE(gateway_assets, ''), COALESCE(reference_ledger, '')
 		FROM sessions WHERE id=?`, id).
