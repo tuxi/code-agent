@@ -366,7 +366,7 @@ type WebFetchConfig struct {
 
 // SearXNGInstances returns the list of SearXNG instances from config.
 // If searxng_base_url is set, it is split on commas to form the list.
-// Otherwise the built-in defaults are used.
+// Otherwise, the built-in defaults are used.
 func (c WebSearchConfig) SearXNGInstances() []string {
 	if c.SearXNGBaseURL != "" {
 		parts := strings.Split(c.SearXNGBaseURL, ",")
@@ -426,11 +426,11 @@ type ServerConfig struct {
 
 // ModelCatalogMetadata is optional non-secret presentation metadata.
 type ModelCatalogMetadata struct {
-	ConnectionID          string   `json:"connection_id,omitempty"`
-	ProviderID            string   `json:"provider_id,omitempty"`
-	ConnectionDisplayName string   `json:"connection_display_name,omitempty"`
-	DisplayName           string   `json:"display_name,omitempty"`
-	SupportsTools         *bool    `json:"supports_tools,omitempty"`
+	ConnectionID          string `json:"connection_id,omitempty"`
+	ProviderID            string `json:"provider_id,omitempty"`
+	ConnectionDisplayName string `json:"connection_display_name,omitempty"`
+	DisplayName           string `json:"display_name,omitempty"`
+	SupportsTools         *bool  `json:"supports_tools,omitempty"`
 	// SupportsReasoning is a pointer so an UNSET declaration (nil) stays
 	// distinguishable from an explicit false — the built-in registry fills
 	// official model capabilities only when the config leaves it unset.
@@ -802,10 +802,10 @@ func bootstrapUserSettings(path string) bool {
     "max_steps": 120
   },
   "provider": {
-    "request_timeout_seconds": 0,
-    "max_retries": 0,
-    "backoff_millis": 0,
-    "max_backoff_seconds": 0
+    "request_timeout_seconds": 600,
+    "max_retries": 10,
+    "backoff_millis": 500,
+    "max_backoff_seconds": 8
   },
   "providers": {
     "deepseek": {
