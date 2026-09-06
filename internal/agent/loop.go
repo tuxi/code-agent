@@ -49,8 +49,9 @@ type Runner struct {
 	BaseURL     string
 	Temperature float64
 	// ReasoningEffort is the model's thinking budget ("low"|"medium"|"high"|"x-high"|"max";
-	// "" = provider default). Set by the runner builder from the model config,
-	// forwarded on every model request, and surfaced on model_request events.
+	// reserved "off" = disable reasoning; "" = provider default). Set by the
+	// runner builder from the model config, forwarded on every model request,
+	// and surfaced on model_request events.
 	ReasoningEffort string
 	Tools           *tools.Registry
 	MaxSteps        int

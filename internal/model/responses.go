@@ -295,10 +295,15 @@ func toResponsesRequest(req Request, webSearch bool) responsesRequest {
 }
 
 // reasoningEffortToResponses converts the generic reasoning_effort string into
-// the Responses API's {effort: ...} block. Returns nil when unset.
+// the Responses API's {effort: ...} block. The reserved "off" becomes "none"
+// (explicitly disable the chain-of-thought pass where the provider supports
+// it). Returns nil when unset (provider default).
 func reasoningEffortToResponses(effort string) *responsesReasoning {
 	if effort == "" {
 		return nil
+	}
+	if effort == ReasoningEffortOff {
+		return &responsesReasoning{Effort: "none"}
 	}
 	return &responsesReasoning{Effort: effort}
 }

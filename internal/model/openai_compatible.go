@@ -395,6 +395,17 @@ func IsLocalBaseURL(urlStr string) bool {
 	return pkg.IsInnerIP(host)
 }
 
+// reasoningEffortToOpenAI maps the generic effort onto the OpenAI-compatible
+// reasoning_effort parameter. The reserved "off" becomes "none" (explicitly
+// disable the chain-of-thought pass where the provider supports it); "" stays
+// unset (provider default); any other level forwards verbatim.
+func reasoningEffortToOpenAI(effort string) string {
+	if effort == ReasoningEffortOff {
+		return "none"
+	}
+	return effort
+}
+
 // CompleteStream is the streaming form of Complete (StreamingProvider). It calls
 // onText/onReasoning for their respective deltas as they arrive, accumulates
 // tool-call deltas (the loop needs them whole), and returns the same complete
@@ -411,7 +422,7 @@ func (p *OpenAICompatibleProvider) CompleteStream(ctx context.Context, req Reque
 	data, err := json.Marshal(chatCompletionRequest{
 		SessionID: req.SessionID, TurnID: req.TurnID, RequestID: req.RequestID, ExecutionID: req.ExecutionID,
 		Model: req.Model, Messages: newWireMessages(req.Messages), Temperature: req.Temperature,
-		ReasoningEffort: req.ReasoningEffort,
+		ReasoningEffort: reasoningEffortToOpenAI(req.ReasoningEffort),
 		Tools:           toolsForGatewayRequest(req.Messages, req.Tools), ToolChoice: req.ToolChoice,
 		Stream: true, StreamOptions: &streamOptions{IncludeUsage: true},
 	})
@@ -585,7 +596,7 @@ func (p *OpenAICompatibleProvider) Complete(ctx context.Context, req Request) (R
 		Model:           req.Model,
 		Messages:        newWireMessages(req.Messages),
 		Temperature:     req.Temperature,
-		ReasoningEffort: req.ReasoningEffort,
+		ReasoningEffort: reasoningEffortToOpenAI(req.ReasoningEffort),
 		Tools:           toolsForGatewayRequest(req.Messages, req.Tools),
 		ToolChoice:      req.ToolChoice,
 	}

@@ -275,13 +275,22 @@ func resolveTurnModel(cfg settings.Settings, defaultMC settings.ModelConfig, req
 // default stands). A non-empty effort is validated against the model's declared
 // capability and rejected when the model cannot honor it, so the caller (a
 // client effort picker fed by /v1/runtime/models) gets explicit feedback
-// instead of a silent provider-side error.
+// instead of a silent provider-side error. The reserved "off" (disable
+// reasoning entirely) is accepted only when the model declares
+// can_disable_reasoning != false.
 func applyReasoningEffort(mc *settings.ModelConfig, effort string) error {
 	if effort == "" {
 		return nil
 	}
 	if mc.Catalog.SupportsReasoning != nil && !*mc.Catalog.SupportsReasoning {
 		return fmt.Errorf("model %q does not support reasoning, cannot apply reasoning_effort %q", mc.Model, effort)
+	}
+	if effort == model.ReasoningEffortOff {
+		if mc.Catalog.CanDisableReasoning != nil && !*mc.Catalog.CanDisableReasoning {
+			return fmt.Errorf("model %q cannot disable reasoning (reasoner-only)", mc.Model)
+		}
+		mc.ReasoningEffort = effort
+		return nil
 	}
 	if len(mc.Catalog.SupportedReasoningEfforts) > 0 {
 		supported := false

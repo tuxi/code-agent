@@ -64,7 +64,8 @@ type AgentInput struct {
 	Text        string                  `json:"text,omitempty"`         // kind="text" | "command"
 	Model       string                  `json:"model,omitempty"`        // optional: model profile name to use this turn
 	// ReasoningEffort overrides the resolved model's default thinking budget for
-	// THIS turn ("low"|"medium"|"high"|"x-high"|"max"). Empty keeps the model's
+	// THIS turn ("low"|"medium"|"high"|"x-high"|"max" | reserved "off" = disable
+	// reasoning, requires can_disable_reasoning). Empty keeps the model's
 	// configured default. Validated against the model's supported efforts; an
 	// unsupported value rejects the turn. Only meaningful on kind="text".
 	ReasoningEffort string                  `json:"reasoning_effort,omitempty"` // kind="text": per-turn thinking budget override

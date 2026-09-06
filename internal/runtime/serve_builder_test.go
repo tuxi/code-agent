@@ -355,10 +355,10 @@ func bptr(b bool) *bool { return &b }
 // declared capability and applies it onto the resolved model config.
 func TestApplyReasoningEffort(t *testing.T) {
 	cases := []struct {
-		name   string
-		mc     settings.ModelConfig
-		effort string
-		want   string // expected mc.ReasoningEffort after a successful apply
+		name    string
+		mc      settings.ModelConfig
+		effort  string
+		want    string // expected mc.ReasoningEffort after a successful apply
 		wantErr bool
 	}{
 		{"empty effort is a no-op even for non-reasoning model",
@@ -373,6 +373,10 @@ func TestApplyReasoningEffort(t *testing.T) {
 			settings.ModelConfig{Model: "m", Catalog: settings.ModelCatalogMetadata{SupportsReasoning: bptr(false)}}, "high", "", true},
 		{"effort outside supported list rejects",
 			settings.ModelConfig{Model: "m", Catalog: settings.ModelCatalogMetadata{SupportsReasoning: bptr(true), SupportedReasoningEfforts: []string{"low", "medium"}}}, "x-high", "", true},
+		{"off applies when can_disable allows",
+			settings.ModelConfig{Model: "m", Catalog: settings.ModelCatalogMetadata{SupportsReasoning: bptr(true), CanDisableReasoning: bptr(true), SupportedReasoningEfforts: []string{"low", "high"}}}, "off", "off", false},
+		{"off rejects for reasoner-only model",
+			settings.ModelConfig{Model: "m", Catalog: settings.ModelCatalogMetadata{SupportsReasoning: bptr(true), CanDisableReasoning: bptr(false)}}, "off", "", true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

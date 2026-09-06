@@ -1116,6 +1116,9 @@ func TestModelSupportsEffort(t *testing.T) {
 		{"in supported list", settings.ModelCatalogMetadata{SupportsReasoning: boolP(true), SupportedReasoningEfforts: []string{"low", "medium", "high"}}, "high", true},
 		{"not in supported list", settings.ModelCatalogMetadata{SupportsReasoning: boolP(true), SupportedReasoningEfforts: []string{"low", "medium"}}, "x-high", false},
 		{"unknown capability allows", settings.ModelCatalogMetadata{}, "low", true},
+		{"off allowed when can_disable true", settings.ModelCatalogMetadata{SupportsReasoning: boolP(true), CanDisableReasoning: boolP(true), SupportedReasoningEfforts: []string{"low", "high"}}, "off", true},
+		{"off allowed when can_disable unset", settings.ModelCatalogMetadata{SupportsReasoning: boolP(true)}, "off", true},
+		{"off rejected for reasoner-only", settings.ModelCatalogMetadata{SupportsReasoning: boolP(true), CanDisableReasoning: boolP(false)}, "off", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
