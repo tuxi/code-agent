@@ -211,6 +211,13 @@ type ToolFunction struct {
 	Parameters  json.RawMessage `json:"parameters"`
 }
 
+// ReasoningEffortOff is the reserved reasoning_effort value that disables
+// reasoning entirely (skips the chain-of-thought pass). Adapters translate it
+// to the provider's disable parameter: Ollama think=false, OpenAI-compatible
+// and Responses reasoning_effort "none". Only meaningful for models whose
+// can_disable_reasoning is true.
+const ReasoningEffortOff = "off"
+
 type Request struct {
 	// SessionID and ExecutionID are Gateway correlation identifiers. They are
 	// carried on the request envelope, never inserted into model-visible text.
@@ -223,8 +230,11 @@ type Request struct {
 	Temperature float64   `json:"temperature,omitempty"`
 
 	// ReasoningEffort is the model's thinking budget: "low" | "medium" | "high"
-	// | "x-high" | "max", or "" to use the provider default. Adapters map it to
-	// their own parameter (reasoning_effort / reasoning.effort / think).
+	// | "x-high" | "max", the reserved "off" (disable reasoning entirely —
+	// adapters map it to the provider's disable parameter: Ollama think=false,
+	// OpenAI-compatible/Responses reasoning_effort "none"), or "" to use the
+	// provider default. Adapters map it to their own parameter
+	// (reasoning_effort / reasoning.effort / think).
 	ReasoningEffort string `json:"reasoning_effort,omitempty"`
 
 	// Tools is the set of tools the model may call this turn. When empty, the

@@ -595,10 +595,14 @@ func (e *TurnExecutor) conversationArchived(ctx context.Context, fallback *sessi
 
 // modelSupportsEffort reports whether the given model config can honor the
 // reasoning effort — used to decide whether a session-cached sticky effort is
-// still valid for the resolved model. An unknown capability (nil supports,
-// empty supported list) is treated as allowing pass-through, matching
+// still valid for the resolved model. The reserved "off" requires
+// can_disable_reasoning != false. An unknown capability (nil supports, empty
+// supported list) is treated as allowing pass-through, matching
 // applyReasoningEffort's behavior for gateway legacy wire models.
 func modelSupportsEffort(mc settings.ModelConfig, effort string) bool {
+	if effort == model.ReasoningEffortOff {
+		return mc.Catalog.CanDisableReasoning == nil || *mc.Catalog.CanDisableReasoning
+	}
 	if mc.Catalog.SupportsReasoning != nil && !*mc.Catalog.SupportsReasoning {
 		return false
 	}

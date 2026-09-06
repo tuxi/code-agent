@@ -527,10 +527,14 @@ func (p *OllamaProvider) CompleteStream(ctx context.Context, req Request, onText
 
 // reasoningEffortOrDefault maps the generic reasoning_effort string onto Ollama's
 // think parameter (accepts "high"|"medium"|"low"|"max"|"x-high"|true|false; an
-// unrecognized level is forwarded verbatim for the model to judge). An unset
-// effort keeps the legacy per-mode default (false for Complete, "low" for
-// CompleteStream), so existing behavior is unchanged until a level is configured.
+// unrecognized level is forwarded verbatim for the model to judge). The reserved
+// "off" disables thinking entirely (think=false). An unset effort keeps the
+// legacy per-mode default (false for Complete, "low" for CompleteStream), so
+// existing behavior is unchanged until a level is configured.
 func reasoningEffortOrDefault(effort string, fallback any) any {
+	if effort == ReasoningEffortOff {
+		return false
+	}
 	if effort == "" {
 		return fallback
 	}

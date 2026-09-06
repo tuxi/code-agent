@@ -63,7 +63,8 @@ v1 入站消息按 `type` 字段平铺分发：
   "text": "分析这个项目",
   "model": "deepseek/deepseek-v4-flash", // 可选：本 turn 模型
   "reasoning_effort": "high"             // 可选：本 turn 思考档位覆写
-                                         //   low|medium|high|x-high|max；
+                                         //   low|medium|high|x-high|max|off（off=关闭思考，
+                                         //   需模型 can_disable_reasoning）；
                                          //   缺省=模型配置默认，服务端校验模型支持性
 }
 
