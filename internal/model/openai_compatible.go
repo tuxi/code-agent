@@ -109,18 +109,27 @@ func defaultHTTPClient() *http.Client {
 	// ... while reading body" on long tasks). Per-attempt total time is
 	// governed by ResilientProvider's context deadline
 	// (request_timeout_seconds) instead. Here we only bound the phases that
-	// SHOULD have a hard ceiling — connect, TLS, and time to first response
-	// byte — none of which scale with generation length.
+	// SHOULD have a hard ceiling — connect and TLS handshake — neither of
+	// which scale with generation length.
+	//
+	// ResponseHeaderTimeout is deliberately omitted: with a large context
+	// (hundreds of thousands of tokens), the upstream API — especially
+	// through a relay/proxy — can take well over 60 s before the first
+	// response header arrives (body upload + relay forwarding + prompt
+	// processing). A hardcoded header timeout here would fire before the
+	// ResilientProvider's context deadline and produce false-positive
+	// timeouts that exhaust the retry budget. The context deadline
+	// (request_timeout_seconds) already provides the correct overall bound,
+	// as the Ollama provider does.
 	return &http.Client{
 		Transport: &http.Transport{
-			Proxy:                 http.ProxyFromEnvironment,
-			DialContext:           (&net.Dialer{Timeout: 10 * time.Second}).DialContext,
-			TLSClientConfig:       &tls.Config{RootCAs: loadSystemRootCAs()},
-			TLSHandshakeTimeout:   10 * time.Second,
-			ResponseHeaderTimeout: 60 * time.Second,
+			Proxy:               http.ProxyFromEnvironment,
+			DialContext:         (&net.Dialer{Timeout: 10 * time.Second}).DialContext,
+			TLSClientConfig:     &tls.Config{RootCAs: loadSystemRootCAs()},
+			TLSHandshakeTimeout: 10 * time.Second,
 			ExpectContinueTimeout: 1 * time.Second,
-			MaxIdleConns:          100,
-			IdleConnTimeout:       90 * time.Second,
+			MaxIdleConns:        100,
+			IdleConnTimeout:     90 * time.Second,
 		},
 	}
 }

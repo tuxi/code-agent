@@ -107,11 +107,15 @@ func TestLocalEndpointSkipsAPIKey(t *testing.T) {
 }
 
 // TestProviderClientHasNoTotalTimeout guards against reintroducing a fixed
-// http.Client.Timeout. Such a ceiling bounds the WHOLE exchange — including the
-// response body — so it kills any streamed or long generation that runs past
-// it ("context deadline exceeded ... while reading body" on long tasks). Total
-// per-attempt time must come from ResilientProvider's context deadline; the
-// client should only bound connect/TLS/time-to-first-byte via its Transport.
+// http.Client.Timeout AND a hardcoded ResponseHeaderTimeout. Such ceilings bound
+// the exchange independently of the per-attempt context deadline: with a large
+// context (hundreds of thousands of tokens), especially through a relay/proxy,
+// the upstream can take well over 60 s before the first response header arrives
+// (body upload + relay forwarding + prompt processing). A hardcoded header
+// timeout fires first and produces false-positive timeouts that exhaust the
+// retry budget. Total per-attempt time must come from ResilientProvider's
+// context deadline (request_timeout_seconds); the client only bounds
+// connect/TLS-handshake, phases that do not scale with generation length.
 func TestProviderClientHasNoTotalTimeout(t *testing.T) {
 	p := NewOpenAICompatibleProviderWithKey("https://example.test", "key")
 	if p.HTTPClient.Timeout != 0 {
@@ -119,10 +123,16 @@ func TestProviderClientHasNoTotalTimeout(t *testing.T) {
 	}
 	tr, ok := p.HTTPClient.Transport.(*http.Transport)
 	if !ok {
-		t.Fatalf("Transport = %T, want *http.Transport bounding connect/TLS/header phases", p.HTTPClient.Transport)
+		t.Fatalf("Transport = %T, want *http.Transport bounding connect/TLS phases", p.HTTPClient.Transport)
 	}
-	if tr.ResponseHeaderTimeout == 0 {
-		t.Fatal("ResponseHeaderTimeout = 0; time-to-first-byte should still be bounded")
+	if tr.ResponseHeaderTimeout != 0 {
+		t.Fatalf("ResponseHeaderTimeout = %s, want 0 (hardcoded header timeout false-fires on large-context relay calls; the per-attempt context deadline is the correct bound)", tr.ResponseHeaderTimeout)
+	}
+	if tr.DialContext == nil {
+		t.Fatal("DialContext = nil; connect phase should be bounded")
+	}
+	if tr.TLSHandshakeTimeout == 0 {
+		t.Fatal("TLSHandshakeTimeout = 0; handshake phase should be bounded")
 	}
 }
 
