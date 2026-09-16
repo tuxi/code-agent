@@ -506,7 +506,7 @@ func (p *OpenAICompatibleProvider) CompleteStream(ctx context.Context, req Reque
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		raw, _ := io.ReadAll(resp.Body)
-		return Response{}, p.withCredentialContext(apiErrorFromBody(resp.StatusCode, raw))
+		return Response{}, p.withCredentialContext(apiErrorFromBody(resp.StatusCode, raw), bearerSecret(httpReq))
 	}
 
 	var content strings.Builder
@@ -704,7 +704,7 @@ func (p *OpenAICompatibleProvider) Complete(ctx context.Context, req Request) (R
 	// "decode response" failure. Parse the structured error best-effort for a
 	// better message.
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return Response{}, p.withCredentialContext(apiErrorFromBody(resp.StatusCode, raw))
+		return Response{}, p.withCredentialContext(apiErrorFromBody(resp.StatusCode, raw), bearerSecret(httpReq))
 	}
 
 	// A 200 with an empty body is a truncated upstream response (seen from
@@ -781,20 +781,35 @@ func apiErrorFromBody(statusCode int, raw []byte) *APIError {
 	return apiErr
 }
 
-// withCredentialContext makes 401/403 actionable without exposing provider
-// response bodies that may echo sensitive authentication material.
-func (p *OpenAICompatibleProvider) withCredentialContext(err *APIError) *APIError {
+// withCredentialContext annotates a 401/403 with the credential target and
+// makes it safe to surface: the raw body (which may echo the Authorization
+// header) is always dropped. Genuine authentication failures get the actionable
+// "provider authentication failed" wording; a structural 403 (region lock,
+// entitlement) keeps the provider's own type/message so the real reason reaches
+// the user instead of being mislabeled as an auth failure.
+func (p *OpenAICompatibleProvider) withCredentialContext(err *APIError, secret string) *APIError {
 	if err == nil || (err.StatusCode != http.StatusUnauthorized && err.StatusCode != http.StatusForbidden) {
 		return err
 	}
 	if p.CredentialTarget.Namespace != "" || p.CredentialTarget.Name != "" {
 		err.CredentialTarget = p.CredentialTarget.String()
 	}
-	err.Type = "authentication_error"
-	err.Code = "auth_expired"
-	err.Message = "provider authentication failed"
 	err.Body = ""
+	if IsAuthFailure(err) {
+		err.Type = "authentication_error"
+		err.Code = "auth_expired"
+		err.Message = "provider authentication failed"
+		return err
+	}
+	err.Message = redactSecret(err.Message, secret)
 	return err
+}
+
+// bearerSecret extracts the resolved credential from the request's
+// Authorization header, or "" when no bearer credential was applied. Used to
+// scrub an upstream error message that may have echoed the secret.
+func bearerSecret(req *http.Request) string {
+	return strings.TrimPrefix(req.Header.Get("Authorization"), "Bearer ")
 }
 
 func errorCode(value any) string {

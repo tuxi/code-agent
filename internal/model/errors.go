@@ -3,6 +3,8 @@ package model
 import (
 	"errors"
 	"fmt"
+	"net/http"
+	"strings"
 )
 
 var userAssetErrorMessages = map[string]string{
@@ -51,6 +53,52 @@ type APIError struct {
 	Code    string
 	Message string
 	Body    string
+}
+
+// authFailureHints are the substrings that mark a 401/403 as an authentication
+// failure. Only such errors are reported as "provider authentication failed"
+// and mapped to the host's auth_expired refresh contract; a structural 403
+// (region lock, entitlement, model-not-entitled) carries a different upstream
+// type/message and must be surfaced as-is.
+var authFailureHints = []string{
+	"auth", "unauthor", "api key", "apikey", "invalid_api_key",
+	"invalid key", "credential", "permission",
+}
+
+// IsAuthFailure reports whether a non-2xx APIError is an authentication failure
+// rather than a structural rejection. A 401 is always authentication. A 403 is
+// authentication when the upstream error text carries an auth hint, or when the
+// provider supplied no detail at all (the historical default for a bare 403).
+func IsAuthFailure(e *APIError) bool {
+	if e == nil {
+		return false
+	}
+	if e.StatusCode == http.StatusUnauthorized {
+		return true
+	}
+	if e.StatusCode != http.StatusForbidden {
+		return false
+	}
+	hay := strings.ToLower(e.Type + " " + e.Code + " " + e.Message)
+	for _, hint := range authFailureHints {
+		if strings.Contains(hay, hint) {
+			return true
+		}
+	}
+	// No structured upstream detail: keep classifying as auth so a bare 403
+	// behaves exactly as before.
+	return strings.TrimSpace(e.Type+e.Code+e.Message) == ""
+}
+
+// redactSecret removes the resolved credential value from a provider message
+// before it is surfaced. Relays occasionally echo the Authorization header in
+// an error message; the raw body is always dropped, and this scrubs the decoded
+// message as well when the secret is known.
+func redactSecret(message, secret string) string {
+	if secret == "" || message == "" {
+		return message
+	}
+	return strings.ReplaceAll(message, secret, "[redacted]")
 }
 
 func (e *APIError) Error() string {

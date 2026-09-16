@@ -465,6 +465,11 @@ func (p *ResponsesProvider) Complete(ctx context.Context, req Request) (Response
 		return Response{}, err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
+	// https://opencode.ai/docs/go/#where-can-i-use-it
+	// 为每段对话在 x-opencode-session 请求头中发送稳定的会话 ID，以便我们优化路由和提示词缓存。
+	if strings.Contains(p.BaseURL, "opencode.ai") {
+		httpReq.Header.Set("x-opencode-session", req.SessionID)
+	}
 
 	resp, err := p.HTTPClient.Do(httpReq)
 	if err != nil {
@@ -481,7 +486,7 @@ func (p *ResponsesProvider) Complete(ctx context.Context, req Request) (Response
 	// (proxy/HTML error page), and we must not mask a retryable status as a
 	// "decode response" failure.
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return Response{}, p.withCredentialContext(apiErrorFromBody(resp.StatusCode, raw))
+		return Response{}, p.withCredentialContext(apiErrorFromBody(resp.StatusCode, raw), bearerSecret(httpReq))
 	}
 
 	var decoded responsesResponse
@@ -544,6 +549,11 @@ func (p *ResponsesProvider) CompleteStream(ctx context.Context, req Request, onT
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "text/event-stream")
+	// https://opencode.ai/docs/go/#where-can-i-use-it
+	// 为每段对话在 x-opencode-session 请求头中发送稳定的会话 ID，以便我们优化路由和提示词缓存。
+	if strings.Contains(p.BaseURL, "opencode.ai") {
+		httpReq.Header.Set("x-opencode-session", req.SessionID)
+	}
 
 	resp, err := p.HTTPClient.Do(httpReq)
 	if err != nil {
@@ -553,7 +563,7 @@ func (p *ResponsesProvider) CompleteStream(ctx context.Context, req Request, onT
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		raw, _ := io.ReadAll(resp.Body)
-		return Response{}, p.withCredentialContext(apiErrorFromBody(resp.StatusCode, raw))
+		return Response{}, p.withCredentialContext(apiErrorFromBody(resp.StatusCode, raw), bearerSecret(httpReq))
 	}
 
 	sc := bufio.NewScanner(resp.Body)
@@ -649,18 +659,26 @@ func (p *ResponsesProvider) applyAuth(ctx context.Context, req *http.Request) er
 	return nil
 }
 
-// withCredentialContext makes 401/403 actionable without exposing provider
-// response bodies that may echo sensitive authentication material.
-func (p *ResponsesProvider) withCredentialContext(err *APIError) *APIError {
+// withCredentialContext annotates a 401/403 with the credential target and
+// makes it safe to surface: the raw body (which may echo the Authorization
+// header) is always dropped. Genuine authentication failures get the actionable
+// "provider authentication failed" wording; a structural 403 (region lock,
+// entitlement) keeps the provider's own type/message so the real reason reaches
+// the user instead of being mislabeled as an auth failure.
+func (p *ResponsesProvider) withCredentialContext(err *APIError, secret string) *APIError {
 	if err == nil || (err.StatusCode != http.StatusUnauthorized && err.StatusCode != http.StatusForbidden) {
 		return err
 	}
 	if p.CredentialTarget.Namespace != "" || p.CredentialTarget.Name != "" {
 		err.CredentialTarget = p.CredentialTarget.String()
 	}
-	err.Type = "authentication_error"
-	err.Code = "auth_expired"
-	err.Message = "provider authentication failed"
 	err.Body = ""
+	if IsAuthFailure(err) {
+		err.Type = "authentication_error"
+		err.Code = "auth_expired"
+		err.Message = "provider authentication failed"
+		return err
+	}
+	err.Message = redactSecret(err.Message, secret)
 	return err
 }

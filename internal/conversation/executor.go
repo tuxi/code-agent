@@ -1287,7 +1287,11 @@ func lifecycleErrorCode(err error) string {
 		if apiErr.Code == "quota_exceeded" || apiErr.Type == "quota_exceeded" {
 			return "quota_exceeded"
 		}
-		if apiErr.StatusCode == 401 || apiErr.StatusCode == 403 {
+		// Only genuine authentication failures map to the host's token-refresh
+		// contract. A structural 403 (region lock, entitlement) must not trigger
+		// auth_expired — it falls through to request_failed so the provider's own
+		// message (e.g. RegionError) reaches the host unchanged.
+		if model.IsAuthFailure(apiErr) {
 			return "auth_expired"
 		}
 	}

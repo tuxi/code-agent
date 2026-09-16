@@ -168,6 +168,10 @@ func TestLifecycleErrorCode(t *testing.T) {
 		{"gateway quota type fallback", &model.APIError{StatusCode: 429, Type: "quota_exceeded"}, "quota_exceeded"},
 		{"gateway auth", &model.APIError{StatusCode: 401}, "auth_expired"},
 		{"provider forbidden", &model.APIError{StatusCode: 403}, "auth_expired"},
+		{"provider auth type", &model.APIError{StatusCode: 403, Type: "authentication_error"}, "auth_expired"},
+		// A structural 403 (region lock) must NOT trigger the host's token-refresh
+		// contract; it falls through so the provider's reason survives.
+		{"provider region lock", &model.APIError{StatusCode: 403, Type: "RegionError", Message: "only available hosted in China"}, "request_failed"},
 		{"generic", errors.New("boom"), "request_failed"},
 	}
 	for _, tc := range cases {

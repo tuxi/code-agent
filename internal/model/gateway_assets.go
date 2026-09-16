@@ -191,7 +191,7 @@ func (p *OpenAICompatibleProvider) gatewayJSON(ctx context.Context, method, endp
 		return p.withCredentialContext(&APIError{
 			StatusCode: resp.StatusCode,
 			Message:    "gateway asset authentication failed",
-		})
+		}, bearerSecret(req))
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 || envelope.Code != 0 {
 		return fmt.Errorf("gateway asset request failed: %s", envelope.Message)

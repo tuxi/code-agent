@@ -70,7 +70,7 @@ func (p *OpenAICompatibleProvider) ImageInputCapability(ctx context.Context) (bo
 			StatusCode: resp.StatusCode,
 			Code:       "auth_expired",
 			Message:    "gateway capability authentication failed",
-		})
+		}, bearerSecret(req))
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return false, &APIError{StatusCode: resp.StatusCode, Message: "gateway capability request failed"}

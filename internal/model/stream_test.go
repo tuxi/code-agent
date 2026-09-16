@@ -235,13 +235,61 @@ func TestOpenAICompatibleAuthErrorsIncludeTargetAndRedactBody(t *testing.T) {
 			if apiErr.CredentialTarget != "llm/company-production" {
 				t.Fatalf("credential target = %q", apiErr.CredentialTarget)
 			}
-			if apiErr.Code != "auth_expired" || apiErr.Type != "authentication_error" {
-				t.Fatalf("classification = %q/%q", apiErr.Code, apiErr.Type)
+			// A 401 is always an auth failure; a 403 whose upstream type is not
+			// auth-related (here "upstream") must NOT be mislabeled as one — it
+			// keeps the provider's own type so the real reason survives.
+			if status == http.StatusUnauthorized {
+				if apiErr.Code != "auth_expired" || apiErr.Type != "authentication_error" {
+					t.Fatalf("classification = %q/%q", apiErr.Code, apiErr.Type)
+				}
+			} else if apiErr.Type != "upstream" || IsAuthFailure(apiErr) {
+				t.Fatalf("structural 403 must preserve upstream type, got type=%q", apiErr.Type)
 			}
-			if strings.Contains(err.Error(), "super-secret-key") || apiErr.Body != "" {
-				t.Fatalf("authentication error leaked provider body: %v", err)
+			if apiErr.Body != "" {
+				t.Fatalf("error body must be dropped, got %q", apiErr.Body)
+			}
+			if strings.Contains(err.Error(), "super-secret-key") {
+				t.Fatalf("error leaked provider secret: %v", err)
 			}
 		})
+	}
+}
+
+// TestStructuralForbiddenSurfacesProviderReason pins the OpenCode Go regression:
+// a DeepSeek model that is region-locked returns HTTP 403 RegionError, which
+// must surface as such instead of being masked as "provider authentication
+// failed" (which also wrongly triggers the host's auth-refresh contract).
+func TestStructuralForbiddenSurfacesProviderReason(t *testing.T) {
+	target := credential.Target{Namespace: "llm", Name: "opencode-go"}
+	resolver := credential.StaticResolver{
+		target: {Type: credential.Bearer, Secret: "oc-key"},
+	}
+	body := `{"error":{"type":"RegionError","message":"The latest version of this model is only available hosted in China and requires explicit opt in: https://opencode.ai/workspace/wrk_x/go"}}`
+	provider := NewOpenAICompatibleProvider("https://opencode.ai/zen/go/v1", resolver, target)
+	provider.HTTPClient = &http.Client{Transport: modelRoundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusForbidden,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(body)),
+		}, nil
+	})}
+
+	_, err := provider.Complete(context.Background(), Request{
+		Model:    "deepseek-v4-flash",
+		Messages: []Message{{Role: RoleUser, Content: "hi"}},
+	})
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("error = %T %v, want APIError", err, err)
+	}
+	if apiErr.Type != "RegionError" {
+		t.Fatalf("type = %q, want RegionError (upstream reason must survive)", apiErr.Type)
+	}
+	if !strings.Contains(apiErr.Message, "explicit opt in") {
+		t.Fatalf("message = %q, want the provider's own explanation", apiErr.Message)
+	}
+	if IsAuthFailure(apiErr) {
+		t.Fatalf("RegionError must not be classified as an authentication failure")
 	}
 }
 
