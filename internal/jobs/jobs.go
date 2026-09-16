@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -134,11 +135,20 @@ func NewRegistry() *Registry {
 	return &Registry{jobs: make(map[string]*Job), maxOutput: 256 * 1024}
 }
 
-// Start launches command (already split into argv) in dir and returns
-// immediately with a Job in the Running state. The job's context is detached
-// from any caller context so it survives the tool call that started it; it ends
-// on its own, on Cancel, or on process exit. owner routes the job's lifecycle
-// events back to the starting conversation (zero value = no routing).
+// Start launches argv in dir and returns immediately with a Job in the Running
+// state. The job's context is detached from any caller context so it survives
+// the tool call that started it; it ends on its own, on Cancel, or on process
+// exit. owner routes the job's lifecycle events back to the starting
+// conversation (zero value = no routing).
+//
+// Contract (machine-checked below): argv is a FULL argv — argv[0] is the
+// program, argv[1:] its arguments. command is the human-readable command line
+// shown to the model and used by observation classification (classifyByCommand
+// greps it for test/build/vet), so it must be the real command text, not just
+// the program name. Passing args without the program (e.g. ["-c", cmd] for
+// sh) is exactly the drift this check exists to catch — it once made every
+// compound background job die with `exec: "-c": executable file not found in
+// $PATH`.
 func (r *Registry) Start(dir, command string, argv []string, owner Owner) *Job {
 	id := fmt.Sprintf("job_%d", r.seq.Add(1))
 	ctx, cancel := context.WithCancel(context.Background())
@@ -170,6 +180,15 @@ func (r *Registry) Start(dir, command string, argv []string, owner Owner) *Job {
 	var w io.Writer = out
 	if r.Sink != nil {
 		w = &sinkWriter{buf: out, sink: r.Sink, id: id}
+	}
+
+	if note := argvContractNote(argv); note != "" {
+		fmt.Fprintf(w, "failed to start: %s\n", note)
+		job.finish(Failed, -1)
+		if r.Sink != nil {
+			r.Sink.JobFinished(job.Snapshot())
+		}
+		return job
 	}
 
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
@@ -211,6 +230,25 @@ func (r *Registry) Start(dir, command string, argv []string, owner Owner) *Job {
 	}()
 
 	return job
+}
+
+// argvContractNote validates the Start contract: argv must be a full argv with
+// the program at index 0. Returns "" when argv is usable, else a human-readable
+// refusal. A leading "-" in argv[0] is the classic "args without the program"
+// mistake (["-c", cmd] instead of ["sh", "-c", cmd]); catching it here turns a
+// confusing exec error into a precise contract violation.
+func argvContractNote(argv []string) string {
+	if len(argv) == 0 {
+		return "argv is empty: Start requires a full argv with the program at index 0"
+	}
+	if argv[0] == "" {
+		return "argv[0] is empty: Start requires a full argv with the program name at index 0"
+	}
+	if strings.HasPrefix(argv[0], "-") {
+		return fmt.Sprintf("argv[0] is %q: Start requires a full argv with the program at index 0 "+
+			"(args-only argv is the classic mistake — e.g. pass [\"sh\", \"-c\", cmd], not [\"-c\", cmd])", argv[0])
+	}
+	return ""
 }
 
 // sinkWriter tees every write to the capped buffer AND the sink. It preserves

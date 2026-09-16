@@ -53,6 +53,44 @@ func TestRunCommandBackground(t *testing.T) {
 	}
 }
 
+// A compound background command routes through executeShell, which launches it
+// via `sh -c`. jobs.Start treats argv[0] as the program, so the argv must be
+// ["sh", "-c", cmd] — a bare ["-c", cmd] made every compound background job
+// die at start with `exec: "-c": executable file not found in $PATH`.
+func TestRunCommandBackgroundCompound(t *testing.T) {
+	tool := NewRunCommandTool()
+	res, err := tool.Execute(context.Background(), tools.ExecutionContext{WorkspaceRoot: "."},
+		json.RawMessage(`{"command":"X=ok; echo $X; echo second","background":true}`))
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	var br backgroundResult
+	if err := json.Unmarshal([]byte(res.Content), &br); err != nil {
+		t.Fatalf("background result is not JSON: %v\n%s", err, res.Content)
+	}
+	if br.JobID == "" {
+		t.Fatal("no job_id returned for a background compound command")
+	}
+	job, ok := tool.Jobs.Get(br.JobID)
+	if !ok {
+		t.Fatal("job not registered")
+	}
+	job.Wait()
+	snap := job.Snapshot()
+	if snap.Status != "exited" {
+		t.Fatalf("status = %s, want exited (logs: %q)", snap.Status, job.Logs())
+	}
+	// The snapshot command is the full human-readable line (drives the job
+	// card and observation classification), not the program name.
+	if snap.Command != "X=ok; echo $X; echo second" {
+		t.Errorf("snapshot command = %q, want the full command line", snap.Command)
+	}
+	logs := job.Logs()
+	if !strings.Contains(logs, "ok") || !strings.Contains(logs, "second") {
+		t.Errorf("job_logs = %q, want shell-expanded output", logs)
+	}
+}
+
 func TestBackgroundStillPolicyGated(t *testing.T) {
 	tool := NewRunCommandTool()
 	res, err := tool.Execute(context.Background(), tools.ExecutionContext{WorkspaceRoot: "."}, json.RawMessage(`{"command":"rm -rf /","background":true}`))

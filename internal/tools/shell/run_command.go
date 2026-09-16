@@ -292,7 +292,10 @@ func (t *RunCommandTool) executeShell(ctx context.Context, ec tools.ExecutionCon
 			t.Jobs = jobs.NewRegistry()
 		}
 		owner := jobs.Owner{SessionID: ec.SessionID, TurnID: ec.TurnID, CallID: ec.CallID}
-		snap := t.Jobs.Start(rootAbs, "sh", []string{"-c", command}, owner).Snapshot()
+		// command = full human-readable line (job card + observation
+		// classification); argv = full argv, program first (jobs.Start
+		// contract).
+		snap := t.Jobs.Start(rootAbs, command, []string{"sh", "-c", command}, owner).Snapshot()
 		return t.jsonResult(backgroundResult{
 			Command:  command,
 			JobID:    snap.ID,

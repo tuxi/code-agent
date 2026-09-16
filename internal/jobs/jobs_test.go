@@ -69,6 +69,54 @@ func TestStartNonexistentBinary(t *testing.T) {
 	}
 }
 
+// The Start contract is a FULL argv (program at index 0). Passing args-only —
+// the bug that killed every compound background job with
+// `exec: "-c": executable file not found in $PATH` — must be refused with a
+// precise contract message, not a confusing exec error.
+func TestStartRejectsArgsOnlyArgv(t *testing.T) {
+	r := NewRegistry()
+	cases := []struct {
+		name string
+		argv []string
+	}{
+		{"empty", nil},
+		{"empty program", []string{"", "-c", "echo hi"}},
+		{"flag as program", []string{"-c", "echo hi"}},
+	}
+	for _, tc := range cases {
+		job := r.Start(".", "sh", tc.argv, Owner{})
+		job.Wait()
+		snap := job.Snapshot()
+		if snap.Status != Failed {
+			t.Errorf("%s: status = %q, want failed", tc.name, snap.Status)
+		}
+		logs := job.Logs()
+		if !strings.Contains(logs, "failed to start") || !strings.Contains(logs, "full argv") {
+			t.Errorf("%s: logs = %q, want the precise argv-contract message", tc.name, logs)
+		}
+	}
+}
+
+func TestStartShDashC(t *testing.T) {
+	r := NewRegistry()
+	job := r.Start(".", "echo a; echo b", []string{"sh", "-c", "echo a; echo b"}, Owner{})
+	job.Wait()
+	snap := job.Snapshot()
+	if snap.Status != Exited {
+		t.Fatalf("status = %q, want exited (logs %q)", snap.Status, job.Logs())
+	}
+	if got := job.Logs(); !strings.Contains(got, "a") || !strings.Contains(got, "b") {
+		t.Errorf("logs = %q, want both lines", got)
+	}
+	// An absolute-path program is a legitimate argv[0] — the guard must not
+	// reject it.
+	abs := r.Start(".", "/bin/echo ok", []string{"/bin/echo", "ok"}, Owner{})
+	abs.Wait()
+	if s := abs.Snapshot(); s.Status != Exited {
+		t.Errorf("absolute-path argv[0]: status = %q, want exited (logs %q)", s.Status, abs.Logs())
+	}
+}
+
 func TestListInStartOrder(t *testing.T) {
 	r := NewRegistry()
 	r.Start(".", "echo a", []string{"echo", "a"}, Owner{}).Wait()
@@ -151,13 +199,16 @@ func TestSinkStartFailureStillPairs(t *testing.T) {
 	r.Sink = sink
 
 	r.Start(".", "no-such-binary-xyz", []string{"no-such-binary-xyz"}, Owner{}).Wait()
+	// The argv-contract refusal is a start failure too: Started/Finished must
+	// pair here as well.
+	r.Start(".", "sh", []string{"-c", "echo hi"}, Owner{}).Wait()
 
 	started, _, finished := sink.state()
-	if len(started) != 1 {
-		t.Errorf("started count = %d, want 1", len(started))
+	if len(started) != 2 {
+		t.Errorf("started count = %d, want 2", len(started))
 	}
-	if len(finished) != 1 || finished[0].Status != Failed {
-		t.Errorf("finished = %+v, want exactly one failed snapshot (Started/Finished must pair)", finished)
+	if len(finished) != 2 || finished[0].Status != Failed || finished[1].Status != Failed {
+		t.Errorf("finished = %+v, want exactly two failed snapshots (Started/Finished must pair)", finished)
 	}
 }
 
