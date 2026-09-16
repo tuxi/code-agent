@@ -310,6 +310,31 @@ func (d reasoningDetail) reasoningText() string {
 	}
 }
 
+// pickReasoning resolves the three redundant reasoning channels an
+// OpenAI-compatible provider may fill for one message/delta. Per OpenRouter's
+// docs, `reasoning_content` is an exact alias of `reasoning`, and
+// `reasoning_details` is the structured form of the same content — a provider
+// (OpenRouter in particular) routinely sends the identical text on two or
+// three of them. Accumulating every channel duplicates each delta once per
+// channel (the "NowNowNowNow I I I I" TUI symptom); selecting one preserves
+// providers that only ever fill a single channel (DeepSeek-style
+// reasoning_content, OpenRouter-style reasoning/reasoning_details).
+// Fallback order mirrors the non-streaming parse: flat strings first, then
+// the structured array flattened.
+func pickReasoning(reasoningContent, reasoning string, details []reasoningDetail) string {
+	if reasoningContent != "" {
+		return reasoningContent
+	}
+	if reasoning != "" {
+		return reasoning
+	}
+	var sb strings.Builder
+	for _, d := range details {
+		sb.WriteString(d.reasoningText())
+	}
+	return sb.String()
+}
+
 // streamChunk is one SSE delta in an OpenAI-compatible streaming response.
 type streamChunk struct {
 	// Error is emitted by an OpenAI-compatible gateway when the upstream request
@@ -322,8 +347,9 @@ type streamChunk struct {
 			Content string `json:"content"` // final-answer text delta
 			// ReasoningContent is the DeepSeek/vLLM-style reasoning channel.
 			// OpenRouter normalizes the same data into Reasoning (its wire name,
-			// with reasoning_content accepted as an input alias only) and the
-			// structured ReasoningDetails array; all three are accumulated.
+			// with reasoning_content accepted as an input alias) and the
+			// structured ReasoningDetails array. These are redundant views of
+			// one delta — pickReasoning selects a single channel per chunk.
 			ReasoningContent string            `json:"reasoning_content"`
 			Reasoning        string            `json:"reasoning"`
 			ReasoningDetails []reasoningDetail `json:"reasoning_details"`
@@ -516,28 +542,13 @@ func (p *OpenAICompatibleProvider) CompleteStream(ctx context.Context, req Reque
 			finishReason = ch.FinishReason
 		}
 
-		if ch.Delta.ReasoningContent != "" {
-			reasoningContent.WriteString(ch.Delta.ReasoningContent)
+		// The three reasoning channels are redundant representations of the
+		// same delta (see pickReasoning); select one per chunk instead of
+		// accumulating all of them, which duplicated every word per channel.
+		if delta := pickReasoning(ch.Delta.ReasoningContent, ch.Delta.Reasoning, ch.Delta.ReasoningDetails); delta != "" {
+			reasoningContent.WriteString(delta)
 			if onReasoning != nil {
-				onReasoning(ch.Delta.ReasoningContent)
-			}
-		}
-		// OpenRouter-style reasoning channels: the flat `reasoning` string and
-		// the structured `reasoning_details` array carry the same data that
-		// DeepSeek-style providers put in reasoning_content. Without them a
-		// reasoning-heavy turn looks empty to us.
-		if ch.Delta.Reasoning != "" {
-			reasoningContent.WriteString(ch.Delta.Reasoning)
-			if onReasoning != nil {
-				onReasoning(ch.Delta.Reasoning)
-			}
-		}
-		for _, d := range ch.Delta.ReasoningDetails {
-			if text := d.reasoningText(); text != "" {
-				reasoningContent.WriteString(text)
-				if onReasoning != nil {
-					onReasoning(text)
-				}
+				onReasoning(delta)
 			}
 		}
 
@@ -675,20 +686,9 @@ func (p *OpenAICompatibleProvider) Complete(ctx context.Context, req Request) (R
 	}
 
 	choice := decoded.Choices[0]
-	// OpenRouter-style reasoning channels (see streamChunk.Delta): prefer the
-	// DeepSeek-style flat string, then OpenRouter's flat alias, then its
-	// structured details array.
-	reasoning := choice.Message.ReasoningContent
-	if reasoning == "" {
-		reasoning = choice.Message.Reasoning
-	}
-	if reasoning == "" {
-		var sb strings.Builder
-		for _, d := range choice.Message.ReasoningDetails {
-			sb.WriteString(d.reasoningText())
-		}
-		reasoning = sb.String()
-	}
+	// The three reasoning channels are redundant views of the same content
+	// (see pickReasoning); select one rather than accumulating duplicates.
+	reasoning := pickReasoning(choice.Message.ReasoningContent, choice.Message.Reasoning, choice.Message.ReasoningDetails)
 	return Response{
 		Content:          strings.TrimSpace(choice.Message.Content),
 		ReasoningContent: strings.TrimSpace(reasoning),

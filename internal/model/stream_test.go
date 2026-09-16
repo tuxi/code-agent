@@ -108,6 +108,42 @@ func TestCompleteStreamParsesOpenRouterReasoningFields(t *testing.T) {
 	}
 }
 
+func TestCompleteStreamDedupesRedundantReasoningChannels(t *testing.T) {
+	// OpenRouter sends the SAME reasoning delta redundantly across all three
+	// channels in a single chunk (reasoning_content is an alias of reasoning,
+	// and reasoning_details is the structured view of the same text). The old
+	// code accumulated every channel, so each word was emitted once per channel
+	// — the "NowNowNowNow I I I I" TUI symptom. We must emit it exactly once.
+	sse := strings.Join([]string{
+		`data: {"choices":[{"delta":{"reasoning_content":"Now ","reasoning":"Now ","reasoning_details":[{"type":"reasoning.text","text":"Now "}]}}]}`,
+		`data: {"choices":[{"delta":{"reasoning_content":"I ","reasoning":"I ","reasoning_details":[{"type":"reasoning.text","text":"I "}]}}]}`,
+		`data: {"choices":[{"delta":{"content":"answer"}}]}`,
+		`data: {"choices":[{"finish_reason":"stop"}],"usage":{"prompt_tokens":7,"completion_tokens":5}}`,
+		`data: [DONE]`,
+	}, "\n\n") + "\n\n"
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(sse))
+	}))
+	defer srv.Close()
+
+	p := NewOpenAICompatibleProviderWithKey(srv.URL, "key")
+	var reasoningDeltas []string
+	resp, err := p.CompleteStream(context.Background(), Request{Model: "m"}, nil, func(d string) {
+		reasoningDeltas = append(reasoningDeltas, d)
+	})
+	if err != nil {
+		t.Fatalf("CompleteStream: %v", err)
+	}
+	if got := strings.Join(reasoningDeltas, ""); got != "Now I " {
+		t.Fatalf("onReasoning deltas = %q, want 'Now I ' (each delta emitted once, not once per channel)", got)
+	}
+	if resp.ReasoningContent != "Now I" {
+		t.Fatalf("accumulated reasoning = %q, want 'Now I'", resp.ReasoningContent)
+	}
+}
+
 func TestCompleteParsesOpenRouterReasoningFields(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
