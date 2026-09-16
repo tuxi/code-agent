@@ -123,13 +123,13 @@ func defaultHTTPClient() *http.Client {
 	// as the Ollama provider does.
 	return &http.Client{
 		Transport: &http.Transport{
-			Proxy:               http.ProxyFromEnvironment,
-			DialContext:         (&net.Dialer{Timeout: 10 * time.Second}).DialContext,
-			TLSClientConfig:     &tls.Config{RootCAs: loadSystemRootCAs()},
-			TLSHandshakeTimeout: 10 * time.Second,
+			Proxy:                 http.ProxyFromEnvironment,
+			DialContext:           (&net.Dialer{Timeout: 10 * time.Second}).DialContext,
+			TLSClientConfig:       &tls.Config{RootCAs: loadSystemRootCAs()},
+			TLSHandshakeTimeout:   10 * time.Second,
 			ExpectContinueTimeout: 1 * time.Second,
-			MaxIdleConns:        100,
-			IdleConnTimeout:     90 * time.Second,
+			MaxIdleConns:          100,
+			IdleConnTimeout:       90 * time.Second,
 		},
 	}
 }
@@ -454,15 +454,33 @@ func (p *OpenAICompatibleProvider) CompleteStream(ctx context.Context, req Reque
 		return Response{}, fmt.Errorf("missing base url")
 	}
 
-	data, err := json.Marshal(chatCompletionRequest{
-		SessionID: req.SessionID, TurnID: req.TurnID, RequestID: req.RequestID, ExecutionID: req.ExecutionID,
-		Model: req.Model, Messages: newWireMessages(req.Messages), Temperature: req.Temperature,
-		ReasoningEffort: reasoningEffortToOpenAI(req.ReasoningEffort),
-		Tools:           toolsForGatewayRequest(req.Messages, req.Tools), ToolChoice: req.ToolChoice,
-		Stream: true, StreamOptions: &streamOptions{IncludeUsage: true},
-	})
-	if err != nil {
-		return Response{}, err
+	// opencode-go expects the session ID only in the x-opencode-session header,
+	// not in the request body. Other providers accept these fields in the body.
+	var data []byte
+	if strings.Contains(p.BaseURL, "opencode.ai") {
+		var err error
+		// error model api error: status=400 type=invalid_request_error message=Error from provider (Console Go): Upstream request failed: [invalid_request_error] 4 request validation errors: Extra inputs are not permitted, field: 'session_id', value: '20260916-095346-77082c59'; Extra inputs are not permitted, field: 'turn_id', value: 'turn_18d5c47399e18100_3'; Extra inputs are not permitted, field: 'request_id', value: 'A44C05B3-9C19-4DD1-B443-A01796A413AB'; Extra inputs are not permitted, field: 'execution_id', value: '4cc8ced8-0a96-4378-b30d-5242e2c5c3a8'
+		data, err = json.Marshal(chatCompletionRequest{
+			Model: req.Model, Messages: newWireMessages(req.Messages), Temperature: req.Temperature,
+			ReasoningEffort: reasoningEffortToOpenAI(req.ReasoningEffort),
+			Tools:           toolsForGatewayRequest(req.Messages, req.Tools), ToolChoice: req.ToolChoice,
+			Stream: true, StreamOptions: &streamOptions{IncludeUsage: true},
+		})
+		if err != nil {
+			return Response{}, err
+		}
+	} else {
+		var err error
+		data, err = json.Marshal(chatCompletionRequest{
+			SessionID: req.SessionID, TurnID: req.TurnID, RequestID: req.RequestID, ExecutionID: req.ExecutionID,
+			Model: req.Model, Messages: newWireMessages(req.Messages), Temperature: req.Temperature,
+			ReasoningEffort: reasoningEffortToOpenAI(req.ReasoningEffort),
+			Tools:           toolsForGatewayRequest(req.Messages, req.Tools), ToolChoice: req.ToolChoice,
+			Stream: true, StreamOptions: &streamOptions{IncludeUsage: true},
+		})
+		if err != nil {
+			return Response{}, err
+		}
 	}
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.BaseURL+"/chat/completions", bytes.NewReader(data))
@@ -474,6 +492,11 @@ func (p *OpenAICompatibleProvider) CompleteStream(ctx context.Context, req Reque
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "text/event-stream")
+	// https://opencode.ai/docs/go/#where-can-i-use-it
+	// 为每段对话在 x-opencode-session 请求头中发送稳定的会话 ID，以便我们优化路由和提示词缓存。
+	if strings.Contains(p.BaseURL, "opencode.ai") {
+		httpReq.Header.Set("x-opencode-session", req.SessionID)
+	}
 
 	resp, err := p.HTTPClient.Do(httpReq)
 	if err != nil {
@@ -608,22 +631,41 @@ func (p *OpenAICompatibleProvider) Complete(ctx context.Context, req Request) (R
 	// Model may be empty for Gateway — the Gateway server selects the model.
 	// Non-Gateway providers reject empty models at the API level.
 
-	body := chatCompletionRequest{
-		SessionID:       req.SessionID,
-		TurnID:          req.TurnID,
-		RequestID:       req.RequestID,
-		ExecutionID:     req.ExecutionID,
-		Model:           req.Model,
-		Messages:        newWireMessages(req.Messages),
-		Temperature:     req.Temperature,
-		ReasoningEffort: reasoningEffortToOpenAI(req.ReasoningEffort),
-		Tools:           toolsForGatewayRequest(req.Messages, req.Tools),
-		ToolChoice:      req.ToolChoice,
-	}
-
-	data, err := json.Marshal(body)
-	if err != nil {
-		return Response{}, err
+	// opencode-go expects the session ID only in the x-opencode-session header,
+	// not in the request body. Other providers accept these fields in the body.
+	var data []byte
+	if strings.Contains(p.BaseURL, "opencode.ai") {
+		var err error
+		body := chatCompletionRequest{
+			Model:           req.Model,
+			Messages:        newWireMessages(req.Messages),
+			Temperature:     req.Temperature,
+			ReasoningEffort: reasoningEffortToOpenAI(req.ReasoningEffort),
+			Tools:           toolsForGatewayRequest(req.Messages, req.Tools),
+			ToolChoice:      req.ToolChoice,
+		}
+		data, err = json.Marshal(body)
+		if err != nil {
+			return Response{}, err
+		}
+	} else {
+		var err error
+		body := chatCompletionRequest{
+			SessionID:       req.SessionID,
+			TurnID:          req.TurnID,
+			RequestID:       req.RequestID,
+			ExecutionID:     req.ExecutionID,
+			Model:           req.Model,
+			Messages:        newWireMessages(req.Messages),
+			Temperature:     req.Temperature,
+			ReasoningEffort: reasoningEffortToOpenAI(req.ReasoningEffort),
+			Tools:           toolsForGatewayRequest(req.Messages, req.Tools),
+			ToolChoice:      req.ToolChoice,
+		}
+		data, err = json.Marshal(body)
+		if err != nil {
+			return Response{}, err
+		}
 	}
 
 	httpReq, err := http.NewRequestWithContext(
@@ -640,6 +682,11 @@ func (p *OpenAICompatibleProvider) Complete(ctx context.Context, req Request) (R
 		return Response{}, err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
+	// https://opencode.ai/docs/go/#where-can-i-use-it
+	// 为每段对话在 x-opencode-session 请求头中发送稳定的会话 ID，以便我们优化路由和提示词缓存。
+	if strings.Contains(p.BaseURL, "opencode.ai") {
+		httpReq.Header.Set("x-opencode-session", req.SessionID)
+	}
 
 	resp, err := p.HTTPClient.Do(httpReq)
 	if err != nil {
