@@ -117,12 +117,11 @@ func boolPtr(b bool) *bool { return &b }
 var builtinConnections = map[string]builtinConnection{
 	"deepseek": {
 		BaseURL: "https://api.deepseek.com", Env: "DEEPSEEK_API_KEY",
-		WireModel: "deepseek-v4-flash", ProviderType: "openai",
+		WireModel: "deepseek-flash", ProviderType: "openai",
 		DisplayName: "DeepSeek", Summary: "使用 DeepSeek API 密钥连接", Kind: "api_key",
 		Models: []builtinModelTemplate{
-			{ID: "deepseek-v4-flash", RuntimeAlias: "deepseek", ContextWindow: 1_000_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text"}, WebSearch: true, InputPricePerM: 0.16, OutputPricePerM: 0.32, SupportedReasoningEfforts: []string{"low", "medium", "high"}, CanDisableReasoning: boolPtr(true), ReasoningEffort: "low"},
+			{ID: "deepseek-flash", RuntimeAlias: "deepseek", ContextWindow: 1_000_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text"}, WebSearch: true, InputPricePerM: 0.16, OutputPricePerM: 0.32, SupportedReasoningEfforts: []string{"low", "medium", "high"}, CanDisableReasoning: boolPtr(true), ReasoningEffort: "low"},
 			{ID: "deepseek-v4-pro", RuntimeAlias: "deepseek-pro", ContextWindow: 1_000_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text"}, InputPricePerM: 0.45, OutputPricePerM: 0.90, SupportedReasoningEfforts: []string{"low", "medium", "high"}, CanDisableReasoning: boolPtr(true), ReasoningEffort: "low"},
-			{ID: "deepseek-v4-flash-vision-exp", RuntimeAlias: "deepseek-vision", ContextWindow: 1_000_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text", "image"}, InputPricePerM: 0.16, OutputPricePerM: 0.32, SupportedReasoningEfforts: []string{"low", "medium", "high"}, CanDisableReasoning: boolPtr(true), ReasoningEffort: "low"},
 		},
 	},
 	"qwen": {
@@ -150,8 +149,10 @@ var builtinConnections = map[string]builtinConnection{
 		ProviderType: "openai",
 		DisplayName:  "OpenRouter", Summary: "通过一个 API 密钥使用多个模型", Kind: "api_key",
 		Models: []builtinModelTemplate{
-			{ID: "openrouter/auto", RuntimeAlias: "openrouter", ContextWindow: 200_000, SupportsTools: true, InputModalities: []string{"text"}},
-			{ID: "openrouter/free", RuntimeAlias: "openrouter", ContextWindow: 200_000, SupportsTools: true, InputModalities: []string{"text"}},
+			// error model api error: status=400 type= message=Reasoning is mandatory for this endpoint and cannot be disabled.
+			{ID: "openrouter/auto", RuntimeAlias: "openrouter", ContextWindow: 200_000, SupportsTools: true, InputModalities: []string{"text"}, CanDisableReasoning: boolPtr(false), SupportsReasoning: true, SupportedReasoningEfforts: []string{"low", "high"}, ReasoningEffort: "low"},
+			{ID: "openrouter/free", RuntimeAlias: "openrouter", ContextWindow: 200_000, SupportsTools: true, InputModalities: []string{"text"}, CanDisableReasoning: boolPtr(false), SupportsReasoning: true, SupportedReasoningEfforts: []string{"low", "high"}, ReasoningEffort: "low"},
+			{ID: "nvidia/nemotron-3-ultra-550b-a55b:free", RuntimeAlias: "openrouter", ContextWindow: 1_000_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text"}, SupportedReasoningEfforts: []string{"low", "high", "max"}, CanDisableReasoning: boolPtr(false), ReasoningEffort: "high"},
 		},
 	},
 	"bai": {
@@ -159,9 +160,8 @@ var builtinConnections = map[string]builtinConnection{
 		ProviderType: "openai",
 		DisplayName:  "B.ai", Summary: "通过一个 API 密钥使用多个模型", Kind: "api_key",
 		Models: []builtinModelTemplate{
-			{ID: "deepseek-v4-flash", RuntimeAlias: "deepseek", ContextWindow: 1_000_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text"}, WebSearch: true, InputPricePerM: 0.16, OutputPricePerM: 0.32, SupportedReasoningEfforts: []string{"low", "medium", "high"}, CanDisableReasoning: boolPtr(true), ReasoningEffort: "low"},
+			{ID: "deepseek-flash", RuntimeAlias: "deepseek", ContextWindow: 1_000_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text"}, WebSearch: true, InputPricePerM: 0.16, OutputPricePerM: 0.32, SupportedReasoningEfforts: []string{"low", "medium", "high"}, CanDisableReasoning: boolPtr(true), ReasoningEffort: "low"},
 			{ID: "deepseek-v4-pro", RuntimeAlias: "deepseek-pro", ContextWindow: 1_000_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text"}, InputPricePerM: 0.45, OutputPricePerM: 0.90, SupportedReasoningEfforts: []string{"low", "medium", "high"}, CanDisableReasoning: boolPtr(true), ReasoningEffort: "low"},
-			{ID: "deepseek-v4-flash-vision-exp", RuntimeAlias: "deepseek-vision", ContextWindow: 1_000_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text", "image"}, InputPricePerM: 0.16, OutputPricePerM: 0.32, SupportedReasoningEfforts: []string{"low", "medium", "high"}, CanDisableReasoning: boolPtr(true), ReasoningEffort: "low"},
 			{ID: "glm-5.3-flash", RuntimeAlias: "glm-flash", ContextWindow: 1_000_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text", "image"}, InputPricePerM: 0.16, OutputPricePerM: 0.32, SupportedReasoningEfforts: []string{"low", "high", "max"}, CanDisableReasoning: boolPtr(false), ReasoningEffort: "high"},
 			{ID: "mimo-v2.5", RuntimeAlias: "mino-v2.5", ContextWindow: 1_000_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text"}, InputPricePerM: 0.16, OutputPricePerM: 0.32, SupportedReasoningEfforts: []string{"low", "medium", "high"}, CanDisableReasoning: boolPtr(true), ReasoningEffort: "medium"},
 			{ID: "hy3", RuntimeAlias: "hy3", ContextWindow: 256_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text"}, InputPricePerM: 0.16, OutputPricePerM: 0.32, SupportedReasoningEfforts: []string{"low", "medium", "high"}, CanDisableReasoning: boolPtr(true), ReasoningEffort: "low"},
@@ -178,11 +178,11 @@ var builtinConnections = map[string]builtinConnection{
 	//},
 	"opencode-go": {
 		BaseURL: "https://opencode.ai/zen/go/v1", Env: "OPENCODE_GO_API_KEY",
-		WireModel: "deepseek-v4-flash", ProviderType: "openai",
+		WireModel: "deepseek-flash", ProviderType: "openai",
 		DisplayName: "OpenCode Go", Summary: "低订阅费开源编程模型（首月 $5，之后 $10/月）", Kind: "api_key",
 		Models: []builtinModelTemplate{
 			{ID: "gpt-5.6-luna", RuntimeAlias: "opencode gpt 5.6 luna", ContextWindow: 1_000_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text"}, InputPricePerM: 0.22, OutputPricePerM: 0.66, SupportedReasoningEfforts: []string{"low", "medium", "high", "x-high", "max"}, CanDisableReasoning: boolPtr(true), ReasoningEffort: "medium"},
-			{ID: "deepseek-v4-flash", RuntimeAlias: "opencode deepseek flash", ContextWindow: 1_000_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text"}, InputPricePerM: 0.22, OutputPricePerM: 0.66, SupportedReasoningEfforts: []string{"low", "medium", "high"}, CanDisableReasoning: boolPtr(true), ReasoningEffort: "low"},
+			{ID: "deepseek-flash", RuntimeAlias: "opencode deepseek flash", ContextWindow: 1_000_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text"}, InputPricePerM: 0.22, OutputPricePerM: 0.66, SupportedReasoningEfforts: []string{"low", "medium", "high"}, CanDisableReasoning: boolPtr(true), ReasoningEffort: "low"},
 			{ID: "deepseek-v4-pro", RuntimeAlias: "opencode deepseek pro", ContextWindow: 1_000_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text"}, InputPricePerM: 0.66, OutputPricePerM: 1.98, SupportedReasoningEfforts: []string{"low", "medium", "high"}, CanDisableReasoning: boolPtr(true), ReasoningEffort: "low"},
 			{ID: "kimi-k3", RuntimeAlias: "opencode kimi k3", ContextWindow: 1_000_000, SupportsTools: true, InputModalities: []string{"text"}, InputPricePerM: 3.00, OutputPricePerM: 15.00, Temperature: 1.0},
 			{ID: "kimi-k2.7-code", RuntimeAlias: "opencode kimi k2.7 code", ContextWindow: 256_000, SupportsTools: true, InputModalities: []string{"text"}, InputPricePerM: 1.2, OutputPricePerM: 5.6, Temperature: 1.0},
