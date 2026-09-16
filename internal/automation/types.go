@@ -55,8 +55,10 @@ const (
 )
 
 // Retry policy for failed firings: a firing that fails is retried up to
-// MaxRetries times, RetryInterval apart, then the automation is marked COMPLETED
-// so it stops (the user re-enables it from the client to try again).
+// MaxRetries times, RetryInterval apart. At the cap the automation stops:
+// once → COMPLETED (terminal); recurring → PAUSED (recoverable — enabling it
+// again re-arms the schedule, see sqlStore.Update). A recurring task is never
+// driven into the terminal COMPLETED by transient external failures.
 const (
 	MaxRetries    = 3
 	RetryInterval = time.Minute

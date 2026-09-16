@@ -267,6 +267,15 @@ func (s *sqlStore) Update(ctx context.Context, id string, patch AutomationPatch)
 	// know if next_run_at must be recomputed.
 	scheduleChanged := patch.RRule != nil || patch.ScheduleType != nil || patch.ScheduledAt != nil || patch.Timezone != nil
 
+	// reArm marks a revival transition (non-ACTIVE → ACTIVE, e.g. the user
+	// flips enabled=true on a retry-capped or completed automation). Such a
+	// transition must reset the consecutive-failure counter and recompute
+	// NextRunAt from now — otherwise the row keeps the epoch/past NextRunAt
+	// the stop path left behind, and the revival either fires immediately
+	// off-grid or (with RetryCount still at the cap) is re-killed by its very
+	// first failure (Bug #2: enabled=true was an ineffective operation).
+	reArm := false
+
 	if patch.Name != nil {
 		existing.Name = *patch.Name
 	}
@@ -274,6 +283,9 @@ func (s *sqlStore) Update(ctx context.Context, id string, patch AutomationPatch)
 		existing.Prompt = *patch.Prompt
 	}
 	if patch.Status != nil {
+		if *patch.Status == StatusActive && existing.Status != StatusActive {
+			reArm = true
+		}
 		existing.Status = *patch.Status
 	}
 	if patch.ScheduleType != nil {
@@ -338,7 +350,19 @@ func (s *sqlStore) Update(ctx context.Context, id string, patch AutomationPatch)
 	}
 
 	existing.UpdatedAt = time.Now().UTC()
-	if scheduleChanged {
+	// A revival transition resets the failure counter and re-anchors the
+	// schedule from now, so the re-enabled automation actually fires again on
+	// cadence instead of being stuck at the epoch NextRunAt the stop path left.
+	if reArm {
+		if patch.RetryCount == nil {
+			existing.RetryCount = 0
+		}
+		next, err := computeNextRunAt(existing, existing.UpdatedAt)
+		if err != nil {
+			return Automation{}, err
+		}
+		existing.NextRunAt = next
+	} else if scheduleChanged {
 		next, err := computeNextRunAt(existing, existing.LastRunAt)
 		if err != nil {
 			return Automation{}, err

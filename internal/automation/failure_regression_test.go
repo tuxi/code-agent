@@ -64,9 +64,13 @@ func TestSchedulerFailureAdvancesNextRun(t *testing.T) {
 	}
 }
 
-// TestSchedulerFailureCompletesAfterMaxRetries verifies that after MaxRetries
-// consecutive failures the automation is marked COMPLETED and stops retrying.
-func TestSchedulerFailureCompletesAfterMaxRetries(t *testing.T) {
+// TestSchedulerFailurePausesAfterMaxRetries verifies that after MaxRetries
+// consecutive failures a RECURRING automation is marked PAUSED (recoverable),
+// not COMPLETED (terminal) — a transient external failure (device offline,
+// dependency down) must never put a recurring task into a terminal state
+// (Bug #2). Enabling it again re-arms the schedule (see
+// TestReEnableReArmsStaleSchedule).
+func TestSchedulerFailurePausesAfterMaxRetries(t *testing.T) {
 	s := newTestStore(t)
 	a := Automation{
 		Name:         "poll",
@@ -89,8 +93,8 @@ func TestSchedulerFailureCompletesAfterMaxRetries(t *testing.T) {
 	}
 
 	got, _ := s.Get(context.Background(), created.ID)
-	if got.Status != StatusCompleted {
-		t.Fatalf("after %d failures status = %q, want COMPLETED", MaxRetries, got.Status)
+	if got.Status != StatusPaused {
+		t.Fatalf("after %d failures status = %q, want PAUSED", MaxRetries, got.Status)
 	}
 	if got.RetryCount != MaxRetries {
 		t.Fatalf("retry_count = %d, want %d", got.RetryCount, MaxRetries)
@@ -98,7 +102,7 @@ func TestSchedulerFailureCompletesAfterMaxRetries(t *testing.T) {
 	// It must not be due again.
 	due, _ := s.NextDueAt(context.Background(), time.Now().Add(time.Hour))
 	if len(due) != 0 {
-		t.Fatalf("completed automation should not be due, got %d", len(due))
+		t.Fatalf("paused automation should not be due, got %d", len(due))
 	}
 }
 

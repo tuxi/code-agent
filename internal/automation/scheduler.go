@@ -139,7 +139,7 @@ func (s *Scheduler) fire(ctx context.Context, a Automation) {
 				LastError:    "cancelled by user",
 			})
 			var next time.Time
-			status := a.Status
+			var status *Status
 			if a.ScheduleType == ScheduleRecurring {
 				if computed, cerr := computeNextRunAt(a, now); cerr == nil {
 					next = computed
@@ -147,11 +147,16 @@ func (s *Scheduler) fire(ctx context.Context, a Automation) {
 					next = now.Add(s.interval)
 				}
 			} else {
-				status = StatusCompleted
+				completed := StatusCompleted
+				status = &completed
 			}
+			// Recurring: never write Status back — the snapshot in `a` predates
+			// the turn, and a pause performed during the turn must survive this
+			// bookkeeping write (Bug #1). Only the deliberate once→COMPLETED
+			// terminal transition is written.
 			_, _ = s.store.Update(ctx, a.ID, AutomationPatch{
 				LastStatus: strPtr(RunCanceled),
-				Status:     &status,
+				Status:     status,
 				LastRunAt:  timePtr(now),
 			})
 			_ = s.store.UpdateNextRunAt(ctx, a.ID, next)
@@ -170,21 +175,31 @@ func (s *Scheduler) fire(ctx context.Context, a Automation) {
 			LastError:    err.Error(),
 		})
 		// Retry policy: a failed firing retries up to MaxRetries times (1 minute
-		// apart), then the automation is marked COMPLETED so it stops. The user can
-		// re-enable it from the client to try again. This prevents an infinite
-		// retry loop that would otherwise create a backlog of failed runs (and
-		// orphan conversations) when e.g. the model is out of quota.
+		// apart). At the cap the automation stops: once → COMPLETED (terminal);
+		// recurring → PAUSED (recoverable — enabling it again re-arms the
+		// schedule, see sqlStore.Update). A recurring task is never pushed into
+		// the terminal COMPLETED by transient external failures (device offline,
+		// dependency down) — that made it unrevivable (Bug #2). As before, this
+		// prevents an infinite retry loop that would otherwise create a backlog
+		// of failed runs (and orphan conversations) when e.g. the model is out
+		// of quota.
 		retries := a.RetryCount + 1
 		var next time.Time
-		status := a.Status
+		var status *Status
 		if retries < MaxRetries {
 			next = now.Add(RetryInterval)
 		} else {
-			status = StatusCompleted
+			stopped := StatusCompleted
+			if a.ScheduleType == ScheduleRecurring {
+				stopped = StatusPaused
+			}
+			status = &stopped
 		}
+		// Below the cap Status is left untouched: a pause performed during the
+		// turn must survive this write-back (Bug #1).
 		_, _ = s.store.Update(ctx, a.ID, AutomationPatch{
 			LastStatus: strPtr(RunFailed),
-			Status:     &status,
+			Status:     status,
 			RetryCount: &retries,
 			LastRunAt:  timePtr(now),
 		})
@@ -207,7 +222,7 @@ func (s *Scheduler) fire(ctx context.Context, a Automation) {
 			LastError:    "skipped: active workflow run",
 		})
 		var next time.Time
-		status := a.Status
+		var status *Status
 		if a.ScheduleType == ScheduleRecurring {
 			if computed, cerr := computeNextRunAt(a, now); cerr == nil {
 				next = computed
@@ -215,23 +230,28 @@ func (s *Scheduler) fire(ctx context.Context, a Automation) {
 				next = now.Add(s.interval)
 			}
 		} else {
-			status = StatusCompleted
+			completed := StatusCompleted
+			status = &completed
 		}
+		// Recurring: Status untouched (mid-turn pause survives, Bug #1).
 		_, _ = s.store.Update(ctx, a.ID, AutomationPatch{
 			LastRunAt:  timePtr(now),
 			LastStatus: strPtr(RunSkipped),
-			Status:     &status,
+			Status:     status,
 			RetryCount: intPtr(0),
 		})
 		_ = s.store.UpdateNextRunAt(ctx, a.ID, next)
 		return
 	}
 
+	// Submit blocks until the turn ends; a nil error means the firing ran to
+	// completion. Record it as succeeded — the old "running" was written after
+	// the turn was already over and never updated (LastStatus stuck at running).
 	_ = s.store.RecordRun(ctx, Run{
 		AutomationID: a.ID,
 		SessionID:    turnID,
 		TaskID:       taskIDField(turnID),
-		Status:       RunRunning,
+		Status:       RunSucceeded,
 		CreatedAt:    now,
 	})
 	_ = s.store.UpdateRuntimeState(ctx, RuntimeState{
@@ -254,8 +274,12 @@ func (s *Scheduler) fire(ctx context.Context, a Automation) {
 	// firing is terminal: next_run_at is zeroed (stops rescheduling) and the
 	// status becomes COMPLETED so the control panel shows "finished" instead of
 	// ACTIVE (WorkBuddy: "一次性任务（执行一次后自动结束）").
+	// Recurring: Status is deliberately NOT written — `a` is the pre-turn
+	// snapshot, and writing its ACTIVE back would silently undo a pause
+	// performed while the turn was running (Bug #1). Only the deliberate
+	// once→COMPLETED terminal transition is written.
 	var next time.Time
-	status := a.Status
+	var status *Status
 	if a.ScheduleType == ScheduleRecurring {
 		computed, err := computeNextRunAt(a, now)
 		if err == nil {
@@ -264,12 +288,13 @@ func (s *Scheduler) fire(ctx context.Context, a Automation) {
 			next = now.Add(s.interval)
 		}
 	} else {
-		status = StatusCompleted
+		completed := StatusCompleted
+		status = &completed
 	}
 	_, _ = s.store.Update(ctx, a.ID, AutomationPatch{
 		LastRunAt:  timePtr(now),
-		LastStatus: strPtr(RunRunning),
-		Status:     &status,
+		LastStatus: strPtr(RunSucceeded),
+		Status:     status,
 		// A successful firing resets the consecutive-failure counter.
 		RetryCount: intPtr(0),
 	})
