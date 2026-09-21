@@ -590,8 +590,15 @@ func truncateOneLine(s string, max int) string {
 	return s
 }
 
+// askSessionID is the stable session id stamped on `--ask` one-shot requests.
+// There is no conversation, but the request envelope still needs one: providers
+// that route on a per-conversation header derived from Request.SessionID
+// (OpenCode Go's x-opencode-session) reject an empty value.
+const askSessionID = "codeagent/ask"
+
 func runAsk(ctx context.Context, mc settings.ModelConfig, provider model.Provider, question string) error {
 	resp, err := provider.Complete(ctx, model.Request{
+		SessionID:   askSessionID,
 		Model:       mc.Model,
 		Temperature: mc.Temperature,
 		Messages: []model.Message{

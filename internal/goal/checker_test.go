@@ -43,6 +43,24 @@ func TestLLMCheckerIncludesDiff(t *testing.T) {
 	}
 }
 
+// TestLLMCheckerPropagatesSessionID pins the OpenCode Go regression: the judge is
+// a direct provider call that bypasses the agent loop's request stamping, so it
+// must carry the session id itself. Providers that route on a per-conversation
+// header derived from Request.SessionID (x-opencode-session) otherwise reject it
+// with 400 MissingSessionID.
+func TestLLMCheckerPropagatesSessionID(t *testing.T) {
+	rp := &recordingProvider{content: `{"met":true,"blocked":false,"reason":"ok"}`}
+	c := &LLMChecker{Provider: rp}
+	g := &Goal{SessionID: "sess-goal-1", Objective: "x"}
+
+	if _, err := c.Check(context.Background(), g, fakeTrans{}); err != nil {
+		t.Fatal(err)
+	}
+	if rp.got.SessionID != "sess-goal-1" {
+		t.Fatalf("judge request session id = %q, want %q", rp.got.SessionID, "sess-goal-1")
+	}
+}
+
 // With no diff captured, the diff section is absent (no empty header noise).
 func TestLLMCheckerNoDiffSection(t *testing.T) {
 	rp := &recordingProvider{content: `{"met":true,"blocked":false,"reason":"ok"}`}

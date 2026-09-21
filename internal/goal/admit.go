@@ -31,6 +31,12 @@ type Admitter interface {
 type LLMAdmitter struct {
 	Provider model.Provider
 	Model    string
+	// SessionID rides on the request envelope. The admitter is a direct provider
+	// call (it runs before the goal — and its Engine — exists), so it does not go
+	// through the agent loop's request stamping; providers that route on a
+	// per-conversation id derived from Request.SessionID (OpenCode Go's
+	// x-opencode-session header) reject an empty value with 400 MissingSessionID.
+	SessionID string
 }
 
 const admitterSystem = `你是 /goal 目标准入判定器。/goal 适合这样的目标:有客观、可机检的终点` +
@@ -46,6 +52,7 @@ reason 用中文简述理由;ok=false 时必须说明为何不适合,并建议�
 
 func (a *LLMAdmitter) Admit(ctx context.Context, objective string) (AdmitResult, error) {
 	resp, err := a.Provider.Complete(ctx, model.Request{
+		SessionID:   a.SessionID,
 		Model:       a.Model,
 		Temperature: 0,
 		Messages: []model.Message{

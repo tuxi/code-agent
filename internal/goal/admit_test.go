@@ -54,6 +54,21 @@ func TestLLMAdmitterRoundTrip(t *testing.T) {
 	}
 }
 
+// TestLLMAdmitterPropagatesSessionID pins the same OpenCode Go regression for the
+// set-time gate. Admission runs before the Goal exists, so its session id comes
+// from the struct rather than from a Goal.
+func TestLLMAdmitterPropagatesSessionID(t *testing.T) {
+	rp := &recordingProvider{content: `{"ok":true,"fuzzy":false,"reason":"ok"}`}
+	a := &LLMAdmitter{Provider: rp, SessionID: "sess-admit-1"}
+
+	if _, err := a.Admit(context.Background(), "make tests pass"); err != nil {
+		t.Fatal(err)
+	}
+	if rp.got.SessionID != "sess-admit-1" {
+		t.Fatalf("admitter request session id = %q, want %q", rp.got.SessionID, "sess-admit-1")
+	}
+}
+
 // A provider error surfaces to the caller (the driver decides to fail open).
 func TestLLMAdmitterProviderError(t *testing.T) {
 	a := &LLMAdmitter{Provider: fakeProvider{err: errors.New("boom")}}

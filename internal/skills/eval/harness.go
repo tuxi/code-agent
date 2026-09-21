@@ -82,6 +82,9 @@ func NewHarness() (*Harness, error) {
 	}, nil
 }
 
+// evalSessionID is the stable session id stamped on eval requests — see Run.
+const evalSessionID = "codeagent/skills-eval"
+
 // Run executes a single eval case and returns a result.
 func (h *Harness) Run(ctx context.Context, c Case) EvalResult {
 	// Build the system prompt with the skill body injected — a minimal version
@@ -89,6 +92,12 @@ func (h *Harness) Run(ctx context.Context, c Case) EvalResult {
 	system := buildSystemPrompt(c.Skill, h.SkillsDir)
 
 	req := model.Request{
+		// No conversation backs an eval run, but the request envelope still needs
+		// a session id: providers that route on a per-conversation header derived
+		// from Request.SessionID (OpenCode Go's x-opencode-session) reject an
+		// empty value. A stable per-purpose id is enough — routing and prompt
+		// caching only need it to be stable, not to be a real session.
+		SessionID:   evalSessionID,
 		Model:       h.ModelName,
 		Temperature: h.Temperature,
 		Messages: []model.Message{

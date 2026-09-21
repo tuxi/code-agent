@@ -45,7 +45,18 @@ func (c *LLMChecker) Check(ctx context.Context, g *Goal, t Transcript) (CheckRes
 		// so the judge can catch test-file edits / hardcoded expectations.
 		user += "\n\n本轮工作区实际改动(git diff —— 完整事实,worker 未必主动展示):\n" + g.diff
 	}
+	// The judge is a direct provider call, so it bypasses the agent loop's
+	// request stamping (loop.go stamps SessionID for everything routed through
+	// it). Carry the goal's session id ourselves: providers that route on a
+	// per-conversation id derived from Request.SessionID (OpenCode Go's
+	// x-opencode-session header) otherwise reject the call with 400
+	// MissingSessionID.
+	var sessionID string
+	if g != nil {
+		sessionID = g.SessionID
+	}
 	resp, err := c.Provider.Complete(ctx, model.Request{
+		SessionID:   sessionID,
 		Model:       c.Model,
 		Temperature: 0,
 		Messages: []model.Message{

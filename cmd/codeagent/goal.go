@@ -64,7 +64,7 @@ func goalStart(ctx context.Context, cfg settings.Settings, mc settings.ModelConf
 	}
 	// Admission (§4.7): reject goals with no verifiable endpoint / high-risk actions
 	// before spending anything. Resume skips this — the goal was already admitted.
-	if err := admitGoal(ctx, cfg, mc, runner, objective); err != nil {
+	if err := admitGoal(ctx, cfg, mc, runner, sess.ID, objective); err != nil {
 		return err
 	}
 	engine, err := buildGoalEngine(cfg, mc, runner, sess, store)
@@ -109,12 +109,12 @@ func goalResume(ctx context.Context, cfg settings.Settings, mc settings.ModelCon
 // means rejected. caveat != "" means admitted-with-a-warning (fuzzy, or the
 // admitter was unavailable and we failed open). Admission is advisory UX, not the
 // safety boundary — the approver guards high-risk actions regardless.
-func admitObjective(ctx context.Context, cfg settings.Settings, mc settings.ModelConfig, runner *agent.Runner, objective string) (caveat string, err error) {
+func admitObjective(ctx context.Context, cfg settings.Settings, mc settings.ModelConfig, runner *agent.Runner, sessionID, objective string) (caveat string, err error) {
 	provider, amc, resolveErr := runtime.ResolveSubAgentModel(cfg, mc, runner.Model)
 	if resolveErr != nil {
 		return fmt.Sprintf("准入判定不可用(%v),已从宽放行。", resolveErr), nil
 	}
-	res, aerr := (&goal.LLMAdmitter{Provider: provider, Model: amc.Model}).Admit(ctx, objective)
+	res, aerr := (&goal.LLMAdmitter{Provider: provider, Model: amc.Model, SessionID: sessionID}).Admit(ctx, objective)
 	if aerr != nil {
 		return fmt.Sprintf("准入判定不可用(%v),已从宽放行。", aerr), nil
 	}
@@ -162,8 +162,8 @@ func makeDiffFunc(root string) func(context.Context) string {
 
 // admitGoal is the REPL wrapper around admitObjective: it prints the caveat and
 // returns the rejection error.
-func admitGoal(ctx context.Context, cfg settings.Settings, mc settings.ModelConfig, runner *agent.Runner, objective string) error {
-	caveat, err := admitObjective(ctx, cfg, mc, runner, objective)
+func admitGoal(ctx context.Context, cfg settings.Settings, mc settings.ModelConfig, runner *agent.Runner, sessionID, objective string) error {
+	caveat, err := admitObjective(ctx, cfg, mc, runner, sessionID, objective)
 	if err != nil {
 		return err
 	}
@@ -225,7 +225,7 @@ func (o goalOps) Pursue(pctx context.Context, sess *session.Session, objective s
 			(ex.Status == goal.StatusActive || ex.Status == goal.StatusPaused) {
 			return "", fmt.Errorf("a goal is already in progress (%s); /goal resume or /goal clear", ex.Status)
 		}
-		c, err := admitObjective(pctx, o.cfg, o.mc, o.runner, obj)
+		c, err := admitObjective(pctx, o.cfg, o.mc, o.runner, sess.ID, obj)
 		if err != nil {
 			return "", err // rejected — the TUI prints it
 		}
