@@ -106,5 +106,5 @@ type RunBuilder interface {
 // turn so the user sees a descriptive name in session lists without blocking the
 // turn response.
 type TitleGenerator interface {
-	GenerateTitle(ctx context.Context, userMessage, assistantResponse string) (string, error)
+	GenerateTitle(ctx context.Context, sessionID, userMessage, assistantResponse string) (string, error)
 }

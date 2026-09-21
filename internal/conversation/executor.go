@@ -1656,7 +1656,7 @@ func (e *TurnExecutor) generateTitleAsync(sess *session.Session) {
 		}
 	}
 
-	title, err := e.titleGen.GenerateTitle(ctx, userMsg, assistantMsg)
+	title, err := e.titleGen.GenerateTitle(ctx, sess.ID, userMsg, assistantMsg)
 	if err != nil || title == "" {
 		return
 	}

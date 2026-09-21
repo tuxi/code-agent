@@ -23,8 +23,11 @@ func NewLLMTitleGenerator(provider model.Provider, modelName string) *LLMTitleGe
 
 // GenerateTitle produces a 3-6 word title by prompting the model with the
 // first user message and assistant response. Messages longer than 800 chars are
-// truncated to keep the prompt small.
-func (g *LLMTitleGenerator) GenerateTitle(ctx context.Context, userMessage, assistantResponse string) (string, error) {
+// truncated to keep the prompt small. sessionID rides on the request envelope so
+// providers that require a stable per-conversation session id (OpenCode Go's
+// x-opencode-session header) can route this direct provider call, which — like
+// compaction — bypasses the agent loop's request stamping.
+func (g *LLMTitleGenerator) GenerateTitle(ctx context.Context, sessionID, userMessage, assistantResponse string) (string, error) {
 	userMsg := strings.TrimSpace(userMessage)
 	assistantMsg := strings.TrimSpace(assistantResponse)
 
@@ -48,6 +51,7 @@ func (g *LLMTitleGenerator) GenerateTitle(ctx context.Context, userMessage, assi
 	)
 
 	resp, err := g.Provider.Complete(ctx, model.Request{
+		SessionID:   sessionID,
 		Model:       g.Model,
 		Messages:    []model.Message{{Role: model.RoleUser, Content: prompt}},
 		Temperature: 0.3,

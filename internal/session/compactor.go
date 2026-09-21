@@ -131,7 +131,7 @@ func (c *LLMCompactor) Compact(ctx context.Context, sess *Session) error {
 		return nil
 	}
 
-	summary, err := c.summarize(ctx, sess.Summary, toFold)
+	summary, err := c.summarize(ctx, sess.ID, sess.Summary, toFold)
 	if err != nil {
 		return err
 	}
@@ -147,7 +147,13 @@ func (c *LLMCompactor) Compact(ctx context.Context, sess *Session) error {
 
 // summarize asks the model to fold the dropped messages into the previous
 // summary, producing the updated cumulative digest.
-func (c *LLMCompactor) summarize(ctx context.Context, prev string, msgs []model.Message) (string, error) {
+//
+// sessionID rides on the request envelope so providers that require a stable
+// per-conversation session id (OpenCode Go's x-opencode-session header, derived
+// from Request.SessionID) can route the call. Compaction is a direct provider
+// call, so it does not pass through the agent loop's request stamping and must
+// set this itself.
+func (c *LLMCompactor) summarize(ctx context.Context, sessionID, prev string, msgs []model.Message) (string, error) {
 	var b strings.Builder
 	if prev != "" {
 		b.WriteString("Existing summary so far:\n")
@@ -159,6 +165,7 @@ func (c *LLMCompactor) summarize(ctx context.Context, prev string, msgs []model.
 	b.WriteString("\nProduce the updated cumulative summary.")
 
 	resp, err := c.Provider.Complete(ctx, model.Request{
+		SessionID:   sessionID,
 		Model:       c.ModelName,
 		Temperature: c.Temperature,
 		Messages: []model.Message{

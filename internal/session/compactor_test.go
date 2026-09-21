@@ -157,6 +157,27 @@ func TestLLMCompactorBuildsSummaryLayout(t *testing.T) {
 	assertValidSequence(t, sess.Messages)
 }
 
+// TestLLMCompactorPropagatesSessionID pins the OpenCode Go regression: the
+// summarize call is a direct provider call — it bypasses the agent loop's request
+// stamping — so it must carry the session id itself. Providers that route on a
+// per-conversation header derived from Request.SessionID (x-opencode-session)
+// otherwise reject it with 400 MissingSessionID.
+func TestLLMCompactorPropagatesSessionID(t *testing.T) {
+	fp := &fakeProvider{reply: "DIGEST"}
+	sess := &Session{ID: "20260916-093622-19c30721", Messages: conversation()}
+
+	c := &LLMCompactor{Provider: fp, ModelName: "m", KeepRecentTokens: 25}
+	if err := c.Compact(context.Background(), sess); err != nil {
+		t.Fatal(err)
+	}
+	if fp.calls != 1 {
+		t.Fatalf("expected one summarize call, got %d", fp.calls)
+	}
+	if fp.lastReq.SessionID != sess.ID {
+		t.Fatalf("summarize request session id = %q, want %q", fp.lastReq.SessionID, sess.ID)
+	}
+}
+
 // A second compaction must fold the existing Summary into the new digest (the
 // prior summary is fed to the model) rather than discard it.
 func TestLLMCompactorFoldsPriorSummary(t *testing.T) {
