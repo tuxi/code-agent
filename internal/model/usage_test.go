@@ -5,12 +5,17 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+
+	"code-agent/internal/credential"
 )
 
 // TestOpenAICompatibleProviderSendsGatewayAssetRefs verifies the asset-first
 // Gateway contract: only a small reference enters the chat request, never image
-// bytes, a data URL, an OSS URL, or a local path.
+// bytes, a data URL, an OSS URL, or a local path. The provider is wired with a
+// gateway-namespaced credential because that is what enables the correlation
+// fields the Gateway needs to resolve the asset reference.
 func TestOpenAICompatibleProviderSendsGatewayAssetRefs(t *testing.T) {
 	var request map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -21,7 +26,10 @@ func TestOpenAICompatibleProviderSendsGatewayAssetRefs(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := NewOpenAICompatibleProviderWithKey(srv.URL, "key")
+	target := credential.Target{Namespace: "gateway", Name: "default"}
+	p := NewOpenAICompatibleProvider(srv.URL, credential.StaticResolver{
+		target: {Type: credential.Bearer, Secret: "jwt"},
+	}, target)
 	_, err := p.Complete(context.Background(), Request{SessionID: "sess_1", ExecutionID: "exec_1", Model: "vision-test", Messages: []Message{{
 		Role:    RoleTool,
 		Content: "Screenshot captured.",
@@ -56,6 +64,93 @@ func TestOpenAICompatibleProviderSendsGatewayAssetRefs(t *testing.T) {
 	encoded, _ := json.Marshal(request)
 	if string(encoded) == "" || string(encoded) == "png-test-bytes" {
 		t.Fatalf("request unexpectedly contains binary content: %s", encoded)
+	}
+}
+
+// TestThirdPartyProviderOmitsGatewayCorrelationFields pins the Groq regression:
+// a non-Gateway OpenAI-compatible endpoint must not receive the Gateway
+// correlation extension, which strict providers reject with
+// 400 invalid_request_error ("property 'execution_id' is unsupported").
+func TestThirdPartyProviderOmitsGatewayCorrelationFields(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		target credential.Target
+	}{
+		{"groq", credential.Target{Namespace: "llm", Name: "groq"}},
+		{"opencode-go", credential.Target{Namespace: "llm", Name: "opencode-go"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var body map[string]any
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var parsed map[string]any
+				if err := json.NewDecoder(r.Body).Decode(&parsed); err != nil {
+					t.Fatalf("decode request: %v", err)
+				}
+				body = parsed
+				if strings.Contains(r.Header.Get("Accept"), "text/event-stream") {
+					w.Header().Set("Content-Type", "text/event-stream")
+					_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"))
+					return
+				}
+				_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"}}]}`))
+			}))
+			defer srv.Close()
+
+			resolver := credential.StaticResolver{tc.target: {Type: credential.Bearer, Secret: "k"}}
+			p := NewOpenAICompatibleProvider(srv.URL, resolver, tc.target)
+			req := Request{
+				SessionID: "sess_1", TurnID: "turn_1", RequestID: "req_1", ExecutionID: "exec_1",
+				Model: "m", Messages: []Message{{Role: RoleUser, Content: "hi"}},
+			}
+			calls := map[string]func() error{
+				"Complete":       func() error { _, err := p.Complete(context.Background(), req); return err },
+				"CompleteStream": func() error { _, err := p.CompleteStream(context.Background(), req, nil, nil); return err },
+			}
+			for _, name := range []string{"Complete", "CompleteStream"} {
+				body = nil
+				if err := calls[name](); err != nil {
+					t.Fatalf("%s: %v", name, err)
+				}
+				for _, key := range []string{"session_id", "turn_id", "request_id", "execution_id"} {
+					if _, present := body[key]; present {
+						t.Errorf("%s: body carries %q=%v; strict providers reject it", name, key, body[key])
+					}
+				}
+			}
+		})
+	}
+}
+
+// TestGatewayProviderSendsCorrelationFields is the counterpart: the Gateway
+// relies on these fields to resolve conversation asset references.
+func TestGatewayProviderSendsCorrelationFields(t *testing.T) {
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"}}]}`))
+	}))
+	defer srv.Close()
+
+	target := credential.Target{Namespace: "gateway", Name: "default"}
+	p := NewOpenAICompatibleProvider(srv.URL, credential.StaticResolver{
+		target: {Type: credential.Bearer, Secret: "jwt"},
+	}, target)
+	_, err := p.Complete(context.Background(), Request{
+		SessionID: "sess_1", TurnID: "turn_1", RequestID: "req_1", ExecutionID: "exec_1",
+		Model: "m", Messages: []Message{{Role: RoleUser, Content: "hi"}},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	for key, want := range map[string]string{
+		"session_id": "sess_1", "turn_id": "turn_1",
+		"request_id": "req_1", "execution_id": "exec_1",
+	} {
+		if body[key] != want {
+			t.Errorf("body[%q] = %v, want %q", key, body[key], want)
+		}
 	}
 }
 

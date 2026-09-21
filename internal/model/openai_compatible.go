@@ -149,6 +149,25 @@ type chatCompletionRequest struct {
 	StreamOptions   *streamOptions    `json:"stream_options,omitempty"`
 }
 
+// attachGatewayCorrelation adds the Gateway's correlation extension
+// (session_id / turn_id / request_id / execution_id) to a chat-completions
+// body. Those fields are how the Gateway resolves conversation asset references
+// and traces a turn, and they are NOT part of the OpenAI schema: strict
+// providers validate the request and reject unknown properties with a 400
+// ("property 'execution_id' is unsupported" from Groq; "Extra inputs are not
+// permitted" from OpenCode Go). They are therefore sent only to the Gateway,
+// identified by its gateway-namespaced credential; OpenCode carries its session
+// id in the x-opencode-session header instead.
+func (p *OpenAICompatibleProvider) attachGatewayCorrelation(body *chatCompletionRequest, req Request) {
+	if p.CredentialTarget.Namespace != "gateway" {
+		return
+	}
+	body.SessionID = req.SessionID
+	body.TurnID = req.TurnID
+	body.RequestID = req.RequestID
+	body.ExecutionID = req.ExecutionID
+}
+
 // wireMessage is the on-the-wire form of a Message. Content is a plain string
 // for text-only messages (the historical shape every OpenAI-compatible endpoint
 // accepts); when the loop assembled multimodal ContentParts, Content becomes a
@@ -454,33 +473,20 @@ func (p *OpenAICompatibleProvider) CompleteStream(ctx context.Context, req Reque
 		return Response{}, fmt.Errorf("missing base url")
 	}
 
-	// opencode-go expects the session ID only in the x-opencode-session header,
-	// not in the request body. Other providers accept these fields in the body.
-	var data []byte
-	if strings.Contains(p.BaseURL, "opencode.ai") {
-		var err error
-		// error model api error: status=400 type=invalid_request_error message=Error from provider (Console Go): Upstream request failed: [invalid_request_error] 4 request validation errors: Extra inputs are not permitted, field: 'session_id', value: '20260916-095346-77082c59'; Extra inputs are not permitted, field: 'turn_id', value: 'turn_18d5c47399e18100_3'; Extra inputs are not permitted, field: 'request_id', value: 'A44C05B3-9C19-4DD1-B443-A01796A413AB'; Extra inputs are not permitted, field: 'execution_id', value: '4cc8ced8-0a96-4378-b30d-5242e2c5c3a8'
-		data, err = json.Marshal(chatCompletionRequest{
-			Model: req.Model, Messages: newWireMessages(req.Messages), Temperature: req.Temperature,
-			ReasoningEffort: reasoningEffortToOpenAI(req.ReasoningEffort),
-			Tools:           toolsForGatewayRequest(req.Messages, req.Tools), ToolChoice: req.ToolChoice,
-			Stream: true, StreamOptions: &streamOptions{IncludeUsage: true},
-		})
-		if err != nil {
-			return Response{}, err
-		}
-	} else {
-		var err error
-		data, err = json.Marshal(chatCompletionRequest{
-			SessionID: req.SessionID, TurnID: req.TurnID, RequestID: req.RequestID, ExecutionID: req.ExecutionID,
-			Model: req.Model, Messages: newWireMessages(req.Messages), Temperature: req.Temperature,
-			ReasoningEffort: reasoningEffortToOpenAI(req.ReasoningEffort),
-			Tools:           toolsForGatewayRequest(req.Messages, req.Tools), ToolChoice: req.ToolChoice,
-			Stream: true, StreamOptions: &streamOptions{IncludeUsage: true},
-		})
-		if err != nil {
-			return Response{}, err
-		}
+	body := chatCompletionRequest{
+		Model:           req.Model,
+		Messages:        newWireMessages(req.Messages),
+		Temperature:     req.Temperature,
+		ReasoningEffort: reasoningEffortToOpenAI(req.ReasoningEffort),
+		Tools:           toolsForGatewayRequest(req.Messages, req.Tools),
+		ToolChoice:      req.ToolChoice,
+		Stream:          true,
+		StreamOptions:   &streamOptions{IncludeUsage: true},
+	}
+	p.attachGatewayCorrelation(&body, req)
+	data, err := json.Marshal(body)
+	if err != nil {
+		return Response{}, err
 	}
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.BaseURL+"/chat/completions", bytes.NewReader(data))
@@ -631,41 +637,20 @@ func (p *OpenAICompatibleProvider) Complete(ctx context.Context, req Request) (R
 	// Model may be empty for Gateway — the Gateway server selects the model.
 	// Non-Gateway providers reject empty models at the API level.
 
-	// opencode-go expects the session ID only in the x-opencode-session header,
-	// not in the request body. Other providers accept these fields in the body.
-	var data []byte
-	if strings.Contains(p.BaseURL, "opencode.ai") {
-		var err error
-		body := chatCompletionRequest{
-			Model:           req.Model,
-			Messages:        newWireMessages(req.Messages),
-			Temperature:     req.Temperature,
-			ReasoningEffort: reasoningEffortToOpenAI(req.ReasoningEffort),
-			Tools:           toolsForGatewayRequest(req.Messages, req.Tools),
-			ToolChoice:      req.ToolChoice,
-		}
-		data, err = json.Marshal(body)
-		if err != nil {
-			return Response{}, err
-		}
-	} else {
-		var err error
-		body := chatCompletionRequest{
-			SessionID:       req.SessionID,
-			TurnID:          req.TurnID,
-			RequestID:       req.RequestID,
-			ExecutionID:     req.ExecutionID,
-			Model:           req.Model,
-			Messages:        newWireMessages(req.Messages),
-			Temperature:     req.Temperature,
-			ReasoningEffort: reasoningEffortToOpenAI(req.ReasoningEffort),
-			Tools:           toolsForGatewayRequest(req.Messages, req.Tools),
-			ToolChoice:      req.ToolChoice,
-		}
-		data, err = json.Marshal(body)
-		if err != nil {
-			return Response{}, err
-		}
+	// The session/turn/request/execution correlation fields are a Gateway-only
+	// body extension; strict OpenAI-compatible providers reject them.
+	body := chatCompletionRequest{
+		Model:           req.Model,
+		Messages:        newWireMessages(req.Messages),
+		Temperature:     req.Temperature,
+		ReasoningEffort: reasoningEffortToOpenAI(req.ReasoningEffort),
+		Tools:           toolsForGatewayRequest(req.Messages, req.Tools),
+		ToolChoice:      req.ToolChoice,
+	}
+	p.attachGatewayCorrelation(&body, req)
+	data, err := json.Marshal(body)
+	if err != nil {
+		return Response{}, err
 	}
 
 	httpReq, err := http.NewRequestWithContext(

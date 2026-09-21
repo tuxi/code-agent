@@ -178,8 +178,9 @@ var builtinConnections = map[string]builtinConnection{
 	//},
 	"opencode-go": {
 		BaseURL: "https://opencode.ai/zen/go/v1", Env: "OPENCODE_GO_API_KEY",
-		WireModel: "deepseek-flash", ProviderType: "openai",
-		DisplayName: "OpenCode Go", Summary: "低订阅费开源编程模型（首月 $5，之后 $10/月）", Kind: "api_key",
+		WireModel:    "qwen3.8-flash",
+		ProviderType: "openai",
+		DisplayName:  "OpenCode Go", Summary: "低订阅费开源编程模型（首月 $5，之后 $10/月）", Kind: "api_key",
 		Models: []builtinModelTemplate{
 			{ID: "gpt-5.6-luna", RuntimeAlias: "opencode", API: "responses", ContextWindow: 1_000_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text"}, InputPricePerM: 0.22, OutputPricePerM: 0.66, SupportedReasoningEfforts: []string{"low", "medium", "high", "x-high", "max"}, CanDisableReasoning: boolPtr(true), ReasoningEffort: "medium"},
 			{ID: "deepseek-v4.1-flash", RuntimeAlias: "opencode", ContextWindow: 1_000_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text"}, InputPricePerM: 0.22, OutputPricePerM: 0.66, SupportedReasoningEfforts: []string{"low", "medium", "high"}, CanDisableReasoning: boolPtr(true), ReasoningEffort: "low"},
