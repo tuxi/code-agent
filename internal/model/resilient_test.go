@@ -3,8 +3,10 @@ package model
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
+	"strings"
 	"testing"
 	"time"
 )
@@ -62,6 +64,79 @@ func TestResilientRetriesThenSucceeds(t *testing.T) {
 	}
 	if inner.calls != 3 {
 		t.Fatalf("calls = %d, want 3 (timeout, 503, success)", inner.calls)
+	}
+}
+
+// seqInner returns a scripted sequence of successful responses, so a test can
+// model "attempt 1 produced bad JSON, attempt 2 produced good JSON".
+type seqInner struct {
+	resps []Response
+	calls int
+}
+
+func (s *seqInner) Complete(context.Context, Request) (Response, error) {
+	i := s.calls
+	s.calls++
+	if i >= len(s.resps) {
+		return s.resps[len(s.resps)-1], nil
+	}
+	return s.resps[i], nil
+}
+
+func toolCallResponse(args string) Response {
+	return Response{
+		ToolCalls: []ToolCall{{
+			ID:       "call_1",
+			Type:     "function",
+			Function: FunctionCall{Name: "ask_user", Arguments: args},
+		}},
+		FinishReason: "tool_calls",
+	}
+}
+
+// TestResilientRetriesMalformedToolArguments pins the ask_user regression: a
+// model that emits a stray ']' on one sample usually produces valid JSON on the
+// next, so the turn must recover instead of failing outright.
+func TestResilientRetriesMalformedToolArguments(t *testing.T) {
+	inner := &seqInner{resps: []Response{
+		toolCallResponse(`{"questions":[{"header":"Auth"}]}]`),
+		toolCallResponse(`{"questions":[{"header":"Auth"}]}`),
+	}}
+	p := &ResilientProvider{Inner: inner, MaxRetries: 3, sleep: noSleep(), LogWriter: io.Discard}
+
+	resp, err := p.Complete(context.Background(), Request{Model: "m"})
+	if err != nil {
+		t.Fatalf("expected recovery after a resample, got %v", err)
+	}
+	if len(resp.ToolCalls) != 1 || resp.ToolCalls[0].Function.Arguments != `{"questions":[{"header":"Auth"}]}` {
+		t.Fatalf("unexpected recovered response: %+v", resp.ToolCalls)
+	}
+	if inner.calls != 2 {
+		t.Fatalf("calls = %d, want 2 (malformed then valid)", inner.calls)
+	}
+}
+
+// TestResilientSurfacesPersistentMalformedToolArguments is the other half: when
+// every sample is malformed, the turn still fails — and the error names the
+// offending arguments so the cause is diagnosable rather than silent.
+func TestResilientSurfacesPersistentMalformedToolArguments(t *testing.T) {
+	bad := `{"questions":[{"header":"Auth"}]}]`
+	inner := &seqInner{resps: []Response{toolCallResponse(bad)}}
+	p := &ResilientProvider{Inner: inner, MaxRetries: 2, sleep: noSleep(), LogWriter: io.Discard}
+
+	_, err := p.Complete(context.Background(), Request{Model: "m"})
+	if err == nil {
+		t.Fatal("expected persistent malformed arguments to fail the turn")
+	}
+	if !errors.Is(err, ErrInvalidToolArguments) {
+		t.Fatalf("error does not wrap ErrInvalidToolArguments: %v", err)
+	}
+	if !strings.Contains(err.Error(), bad) {
+		t.Fatalf("error omits the offending arguments: %v", err)
+	}
+	// MaxRetries=2 means 3 attempts total (retries + the initial call).
+	if inner.calls != 3 {
+		t.Fatalf("calls = %d, want 3 (retry budget exhausted)", inner.calls)
 	}
 }
 
@@ -183,6 +258,9 @@ func TestIsRetryableClassification(t *testing.T) {
 		{"canceled", context.Canceled, false},
 		{"net-timeout", timeoutErr{}, true},
 		{"decode-error", errors.New("decode response: bad json"), false},
+		{"empty-response", ErrEmptyAssistantResponse, true},
+		{"invalid-tool-args", ErrInvalidToolArguments, true},
+		{"invalid-tool-args-wrapped", fmt.Errorf("%w (finish_reason=%q)", ErrInvalidToolArguments, "tool_calls"), true},
 		{"nil", nil, false},
 	}
 	for _, c := range cases {

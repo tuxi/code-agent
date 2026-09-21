@@ -318,6 +318,12 @@ func isRetryable(err error) bool {
 	if errors.Is(err, ErrEmptyAssistantResponse) {
 		return true
 	}
+	// Malformed tool-call arguments are a model formatting slip (a stray bracket
+	// or a truncation), not a caller mistake: a resample usually yields
+	// well-formed JSON, so treat it as transient rather than failing the turn.
+	if errors.Is(err, ErrInvalidToolArguments) {
+		return true
+	}
 
 	var apiErr *APIError
 	if errors.As(err, &apiErr) {

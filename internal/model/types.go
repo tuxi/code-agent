@@ -13,6 +13,15 @@ import (
 // as a valid assistant message in OpenAI-compatible conversation history.
 var ErrEmptyAssistantResponse = errors.New("model returned an empty assistant response")
 
+// ErrInvalidToolArguments indicates that a provider returned a tool call whose
+// arguments are not a well-formed JSON object. Small/fast models routinely emit
+// a stray bracket or get truncated on nested-array schemas (e.g. ask_user's
+// options). It is classified as transient so the resilience layer resamples —
+// a fresh generation usually produces valid JSON — instead of failing the whole
+// turn. The offending text is attached to the error (truncated) so a persistent
+// failure can still be diagnosed.
+var ErrInvalidToolArguments = errors.New("tool call arguments are malformed")
+
 type Usage struct {
 	PromptTokens     int   `json:"prompt_tokens"`
 	CompletionTokens int   `json:"completion_tokens"`
@@ -177,14 +186,49 @@ func (c ToolCall) ValidateForHistory() error {
 		[]byte(c.Function.Arguments),
 		&arguments,
 	); err != nil {
-		return fmt.Errorf("function arguments are invalid JSON: %w", err)
+		return fmt.Errorf("%w: %v; arguments=%s",
+			ErrInvalidToolArguments, err, truncateForError(c.Function.Arguments, 500))
 	}
 
 	if _, ok := arguments.(map[string]any); !ok {
-		return errors.New("function arguments must be a JSON object")
+		return fmt.Errorf("%w: expected a JSON object, got %s; arguments=%s",
+			ErrInvalidToolArguments, jsonKind(arguments), truncateForError(c.Function.Arguments, 500))
 	}
 
 	return nil
+}
+
+// truncateForError bounds a model-generated string embedded in an error message.
+// It cuts on rune boundaries so the result stays valid UTF-8.
+func truncateForError(s string, maxRunes int) string {
+	if len(s) <= maxRunes { // bytes ≤ runes, so this is a safe fast path
+		return s
+	}
+	r := []rune(s)
+	if len(r) <= maxRunes {
+		return s
+	}
+	return string(r[:maxRunes]) + "…"
+}
+
+// jsonKind names the JSON type of a decoded value, for error messages.
+func jsonKind(v any) string {
+	switch v.(type) {
+	case map[string]any:
+		return "object"
+	case []any:
+		return "array"
+	case string:
+		return "string"
+	case float64:
+		return "number"
+	case bool:
+		return "boolean"
+	case nil:
+		return "null"
+	default:
+		return "unknown"
+	}
 }
 
 // FunctionCall carries the tool name and its arguments.

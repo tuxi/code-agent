@@ -51,6 +51,10 @@ func errorClass(err error) string {
 		return "timeout"
 	case errors.Is(err, context.Canceled):
 		return "canceled"
+	case errors.Is(err, ErrEmptyAssistantResponse):
+		return "empty_response"
+	case errors.Is(err, ErrInvalidToolArguments):
+		return "invalid_tool_args"
 	}
 	var apiErr *APIError
 	if errors.As(err, &apiErr) {
