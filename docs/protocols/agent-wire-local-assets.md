@@ -48,6 +48,7 @@ serialized into a Provider request. The model receives a text-only manifest
 containing relative path, filename, kind, MIME type, and size, plus instructions
 not to infer file contents and to call a client-side local analysis tool.
 
-Configuring a Gateway uploader does not authorize screenshot or camera output
-to be uploaded. Capture-result auto-upload is disabled unless a host supplies a
-separate explicit authorization.
+The Runtime never uploads screenshot or camera output. Capture and image tool
+results stay in the workspace: a vision-capable model consumes them as inline
+content parts, otherwise the model is told to call a client-side local analysis
+tool. No file bytes leave the machine through the Runtime.

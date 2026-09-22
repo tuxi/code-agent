@@ -63,7 +63,7 @@ func ValidateForkHistory(source *Session) error {
 	if source == nil {
 		return errors.New("session: fork requires source")
 	}
-	if len(source.GatewayAssetCache) > 0 || len(source.ReferenceLedger) > 0 {
+	if len(source.ReferenceLedger) > 0 {
 		return ErrForkAssetsUnsupported
 	}
 	for _, message := range source.Messages {

@@ -7,7 +7,6 @@ require (
 	charm.land/bubbletea/v2 v2.0.8
 	charm.land/lipgloss/v2 v2.0.5
 	github.com/alecthomas/chroma/v2 v2.15.0
-	github.com/aliyun/aliyun-oss-go-sdk v3.0.2+incompatible
 	github.com/atotto/clipboard v0.1.4
 	github.com/bluekeyes/go-gitdiff v0.8.1
 	github.com/catppuccin/go v0.3.0
@@ -91,7 +90,6 @@ require (
 	golang.org/x/oauth2 v0.35.0 // indirect
 	golang.org/x/sync v0.21.0 // indirect
 	golang.org/x/text v0.38.0 // indirect
-	golang.org/x/time v0.15.0 // indirect
 	golang.org/x/tools v0.46.0 // indirect
 	gopkg.in/warnings.v0 v0.1.2 // indirect
 	gorm.io/datatypes v1.2.7 // indirect

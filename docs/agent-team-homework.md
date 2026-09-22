@@ -386,7 +386,7 @@ Codex 的实际情况是：**`state_5.sqlite` 就是 index.db**（SQLite 做索�
 | `prompt_tokens` / `context_window` / `compact_threshold` | INTEGER | Token 预算管理 |
 | `created_at` / `updated_at` / `archived_at` | TEXT | 时间戳 |
 | `metadata` | TEXT (JSON) | 可扩展元数据（含 `turn_status`, `paused_at`） |
-| `gateway_assets` / `reference_ledger` | TEXT (JSON) | 资产和引用 |
+| `reference_ledger` | TEXT (JSON) | 会话级引用账本 |
 
 **code-agent 关联表（消息和事件在同一 SQLite 中）**：
 

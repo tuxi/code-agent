@@ -18,7 +18,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -245,15 +244,7 @@ type Runner struct {
 	// for REPL/TUI, from cfg.Workspace.Root.
 	WorkspaceRoot string
 
-	// AssetUploader turns locally materialized screenshot files into
-	// Gateway-owned references. Nil leaves non-Gateway executions unchanged.
-	AssetUploader model.AssetUploader
-	// AutoUploadCaptureAssets requires an explicit host opt-in. Merely wiring a
-	// Gateway uploader never authorizes screenshots or photos to leave the
-	// workspace.
-	AutoUploadCaptureAssets bool
-	assetUploadCache        map[string]model.GatewayAssetRef
-	UserAssetsSupported     bool
+	UserAssetsSupported bool
 
 	// VisionSupported mirrors the selected model's declared image input
 	// capability (settings.ModelConfig.SupportsVision). When true, local image
@@ -491,147 +482,6 @@ func normalizeToolAssets(refs []assets.Ref, workspaceRoot, turnID, callID string
 		}
 	}
 	return out
-}
-
-// gatewayImageCaptureAssets converts image output from screenshot, camera, and
-// screen-capture tools into Gateway-owned references so the VLM can consume them
-// in subsequent turns. It covers both server-side MCP captures (screenshot_capture)
-// and client-side captures (capture_photo, take_screenshot).
-func (r *Runner) gatewayImageCaptureAssets(ctx context.Context, sess *session.Session, toolName string, refs []assets.Ref) ([]model.GatewayAssetRef, string) {
-	if !r.AutoUploadCaptureAssets || r.AssetUploader == nil || !isImageCaptureTool(toolName) {
-		return nil, ""
-	}
-	var out []model.GatewayAssetRef
-	for i := range refs {
-		ref := &refs[i]
-		if !strings.HasPrefix(strings.ToLower(ref.MIMEType), "image/") || ref.AbsolutePath == "" {
-			continue
-		}
-		localPath, err := r.safeWorkspaceAssetPath(ref.AbsolutePath)
-		if err != nil {
-			// Client-side captures (camera photo, screen capture) may write
-			// to a temp directory outside the workspace. Stage the file
-			// into the workspace so Gateway upload can proceed.
-			if isClientImageCaptureTool(toolName) && r.WorkspaceRoot != "" {
-				staged, copyErr := copyAssetToWorkspace(ref.AbsolutePath, r.WorkspaceRoot, ref.MIMEType)
-				if copyErr != nil {
-					return out, "[asset_unavailable] could not stage client image asset in workspace."
-				}
-				localPath = staged
-				ref.AbsolutePath = staged
-			} else {
-				return out, "[asset_unavailable] image asset is outside the workspace."
-			}
-		}
-		sha, size, err := fileSHA256(localPath)
-		if err != nil {
-			return out, "[asset_unavailable] image asset could not be prepared for Gateway."
-		}
-		scope := "gateway:unknown"
-		if scoped, ok := r.AssetUploader.(model.AssetUploadScoper); ok {
-			scope = scoped.AssetUploadScope(ctx)
-		}
-		cacheKey := scope + ":" + ref.ID + ":" + sha
-		contentKey := scope + ":" + sha
-		if sess != nil && sess.GatewayAssetCache != nil {
-			if cached, ok := sess.GatewayAssetCache[cacheKey]; ok {
-				out = append(out, cached)
-				continue
-			}
-			if cached, ok := sess.GatewayAssetCache[contentKey]; ok {
-				out = append(out, cached)
-				continue
-			}
-		}
-		if r.assetUploadCache != nil {
-			if cached, ok := r.assetUploadCache[cacheKey]; ok {
-				out = append(out, cached)
-				continue
-			}
-		}
-		filename := filepath.Base(localPath)
-		assetClass, businessType := imageCaptureAssetClasses(toolName)
-		gatewayRef, err := r.AssetUploader.UploadAsset(ctx, model.AssetUpload{
-			Path: localPath, AssetClass: assetClass, AssetKind: "image", BusinessType: businessType,
-			Filename: filename, MIMEType: ref.MIMEType, SizeBytes: size, SHA256: sha,
-		})
-		if err != nil {
-			return out, "[asset_unavailable] image upload to Gateway failed."
-		}
-		if r.assetUploadCache == nil {
-			r.assetUploadCache = make(map[string]model.GatewayAssetRef)
-		}
-		r.assetUploadCache[cacheKey] = gatewayRef
-		if sess != nil {
-			if sess.GatewayAssetCache == nil {
-				sess.GatewayAssetCache = make(map[string]model.GatewayAssetRef)
-			}
-			sess.GatewayAssetCache[cacheKey] = gatewayRef
-			sess.GatewayAssetCache[contentKey] = gatewayRef
-		}
-		if ref.Metadata == nil {
-			ref.Metadata = map[string]any{}
-		}
-		ref.Metadata["gateway_asset_id"] = strconv.FormatInt(gatewayRef.AssetID, 10)
-		ref.Metadata["gateway_sha256"] = gatewayRef.SHA256
-		out = append(out, gatewayRef)
-	}
-	if len(out) == 0 {
-		return nil, "[asset_unavailable] no uploadable image asset found."
-	}
-	return deduplicateGatewayAssets(out), ""
-}
-
-func deduplicateGatewayAssets(refs []model.GatewayAssetRef) []model.GatewayAssetRef {
-	if len(refs) < 2 {
-		return refs
-	}
-	seen := make(map[string]bool, len(refs))
-	out := make([]model.GatewayAssetRef, 0, len(refs))
-	for _, ref := range refs {
-		key := strconv.FormatInt(ref.AssetID, 10) + "\x00" + ref.SHA256
-		if seen[key] {
-			continue
-		}
-		seen[key] = true
-		out = append(out, ref)
-	}
-	return out
-}
-
-// isImageCaptureTool reports whether toolName is a tool whose image output
-// should be uploaded to Gateway for VLM consumption. It covers:
-//   - screenshot_capture (including MCP-prefixed variants)
-//   - capture_photo (client-side camera capture)
-//   - take_screenshot (client-side screen capture)
-func isImageCaptureTool(toolName string) bool {
-	if toolName == "screenshot_capture" || strings.HasSuffix(toolName, "__screenshot_capture") {
-		return true
-	}
-	switch toolName {
-	case "capture_photo", "take_screenshot":
-		return true
-	}
-	return false
-}
-
-// imageCaptureAssetClasses maps an image-capture tool name to Gateway
-// (AssetClass, BusinessType) pairs for telemetry downstream.
-func imageCaptureAssetClasses(toolName string) (string, string) {
-	if toolName == "capture_photo" {
-		return "agent_photo", "agent_photo"
-	}
-	return "agent_screenshot", "agent_screenshot"
-}
-
-// isClientImageCaptureTool reports whether toolName is a client-side image
-// capture tool (as opposed to a server-side MCP screenshot_capture).
-func isClientImageCaptureTool(toolName string) bool {
-	switch toolName {
-	case "capture_photo", "take_screenshot":
-		return true
-	}
-	return false
 }
 
 // copyAssetToWorkspace copies an image file from an arbitrary location into

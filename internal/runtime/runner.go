@@ -109,13 +109,10 @@ func BuildRunner(cfg settings.Settings, mc settings.ModelConfig, provider model.
 			return agent.StopVerdict{Continue: v.Continue, Message: v.Message}, nil
 		})
 	}
-	// Asset upload is a Gateway-only capability. Direct OpenAI-compatible and
-	// Ollama models must never receive Gateway asset references by accident.
+	// User-asset references are a Gateway-only capability. Direct OpenAI-compatible
+	// and Ollama models must never receive Gateway asset references by accident.
 	if isGatewayModelEndpoint(mc.BaseURL) {
 		runner.UserAssetsSupported = true
-		if uploader, ok := provider.(model.AssetUploader); ok {
-			runner.AssetUploader = uploader
-		}
 	}
 	// Vision input is a per-model capability, but the injection only fires when
 	// the wire transport can actually serialize content parts. OpenAI-compatible

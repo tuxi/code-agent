@@ -42,11 +42,6 @@ type Session struct {
 
 	Messages []model.Message
 	Metadata map[string]any
-	// GatewayAssetCache maps a content hash (and optional local asset identity)
-	// to an ownership-bound Gateway asset reference. It persists no bytes, STS,
-	// OSS URL, or local path, allowing a resumed session to avoid re-uploading an
-	// unchanged screenshot under the same authenticated Gateway session.
-	GatewayAssetCache map[string]model.GatewayAssetRef
 
 	// ReferenceLedger holds session-scoped opaque MCP values. The model only
 	// sees their $ref handles; raw values are restored solely to resolve a later

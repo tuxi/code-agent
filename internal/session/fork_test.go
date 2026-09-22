@@ -62,7 +62,6 @@ func TestForkHistoryIntoFailsClosedForSessionScopedState(t *testing.T) {
 		source *Session
 		want   error
 	}{
-		{name: "gateway cache", source: &Session{GatewayAssetCache: map[string]model.GatewayAssetRef{"x": {AssetID: 1}}}, want: ErrForkAssetsUnsupported},
 		{name: "reference ledger", source: &Session{ReferenceLedger: []reference.Entry{{}}}, want: ErrForkAssetsUnsupported},
 		{name: "message asset", source: &Session{Messages: []model.Message{{Assets: []model.GatewayAssetRef{{AssetID: 1}}}}}, want: ErrForkAssetsUnsupported},
 	}

@@ -46,9 +46,6 @@ func sampleSession() *session.Session {
 			{BeforeTokens: 90000, AfterTokens: 27000, SavedTokens: 63000, CompressionRatio: 0.7, SummaryChars: 1800, CompactedAt: now},
 		},
 		PromptTokens: 27000,
-		GatewayAssetCache: map[string]model.GatewayAssetRef{
-			"abc": {AssetID: 42, SHA256: "abc", Kind: "image", MIMEType: "image/png", Filename: "screenshot.png"},
-		},
 		ReferenceLedger:  []reference.Entry{{Handle: "ref_0001", RawValue: "snapshot_hidden", Kind: "snapshot", SessionID: "20260616-101500-deadbeef", Scope: "session", CreatedAt: now, ExpiresAt: now.Add(time.Minute)}},
 		ContextWindow:    128000,
 		CompactThreshold: 89600,
@@ -137,9 +134,6 @@ func TestStoreRoundTrip(t *testing.T) {
 
 	if len(got.Compactions) != 1 || got.Compactions[0].SavedTokens != 63000 {
 		t.Fatalf("compaction trace lost: %+v", got.Compactions)
-	}
-	if got.GatewayAssetCache["abc"].AssetID != 42 {
-		t.Fatalf("gateway asset cache lost: %+v", got.GatewayAssetCache)
 	}
 	if len(got.ReferenceLedger) != 1 || got.ReferenceLedger[0].RawValue != "snapshot_hidden" {
 		t.Fatalf("reference ledger lost: %+v", got.ReferenceLedger)

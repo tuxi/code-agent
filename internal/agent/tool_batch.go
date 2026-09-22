@@ -413,12 +413,6 @@ func (r *Runner) commitToolResult(ctx context.Context, sess *session.Session, tu
 	step.FinishedAt = time.Now()
 	turn.Steps = append(turn.Steps, step)
 	assetRefs := normalizeToolAssets(res.assetRefs, r.WorkspaceRoot, r.emitTurnID, p.call.ID)
-	gatewayAssets, assetNote := r.gatewayImageCaptureAssets(ctx, sess, p.call.Function.Name, assetRefs)
-	if assetNote != "" {
-		observation += "\n" + assetNote
-		step.Observation = observation
-		turn.Steps[len(turn.Steps)-1].Observation = observation
-	}
 	toolLocalAssets := r.visionToolLocalAssets(assetRefs)
 	*turnAssets = append(*turnAssets, assetRefs...)
 
@@ -439,7 +433,6 @@ func (r *Runner) commitToolResult(ctx context.Context, sess *session.Session, tu
 		Role:        model.RoleTool,
 		ToolCallID:  p.call.ID,
 		Content:     observation,
-		Assets:      gatewayAssets,
 		LocalAssets: toolLocalAssets,
 	})
 	sess.UpdatedAt = time.Now()

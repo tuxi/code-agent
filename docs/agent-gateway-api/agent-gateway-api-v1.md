@@ -529,6 +529,10 @@ tool result 后，再调用文本推理模型。不会在 `assistant.tool_calls`
 `visual_observation.status`（`image_unavailable`、`image_unsupported` 或
 `vision_failed`），不会伪造观察结果。
 
+> 注：Code-Agent Runtime 已不再自动上传截图/相机产物，`screenshot_capture` 不再
+> 产生 tool asset；`assets` 现仅来自用户在客户端显式上传（加号按钮）。上述
+> `vision_then_reason` 行为仅对仍显式上传的 tool asset 有效。
+
 ### 4.2 非流式响应
 
 ```json
