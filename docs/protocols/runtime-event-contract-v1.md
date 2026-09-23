@@ -305,6 +305,42 @@ LLM returned.
 | `elapsed_ms` | int | Model call duration in milliseconds |
 | `err` | string | null or error message |
 
+#### `model_retrying` (since v1.5)
+
+A model call failed with a **transient** error and the resilience layer is
+about to retry it — or, when `retry_fallback` is set, to replay a failed
+streaming attempt without streaming. Emitted so a live client can explain a
+stall instead of only spinning, and so a recovered call leaves a visible trace
+of the hiccup.
+
+**Live-only.** Like `token_delta` / `reasoning_delta`, it is never persisted and
+has no `seq`: a reconnecting client does not receive it, and replay MUST NOT
+render it. The durable record of a failure is `model_finished.err` /
+`turn_failed` (plus the telemetry store's per-request attempts/trace).
+
+A client SHOULD render it as a transient notice (e.g. `⚠ retrying (2/5) in 3s`)
+and MUST clear that notice when the invocation resolves (`model_finished`).
+
+```json
+{
+  "kind": "model_retrying",
+  "invocation_id": "inv_...",
+  "attempt": 1,
+  "max_attempts": 6,
+  "retry_delay_ms": 500,
+  "err": "model api error: status=503 type=provider_overloaded message=Upstream error from Nvidia: Service temporarily overloaded"
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `invocation_id` | string | Same id as the paired `model_started` / `model_finished`, so a client attaches the notice to the in-flight invocation |
+| `attempt` | int | Ordinal of the attempt that just failed (1-based); `0` for the fallback case |
+| `max_attempts` | int | Total attempts allowed for this call (`retries + 1`); `0` for the fallback case |
+| `retry_delay_ms` | int | Backoff before the next attempt in milliseconds; omitted for the fallback case |
+| `retry_fallback` | bool | `true` when this is the stream→non-stream replay boundary (the streaming attempt failed) rather than a timed retry; `attempt` / `max_attempts` are `0` then |
+| `err` | string | The failure that triggered the retry, trimmed and capped; may be empty |
+
 #### `token_delta` (since v1.0)
 
 Streaming final-answer text chunk. **Not persisted** — live WebSocket only, never stored in event log. Reconnect after disconnect will NOT replay `token_delta` frames. The complete text is always available in `turn_finished.text`.
@@ -797,6 +833,7 @@ After handshake, client may register executable tools:
 turn_started
     │
     ├─ model_started
+    │     ├─ model_retrying × N (transient failures being retried; live-only)
     │     ├─ reasoning_delta × N (may appear; may interleave)
     │     ├─ token_delta × N
     │     ├─ thinking (complete snapshot; may appear)
@@ -923,6 +960,7 @@ Job 子流（`GET /v1/jobs/{id}/stream`）使用**相同的事件信封**（§4�
 | `model_started` | v1.0 | Model | ✅ | ✅ |
 | `model_request` | v1.4 | Model | ✅ | ✅ |
 | `model_finished` | v1.0 | Model | ✅ | ✅ |
+| `model_retrying` | v1.5 | Model | ❌* | ❌ |
 | `token_delta` | v1.0 | Model | ❌* | ❌ |
 | `reasoning_delta` | v1.2 | Model | ❌* | ❌ |
 | `thinking` | v1.0 | Model | ✅ | ✅ |
@@ -949,8 +987,9 @@ Job 子流（`GET /v1/jobs/{id}/stream`）使用**相同的事件信封**（§4�
 | `workflow_finished` | v1.3 | Workflow | ✅ | ✅ |
 | `workflow_failed` | v1.3 | Workflow | ✅ | ✅ |
 
-> \* `token_delta` and `reasoning_delta` are live-only and never replayed. Their
-> authoritative snapshots are `turn_finished.text` and `thinking.text` respectively.
+> \* `token_delta`, `reasoning_delta`, and `model_retrying` are live-only and
+> never replayed. Their authoritative counterparts are `turn_finished.text`, the
+> `thinking` snapshot, and `model_finished.err` / `turn_failed` respectively.
 
 ---
 

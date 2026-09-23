@@ -32,6 +32,10 @@ func (p *liveProgress) Emit(e agent.Event) {
 		p.start()
 	case agent.EventModelFinished:
 		p.stopAndClear()
+	case agent.EventModelRetrying:
+		// Erase the in-place progress line first, so the retry notice prints on a
+		// clean line; the ticker resumes on the line below it.
+		p.clearLine()
 	}
 	p.next.Emit(e)
 }
@@ -86,5 +90,17 @@ func (p *liveProgress) stopAndClear() {
 	close(p.stop)
 	p.active = false
 	// 清除整行并强行将光标拨回行首，确保后面的真正的 Content 输出从干净的新行开始
+	fmt.Fprint(p.w, "\r\033[K")
+}
+
+// clearLine erases the in-place progress line WITHOUT stopping the ticker, so an
+// interleaved notice (a retry notice) prints on a clean line and the spinner
+// resumes on the line below. No-op when the ticker is not running.
+func (p *liveProgress) clearLine() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if !p.active {
+		return
+	}
 	fmt.Fprint(p.w, "\r\033[K")
 }

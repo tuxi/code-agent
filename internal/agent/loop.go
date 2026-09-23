@@ -1681,6 +1681,20 @@ func (r *Runner) complete(ctx context.Context, req model.Request, streamedText, 
 		ToolChoice:        req.ToolChoice,
 		Streamed:          streamed,
 	})
+	// Surface the resilience layer's retries to the live renderer. The notifier
+	// rides the request context rather than the provider instance, because a
+	// provider is shared across concurrent turns (the daemon serves many
+	// sessions off one base provider) — a field there would cross streams.
+	ctx = model.WithRetryNotifier(ctx, func(info model.RetryInfo) {
+		r.emit(Event{
+			Kind:          EventModelRetrying,
+			Attempt:       info.Attempt,
+			MaxAttempts:   info.MaxAttempts,
+			RetryDelayMs:  int(info.Delay / time.Millisecond),
+			RetryFallback: info.Fallback,
+			Err:           retryReasonText(info.Err),
+		})
+	})
 	if r.Stream {
 		if sp, ok := r.Model.(model.StreamingProvider); ok {
 			resp, err := sp.CompleteStream(ctx, req, func(delta string) {
@@ -1705,6 +1719,20 @@ func (r *Runner) complete(ctx context.Context, req model.Request, streamedText, 
 		r.recordCacheSample(resp.Usage.PromptTokens, resp.Usage.CachedPromptTokens)
 	}
 	return resp, err
+}
+
+// retryReasonText renders a retry's underlying error for the live notice. It is
+// trimmed and capped so a long upstream body cannot flood the status line.
+func retryReasonText(err error) string {
+	if err == nil {
+		return ""
+	}
+	msg := strings.TrimSpace(err.Error())
+	const max = 200
+	if len(msg) > max {
+		msg = msg[:max] + "…"
+	}
+	return msg
 }
 
 // workflowPlanApproval returns a PlanApproval callback wired to the Runner's

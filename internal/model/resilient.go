@@ -47,6 +47,51 @@ type ResilientProvider struct {
 	sleep func(time.Duration)
 }
 
+// RetryInfo describes a retry the resilience layer is about to make. It is
+// delivered to the RetryNotifier carried on the request context, so a provider
+// instance shared by concurrent turns always notifies the turn that issued the
+// call.
+type RetryInfo struct {
+	// Attempt is the ordinal of the attempt that just failed (1-based).
+	Attempt int
+	// MaxAttempts is the total number of attempts allowed (MaxRetries + 1).
+	MaxAttempts int
+	// Delay is the backoff the layer will wait before the next attempt.
+	Delay time.Duration
+	// Err is the failure that triggered the retry.
+	Err error
+	// Fallback marks the stream→non-stream boundary rather than a timed retry:
+	// the streaming attempt failed and the same request is being replayed
+	// without streaming. Attempt/MaxAttempts are zero and Delay is unset then.
+	Fallback bool
+}
+
+// RetryNotifier receives one RetryInfo before each retry. It is a plain
+// callback, deliberately not part of the Provider interface: the caller injects
+// it per request via WithRetryNotifier, which keeps a shared provider instance
+// free of per-turn callback state (and therefore race-free across concurrent
+// sessions).
+type RetryNotifier func(RetryInfo)
+
+type retryNotifierKey struct{}
+
+// WithRetryNotifier returns a context carrying n, so the resilience layer can
+// announce its retries to the caller. A nil n returns ctx unchanged.
+func WithRetryNotifier(ctx context.Context, n RetryNotifier) context.Context {
+	if n == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, retryNotifierKey{}, n)
+}
+
+// notifyRetry invokes the context's notifier, if any. Best-effort: a notifier
+// must never fail the request.
+func notifyRetry(ctx context.Context, info RetryInfo) {
+	if n, ok := ctx.Value(retryNotifierKey{}).(RetryNotifier); ok && n != nil {
+		n(info)
+	}
+}
+
 func (p *ResilientProvider) AssetUploadScope(ctx context.Context) string {
 	if scoped, ok := p.Inner.(AssetUploadScoper); ok {
 		return scoped.AssetUploadScope(ctx)
@@ -151,6 +196,9 @@ func (p *ResilientProvider) Complete(ctx context.Context, req Request) (resp Res
 			break
 		}
 		delay := p.backoffFor(attempt)
+		// Announce the upcoming retry to the caller's notifier (if any) so a live
+		// client can explain the stall instead of just spinning.
+		notifyRetry(ctx, RetryInfo{Attempt: attempt, MaxAttempts: attempts, Delay: delay, Err: err})
 		p.logf("[provider] attempt %d failed: %s after %s — retrying in %s\n",
 			attempt, class, attemptDur.Round(100*time.Millisecond), delay.Round(10*time.Millisecond))
 		if !p.wait(ctx, delay) {
@@ -218,6 +266,10 @@ func (p *ResilientProvider) CompleteStream(ctx context.Context, req Request, onT
 		return Response{}, err
 	}
 	//p.logf("[provider] stream failed: %s — falling back to non-streamed retry\n", errorClass(err))
+	// Announce the stream→non-stream boundary: the live preview died, and a
+	// non-streamed replay is about to run (its own retries are announced
+	// separately by Complete).
+	notifyRetry(ctx, RetryInfo{Err: err, Fallback: true})
 	return p.Complete(ctx, req)
 }
 

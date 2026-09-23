@@ -3,7 +3,9 @@ package agent
 import (
 	"context"
 	"errors"
+	"io"
 	"testing"
+	"time"
 
 	"code-agent/internal/model"
 )
@@ -172,5 +174,79 @@ func TestNoTokenDeltasWhenStreamDisabled(t *testing.T) {
 		if e.Kind == EventTokenDelta {
 			t.Fatal("no token deltas should be emitted when Stream is off")
 		}
+	}
+}
+
+// retryingProvider fails twice with a retryable error, then succeeds. It
+// implements both Complete and CompleteStream so the resilience layer's
+// fallback path is also exercised.
+type retryingProvider struct {
+	attempt int
+}
+
+func (p *retryingProvider) Complete(ctx context.Context, req model.Request) (model.Response, error) {
+	p.attempt++
+	if p.attempt <= 2 {
+		return model.Response{}, &model.APIError{StatusCode: 503, Message: "overloaded"}
+	}
+	return model.Response{Content: "ok", FinishReason: "stop"}, nil
+}
+
+func (p *retryingProvider) CompleteStream(ctx context.Context, req model.Request, onText, onReasoning func(string)) (model.Response, error) {
+	// Always fail the stream so the resilience layer falls back to Complete.
+	return model.Response{}, &model.APIError{StatusCode: 503, Message: "stream failed"}
+}
+
+// TestModelRetryingEvent verifies that the resilience layer's retries are
+// surfaced as EventModelRetrying events with the correct attempt numbers and
+// fallback flag.
+func TestModelRetryingEvent(t *testing.T) {
+	em := &capturingEmitter{}
+	provider := &retryingProvider{}
+	// Wrap in ResilientProvider so retries are executed and notified.
+	// sleep field is unexported; omit it (defaults to real sleep, fast enough for 2 retries).
+	resilient := &model.ResilientProvider{
+		Inner:      provider,
+		MaxRetries: 2,
+		Backoff:    500 * time.Millisecond,
+		LogWriter:  io.Discard,
+	}
+	runner := &Runner{
+		Model:    resilient,
+		Stream:   true,
+		MaxSteps: 3,
+		Emitter:  em,
+	}
+
+	_, err := runner.RunTurn(context.Background(), newSession(), "go")
+	if err != nil {
+		t.Fatalf("expected success after retries, got %v", err)
+	}
+
+	var retries []Event
+	for _, e := range em.events {
+		if e.Kind == EventModelRetrying {
+			retries = append(retries, e)
+		}
+	}
+
+	// Expect: 1 fallback (stream failed) + 2 retries from the fallback Complete.
+	if len(retries) != 3 {
+		t.Fatalf("expected 3 model_retrying events (1 fallback + 2 retries), got %d: %+v", len(retries), retries)
+	}
+
+	// First: fallback (Attempt=0, Fallback=true)
+	if retries[0].Attempt != 0 || retries[0].MaxAttempts != 0 || !retries[0].RetryFallback {
+		t.Fatalf("first = %+v, want fallback", retries[0])
+	}
+
+	// Second: first retry of fallback Complete (Attempt=1, MaxAttempts=3)
+	if retries[1].Attempt != 1 || retries[1].MaxAttempts != 3 || retries[1].RetryFallback {
+		t.Fatalf("second = %+v, want attempt=1 max=3 fallback=false", retries[1])
+	}
+
+	// Third: second retry of fallback Complete (Attempt=2, MaxAttempts=3)
+	if retries[2].Attempt != 2 || retries[2].MaxAttempts != 3 || retries[2].RetryFallback {
+		t.Fatalf("third = %+v, want attempt=2 max=3 fallback=false", retries[2])
 	}
 }

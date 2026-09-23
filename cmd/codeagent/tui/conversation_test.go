@@ -408,3 +408,43 @@ func TestResumeReplayPreservesChronologicalOrder(t *testing.T) {
 		t.Fatalf("final answers misplaced: %+v", msgs)
 	}
 }
+
+// TestModelRetryingNoticeTransient verifies that the TUI renders a transient
+// notice for model_retrying and clears it on model_finished.
+func TestModelRetryingNoticeTransient(t *testing.T) {
+	c := &Conversation{}
+
+	// First retry: fallback (stream interrupted)
+	c.Apply(agent.Event{
+		Kind:          agent.EventModelRetrying,
+		Attempt:       0,
+		MaxAttempts:   0,
+		RetryDelayMs:  0,
+		RetryFallback: true,
+		Err:           "stream interrupted",
+	})
+
+	// Second retry: timed retry
+	c.Apply(agent.Event{
+		Kind:         agent.EventModelRetrying,
+		Attempt:      1,
+		MaxAttempts:  3,
+		RetryDelayMs: 500,
+		Err:          "overloaded",
+	})
+
+	// model_finished should clear the notice
+	c.Apply(agent.Event{
+		Kind:         agent.EventModelFinished,
+		PromptTokens: 100,
+		Elapsed:      time.Second,
+	})
+
+	// The conversation should not contain any system message from the retry
+	// (the notice is rendered in the status bar, not the transcript).
+	for _, m := range c.Messages() {
+		if m.Kind == chat.KindSystem && strings.Contains(m.Content, "retry") {
+			t.Fatalf("retry notice leaked into transcript: %+v", m)
+		}
+	}
+}

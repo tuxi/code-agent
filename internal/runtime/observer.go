@@ -69,7 +69,9 @@ func (e EventStoreEmitter) Emit(ev agent.Event) {
 	// Text and reasoning deltas are ephemeral live previews, not part of the
 	// durable stream. EventTurnFinished and EventThinking carry their respective
 	// authoritative snapshots, so persisting every delta would only bloat logs.
-	if ev.Kind != agent.EventTokenDelta && ev.Kind != agent.EventReasoningDelta {
+	// model_retrying is the same kind of live-only progress: the durable record
+	// of a failure is model_finished.err / turn_failed (and telemetry).
+	if ev.Kind != agent.EventTokenDelta && ev.Kind != agent.EventReasoningDelta && ev.Kind != agent.EventModelRetrying {
 		// Tool stream persistence cap: overflow chunks are still forwarded to the
 		// renderer but not persisted; the tail lands as a marker at tool_finished.
 		if e.ToolStreams != nil && (ev.Kind == agent.EventToolStdout || ev.Kind == agent.EventToolStderr) {

@@ -36,6 +36,21 @@ func (f *fakeInner) Complete(ctx context.Context, req Request) (Response, error)
 	return f.resp, nil
 }
 
+// fakeStreamProviderForRetryTest wraps a fakeInner to implement StreamingProvider.
+// Its CompleteStream always fails (so the resilience layer falls back to Complete),
+// and its Complete delegates to the inner.
+type fakeStreamProviderForRetryTest struct {
+	inner *fakeInner
+}
+
+func (f *fakeStreamProviderForRetryTest) CompleteStream(ctx context.Context, req Request, onText, onReasoning func(string)) (Response, error) {
+	return Response{}, &APIError{StatusCode: 503, Message: "stream failed"}
+}
+
+func (f *fakeStreamProviderForRetryTest) Complete(ctx context.Context, req Request) (Response, error) {
+	return f.inner.Complete(ctx, req)
+}
+
 // timeoutErr is a net.Error reporting a timeout, like a transport-level read
 // timeout.
 type timeoutErr struct{}
@@ -361,5 +376,70 @@ func TestResilientStatRecordsTimeout(t *testing.T) {
 	s := obs.stats[0]
 	if !s.TimedOut || s.ErrorClass != "timeout" || s.Attempts != 2 {
 		t.Fatalf("unexpected stat: %+v", s)
+	}
+}
+
+func TestResilientNotifiesRetries(t *testing.T) {
+	// The resilience layer must invoke the context's RetryNotifier before each
+	// backoff wait, and once at the stream→non-stream fallback boundary.
+	var got []RetryInfo
+	notifier := func(info RetryInfo) { got = append(got, info) }
+
+	inner := &fakeInner{
+		errs: []error{timeoutErr{}, &APIError{StatusCode: 503}},
+		resp: Response{Content: "ok"},
+	}
+	p := &ResilientProvider{Inner: inner, MaxRetries: 3, Backoff: 500 * time.Millisecond, sleep: noSleep(), LogWriter: io.Discard}
+
+	ctx := WithRetryNotifier(context.Background(), notifier)
+	_, err := p.Complete(ctx, Request{Model: "m"})
+	if err != nil {
+		t.Fatalf("expected success after retries, got %v", err)
+	}
+
+	// Two retries (timeout, then 503) before the successful third attempt.
+	if len(got) != 2 {
+		t.Fatalf("notifier called %d times, want 2", len(got))
+	}
+	// Full jitter: delay is in [base/2, base]. Base=500ms, so expect [250ms, 500ms].
+	if got[0].Attempt != 1 || got[0].MaxAttempts != 4 || got[0].Delay < 250*time.Millisecond || got[0].Delay > 500*time.Millisecond || got[0].Fallback {
+		t.Fatalf("first retry = %+v, want attempt=1 max=4 delay in [250ms,500ms] fallback=false", got[0])
+	}
+	if got[1].Attempt != 2 || got[1].MaxAttempts != 4 || got[1].Fallback {
+		t.Fatalf("second retry = %+v, want attempt=2 max=4 fallback=false", got[1])
+	}
+}
+
+func TestResilientNotifiesStreamFallback(t *testing.T) {
+	// A streaming failure that falls back to non-streamed Complete must fire a
+	// fallback notification (Attempt/MaxAttempts zero, Fallback=true), followed
+	// by any retries from the fallback Complete call.
+	var got []RetryInfo
+	notifier := func(info RetryInfo) { got = append(got, info) }
+
+	// Inner provider fails on stream, then fails once on non-stream, then succeeds.
+	inner := &fakeInner{
+		errs: []error{&APIError{StatusCode: 503}},
+		resp: Response{Content: "ok"},
+	}
+	sp := &fakeStreamProviderForRetryTest{inner: inner}
+	p := &ResilientProvider{Inner: sp, MaxRetries: 2, Backoff: 500 * time.Millisecond, sleep: noSleep(), LogWriter: io.Discard}
+
+	ctx := WithRetryNotifier(context.Background(), notifier)
+	_, err := p.CompleteStream(ctx, Request{Model: "m"}, nil, nil)
+	if err != nil {
+		t.Fatalf("expected fallback success, got %v", err)
+	}
+
+	// First: the fallback notification (Attempt=0, Fallback=true).
+	// Second: the retry from the fallback Complete (Attempt=1, MaxAttempts=3).
+	if len(got) != 2 {
+		t.Fatalf("notifier called %d times, want 2 (fallback + 1 retry)", len(got))
+	}
+	if got[0].Attempt != 0 || got[0].MaxAttempts != 0 || !got[0].Fallback {
+		t.Fatalf("first = %+v, want fallback", got[0])
+	}
+	if got[1].Attempt != 1 || got[1].MaxAttempts != 3 || got[1].Fallback {
+		t.Fatalf("second = %+v, want attempt=1 max=3 fallback=false", got[1])
 	}
 }

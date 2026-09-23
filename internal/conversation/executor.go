@@ -1776,6 +1776,7 @@ func isEphemeralRuntimeEvent(kind agent.EventKind) bool {
 	switch kind {
 	case agent.EventTokenDelta,
 		agent.EventReasoningDelta,
+		agent.EventModelRetrying,
 		agent.EventWorkflowTaskProgress,
 		agent.EventWorkflowNodeProgress,
 		agent.EventWorkflowNodeDebug,

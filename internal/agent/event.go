@@ -23,6 +23,14 @@ const (
 	EventModelStarted   EventKind = "model_started"   // about to call the model
 	EventModelRequest   EventKind = "model_request"   // the request envelope: model, advertised tools, context shape
 	EventModelFinished  EventKind = "model_finished"  // model returned (carries latency)
+	// EventModelRetrying: a model call failed with a transient error and the
+	// resilience layer is about to retry it (or to replay a failed stream
+	// without streaming). Ephemeral — live-only progress, like the token and
+	// reasoning deltas: the durable record of the failure is model_finished's
+	// err / turn_failed, and the telemetry store's per-request attempts/trace.
+	// A client renders it as a transient "retrying (2/5) in 3s" notice and
+	// clears it when the invocation resolves.
+	EventModelRetrying  EventKind = "model_retrying"
 	EventTokenDelta     EventKind = "token_delta"     // streamed final-answer text; ephemeral, not persisted
 	EventReasoningDelta EventKind = "reasoning_delta" // streamed provider-visible reasoning; ephemeral, not persisted
 	EventThinking       EventKind = "thinking"        // complete provider-visible reasoning snapshot; persisted
@@ -212,6 +220,16 @@ type Event struct {
 	SucceededToolCalls int           // TurnFinished/Failed: executed calls without an execution error
 	BillableToolCalls  int           // TurnFinished/Failed: unique calls carrying a Gateway usage receipt
 	Elapsed            time.Duration // ModelFinished: how long the model call took (P3.8 uses this)
+
+	// ModelRetrying: the retry the resilience layer is about to make. Attempt is
+	// the 1-based ordinal of the attempt that just failed, MaxAttempts the total
+	// allowed, RetryDelayMs the backoff before the next attempt. RetryFallback
+	// marks the stream→non-stream replay boundary instead of a timed retry
+	// (Attempt/MaxAttempts are 0 and RetryDelayMs unset then).
+	Attempt       int
+	MaxAttempts   int
+	RetryDelayMs  int
+	RetryFallback bool
 
 	// Compaction (Compacted / ContextPruned). AfterTokens == 0 means "just
 	// compacted, size not yet measured"; > 0 means the next model call measured

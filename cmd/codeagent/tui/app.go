@@ -22,6 +22,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
@@ -456,6 +457,17 @@ func (m *model) handleEvent(ev agent.Event) tea.Cmd {
 		if ev.PromptTokens > 0 {
 			m.status.SetTokens(int64(ev.PromptTokens))
 		}
+		// The invocation resolved — a retry notice left over from a recovered
+		// call must not linger.
+		cmds = append(cmds, util.CmdHandler(util.ClearStatusMsg{}))
+	case agent.EventModelRetrying:
+		// Transient, Claude-style notice while the resilience layer backs off.
+		// The TTL is a backstop; model_finished clears it explicitly on recovery.
+		cmds = append(cmds, util.CmdHandler(util.InfoMsg{
+			Type: util.InfoTypeWarn,
+			Msg:  retryNotice(ev),
+			TTL:  time.Duration(ev.RetryDelayMs)*time.Millisecond + 2*time.Second,
+		}))
 	}
 	// One event's messages travel as a single ordered batch. The old path sent
 	// each message as its own command via tea.Batch, which runs commands
@@ -467,6 +479,27 @@ func (m *model) handleEvent(ev agent.Event) tea.Cmd {
 	}
 	cmds = append(cmds, waitForEvent(m.b.events))
 	return tea.Batch(cmds...)
+}
+
+// retryNotice renders the transient status-bar text for a model retry: a timed
+// retry shows the attempt ordinal and the backoff, while the stream→non-stream
+// fallback explains why the live preview stopped. The underlying error (already
+// capped by the loop) is appended and the status bar truncates to width.
+func retryNotice(ev agent.Event) string {
+	if ev.RetryFallback {
+		if ev.Err != "" {
+			return "⚠ stream interrupted — retrying without streaming: " + ev.Err
+		}
+		return "⚠ stream interrupted — retrying without streaming"
+	}
+	msg := fmt.Sprintf("⚠ model call failed — retrying (%d/%d)", ev.Attempt, ev.MaxAttempts)
+	if ev.RetryDelayMs > 0 {
+		msg += fmt.Sprintf(" in %.1fs", float64(ev.RetryDelayMs)/1000)
+	}
+	if ev.Err != "" {
+		msg += ": " + ev.Err
+	}
+	return msg
 }
 
 // --- dialog openers ----------------------------------------------------------

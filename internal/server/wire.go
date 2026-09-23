@@ -87,6 +87,13 @@ type wireEvent struct {
 	BillableToolCalls  int      `json:"billable_tool_calls,omitempty"`
 	ElapsedMS          int64    `json:"elapsed_ms,omitempty"`
 
+	// Model retry notice (model_retrying). Live-only, like the deltas: it is
+	// never persisted, so a reconnecting client does not replay it.
+	Attempt       int  `json:"attempt,omitempty"`
+	MaxAttempts   int  `json:"max_attempts,omitempty"`
+	RetryDelayMS  int  `json:"retry_delay_ms,omitempty"`
+	RetryFallback bool `json:"retry_fallback,omitempty"`
+
 	// Compaction.
 	BeforeTokens int     `json:"before_tokens,omitempty"`
 	AfterTokens  int     `json:"after_tokens,omitempty"`
@@ -170,6 +177,10 @@ func toWire(e agent.Event) wireEvent {
 		ExecutedToolCalls:  e.ExecutedToolCalls,
 		SucceededToolCalls: e.SucceededToolCalls,
 		BillableToolCalls:  e.BillableToolCalls,
+		Attempt:            e.Attempt,
+		MaxAttempts:        e.MaxAttempts,
+		RetryDelayMS:       e.RetryDelayMs,
+		RetryFallback:      e.RetryFallback,
 		BeforeTokens:       e.BeforeTokens,
 		AfterTokens:        e.AfterTokens,
 		SavedTokens:        e.SavedTokens,

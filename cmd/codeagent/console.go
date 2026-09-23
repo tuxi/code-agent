@@ -82,6 +82,16 @@ func (consoleEmitter) Emit(e agent.Event) {
 		} else {
 			fmt.Printf("\n[verify] ran the configured verification: %s\n", e.Text)
 		}
+	case agent.EventModelRetrying:
+		// The resilience layer is retrying a transiently failed model call. A
+		// line-based console cannot render a transient notice, so it prints one
+		// line per attempt — bounded by the retry budget.
+		if e.RetryFallback {
+			fmt.Printf("[retry] stream interrupted — replaying without streaming: %s\n", e.Err)
+			break
+		}
+		fmt.Printf("[retry] attempt %d/%d failed — retrying in %.1fs: %s\n",
+			e.Attempt, e.MaxAttempts, float64(e.RetryDelayMs)/1000, e.Err)
 	case agent.EventCompacted:
 		switch {
 		case e.AfterTokens == 0:
