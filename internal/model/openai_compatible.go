@@ -540,17 +540,15 @@ func (p *OpenAICompatibleProvider) CompleteStream(ctx context.Context, req Reque
 			if message == "" {
 				message = "model stream returned an error: " + payload
 			}
-			// An SSE response is already HTTP 200, so the original upstream
-			// status is unavailable here. Treat a gateway-delivered stream error
-			// as a bad gateway; this preserves APIError-based retry policy and,
-			// most importantly, prevents an empty successful response.
-			return Response{}, &APIError{
-				StatusCode: http.StatusBadGateway,
-				Type:       chunk.Error.Type,
-				Code:       errorCode(chunk.Error.Code),
-				Message:    message,
-				Body:       payload,
-			}
+			// An SSE response is already HTTP 200, so the transport carries no
+			// upstream status; apiErrorFromPayload recovers it from the payload's
+			// `code` (falling back to 502). Keeping it APIError-based preserves the
+			// retry policy and, most importantly, prevents an empty successful
+			// response.
+			apiErr := apiErrorFromPayload(http.StatusBadGateway, chunk.Error)
+			apiErr.Message = message
+			apiErr.Body = payload
+			return Response{}, apiErr
 		}
 		if u := chunk.Usage; u != nil {
 			cached := u.PromptCacheHitTokens
@@ -702,6 +700,17 @@ func (p *OpenAICompatibleProvider) Complete(ctx context.Context, req Request) (R
 		return Response{}, fmt.Errorf("decode response: %w; raw=%s", err, string(raw))
 	}
 
+	// A 200 whose body carries an `error` object and no choices is a gateway
+	// reporting an upstream provider failure after the transport already
+	// succeeded (OpenRouter: {"error":{"code":503,"message":"Upstream error from
+	// Nvidia: Service temporarily overloaded"}}). Classify it as an APIError so
+	// the resilience layer's status-based retry policy applies — the old
+	// "no choices" decode error was non-retryable, so a transient upstream
+	// overload ended the turn and forced the user to resend.
+	if decoded.Error != nil {
+		return Response{}, apiErrorFromPayload(http.StatusBadGateway, decoded.Error)
+	}
+
 	if len(decoded.Choices) == 0 {
 		return Response{}, fmt.Errorf("model api returned no choices: raw=%s", string(raw))
 	}
@@ -791,6 +800,28 @@ func (p *OpenAICompatibleProvider) withCredentialContext(err *APIError, secret s
 // scrub an upstream error message that may have echoed the secret.
 func bearerSecret(req *http.Request) string {
 	return strings.TrimPrefix(req.Header.Get("Authorization"), "Bearer ")
+}
+
+// apiErrorFromPayload builds an APIError from an embedded provider error
+// payload. When the payload carries an HTTP status in its `code` field (some
+// gateways forward the upstream status this way — OpenRouter sends the Nvidia
+// 503 inline in an HTTP-200 body), that status overrides defaultStatus so the
+// resilience layer retries transient upstream failures instead of treating them
+// as permanent decode errors.
+func apiErrorFromPayload(defaultStatus int, payload *openAIErrorPayload) *APIError {
+	if payload == nil {
+		return &APIError{StatusCode: defaultStatus}
+	}
+	status := defaultStatus
+	if code, ok := payload.Code.(float64); ok && code >= 400 && code < 600 {
+		status = int(code)
+	}
+	return &APIError{
+		StatusCode: status,
+		Type:       payload.Type,
+		Code:       errorCode(payload.Code),
+		Message:    payload.Message,
+	}
 }
 
 func errorCode(value any) string {

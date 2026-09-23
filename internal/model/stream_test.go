@@ -204,6 +204,57 @@ func TestCompleteRetriesEmptyResponseBody(t *testing.T) {
 	}
 }
 
+func TestCompleteClassifiesEmbeddedUpstreamError(t *testing.T) {
+	// OpenRouter returns HTTP 200 whose body carries an `error` object and no
+	// choices when an upstream provider fails (e.g. Nvidia 503 "Service
+	// temporarily overloaded"). It must classify as a retryable APIError — the
+	// old "model api returned no choices" decode error was non-retryable and
+	// ended the turn, forcing the user to resend.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"gen-1","error":{"message":"Upstream error from Nvidia: Service temporarily overloaded","code":503}}`))
+	}))
+	defer srv.Close()
+
+	p := NewOpenAICompatibleProviderWithKey(srv.URL, "key")
+	_, err := p.Complete(context.Background(), Request{Model: "m"})
+
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("err = %v, want *APIError", err)
+	}
+	if apiErr.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503 (from the payload's code)", apiErr.StatusCode)
+	}
+	if !IsRetryable(err) {
+		t.Fatalf("embedded 503 should be retryable, got %v", err)
+	}
+}
+
+func TestResilientRecoversFromEmbeddedUpstreamError(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if calls.Add(1) == 1 {
+			_, _ = w.Write([]byte(`{"id":"gen-1","error":{"message":"Upstream error from Nvidia: Service temporarily overloaded","code":503}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"recovered"},"finish_reason":"stop"}]}`))
+	}))
+	defer srv.Close()
+
+	p := NewOpenAICompatibleProviderWithKey(srv.URL, "key")
+	rp := &ResilientProvider{Inner: p, MaxRetries: 2, sleep: noSleep(), LogWriter: io.Discard}
+
+	resp, err := rp.Complete(context.Background(), Request{Model: "m"})
+	if err != nil {
+		t.Fatalf("embedded 503 should be retried and recover, got %v", err)
+	}
+	if resp.Content != "recovered" {
+		t.Fatalf("content = %q", resp.Content)
+	}
+}
+
 func TestOpenAICompatibleAuthErrorsIncludeTargetAndRedactBody(t *testing.T) {
 	target := credential.Target{Namespace: "llm", Name: "company-production"}
 	resolver := credential.StaticResolver{
