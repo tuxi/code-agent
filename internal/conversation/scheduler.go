@@ -186,6 +186,24 @@ func (s *TurnScheduler) Cancel(sessionID string) bool {
 	return false
 }
 
+// ReleaseRunning releases a running turn for this session, freeing the scheduler
+// slot immediately. This should be called when a running turn is cancelled so
+// that subsequent turns don't queue behind it.
+func (s *TurnScheduler) ReleaseRunning(sessionID string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	w, ok := s.active[sessionID]
+	if !ok || !w.running || w.released {
+		return false
+	}
+	w.released = true
+	s.running--
+	delete(s.runningSessions, sessionID)
+	delete(s.active, sessionID)
+	s.dispatchLocked()
+	return true
+}
+
 func (s *TurnScheduler) Snapshot() SchedulerSnapshot {
 	s.mu.Lock()
 	defer s.mu.Unlock()

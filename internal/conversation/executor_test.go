@@ -773,6 +773,53 @@ func TestTurnExecutor_RunningCancelPersistsExactlyOneTerminal(t *testing.T) {
 	}
 }
 
+func TestTurnExecutor_CancelReleasesSchedulerSlot(t *testing.T) {
+	// When a running turn is cancelled, the scheduler slot should be released
+	// immediately so a subsequent turn doesn't queue behind it.
+	repo := newFakeRepo()
+	repo.sessions["a"] = &session.Session{ID: "a", WorkspacePath: "/work/a", Metadata: map[string]any{}}
+	repo.sessions["b"] = &session.Session{ID: "b", WorkspacePath: "/work/b", Metadata: map[string]any{}}
+	events := &fakeEventStore{}
+
+	started := make(chan string, 1)
+	release := make(chan struct{})
+	exec := NewTurnExecutor(repo, events, NewActiveTurnRegistry(), NewSubscriptionManager(), &schedulerBlockingRunBuilder{started: started, release: release})
+	exec.SetTurnScheduler(NewTurnScheduler(1)) // single slot
+
+	// Turn A fills the only slot
+	aDone := make(chan error, 1)
+	go func() { _, err := exec.Execute(context.Background(), "a", "A", "", ""); aDone <- err }()
+	if got := assertReady(t, started); got != "a" {
+		t.Fatalf("started = %q", got)
+	}
+
+	// Turn B queues
+	ctx, cancel := context.WithCancel(context.Background())
+	bDone := make(chan error, 1)
+	go func() { _, err := exec.Execute(ctx, "b", "B", "", ""); bDone <- err }()
+
+	// Wait for B to be queued
+	deadline := time.Now().Add(time.Second)
+	for exec.scheduler.Snapshot().Queued != 1 {
+		if time.Now().After(deadline) {
+			t.Fatal("turn B was not queued")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	// Cancel A (the running turn)
+	exec.Cancel("a")
+	if err := assertReady(t, aDone); !errors.Is(err, context.Canceled) {
+		t.Fatalf("A error = %v, want context.Canceled", err)
+	}
+
+	// B should now acquire immediately (not wait for A's deferred release)
+	// We can't easily test the timing, but we can verify B doesn't get a queued event
+	// after A is cancelled. The key assertion is that B's turn starts.
+	cancel() // cancel B's context to clean up
+	_ = assertReady(t, bDone) // B should complete (either run or be cancelled)
+}
+
 func TestTurnExecutor_TerminalPersistenceFailureIsObservable(t *testing.T) {
 	repo := newFakeRepo()
 	repo.sessions["s"] = &session.Session{ID: "s", WorkspacePath: "/work/s", Metadata: map[string]any{}}

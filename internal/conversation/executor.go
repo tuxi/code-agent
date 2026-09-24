@@ -1510,6 +1510,9 @@ func (e *TurnExecutor) Cancel(sessionID string) {
 		return
 	}
 	e.active.Cancel(sessionID)
+	// Also release the scheduler slot so subsequent turns don't queue behind
+	// the cancelled turn.
+	e.scheduler.ReleaseRunning(sessionID)
 }
 
 // Activity exposes the live scheduler projection for the HTTP activity

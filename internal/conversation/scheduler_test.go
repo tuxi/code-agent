@@ -251,6 +251,40 @@ func TestTurnScheduler_RoundRobinAcrossSessions(t *testing.T) {
 	releaseA2()
 }
 
+func TestTurnScheduler_ReleaseRunningFreesSlot(t *testing.T) {
+	s := NewTurnScheduler(1)
+	releaseA, err := s.Acquire(context.Background(), TurnScheduleRequest{SessionID: "a", WorkspacePath: "/work/a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A is running, B should queue
+	bAcquired := make(chan func(), 1)
+	go func() {
+		release, err := s.Acquire(context.Background(), TurnScheduleRequest{SessionID: "b", WorkspacePath: "/work/b"})
+		if err != nil {
+			t.Errorf("B acquire: %v", err)
+			return
+		}
+		bAcquired <- release
+	}()
+	deadline := time.Now().Add(time.Second)
+	for s.Snapshot().Queued != 1 {
+		if time.Now().After(deadline) {
+			t.Fatal("B was not queued")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	// Release A's running slot via ReleaseRunning (simulating cancel)
+	if !s.ReleaseRunning("a") {
+		t.Fatal("ReleaseRunning returned false")
+	}
+	// B should now acquire immediately
+	releaseB := assertReady(t, bAcquired)
+	releaseB()
+	// A's original release should be a no-op now
+	releaseA()
+}
+
 func acquireInto(t *testing.T, s *TurnScheduler, req TurnScheduleRequest, out chan<- func()) {
 	t.Helper()
 	release, err := s.Acquire(context.Background(), req)
