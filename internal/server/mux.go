@@ -76,6 +76,9 @@ type ForkConversationRequest struct {
 	Name            string `json:"name,omitempty"`
 	ExecutionPolicy string `json:"execution_policy,omitempty"`
 	WorktreeName    string `json:"worktree_name,omitempty"`
+	// ThroughTurnID, when set, forks only the source history through the end of
+	// that turn. Omitted preserves the whole-checkpoint fork.
+	ThroughTurnID string `json:"through_turn_id,omitempty"`
 }
 
 type ManagedWorktreeDTO struct {
@@ -213,6 +216,11 @@ type ConversationDetail struct {
 	Worktree        *ManagedWorktreeDTO `json:"worktree,omitempty"`
 	Warnings        []APIWarning        `json:"warnings,omitempty"`
 	TurnStatus      string              `json:"turn_status,omitempty"`
+	// Fork lineage: set when this conversation was forked from another. The client
+	// uses fork_source_session_id + fork_through_turn_id to reconstruct the
+	// inherited prefix (GET /v1/conversations/{source}/events?through_turn_id=...).
+	ForkSourceSessionID string `json:"fork_source_session_id,omitempty"`
+	ForkThroughTurnID   string `json:"fork_through_turn_id,omitempty"`
 }
 
 // ContextSnapshot is GET /v1/conversations/{id}/context. It is a point-in-time
@@ -459,19 +467,25 @@ type MuxOptions struct {
 // multi-session clients. WebSocket hello capabilities remain a backwards-
 // compatible feature list; this endpoint is the source of truth for execution.
 type RuntimeCapabilities struct {
-	MultiSessionExecution    bool `json:"multi_session_execution_v1"`
-	SessionScopedClientTools bool `json:"session_scoped_client_tools_v1"`
-	ActivitySnapshot         bool `json:"activity_snapshot_v1"`
-	SessionAttentionSnapshot bool `json:"session_attention_snapshot_v1"`
-	SessionAttentionDelta    bool `json:"session_attention_delta_v1"`
-	WorkspaceExecutionPolicy bool `json:"workspace_execution_policy_v1"`
-	ManagedWorktree          bool `json:"managed_worktree_v1"`
-	ConversationArchive      bool `json:"conversation_archive_v1"`
-	ConversationFork         bool `json:"conversation_fork_v1"`
-	PublicGitClone           bool `json:"public_git_clone_v1"`
-	WorkspaceGitBranch       bool `json:"workspace_git_branch_v1"`
-	MaxConcurrentTurns       int  `json:"max_concurrent_turns"`
-	MaxConnectedSessions     int  `json:"max_connected_sessions"`
+	MultiSessionExecution      bool `json:"multi_session_execution_v1"`
+	SessionScopedClientTools   bool `json:"session_scoped_client_tools_v1"`
+	ActivitySnapshot           bool `json:"activity_snapshot_v1"`
+	SessionAttentionSnapshot   bool `json:"session_attention_snapshot_v1"`
+	SessionAttentionDelta      bool `json:"session_attention_delta_v1"`
+	WorkspaceExecutionPolicy   bool `json:"workspace_execution_policy_v1"`
+	ManagedWorktree            bool `json:"managed_worktree_v1"`
+	ConversationArchive        bool `json:"conversation_archive_v1"`
+	ConversationFork           bool `json:"conversation_fork_v1"`
+	HistoryPagination          bool `json:"history_pagination"`
+	ConversationListPagination bool `json:"conversation_list_pagination_v1"`
+	// ConversationForkThroughTurn advertises the turn-scoped fork cut
+	// (through_turn_id) and the turn-bounded events prefix query a client uses to
+	// reconstruct an inherited history.
+	ConversationForkThroughTurn bool `json:"conversation_fork_through_turn_v1"`
+	PublicGitClone              bool `json:"public_git_clone_v1"`
+	WorkspaceGitBranch          bool `json:"workspace_git_branch_v1"`
+	MaxConcurrentTurns          int  `json:"max_concurrent_turns"`
+	MaxConnectedSessions        int  `json:"max_connected_sessions"`
 }
 
 // ConfiguredRuntimeCapabilities derives advertised guarantees from the same
@@ -595,6 +609,24 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 	runtimeCapabilities.PublicGitClone = opts.CloneService != nil
 	runtimeCapabilities.WorkspaceGitBranch = opts.GitBranches != nil
 	runtimeCapabilities.ConversationFork = opts.SessionForks != nil
+	_, runtimeCapabilities.HistoryPagination = eventStore.(session.EventPageStore)
+	runtimeCapabilities.ConversationListPagination = supportsListPagination(repo)
+	if capability, ok := eventStore.(interface{ SupportsHistoryPagination() bool }); ok {
+		runtimeCapabilities.HistoryPagination = runtimeCapabilities.HistoryPagination && capability.SupportsHistoryPagination()
+	}
+	advertisedCapabilities := make([]string, 0, len(opts.Capabilities)+1)
+	for _, capability := range opts.Capabilities {
+		if capability != "history_pagination" || runtimeCapabilities.HistoryPagination {
+			advertisedCapabilities = append(advertisedCapabilities, capability)
+		}
+	}
+	if runtimeCapabilities.HistoryPagination && !hasCapability(advertisedCapabilities, "history_pagination") {
+		advertisedCapabilities = append(advertisedCapabilities, "history_pagination")
+	}
+	if runtimeCapabilities.ConversationListPagination && !hasCapability(advertisedCapabilities, "conversation_list_pagination_v1") {
+		advertisedCapabilities = append(advertisedCapabilities, "conversation_list_pagination_v1")
+	}
+	runtimeCapabilities.ConversationForkThroughTurn = opts.SessionForks != nil
 	archiveRepo, archiveSupported := repo.(conversation.ArchivableConversationRepository)
 	if capability, ok := repo.(conversation.ConversationArchiveCapability); ok {
 		archiveSupported = archiveSupported && capability.SupportsConversationArchive()
@@ -671,7 +703,7 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 			sinceSequence = parsed
 			isDelta = true
 		}
-		metas, err := repo.List(r.Context())
+		metas, err := listActivityMetadata(r.Context(), repo)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -830,7 +862,25 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 		}
 		var metas []session.Meta
 		var err error
-		if archiveSupported {
+		_, hasLimit := r.URL.Query()["limit"]
+		_, hasBefore := r.URL.Query()["before"]
+		paged := hasLimit || hasBefore
+		if paged {
+			if !supportsListPagination(repo) {
+				http.Error(w, "conversation list pagination is unsupported", http.StatusNotImplemented)
+				return
+			}
+			metas, err = loadConversationPage(w, r, repo, archived)
+			if err != nil {
+				status := http.StatusBadRequest
+				var storageErr *listPageStorageError
+				if errors.As(err, &storageErr) {
+					status = http.StatusInternalServerError
+				}
+				http.Error(w, err.Error(), status)
+				return
+			}
+		} else if archiveSupported {
 			metas, err = archiveRepo.ListArchived(r.Context(), archived)
 		} else if archived {
 			writeConversationArchiveUnsupported(w, r)
@@ -858,12 +908,17 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 				PausedAt:      m.PausedAt,
 				ArchivedAt:    archiveTimestamp(m.ArchivedAt),
 			}
+			if paged && ref.Name == "" {
+				ref.Name = m.ID
+			}
 			if record, managed := managedBySession[m.ID]; managed {
 				ref.ExecutionPolicy = session.ExecutionPolicyIsolatedWorktree
 				ref.WorkspaceID = record.CheckoutWorkspaceID
 				ref.BaseWorkspaceID = record.BaseWorkspaceID
 				ref.Worktree = managedWorktreeDTO(record)
-				if sess, loadErr := repo.Load(r.Context(), m.ID); loadErr == nil {
+				if paged {
+					ref.Warnings = sessionWorktreeWarnings(&session.Session{Metadata: m.Metadata})
+				} else if sess, loadErr := repo.Load(r.Context(), m.ID); loadErr == nil {
 					ref.Warnings = sessionWorktreeWarnings(sess)
 				}
 			}
@@ -988,7 +1043,7 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 		result, err := opts.SessionForks.ForkSession(r.Context(), sessionfork.Request{
 			ParentSessionID: sourceID, SourceSessionID: sourceID, RequestID: req.RequestID,
 			Name: strings.TrimSpace(req.Name), ExecutionPolicy: req.ExecutionPolicy,
-			WorktreeName: strings.TrimSpace(req.WorktreeName),
+			WorktreeName: strings.TrimSpace(req.WorktreeName), ThroughTurnID: strings.TrimSpace(req.ThroughTurnID),
 		})
 		if err != nil {
 			var managedErr *managedworktree.Error
@@ -1028,12 +1083,12 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 
 	mux.HandleFunc("GET /v1/conversations/{id}", func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
-		recs, ok := loadEvents(r.Context(), eventStore, repo, id, w)
+		summary, ok := loadEventSummary(r.Context(), eventStore, repo, id, w)
 		if !ok {
 			return
 		}
 		detail := ConversationDetail{ID: id}
-		if s, err := repo.Load(r.Context(), id); err == nil {
+		if s, err := loadConversationHeader(r.Context(), repo, id); err == nil {
 			detail.WorkspacePath = s.WorkspacePath
 			detail.Workspace = workspaceDTO(s.WorkspacePath)
 			detail.Name = s.Name
@@ -1043,6 +1098,8 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 			detail.BaseWorkspaceID, _ = s.Metadata[session.MetaBaseWorkspaceID].(string)
 			detail.Warnings = sessionWorktreeWarnings(s)
 			detail.TurnStatus = s.TurnStatus()
+			detail.ForkSourceSessionID, _ = s.Metadata[session.MetaForkSource].(string)
+			detail.ForkThroughTurnID, _ = s.Metadata[session.MetaForkThroughTurn].(string)
 			if s.Workspace.Root != "" {
 				detail.WorkspaceRef = &WorkspaceRefDTO{
 					Root:  s.Workspace.Root,
@@ -1063,19 +1120,12 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 				}
 			}
 		}
-		for _, rec := range recs {
-			if detail.CreatedAt == "" {
-				detail.CreatedAt = rec.At.UTC().Format(rfc3339Millis)
-			}
-			detail.UpdatedAt = rec.At.UTC().Format(rfc3339Millis)
-			switch rec.Kind {
-			case string(agent.EventTurnStarted):
-				detail.TurnCount++
-				detail.MessageCount++
-			case string(agent.EventTurnFinished):
-				detail.MessageCount++
-			}
+		if summary.HasEvents {
+			detail.CreatedAt = summary.FirstAt.UTC().Format(rfc3339Millis)
+			detail.UpdatedAt = summary.LastAt.UTC().Format(rfc3339Millis)
 		}
+		detail.TurnCount = summary.TurnCount
+		detail.MessageCount = summary.MessageCount
 		writeJSON(w, r, http.StatusOK, detail)
 	})
 
@@ -1116,12 +1166,49 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 
 	mux.HandleFunc("GET /v1/conversations/{id}/events", func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
-		// ?since=<seq> replays only events after the client's last seen seq (v1.2
-		// §4) — the incremental catch-up a client runs on reconnect. Absent/invalid
-		// => full replay.
-		recs, ok := loadEventsSince(r.Context(), eventStore, repo, id, parseSince(r), w)
-		if !ok {
+		query := r.URL.Query()
+		_, hasSince := query["since"]
+		_, hasBefore := query["before"]
+		_, hasTail := query["tail"]
+		_, hasLimit := query["limit"]
+		if hasSince && hasBefore {
+			http.Error(w, `"since" and "before" are mutually exclusive`, http.StatusBadRequest)
 			return
+		}
+		throughTurnID := strings.TrimSpace(r.URL.Query().Get("through_turn_id"))
+		var recs []session.EventRecord
+		if throughTurnID != "" {
+			// ?through_turn_id=<turn> replays the events up to and including that
+			// turn's terminal event — the prefix a forked conversation inherited.
+			// It is turn-aligned and mutually exclusive with the incremental ?since.
+			if hasSince || hasBefore || hasTail || hasLimit {
+				http.Error(w, `"through_turn_id" cannot be combined with replay or pagination parameters`, http.StatusBadRequest)
+				return
+			}
+			var ok bool
+			recs, ok = loadEventsThroughTurn(r.Context(), eventStore, repo, id, throughTurnID, w)
+			if !ok {
+				return
+			}
+		} else if hasBefore || (hasTail && !hasSince) {
+			var ok bool
+			recs, ok = loadEventPage(r.Context(), eventStore, repo, id, r, w)
+			if !ok {
+				return
+			}
+		} else {
+			if hasLimit && !hasSince {
+				http.Error(w, `"limit" requires "tail" or "before"`, http.StatusBadRequest)
+				return
+			}
+			// ?since=<seq> replays only events after the client's last seen seq (v1.2
+			// §4) — the incremental catch-up a client runs on reconnect. Absent/invalid
+			// => full replay.
+			var ok bool
+			recs, ok = loadEventsSince(r.Context(), eventStore, repo, id, parseSince(r), w)
+			if !ok {
+				return
+			}
 		}
 		frames := make([]json.RawMessage, 0, len(recs))
 		for _, rec := range recs {
@@ -1228,7 +1315,7 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 	wsResolve := func(r *http.Request) (Session, error) {
 		id := r.PathValue("id")
 		// Verify the session exists in the Repository.
-		if _, err := repo.Load(r.Context(), id); err != nil {
+		if _, err := loadConversationHeader(r.Context(), repo, id); err != nil {
 			return nil, fmt.Errorf("conversation %q not found", id)
 		}
 		return conversation.NewTransportSession(id, executor), nil
@@ -1236,7 +1323,7 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 	ws = &WSHandler{
 		Resolve:            wsResolve,
 		ServerName:         opts.ServerName,
-		Capabilities:       opts.Capabilities,
+		Capabilities:       advertisedCapabilities,
 		Accept:             opts.Accept,
 		Granter:            opts.Granter,
 		Prompts:            opts.Prompts,
@@ -1275,7 +1362,7 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 
 	jobStream := &JobStreamHandler{
 		ServerName:   opts.ServerName,
-		Capabilities: opts.Capabilities,
+		Capabilities: advertisedCapabilities,
 		Accept:       opts.Accept,
 		Resolve: func(r *http.Request) (Subscriber, error) {
 			id := r.PathValue("id")
@@ -1320,7 +1407,7 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 
 	childStream := &JobStreamHandler{
 		ServerName:   opts.ServerName,
-		Capabilities: opts.Capabilities,
+		Capabilities: advertisedCapabilities,
 		Accept:       opts.Accept,
 		Resolve: func(r *http.Request) (Subscriber, error) {
 			id := r.PathValue("id")
@@ -1720,6 +1807,43 @@ func loadEvents(ctx context.Context, eventStore conversation.ConversationEventSt
 	return loadEventsSince(ctx, eventStore, repo, id, 0, w)
 }
 
+func loadEventSummary(ctx context.Context, eventStore conversation.ConversationEventStore, repo conversation.ConversationRepository, id string, w http.ResponseWriter) (session.EventSummary, bool) {
+	if summaries, ok := eventStore.(session.EventSummaryStore); ok {
+		summary, err := summaries.SessionEventSummary(ctx, id)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return session.EventSummary{}, false
+		}
+		if !summary.HasEvents {
+			if _, err := loadConversationHeader(ctx, repo, id); err != nil {
+				http.Error(w, "conversation not found", http.StatusNotFound)
+				return session.EventSummary{}, false
+			}
+		}
+		return summary, true
+	}
+	recs, ok := loadEvents(ctx, eventStore, repo, id, w)
+	if !ok {
+		return session.EventSummary{}, false
+	}
+	var summary session.EventSummary
+	for _, rec := range recs {
+		if !summary.HasEvents {
+			summary.HasEvents = true
+			summary.FirstAt = rec.At
+		}
+		summary.LastAt = rec.At
+		switch rec.Kind {
+		case string(agent.EventTurnStarted):
+			summary.TurnCount++
+			summary.MessageCount++
+		case string(agent.EventTurnFinished):
+			summary.MessageCount++
+		}
+	}
+	return summary, true
+}
+
 // loadEventsByKind fetches only events of the given kinds, in seq order, and
 // resolves existence like loadEvents. Endpoints that need just turn boundaries or
 // tool results use this instead of a full replay, so they never load unrelated
@@ -1750,7 +1874,7 @@ func loadEventsByKind(ctx context.Context, eventStore conversation.ConversationE
 		}
 	}
 	if len(recs) == 0 {
-		if _, err := repo.Load(ctx, id); err != nil {
+		if _, err := loadConversationHeader(ctx, repo, id); err != nil {
 			http.Error(w, "conversation not found", http.StatusNotFound)
 			return nil, false
 		}
@@ -1765,6 +1889,80 @@ func loadEventsByKind(ctx context.Context, eventStore conversation.ConversationE
 // small and are left unbounded — a client that already holds most of the log
 // must not miss the gap.
 const replayBudgetBytes = 8 * 1024 * 1024
+
+const defaultEventPageRows = 200
+
+// loadEventPage applies reverse pagination only to conversation history. since
+// remains the unbounded incremental replay path for gap recovery.
+func loadEventPage(ctx context.Context, eventStore conversation.ConversationEventStore, repo conversation.ConversationRepository, id string, r *http.Request, w http.ResponseWriter) ([]session.EventRecord, bool) {
+	pageStore, ok := eventStore.(session.EventPageStore)
+	if !ok {
+		http.Error(w, "history pagination is not supported by this event store", http.StatusNotImplemented)
+		return nil, false
+	}
+	if capability, ok := eventStore.(interface{ SupportsHistoryPagination() bool }); ok && !capability.SupportsHistoryPagination() {
+		http.Error(w, "history pagination is not supported by this event store", http.StatusNotImplemented)
+		return nil, false
+	}
+	query := r.URL.Query()
+	maxRows := defaultEventPageRows
+	if raw := query.Get("limit"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n <= 0 || n > 10000 {
+			http.Error(w, "limit must be between 1 and 10000", http.StatusBadRequest)
+			return nil, false
+		}
+		maxRows = n
+	} else if _, present := query["limit"]; present {
+		http.Error(w, "limit must be between 1 and 10000", http.StatusBadRequest)
+		return nil, false
+	}
+	beforeSeq := int64(0)
+	if _, present := query["before"]; present {
+		n, err := strconv.ParseInt(query.Get("before"), 10, 64)
+		if err != nil || n <= 0 {
+			http.Error(w, "before must be a positive seq", http.StatusBadRequest)
+			return nil, false
+		}
+		beforeSeq = n
+	} else {
+		n, err := strconv.Atoi(query.Get("tail"))
+		if err != nil || n <= 0 || n > 10000 {
+			http.Error(w, "tail must be between 1 and 10000", http.StatusBadRequest)
+			return nil, false
+		}
+		maxRows = n
+	}
+	recs, hasMore, truncated, err := pageStore.SessionEventPage(ctx, id, beforeSeq, maxRows, replayBudgetBytes)
+	if errors.Is(err, session.ErrEventPaginationUnsupported) {
+		http.Error(w, err.Error(), http.StatusNotImplemented)
+		return nil, false
+	}
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return nil, false
+	}
+	if len(recs) == 0 {
+		if _, err := loadConversationHeader(ctx, repo, id); err != nil {
+			http.Error(w, "conversation not found", http.StatusNotFound)
+			return nil, false
+		}
+	} else {
+		w.Header().Set("X-Codeagent-Oldest-Seq", strconv.FormatInt(recs[0].Seq, 10))
+	}
+	if hasMore {
+		w.Header().Set("X-Codeagent-Has-More-Older", "1")
+	} else {
+		w.Header().Set("X-Codeagent-Has-More-Older", "0")
+	}
+	if truncated {
+		w.Header().Set("X-Codeagent-Replay-Truncated", "1")
+		w.Header().Set("X-Codeagent-Turn-Fragment", "1")
+	} else {
+		w.Header().Set("X-Codeagent-Turn-Fragment", "0")
+	}
+	return recs, true
+}
 
 // loadEventsSince is loadEvents with an incremental floor: sinceSeq > 0 replays
 // only events after that seq (v1.2 §4), else the full log. The existence 404 is
@@ -1789,7 +1987,36 @@ func loadEventsSince(ctx context.Context, eventStore conversation.ConversationEv
 		w.Header().Set("X-Codeagent-Replay-Truncated", "1")
 	}
 	if len(recs) == 0 {
-		if _, err := repo.Load(ctx, id); err != nil {
+		if _, err := loadConversationHeader(ctx, repo, id); err != nil {
+			http.Error(w, "conversation not found", http.StatusNotFound)
+			return nil, false
+		}
+	}
+	return recs, true
+}
+
+// loadEventsThroughTurn replays a session's events up to and including one turn's
+// terminal event (the prefix a fork inherited). It requires an event store that
+// implements session.EventTurnPrefixStore; an unavailable turn (unknown, or not
+// terminal yet) is a 404. The existence check is resolved against the Repository
+// only when the prefix is empty, mirroring loadEventsSince.
+func loadEventsThroughTurn(ctx context.Context, eventStore conversation.ConversationEventStore, repo conversation.ConversationRepository, id, turnID string, w http.ResponseWriter) ([]session.EventRecord, bool) {
+	prefix, ok := eventStore.(session.EventTurnPrefixStore)
+	if !ok {
+		http.Error(w, "turn-scoped replay is not supported by this event store", http.StatusNotImplemented)
+		return nil, false
+	}
+	recs, err := prefix.SessionEventsThroughTurn(ctx, id, turnID)
+	if errors.Is(err, session.ErrEventTurnNotFound) {
+		http.Error(w, "turn not found or not complete", http.StatusNotFound)
+		return nil, false
+	}
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return nil, false
+	}
+	if len(recs) == 0 {
+		if _, err := loadConversationHeader(ctx, repo, id); err != nil {
 			http.Error(w, "conversation not found", http.StatusNotFound)
 			return nil, false
 		}

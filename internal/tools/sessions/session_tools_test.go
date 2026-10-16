@@ -258,6 +258,14 @@ func TestCreateAndForkSessionPassCallerScope(t *testing.T) {
 	if _, err := (&ForkSessionTool{}).Execute(context.Background(), ec, json.RawMessage(`{"id":"source","worktree_name":"invalid"}`)); err == nil {
 		t.Fatal("shared fork accepted worktree_name")
 	}
+
+	ec.CallID = "call-fork-turn"
+	if _, err := (&ForkSessionTool{}).Execute(context.Background(), ec, json.RawMessage(`{"id":"source","through_turn_id":"turn_9"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if control.forkRequest.ThroughTurnID != "turn_9" {
+		t.Fatalf("through turn = %q, want turn_9", control.forkRequest.ThroughTurnID)
+	}
 }
 
 func TestCreateSessionPassesManagedWorktreeOptions(t *testing.T) {

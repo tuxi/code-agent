@@ -199,6 +199,65 @@ func TestRuntimeTargetForksManagedSourceIntoFreshManagedOwnership(t *testing.T) 
 	}
 }
 
+func TestRuntimeTargetForksThroughTurn(t *testing.T) {
+	store, err := sessionsqlite.New(filepath.Join(t.TempDir(), "sessions.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	repo := conversation.NewSQLiteRepository(store, 128000, 90000, "default-model", "", nil)
+	target := NewRuntimeTarget(nil, nil, repo, nil)
+	ctx := context.Background()
+
+	source, err := repo.Create(ctx, t.TempDir(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source.Name = "Source"
+	source.Messages = append(source.Messages,
+		model.Message{Role: model.RoleUser, Content: "turn one", OriginTurnID: "t1"},
+		model.Message{Role: model.RoleAssistant, Content: "answer one"},
+		model.Message{Role: model.RoleUser, Content: "turn two", OriginTurnID: "t2"},
+		model.Message{Role: model.RoleAssistant, Content: "answer two"},
+	)
+	if err := repo.Save(ctx, source); err != nil {
+		t.Fatal(err)
+	}
+
+	forkRequest := sessionfork.Request{RequestID: "fork-t1", ParentSessionID: "parent", SourceSessionID: source.ID, ThroughTurnID: "t1"}
+	forked, err := target.ForkSession(ctx, forkRequest, "fork-t1-child")
+	if err != nil {
+		t.Fatalf("ForkSession: %v", err)
+	}
+	if forked.ThroughTurnID != "t1" {
+		t.Fatalf("result = %+v, want through_turn_id t1", forked)
+	}
+	child, err := repo.Load(ctx, forked.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(child.Messages) != 3 || child.Messages[1].Content != "turn one" || child.Messages[2].Content != "answer one" {
+		t.Fatalf("child history = %+v, want system + turn one only", child.Messages)
+	}
+	if child.Metadata[session.MetaForkSource] != source.ID || child.Metadata[session.MetaForkThroughTurn] != "t1" {
+		t.Fatalf("child lineage = %+v", child.Metadata)
+	}
+
+	// A same-payload retry is idempotent.
+	again, err := target.ForkSession(ctx, forkRequest, "fork-t1-child")
+	if err != nil || again.ID != forked.ID {
+		t.Fatalf("idempotent retry = %+v, %v", again, err)
+	}
+
+	// An unavailable (compacted/unknown) cut fails before provisioning a child.
+	if _, err := target.ForkSession(ctx, sessionfork.Request{RequestID: "fork-missing", ParentSessionID: "parent", SourceSessionID: source.ID, ThroughTurnID: "nope"}, "must-not-exist"); !errors.Is(err, session.ErrForkTurnUnavailable) {
+		t.Fatalf("unavailable cut error = %v", err)
+	}
+	if _, loadErr := repo.Load(ctx, "must-not-exist"); loadErr == nil {
+		t.Fatal("unavailable cut provisioned an orphan child")
+	}
+}
+
 func TestRuntimeTargetDoesNotDowngradeManagedCreate(t *testing.T) {
 	store, err := sessionsqlite.New(filepath.Join(t.TempDir(), "sessions.db"))
 	if err != nil {

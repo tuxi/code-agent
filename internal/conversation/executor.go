@@ -1321,6 +1321,9 @@ func (e *TurnExecutor) SuspendAll(ctx context.Context) []string {
 // hard-kill and clean-suspend paths — the host lists a single "paused" status to
 // offer "continue" (v1.2 §3.2).
 func (e *TurnExecutor) ReconcileInterrupted(ctx context.Context) error {
+	if repo, ok := e.repo.(session.InterruptedSessionStore); ok {
+		return repo.PauseInterruptedSessions(ctx)
+	}
 	metas, err := e.repo.List(ctx)
 	if err != nil {
 		return err

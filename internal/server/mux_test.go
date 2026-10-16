@@ -176,6 +176,34 @@ func (s *fakeEventStore) ReplaySince(ctx context.Context, sessionID string, sinc
 	return out, nil
 }
 
+func (s *fakeEventStore) SessionEventsThroughTurn(_ context.Context, sessionID, turnID string) ([]session.EventRecord, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	recs := s.recs[sessionID]
+	boundary := int64(-1)
+	for _, r := range recs {
+		if r.TurnID != turnID {
+			continue
+		}
+		switch r.Kind {
+		case string(agent.EventTurnFinished), string(agent.EventTurnFailed), string(agent.EventTurnCancelled):
+			if r.Seq > boundary {
+				boundary = r.Seq
+			}
+		}
+	}
+	if boundary < 0 {
+		return nil, session.ErrEventTurnNotFound
+	}
+	var out []session.EventRecord
+	for _, r := range recs {
+		if r.Seq <= boundary {
+			out = append(out, r)
+		}
+	}
+	return out, nil
+}
+
 func (s *fakeEventStore) Attention(_ context.Context, sinceSequence int64) (session.EventAttentionSnapshot, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1287,6 +1315,55 @@ func TestMuxForkEndpointUsesSharedServiceIdempotently(t *testing.T) {
 	managedResp, _ := fork(`{"request_id":"client-fork-2","execution_policy":"isolated_worktree"}`)
 	if managedResp.StatusCode != http.StatusNotImplemented {
 		t.Fatalf("managed fork without provisioner status=%d", managedResp.StatusCode)
+	}
+}
+
+func TestMuxEventsThroughTurnPrefix(t *testing.T) {
+	repo := newFakeConversationRepo()
+	repo.sessions["source"] = &session.Session{ID: "source", WorkspacePath: "/workspace/source", Metadata: map[string]any{}}
+	events := &fakeEventStore{}
+	srv := httptest.NewServer(NewMux(repo, events, nil, MuxOptions{}))
+	defer srv.Close()
+
+	add := func(turn string, kind agent.EventKind) {
+		_, _ = events.Append(context.Background(), storedEvent(agent.Event{Kind: kind, SessionID: "source", TurnID: turn, At: time.Now()}))
+	}
+	add("t1", agent.EventTurnStarted)
+	add("t1", agent.EventToolStarted)
+	add("t1", agent.EventTurnFinished)
+	add("t2", agent.EventTurnStarted)
+	add("t2", agent.EventTurnFinished)
+
+	resp, err := http.Get(srv.URL + "/v1/conversations/source/events?through_turn_id=t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		_ = resp.Body.Close()
+		t.Fatalf("prefix status=%d", resp.StatusCode)
+	}
+	var frames []wireEvent
+	decodeResponse(t, resp, &frames)
+	if len(frames) != 3 || frames[2].Kind != string(agent.EventTurnFinished) || frames[2].TurnID != "t1" {
+		t.Fatalf("prefix frames = %+v, want the 3 events of t1", frames)
+	}
+
+	bad, err := http.Get(srv.URL + "/v1/conversations/source/events?through_turn_id=t1&since=1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = bad.Body.Close()
+	if bad.StatusCode != http.StatusBadRequest {
+		t.Fatalf("through_turn_id+since status=%d, want 400", bad.StatusCode)
+	}
+
+	missing, err := http.Get(srv.URL + "/v1/conversations/source/events?through_turn_id=nope")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = missing.Body.Close()
+	if missing.StatusCode != http.StatusNotFound {
+		t.Fatalf("unknown turn status=%d, want 404", missing.StatusCode)
 	}
 }
 

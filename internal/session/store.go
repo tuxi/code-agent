@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"time"
 )
 
@@ -158,6 +159,22 @@ type EventKindStore interface {
 	SessionEventsByKind(ctx context.Context, sessionID string, kinds []string) ([]EventRecord, error)
 }
 
+// ErrEventTurnNotFound reports that a turn-scoped replay target has no terminal
+// event in the session's event log — an unknown turn id, or a turn that never
+// reached a terminal state (still running or paused).
+var ErrEventTurnNotFound = errors.New("session: turn has no terminal event in the event log")
+
+// EventTurnPrefixStore is an optional event-store extension that replays a
+// session's events up to and including one turn's terminal event
+// (turn_finished / turn_failed / turn_cancelled), in emission order. A fork
+// client uses it to reconstruct the visible prefix it inherited from a source
+// conversation without the runtime copying the source's whole event log into
+// the child. It is kept separate from EventStore so third-party backends stay
+// source-compatible until they opt in.
+type EventTurnPrefixStore interface {
+	SessionEventsThroughTurn(ctx context.Context, sessionID, turnID string) ([]EventRecord, error)
+}
+
 // RequestRecord is one persisted model request (across its retry attempts) for
 // transport telemetry. The persisted log doubles as a per-request trace.
 type RequestRecord struct {
@@ -232,6 +249,8 @@ type MessageHit struct {
 // Meta is a one-line summary of a stored session, for listing. The compaction
 // fields are aggregated from the session's compactions, not stored separately.
 type Meta struct {
+	// Metadata is populated by lightweight metadata/page queries only.
+	Metadata     map[string]any
 	ID           string
 	Name         string // persisted display name (auto-generated or user-set); empty falls back to Title
 	Title        string // derived fallback: first user message, truncated — a human label for pickers

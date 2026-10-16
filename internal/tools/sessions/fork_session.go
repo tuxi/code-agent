@@ -21,10 +21,11 @@ func (*ForkSessionTool) Name() string { return "fork_session" }
 func (*ForkSessionTool) SideEffects() bool { return true }
 func (*ForkSessionTool) Description() string {
 	return "Fork a persistent session from its latest durable, provider-valid checkpoint. The request routes through the source session's owner and preserves text/tool history in the same workspace. " +
+		"Set through_turn_id to inherit only the history up to and including that turn (the user message's origin turn), so a fork can resume from a point before the source went off track. " +
 		"Use isolated_worktree for a clean, exact-commit Git snapshot with fresh managed ownership. Gateway/local assets fail closed. The returned child is idle; use send_to_session to continue it."
 }
 func (*ForkSessionTool) InputSchema() json.RawMessage {
-	return json.RawMessage(`{"type":"object","properties":{"id":{"type":"string","description":"Source session ID"},"name":{"type":"string"},"execution_policy":{"type":"string","enum":["shared_workspace","isolated_worktree"]},"worktree_name":{"type":"string","description":"Optional managed worktree name hint; isolated_worktree only"}},"required":["id"],"additionalProperties":false}`)
+	return json.RawMessage(`{"type":"object","properties":{"id":{"type":"string","description":"Source session ID"},"name":{"type":"string"},"execution_policy":{"type":"string","enum":["shared_workspace","isolated_worktree"]},"worktree_name":{"type":"string","description":"Optional managed worktree name hint; isolated_worktree only"},"through_turn_id":{"type":"string","description":"Optional: fork only through the end of this turn (the user message's origin turn id). Omit for the whole checkpoint."}},"required":["id"],"additionalProperties":false}`)
 }
 
 type forkSessionInput struct {
@@ -32,6 +33,7 @@ type forkSessionInput struct {
 	Name            string `json:"name"`
 	ExecutionPolicy string `json:"execution_policy"`
 	WorktreeName    string `json:"worktree_name"`
+	ThroughTurnID   string `json:"through_turn_id"`
 }
 
 func (*ForkSessionTool) Execute(ctx context.Context, ec tools.ExecutionContext, raw json.RawMessage) (tools.ToolResult, error) {
@@ -61,7 +63,7 @@ func (*ForkSessionTool) Execute(ctx context.Context, ec tools.ExecutionContext, 
 	result, err := ec.SessionControl.ForkSession(ctx, sessionfork.Request{
 		ParentSessionID: ec.SessionID, ParentTurnID: ec.TurnID, SourceSessionID: in.ID,
 		RequestID: requestID, Name: strings.TrimSpace(in.Name), ExecutionPolicy: in.ExecutionPolicy,
-		WorktreeName: strings.TrimSpace(in.WorktreeName),
+		WorktreeName: strings.TrimSpace(in.WorktreeName), ThroughTurnID: strings.TrimSpace(in.ThroughTurnID),
 	})
 	if err != nil {
 		return tools.ToolResult{}, fmt.Errorf("fork_session: %w", err)

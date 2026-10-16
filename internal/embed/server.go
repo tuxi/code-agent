@@ -54,6 +54,7 @@ var defaultCapabilities = []string{
 	"client_tool_execution",
 	"workflow_execution",
 	"conversation_fork_v1",
+	"history_pagination",
 }
 
 // Options configures an embedded server. Every field is supplied in-memory by the

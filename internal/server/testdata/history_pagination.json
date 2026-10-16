@@ -1,0 +1,7 @@
+[
+  {"oldest":"9","has_more":"1","fragment":"0","seqs":[9,10],"kinds":["turn_started","turn_finished"]},
+  {"oldest":"5","has_more":"1","fragment":"0","seqs":[5,6,7,8],"kinds":["turn_started","tool_started","thinking","turn_finished"]},
+  {"oldest":"2","has_more":"1","fragment":"0","seqs":[2,3,4],"kinds":["turn_started","tool_started","turn_finished"]},
+  {"oldest":"1","has_more":"0","fragment":"0","seqs":[1],"kinds":["thinking"]},
+  {"has_more":"0","fragment":"0","seqs":[],"kinds":[]}
+]

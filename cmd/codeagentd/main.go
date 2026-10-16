@@ -49,6 +49,8 @@ var defaultCapabilities = []string{
 	"client_tool_execution",
 	"workflow_execution",
 	"conversation_fork_v1",
+	"conversation_fork_through_turn_v1",
+	"history_pagination",
 }
 
 func main() {
@@ -59,6 +61,12 @@ func main() {
 }
 
 func run() error {
+	startupStarted := time.Now()
+	phaseStarted := startupStarted
+	markStartup := func(phase string) {
+		fmt.Fprintf(os.Stderr, "[startup] phase=%s elapsed=%s total=%s\n", phase, time.Since(phaseStarted), time.Since(startupStarted))
+		phaseStarted = time.Now()
+	}
 	args := os.Args[1:]
 	modelName, args := runtime.ExtractModelFlag(args)
 
@@ -81,6 +89,7 @@ func run() error {
 	root, _ := os.Getwd()
 	home, _ := os.UserHomeDir()
 	cfg, _ := runtime.LoadSettingsWithTrust(context.Background(), root, home, nil, runtime.TrustAlways, os.Stderr)
+	markStartup("settings")
 	// Mutable injected resolver (A2): POST /v1/secrets updates it, and every
 	// credential chain (catalog probing + actual calls) reads it — so a host
 	// can push provider keys to a running daemon without restarting.
@@ -164,11 +173,14 @@ func run() error {
 	// The clone-target directory is the only path that MUST be CWD-independent:
 	// projectsRoot is the user's Documents directory, not the launch directory.
 	cwd, _ := os.Getwd()
-	telemetryStore, err := runtime.OpenStore(cwd)
+	markStartup("credentials_and_provider")
+	fmt.Fprintln(os.Stderr, "[startup] phase=store_open started")
+	telemetryStore, err := runtime.OpenStoreForServer(cwd)
 	if err != nil {
 		return err
 	}
 	defer telemetryStore.Close()
+	markStartup("store_open")
 	runtime.AttachObserver(provider, telemetryStore, ctx)
 
 	// Build the shared BASE tool registry once: built-ins only, no MCP. Each
@@ -183,6 +195,7 @@ func run() error {
 
 	wsReg := runtime.NewWorkspaceRegistry(cfg.GlobalSkillsDir)
 	wsReg.EnableMCP(ctx, toolReg, cfg, nil, inheritClaude)
+	markStartup("registry")
 	defer wsReg.Close()
 
 	// Execution Model components.
@@ -212,7 +225,10 @@ func run() error {
 	if provider != nil {
 		executor.SetTitleGenerator(conversation.NewLLMTitleGenerator(provider, mc.Model))
 	}
-	_ = executor.ReconcileInterrupted(ctx)
+	if err := executor.ReconcileInterrupted(ctx); err != nil {
+		return fmt.Errorf("reconcile interrupted sessions: %w", err)
+	}
+	markStartup("lifecycle_metadata_recovery")
 
 	// Automation engine (T1-T2): open the process-wide automation store, wire the
 	// dispatcher (standalone creates a new conversation, chat returns to a fixed
@@ -239,12 +255,14 @@ func run() error {
 		defer scheduler.Stop()
 		rb.SetAutomationStore(automationStore)
 	}
+	markStartup("automation")
 	managedWorktrees, worktreeReport, worktreeErr := runtime.ConfigureManagedWorktrees(ctx, telemetryStore, repo, executor, true)
 	if worktreeErr != nil {
 		fmt.Fprintf(os.Stderr, "codeagentd: managed worktrees disabled: %v\n", worktreeErr)
 	} else if managedWorktrees != nil && (len(worktreeReport.Issues) > 0 || len(worktreeReport.Orphans) > 0) {
 		fmt.Fprintf(os.Stderr, "codeagentd: managed worktree reconciliation: issues=%d orphans=%d missing=%d\n", len(worktreeReport.Issues), len(worktreeReport.Orphans), len(worktreeReport.Missing))
 	}
+	markStartup("managed_worktrees")
 	// Job bracket events reach the owning conversation's live subscribers (P8.7
 	// §8.4-2) — persisted copies are already handled inside the sink.
 	if jobSink != nil {
@@ -283,6 +301,7 @@ func run() error {
 		return fmt.Errorf("open runtime sharing state: %w", err)
 	}
 	defer sharing.Stop()
+	markStartup("runtime_contract_and_sharing")
 	owner, err := controlplane.NewManager(stateDir, runtimeInfo.ServerID, repo, executor, controlplane.Config{})
 	if err != nil {
 		return err
@@ -292,13 +311,16 @@ func run() error {
 	rb.SetWorkflowRunner(runtime.NewWorkflowRunner(owner, wsReg))
 	rb.SetSessionTrace(runtime.NewSessionTraceFunc())
 	// Workflow-mode automations (workflow_ref) trigger a template directly.
-	dispatcher.SetWorkflowRunner(runtime.NewAutomationWorkflowRunner(runtime.NewHeadlessRuntime(owner, wsReg)))
+	if dispatcher != nil {
+		dispatcher.SetWorkflowRunner(runtime.NewAutomationWorkflowRunner(runtime.NewHeadlessRuntime(owner, wsReg)))
+	}
 	runtime.SetFluxExternalResolver(owner)
 	if err := owner.Start(ctx); err != nil {
 		_ = owner.Close()
 		return err
 	}
 	defer owner.Close()
+	markStartup("control_plane_claims")
 	ownerIdentity := owner.Identity()
 	fmt.Fprintf(os.Stderr, "[control-plane] owner ready instance=%s endpoint=%s protocol=%d\n", ownerIdentity.InstanceID, ownerIdentity.Endpoint, ownerIdentity.ProtocolVersion)
 	var cfgMu sync.RWMutex
@@ -368,7 +390,7 @@ func run() error {
 			return nil
 		},
 		SessionReady: func(ctx context.Context, sessionID string) {
-			if err := owner.Heartbeat(context.WithoutCancel(ctx)); err != nil {
+			if err := owner.ClaimKnownSession(context.WithoutCancel(ctx), sessionID); err != nil {
 				fmt.Fprintf(os.Stderr, "[control-plane] session ready reconcile: %v\n", err)
 			}
 			_, _ = executor.RecoverSessionTurnInputs(context.WithoutCancel(ctx), sessionID)
@@ -393,6 +415,7 @@ func run() error {
 		AutomationStore:        automationStore,
 	})
 	sharing.SetCoreHandler(handler)
+	markStartup("http_handler")
 
 	lis, err := net.Listen("tcp", addr)
 	if err != nil {
@@ -408,6 +431,7 @@ func run() error {
 			return fmt.Errorf("write port-file %s: %w", portFile, err)
 		}
 	}
+	markStartup("listen_and_port_file_ready")
 
 	srv := &http.Server{Handler: handler}
 

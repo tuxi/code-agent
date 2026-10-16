@@ -120,16 +120,17 @@ type Manager struct {
 	token    string
 	client   *http.Client
 
-	mu        sync.Mutex
-	started   bool
-	closing   bool
-	closed    bool
-	closeDone chan struct{}
-	closeErr  error
-	cancel    context.CancelFunc
-	listener  net.Listener
-	server    *http.Server
-	wg        sync.WaitGroup
+	mu          sync.Mutex
+	heartbeatMu sync.Mutex
+	started     bool
+	closing     bool
+	closed      bool
+	closeDone   chan struct{}
+	closeErr    error
+	cancel      context.CancelFunc
+	listener    net.Listener
+	server      *http.Server
+	wg          sync.WaitGroup
 }
 
 func (m *Manager) SetTarget(target Target) {
@@ -330,7 +331,15 @@ func (m *Manager) Start(parent context.Context) error {
 // Heartbeat refreshes the Runtime lease and reconciles its complete session set
 // atomically. An unexpired owner cannot be stolen by another Runtime instance.
 func (m *Manager) Heartbeat(ctx context.Context) error {
-	metas, listErr := m.repo.List(ctx)
+	m.heartbeatMu.Lock()
+	defer m.heartbeatMu.Unlock()
+	var metas []session.Meta
+	var listErr error
+	if repo, ok := m.repo.(session.SessionMetadataStore); ok {
+		metas, listErr = repo.ListMetadata(ctx)
+	} else {
+		metas, listErr = m.repo.List(ctx)
+	}
 	now := m.cfg.Now().UTC()
 	nowMS := now.UnixMilli()
 	expiresMS := now.Add(m.cfg.LeaseTTL).UnixMilli()
@@ -400,6 +409,20 @@ func (m *Manager) Heartbeat(ctx context.Context) error {
 		return fmt.Errorf("control plane: list sessions: %w", listErr)
 	}
 	return nil
+}
+
+// ClaimKnownSession refreshes one session already validated by admission or
+// creation. Attaching a socket must not re-list every conversation.
+func (m *Manager) ClaimKnownSession(ctx context.Context, id string) error {
+	now := m.cfg.Now().UTC()
+	_, err := m.db.ExecContext(ctx, `INSERT INTO session_owners(session_id,instance_id,claimed_at_ms,heartbeat_at_ms,expires_at_ms)
+		VALUES(?,?,?,?,?) ON CONFLICT(session_id) DO UPDATE SET
+		instance_id=excluded.instance_id,
+		claimed_at_ms=CASE WHEN session_owners.instance_id=excluded.instance_id THEN session_owners.claimed_at_ms ELSE excluded.claimed_at_ms END,
+		heartbeat_at_ms=excluded.heartbeat_at_ms, expires_at_ms=excluded.expires_at_ms
+		WHERE session_owners.instance_id=excluded.instance_id OR session_owners.expires_at_ms<=?`,
+		id, m.identity.InstanceID, now.UnixMilli(), now.UnixMilli(), now.Add(m.cfg.LeaseTTL).UnixMilli(), now.UnixMilli())
+	return err
 }
 
 func (m *Manager) Resolve(ctx context.Context, sessionID string) (*Resolution, error) {

@@ -29,10 +29,11 @@ import (
 )
 
 var (
-	indexMu             sync.Mutex
-	indexDB             *sql.DB
-	indexDBPath         string
-	indexRebuildChecked bool
+	indexMu              sync.Mutex
+	indexDB              *sql.DB
+	indexDBPath          string
+	indexRebuildChecked  bool
+	indexRebuildRequired bool
 )
 
 // --- index path ---
@@ -96,6 +97,7 @@ func OpenIndex() (*sql.DB, error) {
 		indexDB = nil
 		indexDBPath = ""
 		indexRebuildChecked = false
+		indexRebuildRequired = false
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, fmt.Errorf("index: create dir: %w", err)
@@ -162,7 +164,7 @@ func EnsureIndexReady(ctx context.Context) (*sql.DB, error) {
 	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sessions`).Scan(&count); err != nil {
 		return db, fmt.Errorf("index: count sessions: %w", err)
 	}
-	if count > 0 {
+	if count > 0 && !indexRebuildRequired {
 		indexRebuildChecked = true
 		return db, nil
 	}
@@ -170,8 +172,37 @@ func EnsureIndexReady(ctx context.Context) (*sql.DB, error) {
 		return db, err
 	}
 	indexRebuildChecked = true
+	indexRebuildRequired = false
 	fmt.Fprintln(os.Stderr, "[index] ✅ index ready")
 	return db, nil
+}
+
+func prepareDeferredIndex() (*sql.DB, error) {
+	db, err := OpenIndex()
+	if err != nil {
+		return nil, err
+	}
+	indexMu.Lock()
+	defer indexMu.Unlock()
+	if !indexRebuildChecked {
+		var count int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM sessions`).Scan(&count); err != nil {
+			return db, err
+		}
+		indexRebuildRequired = indexRebuildRequired || count == 0
+	}
+	return db, nil
+}
+
+func ensureDeferredIndex(ctx context.Context) error {
+	indexMu.Lock()
+	required := indexRebuildRequired
+	indexMu.Unlock()
+	if !required {
+		return nil
+	}
+	_, err := EnsureIndexReady(ctx)
+	return err
 }
 
 func resetIndex() {
@@ -183,6 +214,7 @@ func resetIndex() {
 	indexDB = nil
 	indexDBPath = ""
 	indexRebuildChecked = false
+	indexRebuildRequired = false
 }
 
 // --- write hooks (called from sqlite.Store after primary write succeeds) ---
@@ -342,6 +374,9 @@ func SessionIndex() tools.SessionIndex {
 type sessionIndexImpl struct{ db *sql.DB }
 
 func (s *sessionIndexImpl) ListAll() ([]tools.SessionIndexEntry, error) {
+	if err := ensureDeferredIndex(context.Background()); err != nil {
+		return nil, err
+	}
 	rows, err := ListAllSessions(s.db)
 	if err != nil {
 		return nil, err
@@ -364,6 +399,9 @@ func (s *sessionIndexImpl) ListAll() ([]tools.SessionIndexEntry, error) {
 }
 
 func (s *sessionIndexImpl) Get(id string) (*tools.SessionIndexEntry, error) {
+	if err := ensureDeferredIndex(context.Background()); err != nil {
+		return nil, err
+	}
 	r, err := GetSessionIndex(s.db, id)
 	if err != nil || r == nil {
 		return nil, err
@@ -382,6 +420,9 @@ func (s *sessionIndexImpl) Get(id string) (*tools.SessionIndexEntry, error) {
 }
 
 func (s *sessionIndexImpl) Read(ctx context.Context, id string) (*tools.SessionIndexDetail, error) {
+	if err := ensureDeferredIndex(ctx); err != nil {
+		return nil, err
+	}
 	entry, err := GetSessionIndex(s.db, id)
 	if err != nil {
 		return nil, err

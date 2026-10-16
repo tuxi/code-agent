@@ -30,6 +30,7 @@ const (
 	MetaSpawnKind        = "spawn_kind"
 	MetaSpawnParent      = "spawn_parent_session_id"
 	MetaForkSource       = "fork_source_session_id"
+	MetaForkThroughTurn  = "fork_through_turn_id"
 	MetaSpawnReady       = "spawn_ready"
 )
 

@@ -127,7 +127,7 @@ agent-core (Layer 1)          agent-server (Layer 2)         frontends (Layer 3)
 - 类型：int64
 - 第一个有效事件的 `seq = 1`。不存在 `seq = 0` 的有效事件
 - Per-session 单调递增，跨 session 不连续
-- `GET /v1/conversations/{id}/events?since=0` — 获取**所有**事件（`since=0` 表示从头开始）
+- `GET /v1/conversations/{id}/events?since=0` — 兼容旧客户端的 8 MiB payload 预算尾部回放；超预算时响应 `X-Codeagent-Replay-Truncated: 1`
 - `GET /v1/conversations/{id}/events?since=N` — 获取 `seq > N` 的事件
 - Client 维护 `maxSeq`，每次重连后先用 HTTP 补缺口再放行直播帧
 
@@ -877,9 +877,46 @@ turn_started
 
 ### 9.4 Replay Ordering
 
-`GET /v1/conversations/{id}/events` returns events ordered by:
-- `session_id` first (root → children in creation order)
-- then by `(at ASC, seq ASC)` within each session
+`GET /v1/conversations/{id}/events` reads one conversation's event partition,
+ordered by `seq ASC` (`session_events.id ASC`). Seq is a store-wide increasing
+row ID, so a conversation's seq values may have gaps. The endpoint does not
+group or sort by child session or event timestamp. Child job/task bracket events
+copied into the parent partition use that parent's seq order; child firehose
+events remain in the child partition.
+
+History pagination keeps the same ascending array of wire frames:
+
+| Query | Result |
+|---|---|
+| `tail=N` | Latest approximately N events, extended backward to `turn_started` when necessary. |
+| `before=C&limit=N` | Older events with `seq < C`, approximately N events; limit defaults to 200. Use the prior page's `X-Codeagent-Oldest-Seq` as C. |
+| `since=N` | All events with `seq > N`, without a page limit. This remains the gap recovery path. |
+| no pagination query or `since=0` | Legacy newest tail under the 8 MiB payload budget; `X-Codeagent-Replay-Truncated: 1` reports omitted older events. |
+
+`since` and `before` together return HTTP 400. `tail` applies only without
+`since` or `before`; `limit` alone returns HTTP 400. `tail` sets the requested
+page size and takes precedence over `limit` when both are present. Page sizes
+must be 1–10000 events. The row target is soft: pages extend backward to
+`turn_started` when the current turn fits. An 8 MiB stored-payload budget and
+10000-row hard cap bound each page. A single event larger than 8 MiB is kept
+whole. If a hard cap stops inside a turn, both
+`X-Codeagent-Turn-Fragment: 1` and `X-Codeagent-Replay-Truncated: 1` are set.
+The client must fetch `before=Oldest-Seq` until it receives the missing
+`turn_started`, then merge those adjacent fragments in seq order before
+reducing the turn into a separate history graph. `Turn-Fragment: 0` means the
+oldest row is aligned or the page has reached the start of the log.
+For the initial tail page, a client may retain the leading fragment and show
+newer complete turns immediately. When older pages arrive, it must replay the
+retained tail fragment after the matching older events, without resetting the
+live graph or advancing its forward cursor from an older page.
+
+Paginated responses set `X-Codeagent-Has-More-Older: 0|1`. Nonempty pages also
+set `X-Codeagent-Oldest-Seq` to their smallest seq; empty pages omit it. A page
+normally begins at `turn_started`. The final oldest page may begin with events
+that precede the first turn. The response `data` remains a `[WireFrame]` array
+inside the existing HTTP `{trace_id, code, msg, data}` envelope.
+`hello.capabilities` and `/v1/runtime/capabilities` advertise
+`history_pagination` when supported.
 
 ---
 
@@ -889,7 +926,7 @@ turn_started
 
 ```
 1. Client: GET /v1/conversations → conversation list
-2. Client: GET /v1/conversations/{id}/events?since=0 → full history
+2. Client: GET /v1/conversations/{id}/events?tail=200 → latest turn-aligned page
 3. Client builds maxSeq from received events
 4. Client: WS GET /v1/conversations/{id}/stream
 5. Server: hello frame → backfills events with seq > maxSeq → live stream
@@ -907,7 +944,7 @@ On WS disconnect:
 ```
 Client restart:
   GET /v1/conversations → find previous session
-  GET /v1/conversations/{id}/events?since=0 → full replay
+  GET /v1/conversations/{id}/events?tail=200 → latest page; use before=oldestSeq for older pages
   GET /v1/conversations/{id}/stream → attach with new since = maxSeq
 ```
 

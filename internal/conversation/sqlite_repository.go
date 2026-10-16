@@ -136,6 +136,30 @@ func (r *sqliteRepository) Load(ctx context.Context, id string) (*session.Sessio
 	return sess, nil
 }
 
+// LoadHeader follows the same reanchor rules as Load, but legacy refs are
+// migrated only in memory: saving a partial header could erase the transcript.
+func (r *sqliteRepository) LoadHeader(ctx context.Context, id string) (*session.Session, error) {
+	var header *session.Session
+	var err error
+	if store, ok := r.store.(session.SessionHeaderStore); ok {
+		header, err = store.LoadHeader(ctx, id)
+	} else {
+		header, err = r.store.Load(ctx, id)
+	}
+	if err != nil {
+		return nil, err
+	}
+	if r.currentWorkspaceDir != "" {
+		if header.Workspace.Root == "" && header.WorkspacePath != "" {
+			header.Workspace = session.MigrateLegacyWorkspacePath(header.WorkspacePath, r.currentWorkspaceDir)
+		}
+		if abs, ok := r.reanchor(id, header.Workspace); ok {
+			header.WorkspacePath = abs
+		}
+	}
+	return header, nil
+}
+
 // reanchor resolves a portable ref into this launch's absolute path, passing any
 // host-supplied rebind for an external session. It reports ok=false (leaving the
 // caller's stored WorkspacePath untouched) for an unanchored ref or an external ref
@@ -164,7 +188,7 @@ func (r *sqliteRepository) Rebind(ctx context.Context, id, absPath string) error
 		return fmt.Errorf("rebind: workspace path not accessible: %w", err)
 	}
 	// Confirm the session exists so a typo'd id surfaces as an error, not a silent no-op.
-	if _, err := r.store.Load(ctx, id); err != nil {
+	if _, err := r.LoadHeader(ctx, id); err != nil {
 		return err
 	}
 	r.rebinds.set(id, absPath)
@@ -175,7 +199,7 @@ func (r *sqliteRepository) NeedsRebind(ctx context.Context, id string) (bool, er
 	if r.currentWorkspaceDir == "" {
 		return false, nil // desktop: absolute paths are stable
 	}
-	sess, err := r.store.Load(ctx, id)
+	sess, err := r.LoadHeader(ctx, id)
 	if err != nil {
 		return false, err
 	}
@@ -212,6 +236,66 @@ func (r *sqliteRepository) List(ctx context.Context) ([]session.Meta, error) {
 		}
 	}
 	return metas, nil
+}
+
+func (r *sqliteRepository) ListMetadata(ctx context.Context) ([]session.Meta, error) {
+	if store, ok := r.store.(session.SessionMetadataStore); ok {
+		metas, err := store.ListMetadata(ctx)
+		if r.currentWorkspaceDir != "" {
+			for i := range metas {
+				if abs, ok := r.reanchor(metas[i].ID, metas[i].Workspace); ok {
+					metas[i].WorkspacePath = abs
+				}
+			}
+		}
+		return metas, err
+	}
+	return r.List(ctx)
+}
+
+func (r *sqliteRepository) SupportsConversationListPagination() bool {
+	_, ok := r.store.(session.SessionPageStore)
+	return ok
+}
+
+func (r *sqliteRepository) ListSessionPage(ctx context.Context, archived bool, before *session.SessionListCursor, limit int) ([]session.Meta, *session.SessionListCursor, error) {
+	store, ok := r.store.(session.SessionPageStore)
+	if !ok {
+		return nil, nil, fmt.Errorf("conversation list pagination is unsupported")
+	}
+	metas, next, err := store.ListSessionPage(ctx, archived, before, limit)
+	if r.currentWorkspaceDir != "" {
+		for i := range metas {
+			if abs, ok := r.reanchor(metas[i].ID, metas[i].Workspace); ok {
+				metas[i].WorkspacePath = abs
+			}
+		}
+	}
+	return metas, next, err
+}
+
+func (r *sqliteRepository) PauseInterruptedSessions(ctx context.Context) error {
+	if store, ok := r.store.(session.InterruptedSessionStore); ok {
+		return store.PauseInterruptedSessions(ctx)
+	}
+	metas, err := r.ListMetadata(ctx)
+	if err != nil {
+		return err
+	}
+	for _, meta := range metas {
+		if meta.TurnStatus != session.TurnStatusRunning && meta.TurnStatus != session.TurnStatusResuming {
+			continue
+		}
+		sess, err := r.Load(ctx, meta.ID)
+		if err != nil {
+			continue
+		}
+		sess.MarkPaused(time.Now())
+		if err := r.Save(ctx, sess); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (r *sqliteRepository) SupportsConversationArchive() bool {
@@ -435,6 +519,48 @@ func (a *StoreEventAdapter) SessionEventsSinceBudget(ctx context.Context, sessio
 		out[i], out[j] = out[j], out[i]
 	}
 	return out, truncated, nil
+}
+
+// SessionEventPage delegates only to backends that can fetch a bounded page
+// natively. A full replay fallback would defeat the pagination memory bound.
+func (a *StoreEventAdapter) SessionEventPage(ctx context.Context, sessionID string, beforeSeq int64, maxRows int, maxBytes int64) ([]session.EventRecord, bool, bool, error) {
+	if pageStore, ok := a.Store.(session.EventPageStore); ok {
+		return pageStore.SessionEventPage(ctx, sessionID, beforeSeq, maxRows, maxBytes)
+	}
+	return nil, false, false, session.ErrEventPaginationUnsupported
+}
+
+func (a *StoreEventAdapter) SupportsHistoryPagination() bool {
+	_, ok := a.Store.(session.EventPageStore)
+	return ok
+}
+
+func (a *StoreEventAdapter) SessionEventSummary(ctx context.Context, sessionID string) (session.EventSummary, error) {
+	if summaryStore, ok := a.Store.(session.EventSummaryStore); ok {
+		return summaryStore.SessionEventSummary(ctx, sessionID)
+	}
+	// Keep the prior bounded-detail behavior for third-party stores without a
+	// summary index; only native stores gain complete counts without payloads.
+	recs, _, err := a.SessionEventsSinceBudget(ctx, sessionID, 0, 8*1024*1024)
+	if err != nil {
+		return session.EventSummary{}, err
+	}
+	var summary session.EventSummary
+	for _, rec := range recs {
+		if !summary.HasEvents {
+			summary.HasEvents = true
+			summary.FirstAt = rec.At
+		}
+		summary.LastAt = rec.At
+		switch rec.Kind {
+		case "turn_started":
+			summary.TurnCount++
+			summary.MessageCount++
+		case "turn_finished":
+			summary.MessageCount++
+		}
+	}
+	return summary, nil
 }
 
 // SessionEventsByKind implements session.EventKindStore. Delegates when the

@@ -26,7 +26,10 @@ var (
 	_ EventStore               = (*MemoryStore)(nil)
 	_ EventAttentionStore      = (*MemoryStore)(nil)
 	_ EventBudgetStore         = (*MemoryStore)(nil)
+	_ EventPageStore           = (*MemoryStore)(nil)
+	_ EventSummaryStore        = (*MemoryStore)(nil)
 	_ EventKindStore           = (*MemoryStore)(nil)
+	_ EventTurnPrefixStore     = (*MemoryStore)(nil)
 	_ TelemetryStore           = (*MemoryStore)(nil)
 	_ ConversationArchiveStore = (*MemoryStore)(nil)
 	_ TurnInputStore           = (*MemoryStore)(nil)
@@ -453,6 +456,55 @@ func (m *MemoryStore) SessionEventsSinceBudget(_ context.Context, sessionID stri
 	return out, truncated, nil
 }
 
+func (m *MemoryStore) SessionEventPage(_ context.Context, sessionID string, beforeSeq int64, maxRows int, maxBytes int64) ([]EventRecord, bool, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	i := len(m.events) - 1
+	recs, truncated, err := BuildEventPage(maxRows, maxBytes, func() (EventRecord, bool, error) {
+		for i >= 0 {
+			e := m.events[i]
+			i--
+			if e.SessionID == sessionID && (beforeSeq == 0 || e.Seq < beforeSeq) {
+				return e, true, nil
+			}
+		}
+		return EventRecord{}, false, nil
+	})
+	if err != nil || len(recs) == 0 {
+		return recs, false, truncated, err
+	}
+	for _, e := range m.events {
+		if e.SessionID == sessionID && e.Seq < recs[0].Seq {
+			return recs, true, truncated, nil
+		}
+	}
+	return recs, false, truncated, nil
+}
+
+func (m *MemoryStore) SessionEventSummary(_ context.Context, sessionID string) (EventSummary, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var summary EventSummary
+	for _, e := range m.events {
+		if e.SessionID != sessionID {
+			continue
+		}
+		if !summary.HasEvents {
+			summary.HasEvents = true
+			summary.FirstAt = e.At
+		}
+		summary.LastAt = e.At
+		switch e.Kind {
+		case "turn_started":
+			summary.TurnCount++
+			summary.MessageCount++
+		case "turn_finished":
+			summary.MessageCount++
+		}
+	}
+	return summary, nil
+}
+
 // SessionEventsByKind mirrors the sqlite EventKindStore contract: events of the
 // given kinds only, in seq order.
 func (m *MemoryStore) SessionEventsByKind(_ context.Context, sessionID string, kinds []string) ([]EventRecord, error) {
@@ -465,6 +517,36 @@ func (m *MemoryStore) SessionEventsByKind(_ context.Context, sessionID string, k
 	var out []EventRecord
 	for _, e := range m.events {
 		if e.SessionID == sessionID && want[e.Kind] {
+			out = append(out, e)
+		}
+	}
+	return out, nil
+}
+
+// SessionEventsThroughTurn mirrors the sqlite EventTurnPrefixStore contract: all
+// of a session's events up to and including the terminal event of turnID, in
+// emission order. ErrEventTurnNotFound when the turn has no terminal event.
+func (m *MemoryStore) SessionEventsThroughTurn(_ context.Context, sessionID, turnID string) ([]EventRecord, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	boundary := int64(-1)
+	for _, e := range m.events {
+		if e.SessionID != sessionID || e.TurnID != turnID {
+			continue
+		}
+		switch e.Kind {
+		case "turn_finished", "turn_failed", "turn_cancelled":
+			if e.Seq > boundary {
+				boundary = e.Seq
+			}
+		}
+	}
+	if boundary < 0 {
+		return nil, ErrEventTurnNotFound
+	}
+	var out []EventRecord
+	for _, e := range m.events {
+		if e.SessionID == sessionID && e.Seq <= boundary {
 			out = append(out, e)
 		}
 	}

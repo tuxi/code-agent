@@ -75,6 +75,60 @@ func TestForkHistoryIntoFailsClosedForSessionScopedState(t *testing.T) {
 	}
 }
 
+func TestForkHistoryIntoThroughStopsAtTurn(t *testing.T) {
+	now := time.Date(2026, 8, 2, 10, 0, 0, 0, time.UTC)
+	source := &Session{
+		ID: "source", WorkspacePath: "/source", Name: "Run", Model: "m",
+		Summary: "earlier folded turns",
+		Messages: []model.Message{
+			{Role: model.RoleSystem, Content: "source system"},
+			// The compaction summary message carries no OriginTurnID (Session.Summary invariant).
+			{Role: model.RoleUser, Content: "folded digest"},
+			{Role: model.RoleUser, Content: "turn one", OriginTurnID: "t1"},
+			{Role: model.RoleAssistant, ToolCalls: []model.ToolCall{{ID: "call-1", Type: "function", Function: model.FunctionCall{Name: "read", Arguments: `{}`}}}},
+			{Role: model.RoleTool, ToolCallID: "call-1", Content: "file body"},
+			{Role: model.RoleAssistant, Content: "answer one"},
+			{Role: model.RoleUser, Content: "turn two", OriginTurnID: "t2"},
+			{Role: model.RoleAssistant, Content: "answer two"},
+		},
+	}
+
+	child := &Session{ID: "child", Messages: []model.Message{{Role: model.RoleSystem, Content: "child system"}}}
+	if err := ForkHistoryIntoThrough(child, source, "t1", "", now); err != nil {
+		t.Fatalf("ForkHistoryIntoThrough: %v", err)
+	}
+	if len(child.Messages) != 6 {
+		t.Fatalf("history len = %d, want 6 (system + summary + turn one incl. tool exchange): %+v", len(child.Messages), child.Messages)
+	}
+	if child.Messages[1].Content != "folded digest" || child.Messages[5].Content != "answer one" {
+		t.Fatalf("cut history = %+v", child.Messages)
+	}
+	if child.Summary != "earlier folded turns" {
+		t.Fatalf("summary = %q, want carried", child.Summary)
+	}
+
+	// Cutting through the last turn keeps the whole checkpoint.
+	full := &Session{ID: "full", Messages: []model.Message{{Role: model.RoleSystem, Content: "child system"}}}
+	if err := ForkHistoryIntoThrough(full, source, "t2", "", now); err != nil {
+		t.Fatalf("ForkHistoryIntoThrough(t2): %v", err)
+	}
+	if len(full.Messages) != len(source.Messages) || full.Messages[len(full.Messages)-1].Content != "answer two" {
+		t.Fatalf("full fork = %+v", full.Messages)
+	}
+
+	// A turn folded into the summary is unavailable: fail closed, provision nothing.
+	if err := ValidateForkTurn(source, "t-gone"); !errors.Is(err, ErrForkTurnUnavailable) {
+		t.Fatalf("ValidateForkTurn error = %v, want ErrForkTurnUnavailable", err)
+	}
+	orphan := &Session{ID: "orphan", Messages: []model.Message{{Role: model.RoleSystem, Content: "child system"}}}
+	if err := ForkHistoryIntoThrough(orphan, source, "t-gone", "", now); !errors.Is(err, ErrForkTurnUnavailable) {
+		t.Fatalf("unavailable cut error = %v", err)
+	}
+	if len(orphan.Messages) != 1 {
+		t.Fatalf("failed fork mutated child history: %+v", orphan.Messages)
+	}
+}
+
 func TestManagedWorktreeHistoryCanBeCopiedButNotShared(t *testing.T) {
 	source := sessionWithExecutionPolicy(ExecutionPolicyIsolatedWorktree)
 	source.Messages = []model.Message{{Role: model.RoleSystem}, {Role: model.RoleUser, Content: "managed history"}}

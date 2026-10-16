@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -78,6 +79,49 @@ func TestStoreSessionEventsSinceBudgetCoversAll(t *testing.T) {
 	}
 	if recs[0].Seq != 1 || recs[4].Seq != 5 {
 		t.Fatalf("seqs = %d..%d, want 1..5", recs[0].Seq, recs[4].Seq)
+	}
+}
+
+// SessionEventsThroughTurn returns the turn-aligned prefix and reports a missing
+// terminal event for unknown or still-running turns.
+func TestStoreSessionEventsThroughTurn(t *testing.T) {
+	store := newStore(t)
+	ctx := context.Background()
+	sid := "s1"
+	base := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	i := 0
+	add := func(turn, kind string) {
+		_, _ = store.RecordEvent(ctx, session.EventRecord{
+			SessionID: sid, TurnID: turn, Kind: kind,
+			At: base.Add(time.Duration(i) * time.Second), Payload: []byte(`{"kind":"` + kind + `"}`),
+		})
+		i++
+	}
+	add("t1", "turn_started")
+	add("t1", "tool_started")
+	add("t1", "turn_finished")
+	add("t2", "turn_started")
+	add("t2", "turn_finished")
+
+	recs, err := store.SessionEventsThroughTurn(ctx, sid, "t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recs) != 3 || recs[2].Kind != "turn_finished" || recs[2].TurnID != "t1" {
+		t.Fatalf("prefix = %+v, want the 3 events of t1", recs)
+	}
+
+	all, err := store.SessionEventsThroughTurn(ctx, sid, "t2")
+	if err != nil || len(all) != 5 {
+		t.Fatalf("t2 prefix = %d events err=%v, want 5", len(all), err)
+	}
+
+	if _, err := store.SessionEventsThroughTurn(ctx, sid, "missing"); !errors.Is(err, session.ErrEventTurnNotFound) {
+		t.Fatalf("missing turn error = %v, want ErrEventTurnNotFound", err)
+	}
+	add("t3", "turn_started") // never terminates
+	if _, err := store.SessionEventsThroughTurn(ctx, sid, "t3"); !errors.Is(err, session.ErrEventTurnNotFound) {
+		t.Fatalf("running turn error = %v, want ErrEventTurnNotFound", err)
 	}
 }
 

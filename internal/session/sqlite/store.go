@@ -29,7 +29,10 @@ var (
 	_ session.EventStore               = (*Store)(nil)
 	_ session.EventAttentionStore      = (*Store)(nil)
 	_ session.EventBudgetStore         = (*Store)(nil)
+	_ session.EventPageStore           = (*Store)(nil)
+	_ session.EventSummaryStore        = (*Store)(nil)
 	_ session.EventKindStore           = (*Store)(nil)
+	_ session.EventTurnPrefixStore     = (*Store)(nil)
 	_ session.TelemetryStore           = (*Store)(nil)
 	_ session.ConversationArchiveStore = (*Store)(nil)
 	_ worktree.Store                   = (*Store)(nil)
@@ -52,6 +55,8 @@ type Store struct {
 	// OnUpdate is an optional callback invoked after a successful targeted
 	// metadata mutation (rename/archive/restore) that bypasses Save.
 	OnUpdate func(sessionID string)
+	// OnLifecycleUpdate refreshes the derived index without a full session load.
+	OnLifecycleUpdate func(sessionID, status string)
 }
 
 // New opens (creating if needed) a SQLite session database at the given path.
@@ -197,8 +202,7 @@ CREATE TABLE IF NOT EXISTS managed_worktrees (
     created_at             TEXT NOT NULL,
     updated_at             TEXT NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_managed_worktrees_state ON managed_worktrees(state);
-CREATE INDEX IF NOT EXISTS idx_session_events_session ON session_events(session_id, at);`
+CREATE INDEX IF NOT EXISTS idx_managed_worktrees_state ON managed_worktrees(state);`
 
 // open (re)opens the database at s.path and applies the idempotent migrations.
 // Used at construction and to recover the connection after the file moved out
@@ -238,10 +242,15 @@ func (s *Store) open() error {
 	}
 	// Serial CLI usage: a single connection sidesteps SQLite "database is locked".
 	db.SetMaxOpenConns(1)
+	migrationStarted := time.Now()
+	fmt.Fprintln(os.Stderr, "[startup] phase=sqlite_schema started")
 	if _, err := db.Exec(schema); err != nil {
 		db.Close()
 		return fmt.Errorf("migrate: %w", err)
 	}
+	fmt.Fprintf(os.Stderr, "[startup] phase=sqlite_schema completed elapsed=%s\n", time.Since(migrationStarted))
+	migrationStarted = time.Now()
+	fmt.Fprintln(os.Stderr, "[startup] phase=sqlite_columns started")
 	// Additive migrations: columns added after the requests table first shipped
 	// won't come from CREATE IF NOT EXISTS. ADD COLUMN is idempotent here —
 	// "duplicate column" just means it already applied.
@@ -273,19 +282,18 @@ func (s *Store) open() error {
 		`ALTER TABLE turn_inputs ADD COLUMN intent TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE turn_inputs ADD COLUMN accepted_seq INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE managed_worktrees ADD COLUMN remove_force INTEGER NOT NULL DEFAULT 0`,
-		// v2: re-index session_events by at for chronological ordering.
-		// The original index was on (session_id, id); rebuild on (session_id, at).
-		`DROP INDEX IF EXISTS idx_session_events_session`,
-		`CREATE INDEX idx_session_events_session ON session_events(session_id, at)`,
+		// Existing chronological indexes are retained. New query-specific indexes
+		// are additive in schema and never rebuilt on an ordinary open.
 	} {
 		if _, err := db.Exec(stmt); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			db.Close()
 			return fmt.Errorf("migrate (%s): %w", stmt, err)
 		}
 	}
-	if _, err := db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_origin_turn ON messages(session_id, origin_turn_id) WHERE origin_turn_id IS NOT NULL AND origin_turn_id != ''`); err != nil {
+	fmt.Fprintf(os.Stderr, "[startup] phase=sqlite_columns completed elapsed=%s\n", time.Since(migrationStarted))
+	if err := ensureSecondaryIndexes(db); err != nil {
 		db.Close()
-		return fmt.Errorf("migrate origin turn index: %w", err)
+		return err
 	}
 	s.db = db
 	return nil
@@ -820,6 +828,78 @@ func (s *Store) SessionEventsSinceBudget(ctx context.Context, sessionID string, 
 	return out, truncated, nil
 }
 
+func (s *Store) SessionEventPage(ctx context.Context, sessionID string, beforeSeq int64, maxRows int, maxBytes int64) ([]session.EventRecord, bool, bool, error) {
+	// The exclusive cursor is a rowid, not an offset. The session_id/id index
+	// supports both the tail and older-page scans without sorting the log.
+	query := `SELECT id, session_id, turn_id, kind, at, COALESCE(payload, '')
+		FROM session_events WHERE session_id=? ORDER BY id DESC`
+	args := []any{sessionID}
+	if beforeSeq > 0 {
+		query = `SELECT id, session_id, turn_id, kind, at, COALESCE(payload, '')
+			FROM session_events WHERE session_id=? AND id<? ORDER BY id DESC`
+		args = append(args, beforeSeq)
+	}
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, false, false, err
+	}
+	recs, truncated, err := session.BuildEventPage(maxRows, maxBytes, func() (session.EventRecord, bool, error) {
+		if !rows.Next() {
+			return session.EventRecord{}, false, rows.Err()
+		}
+		var e session.EventRecord
+		var at, payload string
+		if err := rows.Scan(&e.Seq, &e.SessionID, &e.TurnID, &e.Kind, &at, &payload); err != nil {
+			return session.EventRecord{}, false, err
+		}
+		e.At = parseTime(at)
+		if payload != "" {
+			e.Payload = json.RawMessage(payload)
+		}
+		return e, true, nil
+	})
+	closeErr := rows.Close()
+	if err != nil {
+		return nil, false, false, err
+	}
+	if closeErr != nil {
+		return nil, false, false, closeErr
+	}
+	if len(recs) == 0 {
+		return recs, false, truncated, nil
+	}
+	var hasMore bool
+	err = s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM session_events WHERE session_id=? AND id<?)`, sessionID, recs[0].Seq).Scan(&hasMore)
+	return recs, hasMore, truncated, err
+}
+
+func (s *Store) SessionEventSummary(ctx context.Context, sessionID string) (session.EventSummary, error) {
+	var summary session.EventSummary
+	var at string
+	err := s.db.QueryRowContext(ctx, `SELECT at FROM session_events WHERE session_id=? ORDER BY id ASC LIMIT 1`, sessionID).Scan(&at)
+	if errors.Is(err, sql.ErrNoRows) {
+		return summary, nil
+	}
+	if err != nil {
+		return summary, err
+	}
+	summary.HasEvents = true
+	summary.FirstAt = parseTime(at)
+	if err := s.db.QueryRowContext(ctx, `SELECT at FROM session_events WHERE session_id=? ORDER BY id DESC LIMIT 1`, sessionID).Scan(&at); err != nil {
+		return summary, err
+	}
+	summary.LastAt = parseTime(at)
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM session_events WHERE session_id=? AND kind='turn_started'`, sessionID).Scan(&summary.TurnCount); err != nil {
+		return summary, err
+	}
+	var finished int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM session_events WHERE session_id=? AND kind='turn_finished'`, sessionID).Scan(&finished); err != nil {
+		return summary, err
+	}
+	summary.MessageCount = summary.TurnCount + finished
+	return summary, nil
+}
+
 // SessionEventsByKind implements session.EventKindStore: it replays only events
 // of the given kinds in seq order, so detail/messages/asset endpoints load just
 // the rows they need instead of a session's whole (potentially huge) event log.
@@ -827,16 +907,45 @@ func (s *Store) SessionEventsByKind(ctx context.Context, sessionID string, kinds
 	if len(kinds) == 0 {
 		return nil, nil
 	}
-	placeholders := strings.Repeat("?,", len(kinds))
-	placeholders = placeholders[:len(placeholders)-1]
-	args := make([]any, 0, len(kinds)+1)
-	args = append(args, sessionID)
+	// Each kind is an ordered index range. UNION ALL merges those ranges by
+	// rowid instead of scanning a huge partition or sorting payload-bearing rows.
+	var queries []string
+	var args []any
+	seen := map[string]bool{}
 	for _, k := range kinds {
-		args = append(args, k)
+		if seen[k] {
+			continue
+		}
+		seen[k] = true
+		queries = append(queries, `SELECT id, session_id, turn_id, kind, at, COALESCE(payload, '') FROM session_events WHERE session_id=? AND kind=?`)
+		args = append(args, sessionID, k)
+	}
+	rows, err := s.db.QueryContext(ctx, strings.Join(queries, " UNION ALL ")+` ORDER BY id ASC`, args...)
+	if err != nil {
+		return nil, err
+	}
+	return scanEventRows(rows)
+}
+
+// SessionEventsThroughTurn implements session.EventTurnPrefixStore: it returns the
+// session's events up to and including the terminal event of turnID, in the same
+// emission order as SessionEvents, so a fork client can render the prefix it
+// inherited from the source conversation. It reports session.ErrEventTurnNotFound
+// when the turn has no terminal event (unknown, still running, or paused).
+func (s *Store) SessionEventsThroughTurn(ctx context.Context, sessionID, turnID string) ([]session.EventRecord, error) {
+	var boundary sql.NullInt64
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT MAX(id) FROM session_events
+		WHERE session_id=? AND turn_id=? AND kind IN ('turn_finished','turn_failed','turn_cancelled')`,
+		sessionID, turnID).Scan(&boundary); err != nil {
+		return nil, err
+	}
+	if !boundary.Valid {
+		return nil, session.ErrEventTurnNotFound
 	}
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, session_id, turn_id, kind, at, COALESCE(payload, '')
-		FROM session_events WHERE session_id=? AND kind IN (`+placeholders+`) ORDER BY id ASC`, args...)
+		FROM session_events WHERE session_id=? AND id <= ? ORDER BY at ASC, id ASC`, sessionID, boundary.Int64)
 	if err != nil {
 		return nil, err
 	}
@@ -904,32 +1013,35 @@ func (s *Store) SessionEventAttention(ctx context.Context, sinceSequence int64) 
 	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(id), 0) FROM session_events`).Scan(&cursor); err != nil {
 		return session.EventAttentionSnapshot{}, err
 	}
-	rows, err := tx.QueryContext(ctx, `
-		WITH changed_sessions AS (
-			SELECT DISTINCT session_id
-			FROM session_events
-			WHERE id > ? AND id <= ?
-		), heads AS (
-			SELECT e.session_id, MAX(e.id) AS last_sequence
-			FROM session_events e
-			JOIN changed_sessions c ON c.session_id = e.session_id
-			WHERE e.id <= ?
-			GROUP BY e.session_id
-		), terminal_heads AS (
-			SELECT e.session_id, MAX(e.id) AS terminal_sequence
-			FROM session_events e
-			JOIN changed_sessions c ON c.session_id = e.session_id
-			WHERE e.id <= ? AND e.kind IN ('turn_finished', 'turn_failed', 'turn_cancelled')
-			GROUP BY e.session_id
-		)
-		SELECT h.session_id, h.last_sequence,
-		       latest.id, latest.turn_id, latest.kind, latest.at, COALESCE(latest.payload, ''),
-		       t.id, t.turn_id, t.kind, t.at, COALESCE(t.payload, '')
-		FROM heads h
-		JOIN session_events latest ON latest.id = h.last_sequence
-		LEFT JOIN terminal_heads th ON th.session_id = h.session_id
-		LEFT JOIN session_events t ON t.id = th.terminal_sequence
-		ORDER BY h.session_id ASC`, sinceSequence, cursor, cursor, cursor)
+	// Baselines enumerate partition keys by indexed successor seeks rather than
+	// reading millions of event rows. Deltas inspect only the new rowid range.
+	changed := `WITH RECURSIVE changed_sessions(session_id) AS (
+		SELECT MIN(session_id) FROM session_events
+		UNION ALL
+		SELECT (SELECT MIN(session_id) FROM session_events WHERE session_id > c.session_id)
+		FROM changed_sessions c WHERE c.session_id IS NOT NULL
+	)`
+	args := []any{cursor, cursor, cursor, cursor}
+	if sinceSequence > 0 {
+		changed = `WITH changed_sessions AS (SELECT DISTINCT session_id FROM session_events WHERE id > ? AND id <= ?)`
+		args = []any{sinceSequence, cursor, cursor, cursor, cursor, cursor}
+	}
+	rows, err := tx.QueryContext(ctx, changed+`, heads AS (
+		SELECT c.session_id,
+		       (SELECT MAX(id) FROM session_events WHERE session_id=c.session_id AND id<=?) AS last_sequence,
+		       MAX(
+		         COALESCE((SELECT MAX(id) FROM session_events WHERE session_id=c.session_id AND kind='turn_finished' AND id<=?),0),
+		         COALESCE((SELECT MAX(id) FROM session_events WHERE session_id=c.session_id AND kind='turn_failed' AND id<=?),0),
+		         COALESCE((SELECT MAX(id) FROM session_events WHERE session_id=c.session_id AND kind='turn_cancelled' AND id<=?),0)
+		       ) AS terminal_sequence
+		FROM changed_sessions c WHERE c.session_id IS NOT NULL
+	)
+	SELECT h.session_id, h.last_sequence,
+	       latest.id, latest.turn_id, latest.kind, latest.at, '',
+	       t.id, t.turn_id, t.kind, t.at, ''
+	FROM heads h JOIN session_events latest ON latest.id=h.last_sequence
+	LEFT JOIN session_events t ON t.id=h.terminal_sequence
+	ORDER BY h.session_id ASC`, args...)
 	if err != nil {
 		return session.EventAttentionSnapshot{}, err
 	}

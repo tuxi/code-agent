@@ -5,7 +5,9 @@ import (
 	"code-agent/internal/session/sqlite"
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -34,6 +36,15 @@ func OpenStore(root string) (session.Store, error) {
 	return openSQLiteStore(root)
 }
 
+// OpenStoreForServer defers a cold global-index rebuild until the first
+// cross-session tool query. HTTP readiness does not depend on that scan.
+func OpenStoreForServer(root string) (session.Store, error) {
+	if StoreFactory != nil {
+		return StoreFactory(root)
+	}
+	return openSQLiteStoreWithIndex(root, false)
+}
+
 // openSQLiteStore opens (creating if needed) the per-project session database.
 // The DB lives under the user's home (see storePath), NOT inside the project
 // directory: a project under a synced folder (iCloud Drive, Dropbox, …) would
@@ -41,6 +52,10 @@ func OpenStore(root string) (session.Store, error) {
 // SQLite rejects as SQLITE_READONLY_DBMOVED and which can corrupt the file.
 // Sessions stay project-scoped: you resume the conversation for the repo you are in.
 func openSQLiteStore(root string) (session.Store, error) {
+	return openSQLiteStoreWithIndex(root, true)
+}
+
+func openSQLiteStoreWithIndex(root string, eagerIndex bool) (session.Store, error) {
 	path, err := storePath(root)
 	if err != nil {
 		return nil, err
@@ -91,6 +106,12 @@ func openSQLiteStore(root string) (session.Store, error) {
 
 	store, err := sqlite.New(path)
 	if err != nil {
+		// A failed migration (disk full, busy, cancelled, permission error) does
+		// not establish corruption. Never quarantine a valid large history DB
+		// merely because an additive index could not be built.
+		if !isSQLiteCorruption(err) {
+			return nil, err
+		}
 		// The DB won't open — it may be a corrupt copy migrated from a synced
 		// folder that was being clobbered. Quarantine it (non-destructively, kept
 		// for manual recovery) and start fresh rather than block startup forever.
@@ -114,7 +135,13 @@ func openSQLiteStore(root string) (session.Store, error) {
 	// Wire the cross-workspace session index so every Save/Delete updates the
 	// global index.db. The process-wide index is opened once and rebuilt once,
 	// synchronously, before callers can query a newly-created empty index.
-	if idx, idxErr := EnsureIndexReady(context.Background()); idx != nil {
+	openIndex := func() (*sql.DB, error) {
+		if eagerIndex {
+			return EnsureIndexReady(context.Background())
+		}
+		return prepareDeferredIndex()
+	}
+	if idx, idxErr := openIndex(); idx != nil {
 		store.OnSave = func(sess *session.Session, storePath string) {
 			persisted, err := store.Load(context.Background(), sess.ID)
 			if err != nil {
@@ -125,6 +152,11 @@ func openSQLiteStore(root string) (session.Store, error) {
 		}
 		store.OnDelete = func(id string) {
 			DeleteSessionIndex(idx, id)
+		}
+		store.OnLifecycleUpdate = func(id, status string) {
+			if _, err := idx.Exec(`UPDATE sessions SET turn_status=? WHERE id=?`, status, id); err != nil {
+				fmt.Fprintf(os.Stderr, "[index] update lifecycle: %v\n", err)
+			}
 		}
 		store.OnUpdate = func(id string) {
 			sess, err := store.Load(context.Background(), id)
@@ -143,6 +175,17 @@ func openSQLiteStore(root string) (session.Store, error) {
 
 	fmt.Fprintf(os.Stderr, "[session-db] ✅ DB opened successfully\n")
 	return store, nil
+}
+
+func isSQLiteCorruption(err error) bool {
+	var coded interface{ Code() int }
+	if !errors.As(err, &coded) {
+		return false
+	}
+	// SQLite primary result codes: CORRUPT=11, NOTADB=26. Extended codes keep
+	// the primary result in the low byte.
+	code := coded.Code() & 0xff
+	return code == 11 || code == 26
 }
 
 // storePath returns the session DB path for a workspace root, under the user's

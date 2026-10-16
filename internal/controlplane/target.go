@@ -58,7 +58,7 @@ func (t *RuntimeTarget) CreateSession(ctx context.Context, request tools.Session
 		}
 	}
 	child.SetExecutionPolicy(request.ExecutionPolicy)
-	markSpawn(child, request.RequestID, request.ParentSessionID, "", session.SpawnKindCreate, true)
+	markSpawn(child, request.RequestID, request.ParentSessionID, "", "", session.SpawnKindCreate, true)
 	child.Name = request.Name
 	if err := t.repo.Save(ctx, child); err != nil {
 		return tools.SessionSpawnResult{}, err
@@ -86,7 +86,7 @@ func (t *RuntimeTarget) createManagedWorktreeSession(ctx context.Context, reques
 		return tools.SessionSpawnResult{}, errors.New("managed worktree provisioner returned a different child session")
 	}
 	result.Session.Name = request.Name
-	markSpawn(result.Session, request.RequestID, request.ParentSessionID, "", session.SpawnKindCreate, true)
+	markSpawn(result.Session, request.RequestID, request.ParentSessionID, "", "", session.SpawnKindCreate, true)
 	if err := t.repo.Save(ctx, result.Session); err != nil {
 		return tools.SessionSpawnResult{}, err
 	}
@@ -115,14 +115,21 @@ func (t *RuntimeTarget) ForkSession(ctx context.Context, request sessionfork.Req
 	if loadErr == nil {
 		existingRequest, _ := child.Metadata[session.MetaSpawnRequest].(string)
 		existingSource, _ := child.Metadata[session.MetaForkSource].(string)
-		if child.WorkspacePath != source.WorkspacePath || (existingRequest != "" && existingRequest != request.RequestID) || (existingSource != "" && existingSource != request.SourceSessionID) || (existingRequest == "" && !child.IsEmpty()) {
+		existingThrough, _ := child.Metadata[session.MetaForkThroughTurn].(string)
+		sameSpawn := existingRequest != "" && existingRequest == request.RequestID
+		if child.WorkspacePath != source.WorkspacePath || (existingRequest != "" && existingRequest != request.RequestID) || (existingSource != "" && existingSource != request.SourceSessionID) || (sameSpawn && existingThrough != request.ThroughTurnID) || (existingRequest == "" && !child.IsEmpty()) {
 			return sessionfork.Result{}, errors.New("reserved fork session conflicts with an existing session")
 		}
 		if ready, _ := child.Metadata[session.MetaSpawnReady].(bool); ready {
-			return forkResult(child, request.ParentSessionID, request.SourceSessionID, ""), nil
+			return forkResult(child, request.ParentSessionID, request.SourceSessionID, "", request.ThroughTurnID), nil
 		}
 	}
 	if err := session.ValidateForkSource(source); err != nil {
+		return sessionfork.Result{}, err
+	}
+	// Resolve the cut turn before provisioning the child so an unavailable
+	// (compacted/unknown) turn never leaves an empty reserved session behind.
+	if err := session.ValidateForkTurn(source, request.ThroughTurnID); err != nil {
 		return sessionfork.Result{}, err
 	}
 	if loadErr != nil {
@@ -130,19 +137,19 @@ func (t *RuntimeTarget) ForkSession(ctx context.Context, request sessionfork.Req
 		if err != nil {
 			return sessionfork.Result{}, err
 		}
-		markSpawn(child, request.RequestID, request.ParentSessionID, request.SourceSessionID, session.SpawnKindFork, false)
+		markSpawn(child, request.RequestID, request.ParentSessionID, request.SourceSessionID, request.ThroughTurnID, session.SpawnKindFork, false)
 		if err := t.repo.Save(ctx, child); err != nil {
 			return sessionfork.Result{}, err
 		}
 	}
-	if err := session.ForkHistoryInto(child, source, request.Name, time.Now().UTC()); err != nil {
+	if err := session.ForkHistoryIntoThrough(child, source, request.ThroughTurnID, request.Name, time.Now().UTC()); err != nil {
 		return sessionfork.Result{}, err
 	}
-	markSpawn(child, request.RequestID, request.ParentSessionID, request.SourceSessionID, session.SpawnKindFork, true)
+	markSpawn(child, request.RequestID, request.ParentSessionID, request.SourceSessionID, request.ThroughTurnID, session.SpawnKindFork, true)
 	if err := t.repo.Save(ctx, child); err != nil {
 		return sessionfork.Result{}, err
 	}
-	return forkResult(child, request.ParentSessionID, request.SourceSessionID, ""), nil
+	return forkResult(child, request.ParentSessionID, request.SourceSessionID, "", request.ThroughTurnID), nil
 }
 
 func (t *RuntimeTarget) forkManagedWorktreeSession(ctx context.Context, request sessionfork.Request, childID string) (sessionfork.Result, error) {
@@ -154,6 +161,9 @@ func (t *RuntimeTarget) forkManagedWorktreeSession(ctx context.Context, request 
 		return sessionfork.Result{}, err
 	}
 	if err := session.ValidateForkHistory(source); err != nil {
+		return sessionfork.Result{}, err
+	}
+	if err := session.ValidateForkTurn(source, request.ThroughTurnID); err != nil {
 		return sessionfork.Result{}, err
 	}
 	suggestedName := request.WorktreeName
@@ -176,19 +186,22 @@ func (t *RuntimeTarget) forkManagedWorktreeSession(ctx context.Context, request 
 	}
 	child := result.Session
 	if ready, _ := child.Metadata[session.MetaSpawnReady].(bool); ready {
-		return forkResult(child, request.ParentSessionID, request.SourceSessionID, result.Record.BaseCommit), nil
+		return forkResult(child, request.ParentSessionID, request.SourceSessionID, result.Record.BaseCommit, request.ThroughTurnID), nil
 	}
-	if err := session.ForkHistoryInto(child, source, request.Name, time.Now().UTC()); err != nil {
+	if err := session.ForkHistoryIntoThrough(child, source, request.ThroughTurnID, request.Name, time.Now().UTC()); err != nil {
 		return sessionfork.Result{}, err
 	}
-	markSpawn(child, request.RequestID, request.ParentSessionID, request.SourceSessionID, session.SpawnKindFork, true)
+	markSpawn(child, request.RequestID, request.ParentSessionID, request.SourceSessionID, request.ThroughTurnID, session.SpawnKindFork, true)
 	if err := t.repo.Save(ctx, child); err != nil {
 		return sessionfork.Result{}, err
 	}
-	return forkResult(child, request.ParentSessionID, request.SourceSessionID, result.Record.BaseCommit), nil
+	return forkResult(child, request.ParentSessionID, request.SourceSessionID, result.Record.BaseCommit, request.ThroughTurnID), nil
 }
 
-func markSpawn(child *session.Session, requestID, parentID, sourceID, kind string, ready bool) {
+// markSpawn records spawn/fork causality on the child. throughTurnID is the
+// fork cut (empty for creates and whole-checkpoint forks); it is persisted so a
+// client reopening the child can reconstruct the inherited prefix.
+func markSpawn(child *session.Session, requestID, parentID, sourceID, throughTurnID, kind string, ready bool) {
 	if child.Metadata == nil {
 		child.Metadata = make(map[string]any)
 	}
@@ -199,14 +212,17 @@ func markSpawn(child *session.Session, requestID, parentID, sourceID, kind strin
 	if sourceID != "" {
 		child.Metadata[session.MetaForkSource] = sourceID
 	}
+	if throughTurnID != "" {
+		child.Metadata[session.MetaForkThroughTurn] = throughTurnID
+	}
 }
 
 func spawnResult(child *session.Session, parentID, sourceID, kind string) tools.SessionSpawnResult {
 	return tools.SessionSpawnResult{ID: child.ID, ParentSessionID: parentID, SourceSessionID: sourceID, WorkspacePath: child.WorkspacePath, Kind: kind, Status: "open"}
 }
 
-func forkResult(child *session.Session, parentID, sourceID, baseCommit string) sessionfork.Result {
-	return sessionfork.Result{ID: child.ID, ParentSessionID: parentID, SourceSessionID: sourceID, WorkspacePath: child.WorkspacePath, Kind: session.SpawnKindFork, Status: "open", BaseCommit: baseCommit}
+func forkResult(child *session.Session, parentID, sourceID, baseCommit, throughTurnID string) sessionfork.Result {
+	return sessionfork.Result{ID: child.ID, ParentSessionID: parentID, SourceSessionID: sourceID, WorkspacePath: child.WorkspacePath, Kind: session.SpawnKindFork, Status: "open", BaseCommit: baseCommit, ThroughTurnID: throughTurnID}
 }
 
 func (t *RuntimeTarget) Accept(ctx, executionCtx context.Context, sessionID string, request tools.SessionSendRequest) (tools.SessionDelivery, error) {

@@ -604,22 +604,32 @@ Description: Fork a session's latest durable checkpoint into a new persistent,
              persisted summary and provider-valid text/tool history.
 
 Parameters:
-  id    string, required — source session ID
-  name  string, optional — defaults to "<source name> (fork)"
+  id              string, required — source session ID
+  name            string, optional — defaults to "<source name> (fork)"
+  through_turn_id string, optional — fork only through the end of this turn
 
 Returns: {id, parent_session_id, source_session_id, workspace_path,
-         kind: "fork", status: "open"}
+         kind: "fork", status: "open", through_turn_id}
 ```
 
 The current tool call is not part of the fork unless it was already persisted
 as a balanced checkpoint. Gateway assets, local assets, reference-ledger state,
 and managed-worktree sources fail closed in Phase C1.
 
-Known compatibility issue: the model checkpoint and `read_session` contain the
-forked history, but AgentKit's initial conversation rendering is currently empty
-because its restore path is event-backed and Phase C1 does not duplicate source
-events. This is recorded and deliberately deferred; blindly copying thousands
-of diagnostic events is not the intended long-term fix.
+Turn-scoped fork (`through_turn_id`, see
+`docs/runtime-integration/conversation-fork-at-turn-v1.md`): the child copies the
+source history only through the end of the given turn, cutting on the next user
+message so the boundary is always provider-valid. A cut turn that compaction has
+folded into the summary (or that is unknown / not terminal) fails closed before a
+child is provisioned.
+
+Fork rendering: the model checkpoint and `read_session` contain the forked
+history, and the child records lineage (`fork_source_session_id`,
+`fork_through_turn_id`) exposed on `GET /v1/conversations/{id}`. AgentKit renders
+the inherited prefix by fetching the source's events bounded by the cut turn
+(`GET /v1/conversations/{source}/events?through_turn_id=...`), a turn-aligned,
+prefix-shaped replay. The child deliberately does not duplicate the source's
+diagnostic event log.
 
 ### 5.7 Loading strategy
 
