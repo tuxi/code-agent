@@ -8,12 +8,15 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/net/dns/dnsmessage"
 )
 
 const (
 	mdnsServiceType = "_talkify-agent._tcp.local."
 	mdnsGroup       = "224.0.0.251"
 	mdnsPort        = 5353
+	mdnsRecordTTL   = 120
 )
 
 // mdnsAdvertiser is intentionally small and dependency-free. It answers the
@@ -35,15 +38,15 @@ func newMDNSAdvertiser(serverID, displayName string, port int) (*mdnsAdvertiser,
 	if err != nil || strings.TrimSpace(host) == "" {
 		host = "codeagent"
 	}
-	host = strings.TrimSuffix(host, ".")
+	host = mdnsTargetHost(host)
 	service := sanitizeDNSLabel(displayName) + " " + shortServerID(serverID) + "." + mdnsServiceType
 	conn, err := net.ListenMulticastUDP("udp4", nil, &net.UDPAddr{IP: net.ParseIP(mdnsGroup), Port: mdnsPort})
 	if err != nil {
 		return nil, fmt.Errorf("bind Bonjour mDNS: %w", err)
 	}
-	m := &mdnsAdvertiser{conn: conn, addr: &net.UDPAddr{IP: net.ParseIP(mdnsGroup), Port: mdnsPort}, service: service, target: host + ".local.", port: port, serverID: serverID, displayName: displayName, stop: make(chan struct{})}
+	m := &mdnsAdvertiser{conn: conn, addr: &net.UDPAddr{IP: net.ParseIP(mdnsGroup), Port: mdnsPort}, service: service, target: host, port: port, serverID: serverID, displayName: displayName, stop: make(chan struct{})}
 	go m.serve()
-	if err := m.announce(120); err != nil {
+	if err := m.announce(mdnsRecordTTL); err != nil {
 		m.Close()
 		return nil, err
 	}
@@ -51,8 +54,13 @@ func newMDNSAdvertiser(serverID, displayName string, port int) (*mdnsAdvertiser,
 }
 
 func (m *mdnsAdvertiser) serve() {
-	buf := make([]byte, 1500)
+	buf := make([]byte, 9000)
+	nextAnnouncement := time.Now().Add(mdnsRecordTTL * time.Second / 2)
 	for {
+		if time.Now().After(nextAnnouncement) {
+			_ = m.announce(mdnsRecordTTL)
+			nextAnnouncement = time.Now().Add(mdnsRecordTTL * time.Second / 2)
+		}
 		_ = m.conn.SetReadDeadline(time.Now().Add(time.Second))
 		n, from, err := m.conn.ReadFromUDP(buf)
 		select {
@@ -66,14 +74,17 @@ func (m *mdnsAdvertiser) serve() {
 			}
 			return
 		}
-		if n < 12 || binary.BigEndian.Uint16(buf[2:4]) == 0 {
+		packet, unicast := m.responseToQuery(buf[:n])
+		if packet == nil {
 			continue
 		}
-		if !hasMDNSQuestion(buf[:n]) {
-			continue
+		destination := m.addr
+		if unicast || from.Port != mdnsPort {
+			destination = from
+			// Legacy unicast DNS queries use the original transaction ID.
+			copy(packet[:2], buf[:2])
 		}
-		packet := m.records(0)
-		_, _ = m.conn.WriteToUDP(packet, from)
+		_, _ = m.conn.WriteToUDP(packet, destination)
 	}
 }
 
@@ -138,7 +149,7 @@ func (p *dnsPacket) srv(name, target string, port uint16, ttl uint32) {
 	r.data = make([]byte, 6)
 	binary.BigEndian.PutUint16(r.data[4:6], port)
 	r.name(target)
-	p.rr(name, 33, 1, ttl, r.data)
+	p.rr(name, 33, 0x8001, ttl, r.data)
 }
 func (p *dnsPacket) txt(name string, values []string, ttl uint32) {
 	var r []byte
@@ -149,14 +160,51 @@ func (p *dnsPacket) txt(name string, values []string, ttl uint32) {
 		r = append(r, byte(len(v)))
 		r = append(r, []byte(v)...)
 	}
-	p.rr(name, 16, 1, ttl, r)
+	p.rr(name, 16, 0x8001, ttl, r)
 }
-func (p *dnsPacket) a(name string, ip net.IP, ttl uint32) { p.rr(name, 1, 1, ttl, ip.To4()) }
+func (p *dnsPacket) a(name string, ip net.IP, ttl uint32) { p.rr(name, 1, 0x8001, ttl, ip.To4()) }
 func (p *dnsPacket) bytes() []byte                        { return p.data }
 
-func hasMDNSQuestion(packet []byte) bool {
-	return len(packet) > 12 && binary.BigEndian.Uint16(packet[4:6]) > 0
+// A normal mDNS query has flags == 0. Only QR-marked responses are
+// excluded. TTL zero is reserved for Close's goodbye, never a live answer.
+func (m *mdnsAdvertiser) responseToQuery(packet []byte) ([]byte, bool) {
+	var parser dnsmessage.Parser
+	header, err := parser.Start(packet)
+	if err != nil || header.Response || header.OpCode != 0 {
+		return nil, false
+	}
+	questions, err := parser.AllQuestions()
+	if err != nil {
+		return nil, false
+	}
+	matched, unicast := false, false
+	for _, question := range questions {
+		if uint16(question.Class)&0x7fff != uint16(dnsmessage.ClassINET) {
+			continue
+		}
+		name := question.Name.String()
+		relevant := strings.EqualFold(name, mdnsServiceType) && (question.Type == dnsmessage.TypePTR || question.Type == dnsmessage.TypeALL) ||
+			strings.EqualFold(name, m.service) && (question.Type == dnsmessage.TypeSRV || question.Type == dnsmessage.TypeTXT || question.Type == dnsmessage.TypeALL) ||
+			strings.EqualFold(name, m.target) && (question.Type == dnsmessage.TypeA || question.Type == dnsmessage.TypeALL)
+		if relevant {
+			matched = true
+			unicast = unicast || uint16(question.Class)&0x8000 != 0
+		}
+	}
+	if !matched {
+		return nil, false
+	}
+	return m.records(mdnsRecordTTL), unicast
 }
+
+func mdnsTargetHost(host string) string {
+	host = strings.TrimSuffix(strings.TrimSpace(host), ".")
+	if !strings.HasSuffix(strings.ToLower(host), ".local") {
+		host += ".local"
+	}
+	return host + "."
+}
+
 func firstPrivateIPv4() net.IP {
 	ifaces, _ := net.Interfaces()
 	for _, iface := range ifaces {
