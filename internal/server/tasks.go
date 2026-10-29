@@ -179,6 +179,12 @@ func writeTaskError(w http.ResponseWriter, r *http.Request, err error) {
 		status, code = http.StatusNotFound, "task_resource_not_found"
 	case errors.Is(err, collab.ErrUnavailable):
 		status, code = http.StatusServiceUnavailable, "managed_unavailable"
+	case errors.Is(err, collab.ErrExecutorModelUnavailable):
+		status, code = http.StatusConflict, "executor_model_unavailable"
+	case errors.Is(err, collab.ErrRecoveryRequired):
+		status, code = http.StatusConflict, "recovery_required"
+	case errors.Is(err, collab.ErrManagedWorkspace):
+		status, code = http.StatusConflict, "managed_workspace"
 	case errors.Is(err, collab.ErrConflict):
 		status, code = http.StatusConflict, "task_conflict"
 	case errors.Is(err, collab.ErrForbidden):

@@ -1,0 +1,96 @@
+{
+  "schema": "legacy-ownership-investigation/v1",
+  "captured_at": "2026-10-29T08:42:19Z",
+  "server_id": "srv_31ff12dc-6485-453d-a565-53da1fe86f03",
+  "store_id": "cstore_16a5c66010fa0840a975cb9ff13173e8",
+  "session_id": "20260809-113038-ea2450ff",
+  "decision": "unresolved",
+  "admission_authority": false,
+  "original_records_modified": false,
+  "inventory": {
+    "brackets_scanned": 5412,
+    "payload_bytes_scanned": 7748408,
+    "linked_known_workspace_child_brackets": 2705,
+    "unknown_owner_workspace_child_brackets": 1,
+    "unknown_parent_sessions": [
+      "20260809-113038-ea2450ff"
+    ],
+    "other_unresolved_categories": 0,
+    "bounds": {
+      "seconds": 8,
+      "rows": 30000,
+      "bytes": 16777216
+    }
+  },
+  "source_commits": [
+    "c5452527761ca2e610519240f1ed44390291a618",
+    "a76350c7b3d64abf0d18ef886d694abf1aea37be",
+    "7ea23f8974834181aeea9ea5036f19311c1e030d"
+  ],
+  "evidence": [
+    {
+      "event_seq": "28171",
+      "partition": "20260809-113038-ea2450ff",
+      "turn_id": "turn_5",
+      "kind": "tool_finished",
+      "event_at": "2026-08-09T20:04:25.537755+08:00",
+      "payload_sha256": "d3737d28dd0e2156bc0634818d559ecf850d5685eec37f785bb525df02d91c73"
+    },
+    {
+      "event_seq": "28190",
+      "partition": "20260809-113038-ea2450ff",
+      "turn_id": "turn_5",
+      "kind": "tool_finished",
+      "event_at": "2026-08-09T20:08:13.23357+08:00",
+      "payload_sha256": "e9ac40a32e0c28486f3c0acb567b8c5b3e1de36929de57340c56d3e2c87b11a6"
+    },
+    {
+      "event_seq": "28871",
+      "partition": "20260809-113038-ea2450ff",
+      "turn_id": "turn_9",
+      "kind": "tool_started",
+      "event_at": "2026-08-09T22:06:26.352645+08:00",
+      "payload_sha256": "5e5e8b05ca14f40e4b39f6bab88b0fd653ac6803d8c3326444674444b2f9ce64"
+    },
+    {
+      "event_seq": "28873",
+      "partition": "20260809-113038-ea2450ff",
+      "turn_id": "turn_9",
+      "kind": "job_started",
+      "event_at": "2026-08-09T22:06:26.35274+08:00",
+      "payload_sha256": "bf58114a8ad9aaf9b9b302fb8b2c16651f224db2d1dda792a779971f40bf16e0"
+    },
+    {
+      "event_seq": "28874",
+      "partition": "job_1",
+      "turn_id": "",
+      "kind": "job_output",
+      "event_at": "2026-08-09T22:06:26.355248+08:00",
+      "payload_sha256": "c87c55f39b96f1999afa0e530e18c183baa1836a827a2bf853ed065a53c622b5"
+    },
+    {
+      "event_seq": "28876",
+      "partition": "20260809-113038-ea2450ff",
+      "turn_id": "turn_9",
+      "kind": "job_finished",
+      "event_at": "2026-08-09T22:06:26.355385+08:00",
+      "payload_sha256": "b8936ea8ab9c7c8691dbce09bd2a30437ac39932d080ee45aed64e9fcd379ea0"
+    },
+    {
+      "event_seq": "28878",
+      "partition": "20260809-113038-ea2450ff",
+      "turn_id": "turn_9",
+      "kind": "tool_finished",
+      "event_at": "2026-08-09T22:06:26.355579+08:00",
+      "payload_sha256": "a6813433ebef46ce37d96a23a8c8b13a30d3bf8355cb3a3b6223374deca1a31c"
+    },
+    {
+      "event_seq": "28916",
+      "partition": "20260809-113038-ea2450ff",
+      "turn_id": "turn_10",
+      "kind": "tool_finished",
+      "event_at": "2026-08-09T22:13:25.088006+08:00",
+      "payload_sha256": "5eb95f72ba68fae46e2c1f1c1e5e688d33f8b047df18ceca4dc77c542517707b"
+    }
+  ]
+}

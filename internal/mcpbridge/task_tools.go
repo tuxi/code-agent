@@ -89,7 +89,7 @@ func registerTaskTools(s *mcp.Server, c *Client) {
 		v, e := c.TaskEvents(ctx, in.TaskID, in.After, in.Limit)
 		return nil, v, e
 	})
-	mcp.AddTool(s, &mcp.Tool{Name: "codeagent_start_task_run", Description: "Capability-gated managed v1: use a reported plan, bound local executor, reported reviewer, explicit files/checks, and 1-5 total iterations. Runtime owns model/config/approval; unknown outcomes freeze instead of replay."}, func(ctx context.Context, _ *mcp.CallToolRequest, in taskRunInput) (*mcp.CallToolResult, collab.Receipt, error) {
+	mcp.AddTool(s, &mcp.Tool{Name: "codeagent_start_task_run", Description: "Capability-gated managed v1: reported plan, bound executor/reviewer, files/checks, 1-5 iterations. Optional executor_model is a namespaced catalog ID fixed for this Run and repairs; omit to inherit default. Runtime owns generation/approval; unavailable models never fall back."}, func(ctx context.Context, _ *mcp.CallToolRequest, in taskRunInput) (*mcp.CallToolResult, collab.Receipt, error) {
 		v, e := c.StartTaskRun(ctx, in.TaskID, in.Run)
 		return nil, v, e
 	})

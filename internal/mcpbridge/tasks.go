@@ -46,7 +46,7 @@ func (c *Client) taskScope(ctx context.Context) (string, string, error) {
 	return id, "workspace_" + collab.PayloadHash([]byte(identity)), nil
 }
 
-func (c *Client) taskCapabilities(ctx context.Context) error {
+func (c *Client) taskCapabilities(ctx context.Context, extra ...string) error {
 	var out struct {
 		Capabilities []string `json:"capabilities"`
 	}
@@ -59,6 +59,11 @@ func (c *Client) taskCapabilities(ctx context.Context) error {
 	}
 	if !found["task_managed_workflow_v1"] || !found["task_review_gate_v1"] {
 		return collab.ErrUnavailable
+	}
+	for _, capability := range extra {
+		if !found[capability] {
+			return collab.ErrUnavailable
+		}
 	}
 	return nil
 }
@@ -187,7 +192,11 @@ func (c *Client) StartTaskRun(ctx context.Context, id string, in collab.StartRun
 	if _, err := c.ReadTask(ctx, id); err != nil {
 		return collab.Receipt{}, err
 	}
-	if err := c.taskCapabilities(ctx); err != nil {
+	var extra []string
+	if in.ExecutorModel != "" {
+		extra = append(extra, "task_executor_model_v1")
+	}
+	if err := c.taskCapabilities(ctx, extra...); err != nil {
 		return collab.Receipt{}, err
 	}
 	var out collab.Receipt

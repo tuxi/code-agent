@@ -77,13 +77,14 @@ func CollaborationDefinition(rounds int) (*definition.WorkflowDefinition, error)
 // execution domain before workers start. It starts neither workers nor models.
 // Dispatch must use TurnExecutor.AcceptManagedDispatch, preserving approvals.
 type Stages struct {
-	Runtime    *flux.Runtime
-	Tasks      collab.Repository
-	Managed    collab.ManagedRepository
-	Reviews    collab.ReviewRepository
-	Actor      collab.Principal
-	Dispatch   func(context.Context, collab.ManagedTurnRef) error
-	Checkpoint func(string, string)
+	Runtime               *flux.Runtime
+	Tasks                 collab.Repository
+	Managed               collab.ManagedRepository
+	Reviews               collab.ReviewRepository
+	Actor                 collab.Principal
+	Dispatch              func(context.Context, collab.ManagedTurnRef) error
+	Checkpoint            func(string, string)
+	ValidateExecutorModel func(context.Context, string) error
 }
 
 func (s *Stages) Register() error {
@@ -165,6 +166,11 @@ func (s *Stages) Execute(ctx context.Context, in map[string]any, _ tool.ToolEmit
 	if n > run.MaxIterations {
 		return nil, collab.ErrConflict
 	}
+	// Pre-admission failures may fence the next iteration before a dispatch is
+	// reserved. Acknowledge that existing fence without inventing an Attempt.
+	if stage == "attention" && n == run.CurrentIteration+1 && (run.State == "waiting" || run.State == "recovery_required") {
+		return tool.Success(map[string]any{"status": "attention"}), nil
+	}
 	if stage != "dispatch" && n != run.CurrentIteration {
 		return nil, collab.ErrConflict
 	}
@@ -177,6 +183,9 @@ func (s *Stages) Execute(ctx context.Context, in map[string]any, _ tool.ToolEmit
 	}
 	switch stage {
 	case "dispatch":
+		if run.ExecutorModel != "" && (s.ValidateExecutorModel == nil || s.ValidateExecutorModel(ctx, run.ExecutorModel) != nil) {
+			return attention("executor_model_unavailable")
+		}
 		gateID := ""
 		message := ""
 		if n == 1 {
@@ -204,7 +213,7 @@ func (s *Stages) Execute(ctx context.Context, in map[string]any, _ tool.ToolEmit
 			message = "Repair the reviewed candidate according to these findings:\n" + strings.Join(d.Review.Findings, "\n")
 		}
 		message += "\nRequired foreground validation after the final edit:\n" + strings.Join(run.ReviewPolicy.ValidationCommands, "\n")
-		_, err = s.Managed.ReserveDispatch(ctx, s.Actor, id, collab.ReserveDispatchInput{RequestID: fmt.Sprintf("dag-dispatch-%d", n), Epoch: epoch, Iteration: n, Message: message, GateDecisionID: gateID})
+		_, err = s.Managed.ReserveDispatch(ctx, s.Actor, id, collab.ReserveDispatchInput{RequestID: fmt.Sprintf("dag-dispatch-%d", n), Epoch: epoch, Iteration: n, Message: message, Model: run.ExecutorModel, GateDecisionID: gateID})
 		if err != nil {
 			return attention("dispatch_requires_reconciliation")
 		}

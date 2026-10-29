@@ -40,6 +40,10 @@ func WithManagedTasks(base http.Handler, repo collab.Repository, svc collab.Mana
 		if err != nil {
 			return nil, err
 		}
+		caps := []string{"task_links_v1", "task_timeline_v1", "task_managed_workflow_v1", "task_review_gate_v1"}
+		if models, ok := svc.(interface{ SupportsExecutorModel() bool }); ok && models.SupportsExecutorModel() {
+			caps = append(caps, "task_executor_model_v1")
+		}
 		return struct {
 			collab.Identity
 			Capabilities        []string `json:"capabilities"`
@@ -47,12 +51,18 @@ func WithManagedTasks(base http.Handler, repo collab.Repository, svc collab.Mana
 			ExecutionProfile    string   `json:"execution_profile"`
 			UnknownSideEffects  string   `json:"unknown_side_effects"`
 			AutomaticTurnReplay bool     `json:"automatic_turn_replay"`
-		}{id, []string{"task_links_v1", "task_timeline_v1", "task_managed_workflow_v1", "task_review_gate_v1"}, "read_through", "local_foreground_v1", "recovery_required", false}, nil
+		}{id, caps, "read_through", "local_foreground_v1", "recovery_required", false}, nil
 	})
 	handle("POST /v1/tasks/{id}/runs", func(w http.ResponseWriter, r *http.Request, a collab.Principal) (any, error) {
 		var in collab.StartRunInput
 		if err := decodeTaskInput(w, r, &in); err != nil {
 			return nil, err
+		}
+		if in.ExecutorModel != "" {
+			models, ok := svc.(interface{ SupportsExecutorModel() bool })
+			if !ok || !models.SupportsExecutorModel() {
+				return nil, collab.ErrUnavailable
+			}
 		}
 		return svc.StartRun(r.Context(), a, r.PathValue("id"), in)
 	})

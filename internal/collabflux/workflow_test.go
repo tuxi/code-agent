@@ -37,13 +37,21 @@ type offlineBuilder struct {
 	calls      atomic.Int32
 	root, mode string
 	badConfig  atomic.Bool
+	model      string
 }
 
-func (*offlineBuilder) ResolveModel(string) (*settings.ModelConfig, error) {
+func (b *offlineBuilder) ResolveModel(requested string) (*settings.ModelConfig, error) {
+	if b.model != "" && requested == b.model {
+		return &settings.ModelConfig{Name: b.model, Model: "resolved-selected"}, nil
+	}
 	return &settings.ModelConfig{Name: "runtime-default", Model: "resolved-default"}, nil
 }
 func (b *offlineBuilder) Build(c conversation.RuntimeContext) conversation.TurnRunner {
-	if c.Model != "runtime-default" || c.ResolvedModel != "resolved-default" || c.ApprovalMode != "ask" {
+	expectedModel, expectedResolved := "runtime-default", "resolved-default"
+	if b.model != "" {
+		expectedModel, expectedResolved = b.model, "resolved-selected"
+	}
+	if c.Model != expectedModel || c.ResolvedModel != expectedResolved || c.ApprovalMode != "ask" {
 		b.badConfig.Store(true)
 	}
 	return &offlineRunner{builder: b, c: c}
@@ -111,6 +119,10 @@ type workflowHarness struct {
 }
 
 func workflowFixture(t *testing.T, rounds int, mode string) *workflowHarness {
+	return workflowModelFixture(t, rounds, mode, "", nil)
+}
+
+func workflowModelFixture(t *testing.T, rounds int, mode, selectedModel string, validate func(context.Context, string) error) *workflowHarness {
 	t.Helper()
 	ctx := context.Background()
 	root := t.TempDir()
@@ -185,7 +197,7 @@ func workflowFixture(t *testing.T, rounds int, mode string) *workflowHarness {
 	if err != nil {
 		t.Fatal(err)
 	}
-	prepared, err := m.PrepareRun(ctx, a, task.ID, collab.PrepareRunInput{RequestID: "prepare", PlanArtifactID: plan.ID, ExecutorParticipationID: local.ID, ReviewerParticipationID: parts["reviewer"], MaxIterations: rounds, Workflow: collab.WorkflowBinding{Name: def.Name, VersionID: strconv.FormatInt(version.ID, 10), Hash: version.Hash}, ReviewPolicy: &collab.ReviewPolicy{Files: []string{"main.txt"}, ValidationCommands: []string{"git diff --check"}}})
+	prepared, err := m.PrepareRun(ctx, a, task.ID, collab.PrepareRunInput{ExecutorModel: selectedModel, RequestID: "prepare", PlanArtifactID: plan.ID, ExecutorParticipationID: local.ID, ReviewerParticipationID: parts["reviewer"], MaxIterations: rounds, Workflow: collab.WorkflowBinding{Name: def.Name, VersionID: strconv.FormatInt(version.ID, 10), Hash: version.Hash}, ReviewPolicy: &collab.ReviewPolicy{Files: []string{"main.txt"}, ValidationCommands: []string{"git diff --check"}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -193,13 +205,13 @@ func workflowFixture(t *testing.T, rounds int, mode string) *workflowHarness {
 	if err != nil {
 		t.Fatal(err)
 	}
-	builder := &offlineBuilder{root: root, mode: mode}
+	builder := &offlineBuilder{root: root, mode: mode, model: selectedModel}
 	approval := &offlineApproval{}
 	executor := conversation.NewTurnExecutor(conversations, &conversation.StoreEventAdapter{Store: store}, conversation.NewActiveTurnRegistry(), conversation.NewSubscriptionManager(), builder)
 	t.Cleanup(executor.Shutdown)
 	executor.SetApprovalMode(target.ID, "ask")
 	executor.SetApprover(target.ID, approval)
-	stages := &Stages{Runtime: runtime, Tasks: tasks, Managed: m, Reviews: v, Actor: a, Dispatch: func(ctx context.Context, ref collab.ManagedTurnRef) error {
+	stages := &Stages{Runtime: runtime, Tasks: tasks, Managed: m, Reviews: v, Actor: a, ValidateExecutorModel: validate, Dispatch: func(ctx context.Context, ref collab.ManagedTurnRef) error {
 		_, err := executor.AcceptManagedDispatch(ctx, context.Background(), a, ref)
 		return err
 	}}

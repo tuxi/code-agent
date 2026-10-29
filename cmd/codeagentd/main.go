@@ -371,7 +371,7 @@ func run() error {
 				cfgMu.RUnlock()
 				paths = append(paths, settings.LoadProjectSettings(sess.WorkspacePath, os.Stderr).Permissions.ProtectedPaths...)
 				return paths, nil
-			}, Dispatch: func(admissionCtx context.Context, ref collab.ManagedTurnRef) error {
+			}, ValidateExecutorModel: rb.ValidateExecutorModel, Dispatch: func(admissionCtx context.Context, ref collab.ManagedTurnRef) error {
 				_, err := executor.AcceptManagedDispatch(admissionCtx, ctx, collab.Principal{ID: "runtime-owner", LocalSessions: true}, ref)
 				return err
 			}})
@@ -379,7 +379,7 @@ func run() error {
 				fmt.Fprintln(os.Stderr, "codeagentd: managed collaboration unavailable:", err)
 			} else {
 				defer managedTasks.Close()
-				capabilities = append(capabilities, "task_managed_workflow_v1", "task_review_gate_v1")
+				capabilities = append(capabilities, "task_managed_workflow_v1", "task_review_gate_v1", "task_executor_model_v1")
 			}
 		}
 	}

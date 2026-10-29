@@ -211,7 +211,7 @@ func (c *Client) request(ctx context.Context, method, path string, body, out any
 	}
 	defer res.Body.Close()
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
-		return fmt.Errorf("runtime %s %s returned HTTP %d", method, u.Path, res.StatusCode)
+		return readRuntimeAPIError(res.StatusCode, res.Body)
 	}
 	if strings.HasSuffix(u.Path, "/events") {
 		for _, header := range []string{"X-Codeagent-Replay-Truncated", "X-Codeagent-Has-More-Older", "X-Codeagent-Turn-Fragment"} {

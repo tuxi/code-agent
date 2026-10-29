@@ -8,9 +8,10 @@ import (
 )
 
 var (
-	ErrManagedWorkspace = boundaryError{"managed_workspace", "workspace is owned by a managed task"}
-	ErrRecoveryRequired = boundaryError{"recovery_required", "managed execution requires recovery reconciliation"}
-	ErrUnavailable      = boundaryError{"managed_unavailable", "managed task capability is unavailable"}
+	ErrManagedWorkspace         = boundaryError{"managed_workspace", "workspace is owned by a managed task"}
+	ErrRecoveryRequired         = boundaryError{"recovery_required", "managed execution requires recovery reconciliation"}
+	ErrUnavailable              = boundaryError{"managed_unavailable", "managed task capability is unavailable"}
+	ErrExecutorModelUnavailable = boundaryError{"executor_model_unavailable", "selected executor model is unavailable"}
 )
 
 type boundaryError struct{ code, message string }
@@ -39,6 +40,7 @@ type WorkflowBinding struct {
 }
 
 type ManagedRun struct {
+	ExecutorModel           string           `json:"executor_model,omitempty"`
 	RunID                   string           `json:"run_id"`
 	TaskID                  string           `json:"task_id"`
 	ServerID                string           `json:"server_id"`
@@ -63,6 +65,7 @@ type ManagedRun struct {
 }
 
 type PrepareRunInput struct {
+	ExecutorModel           string `json:"executor_model,omitempty"`
 	RequestID               string
 	PlanArtifactID          string
 	ExecutorParticipationID string

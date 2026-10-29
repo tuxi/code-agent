@@ -18,8 +18,9 @@ type RecoveryCheck struct {
 }
 
 // StartRunInput deliberately excludes workflow identity, protected-path policy,
-// model selection and generation parameters. These are owned by the host.
+// and generation parameters. An optional executor model uses the host catalog.
 type StartRunInput struct {
+	ExecutorModel           string   `json:"executor_model,omitempty"`
 	RequestID               string   `json:"request_id"`
 	PlanArtifactID          string   `json:"plan_artifact_id"`
 	ExecutorParticipationID string   `json:"executor_participation_id"`

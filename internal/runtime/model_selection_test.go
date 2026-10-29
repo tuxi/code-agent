@@ -2,8 +2,27 @@ package runtime
 
 import (
 	"code-agent/internal/settings"
+	"context"
 	"testing"
 )
+
+func TestManagedExecutorSelectionRequiresCanonicalAvailableModel(t *testing.T) {
+	mc := settings.ModelConfig{Name: "fast", Provider: "openai", Model: "vendor/model", BaseURL: "http://127.0.0.1:12345", Catalog: settings.ModelCatalogMetadata{ConnectionID: "corp"}}
+	b := &ServeRunBuilder{Set: settings.Settings{Models: map[string]settings.ModelConfig{"fast": mc}}, mc: mc}
+	if err := b.ValidateExecutorModel(context.Background(), "corp/vendor/model"); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"", "fast", "other/vendor/model"} {
+		if err := b.ValidateExecutorModel(context.Background(), id); err == nil {
+			t.Fatal("accepted noncatalog ID", id)
+		}
+	}
+	mc.BaseURL = "https://example.invalid/v1"
+	b.ReconfigureSettings(settings.Settings{Models: map[string]settings.ModelConfig{"fast": mc}}, mc, nil, nil)
+	if err := b.ValidateExecutorModel(context.Background(), "corp/vendor/model"); err == nil {
+		t.Fatal("missing credentials accepted")
+	}
+}
 
 func TestNamespacedTurnSelectionAndDefaultIsolation(t *testing.T) {
 	base := settings.ModelConfig{Name: "fast", Provider: "openai", Model: "vendor/model", BaseURL: "http://127.0.0.1:12345", Catalog: settings.ModelCatalogMetadata{ConnectionID: "corp"}}

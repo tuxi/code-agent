@@ -65,21 +65,12 @@ func rejectUnprovenWorkspaceProcesses(ctx context.Context, tx *sql.Tx, root stri
 	if err != nil {
 		return err
 	}
-	// Orphaned bracket partitions also block managed execution: deleting a
-	// Session does not prove its detached process stopped.
-	var orphan bool
-	if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM session_events e LEFT JOIN sessions s ON s.id=e.session_id WHERE s.id IS NULL AND e.kind IN ('job_started','task_started'))`).Scan(&orphan); err != nil {
-		return err
-	}
-	if orphan {
-		return collab.ErrRecoveryRequired
-	}
 	for _, id := range ids {
 		if err = rejectUnprovenSessionProcesses(ctx, tx, id); err != nil {
 			return err
 		}
 	}
-	return nil
+	return rejectUnownedProcessPartitions(ctx, tx, root)
 }
 
 func rejectUnprovenSessionProcesses(ctx context.Context, tx *sql.Tx, id string) error {

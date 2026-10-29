@@ -1,0 +1,10 @@
+{
+  "request_id": "offline-model-contract",
+  "plan_artifact_id": "plan-fixture",
+  "executor_participation_id": "executor-fixture",
+  "reviewer_participation_id": "reviewer-fixture",
+  "max_iterations": 2,
+  "files": ["managed_smoke/labels.py", "managed_smoke/test_labels.py"],
+  "validation_commands": ["python3 -B -m unittest discover -s managed_smoke -p test_labels.py -v"],
+  "executor_model": "opencode-go/qwen3.8-flash"
+}

@@ -210,6 +210,25 @@ func (b *ServeRunBuilder) ResolveModel(wireModel string) (*settings.ModelConfig,
 	return &selected, nil
 }
 
+// ValidateExecutorModel checks configured identity and credentials without a
+// provider request. Generation settings remain owned by the Runtime.
+func (b *ServeRunBuilder) ValidateExecutorModel(ctx context.Context, id string) error {
+	b.mu.RLock()
+	defaultMC, cfg, cred := b.mc, b.Set, b.credential
+	b.mu.RUnlock()
+	mc, err := resolveTurnModel(cfg, defaultMC, id)
+	if err != nil {
+		return err
+	}
+	if id == "" || settings.ModelID(mc.Name, mc) != id {
+		return ModelUnavailableError{Requested: id}
+	}
+	if ok, _, _, _ := settings.ProbeModelAvailability(ctx, cfg, mc, cred); !ok {
+		return ModelUnavailableError{Requested: id}
+	}
+	return nil
+}
+
 // ModelNotConfiguredError is returned before turn acceptance when an Embedded
 // Runtime was intentionally started with models: {}.
 type ModelNotConfiguredError struct{}

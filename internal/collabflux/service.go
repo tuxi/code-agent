@@ -23,6 +23,7 @@ type ServiceOptions struct {
 	Dispatch                 func(context.Context, collab.ManagedTurnRef) error
 	ProtectedPaths           []string
 	ProtectedPathsForSession func(context.Context, string) ([]string, error)
+	ValidateExecutorModel    func(context.Context, string) error
 	// Checkpoint observes durable boundaries. It grants no execution authority;
 	// subprocess tests use it to stop at a committed crash window.
 	Checkpoint func(string, string)
@@ -78,7 +79,7 @@ func OpenService(ctx context.Context, path string, opts ServiceOptions) (*Servic
 	s := &Service{opts: opts, managed: m, reviews: v, recovery: rec, runtime: rt, unLock: unlock, done: make(chan struct{})}
 	s.adapter, err = New(rt)
 	if err == nil {
-		s.stages = &Stages{Runtime: rt, Tasks: opts.Tasks, Managed: m, Reviews: v, Actor: opts.Actor, Dispatch: opts.Dispatch, Checkpoint: opts.Checkpoint}
+		s.stages = &Stages{Runtime: rt, Tasks: opts.Tasks, Managed: m, Reviews: v, Actor: opts.Actor, Dispatch: opts.Dispatch, Checkpoint: opts.Checkpoint, ValidateExecutorModel: opts.ValidateExecutorModel}
 		err = s.stages.Register()
 	}
 	if err == nil {
@@ -120,6 +121,9 @@ func OpenService(ctx context.Context, path string, opts ServiceOptions) (*Servic
 }
 
 func (s *Service) Ready() bool { return s != nil && s.ready.Load() }
+func (s *Service) SupportsExecutorModel() bool {
+	return s != nil && s.opts.ValidateExecutorModel != nil
+}
 func (s *Service) checkpoint(stage, id string) {
 	if s.opts.Checkpoint != nil {
 		s.opts.Checkpoint(stage, id)
@@ -171,6 +175,14 @@ func (s *Service) StartRun(ctx context.Context, a collab.Principal, id string, i
 	if snapshot.ManagedRun != nil {
 		workflow = snapshot.ManagedRun.Workflow
 	} else {
+		if in.ExecutorModel != "" {
+			if !s.SupportsExecutorModel() {
+				return collab.Receipt{}, collab.ErrUnavailable
+			}
+			if err = s.opts.ValidateExecutorModel(ctx, in.ExecutorModel); err != nil {
+				return collab.Receipt{}, collab.ErrExecutorModelUnavailable
+			}
+		}
 		workflow, err = s.templateBinding(ctx, def)
 		if err != nil {
 			return collab.Receipt{}, err
@@ -188,7 +200,7 @@ func (s *Service) StartRun(ctx context.Context, a collab.Principal, id string, i
 			}
 		}
 	}
-	receipt, err := s.managed.PrepareRun(ctx, a, id, collab.PrepareRunInput{RequestID: in.RequestID, PlanArtifactID: in.PlanArtifactID, ExecutorParticipationID: in.ExecutorParticipationID, ReviewerParticipationID: in.ReviewerParticipationID, MaxIterations: in.MaxIterations, Workflow: workflow, ReviewPolicy: &collab.ReviewPolicy{Files: in.Files, ValidationCommands: in.ValidationCommands, ProtectedPaths: protected}})
+	receipt, err := s.managed.PrepareRun(ctx, a, id, collab.PrepareRunInput{ExecutorModel: in.ExecutorModel, RequestID: in.RequestID, PlanArtifactID: in.PlanArtifactID, ExecutorParticipationID: in.ExecutorParticipationID, ReviewerParticipationID: in.ReviewerParticipationID, MaxIterations: in.MaxIterations, Workflow: workflow, ReviewPolicy: &collab.ReviewPolicy{Files: in.Files, ValidationCommands: in.ValidationCommands, ProtectedPaths: protected}})
 	if err != nil {
 		return receipt, err
 	}
@@ -300,7 +312,7 @@ func (s *Service) recoverFlux(ctx context.Context, run collab.ManagedRun) error 
 		return err
 	}
 	var original collab.ManagedRun
-	if json.Unmarshal(task.InputJSON, &original) != nil || original.RunID != run.RunID || original.TaskID != run.TaskID || original.StoreID != run.StoreID || original.CommandID != run.CommandID || original.Workflow != run.Workflow || original.Epoch != run.Epoch {
+	if json.Unmarshal(task.InputJSON, &original) != nil || original.RunID != run.RunID || original.TaskID != run.TaskID || original.StoreID != run.StoreID || original.CommandID != run.CommandID || original.Workflow != run.Workflow || original.Epoch != run.Epoch || original.ExecutorModel != run.ExecutorModel {
 		return collab.ErrConflict
 	}
 	var receipt string

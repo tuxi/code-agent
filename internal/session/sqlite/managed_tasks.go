@@ -27,7 +27,7 @@ func (r *taskRepository) PrepareRun(ctx context.Context, a collab.Principal, tas
 	if !a.LocalSessions {
 		return collab.Receipt{}, collab.ErrForbidden
 	}
-	if !validWorkflow(in.Workflow) || in.MaxIterations < 1 || in.MaxIterations > 5 {
+	if !validWorkflow(in.Workflow) || in.MaxIterations < 1 || in.MaxIterations > 5 || (in.ExecutorModel != "" && !taskValid(in.ExecutorModel, 256)) {
 		return collab.Receipt{}, collab.ErrInvalid
 	}
 	if in.ReviewPolicy != nil {
@@ -118,6 +118,7 @@ func (r *taskRepository) PrepareRun(ctx context.Context, a collab.Principal, tas
 		}
 		run := collab.ManagedRun{RunID: taskIDValue("run_"), TaskID: taskID, ServerID: identity.ServerID, StoreID: identity.StoreID, Epoch: "1", State: "prepared", Workspace: anchor,
 			PlanArtifactID: plan.ArtifactID, PlanVersion: plan.Version, PlanHash: *plan.ContentHash, ExecutorParticipationID: executor.ParticipationID, ReviewerParticipationID: reviewer.ParticipationID, MaxIterations: in.MaxIterations, Workflow: in.Workflow, CommandID: taskIDValue("command_")}
+		run.ExecutorModel = in.ExecutorModel
 		if in.ReviewPolicy != nil {
 			image, err := collab.CaptureWorkspace(ctx, anchor, *in.ReviewPolicy)
 			if err != nil {
@@ -276,6 +277,13 @@ func (r *taskRepository) ReserveDispatch(ctx context.Context, a collab.Principal
 		if run.ServerID != r.serverID || run.Epoch != in.Epoch {
 			return collab.Receipt{}, collab.ErrConflict
 		}
+		selectedModel := in.Model
+		if run.ExecutorModel != "" {
+			if in.Model != "" && in.Model != run.ExecutorModel {
+				return collab.Receipt{}, collab.ErrConflict
+			}
+			selectedModel = run.ExecutorModel
+		}
 		if err = authorizeIteration(ctx, tx, run, in); err != nil {
 			return collab.Receipt{}, err
 		}
@@ -284,6 +292,7 @@ func (r *taskRepository) ReserveDispatch(ctx context.Context, a collab.Principal
 			return collab.Receipt{}, err
 		}
 		d := collab.ManagedDispatch{Ref: collab.ManagedTurnRef{ServerID: run.ServerID, StoreID: run.StoreID, TaskID: run.TaskID, RunID: id, Epoch: run.Epoch, DispatchID: taskID("dispatch_")}, ParticipationID: p.ParticipationID, SessionID: p.SessionRef.SessionID, RequestID: taskID("managed_"), Iteration: in.Iteration, Message: in.Message, Model: in.Model}
+		d.Model = selectedModel
 		if err = run.Workspace.Check(run.Workspace.Root); err != nil {
 			return collab.Receipt{}, err
 		}
