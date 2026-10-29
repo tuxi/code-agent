@@ -1,0 +1,1285 @@
+{
+  "bundles": {
+    "blob_32f83c16-d7ff-464c-b27b-44b214a9e089": {
+      "schema": "coding_review_bundle_v1",
+      "source": {
+        "server_id": "offline-server",
+        "store_id": "cstore_a1e1dfe6d1cdf9c4011be4fc5445da6f",
+        "task_id": "ctask_afa62a7e-0bce-414b-b338-c5c4a3e00b38",
+        "run_id": "run_7f653810-cb54-45de-a531-dff554039639",
+        "control_epoch": "1",
+        "dispatch_id": "dispatch_69c4b3df-82cf-4525-ab58-852d6977bb28"
+      },
+      "attempt_id": "attempt_32703256-5467-4563-80f8-964678caad94",
+      "turn_id": "turn_18e2dff4c92564a0_2",
+      "iteration": 2,
+      "event_cursor": "42",
+      "plan": {
+        "artifact_id": "artifact_3e3d29ff-b0af-4cb2-8e43-10c39fa0823b",
+        "version": "1",
+        "hash": "620c4b7c81a7c8e0d91db36cc9768f4e4bc014fef41483b619f1bf5106947c6b"
+      },
+      "baseline": {
+        "head": "8d20e41989f51af306296669cef290c3d15cb888",
+        "status": "",
+        "index": [
+          {
+            "path": "main.txt",
+            "exists": true,
+            "mode": 420,
+            "data": "YmFzZWxpbmUK"
+          }
+        ],
+        "files": [
+          {
+            "path": "main.txt",
+            "exists": true,
+            "mode": 384,
+            "data": "YmFzZWxpbmUK"
+          }
+        ]
+      },
+      "candidate": {
+        "head": "8d20e41989f51af306296669cef290c3d15cb888",
+        "status": " M main.txt\u0000",
+        "index": [
+          {
+            "path": "main.txt",
+            "exists": true,
+            "mode": 420,
+            "data": "YmFzZWxpbmUK"
+          }
+        ],
+        "files": [
+          {
+            "path": "main.txt",
+            "exists": true,
+            "mode": 384,
+            "data": "Y2FuZGlkYXRlIHR1cm5fMThlMmRmZjRjOTI1NjRhMF8yCg=="
+          }
+        ]
+      },
+      "patch": "diff --git a/main.txt b/main.txt\n--- a/main.txt\n+++ b/main.txt\n@@ -1,2 +1,2 @@\n-baseline\n+candidate turn_18e2dff4c92564a0_2\n \n",
+      "index_patch": "",
+      "validation_status": "evidence_complete",
+      "execution_evidence": {
+        "last_mutation_call_id": "actual-turn_18e2dff4c92564a0_2-2",
+        "missing_validation_commands": [],
+        "reasons": [],
+        "status": "evidence_complete",
+        "unfinished_call_ids": [],
+        "unresolved_argument_call_ids": []
+      },
+      "events": [
+        {
+          "CallID": "actual-turn_18e2dff4c92564a0_2-1",
+          "Chunk": "",
+          "Err": "",
+          "Executor": "",
+          "Kind": "tool_started",
+          "Observation": "",
+          "Output": null,
+          "ToolArgs": "{\"path\":\"main.txt\"}",
+          "ToolName": "read_file",
+          "seq": "27"
+        },
+        {
+          "CallID": "actual-turn_18e2dff4c92564a0_2-1",
+          "Chunk": "",
+          "Err": "",
+          "Executor": "",
+          "Kind": "tool_finished",
+          "Observation": "1\tcandidate turn_18e2dff47358dea8_1",
+          "Output": {
+            "absolute_path": "/private/var/folders/p2/h8cppqy94j5f2q9xq6v8z7300000gp/T/TestExportManagedTimelineFixture1766492897/002/main.txt",
+            "asset_id": "asset_turn_18e2dff4c92564a0_2_actual-turn_18e2dff4c92564a0_2-1_001_26b084b1",
+            "display_range": {
+              "end_line": 1,
+              "start_line": 1
+            },
+            "kind": "file",
+            "line_count": 1,
+            "path": "main.txt"
+          },
+          "ToolArgs": "",
+          "ToolName": "read_file",
+          "seq": "28"
+        },
+        {
+          "CallID": "actual-turn_18e2dff4c92564a0_2-2",
+          "Chunk": "",
+          "Err": "",
+          "Executor": "",
+          "Kind": "tool_started",
+          "Observation": "",
+          "Output": null,
+          "ToolArgs": "{\"new\":\"candidate turn_18e2dff4c92564a0_2\\n\",\"old\":\"candidate turn_18e2dff47358dea8_1\\n\",\"path\":\"main.txt\"}",
+          "ToolName": "edit_file",
+          "seq": "32"
+        },
+        {
+          "CallID": "actual-turn_18e2dff4c92564a0_2-2",
+          "Chunk": "",
+          "Err": "",
+          "Executor": "",
+          "Kind": "tool_finished",
+          "Observation": "Edited main.txt at line 1:\n-1\tcandidate turn_18e2dff47358dea8_1\n-2\t\n+1\tcandidate turn_18e2dff4c92564a0_2\n+2\t",
+          "Output": null,
+          "ToolArgs": "",
+          "ToolName": "edit_file",
+          "seq": "33"
+        },
+        {
+          "CallID": "actual-turn_18e2dff4c92564a0_2-3",
+          "Chunk": "",
+          "Err": "",
+          "Executor": "",
+          "Kind": "tool_started",
+          "Observation": "",
+          "Output": null,
+          "ToolArgs": "{\"command\":\"git diff --check\"}",
+          "ToolName": "run_command",
+          "seq": "37"
+        },
+        {
+          "CallID": "actual-turn_18e2dff4c92564a0_2-3",
+          "Chunk": "",
+          "Err": "",
+          "Executor": "",
+          "Kind": "tool_finished",
+          "Observation": "{\n  \"status\": \"completed\",\n  \"command\": \"git diff --check\",\n  \"exit_code\": 0,\n  \"duration_ms\": 13,\n  \"decision\": \"allow\"\n}",
+          "Output": null,
+          "ToolArgs": "",
+          "ToolName": "run_command",
+          "seq": "38"
+        },
+        {
+          "CallID": "",
+          "Chunk": "",
+          "Err": "",
+          "Executor": "",
+          "Kind": "turn_finished",
+          "Observation": "",
+          "Output": null,
+          "ToolArgs": "",
+          "ToolName": "",
+          "seq": "42"
+        }
+      ]
+    },
+    "blob_9e78f4f4-4599-4087-8efd-121102a5a752": {
+      "schema": "coding_review_bundle_v1",
+      "source": {
+        "server_id": "offline-server",
+        "store_id": "cstore_a1e1dfe6d1cdf9c4011be4fc5445da6f",
+        "task_id": "ctask_afa62a7e-0bce-414b-b338-c5c4a3e00b38",
+        "run_id": "run_7f653810-cb54-45de-a531-dff554039639",
+        "control_epoch": "1",
+        "dispatch_id": "dispatch_37a78a5f-7830-43e2-90b3-e3fd1b614af8"
+      },
+      "attempt_id": "attempt_481ca34d-c31c-47ee-873e-4e38dfae8c89",
+      "turn_id": "turn_18e2dff47358dea8_1",
+      "iteration": 1,
+      "event_cursor": "21",
+      "plan": {
+        "artifact_id": "artifact_3e3d29ff-b0af-4cb2-8e43-10c39fa0823b",
+        "version": "1",
+        "hash": "620c4b7c81a7c8e0d91db36cc9768f4e4bc014fef41483b619f1bf5106947c6b"
+      },
+      "baseline": {
+        "head": "8d20e41989f51af306296669cef290c3d15cb888",
+        "status": "",
+        "index": [
+          {
+            "path": "main.txt",
+            "exists": true,
+            "mode": 420,
+            "data": "YmFzZWxpbmUK"
+          }
+        ],
+        "files": [
+          {
+            "path": "main.txt",
+            "exists": true,
+            "mode": 384,
+            "data": "YmFzZWxpbmUK"
+          }
+        ]
+      },
+      "candidate": {
+        "head": "8d20e41989f51af306296669cef290c3d15cb888",
+        "status": " M main.txt\u0000",
+        "index": [
+          {
+            "path": "main.txt",
+            "exists": true,
+            "mode": 420,
+            "data": "YmFzZWxpbmUK"
+          }
+        ],
+        "files": [
+          {
+            "path": "main.txt",
+            "exists": true,
+            "mode": 384,
+            "data": "Y2FuZGlkYXRlIHR1cm5fMThlMmRmZjQ3MzU4ZGVhOF8xCg=="
+          }
+        ]
+      },
+      "patch": "diff --git a/main.txt b/main.txt\n--- a/main.txt\n+++ b/main.txt\n@@ -1,2 +1,2 @@\n-baseline\n+candidate turn_18e2dff47358dea8_1\n \n",
+      "index_patch": "",
+      "validation_status": "evidence_complete",
+      "execution_evidence": {
+        "last_mutation_call_id": "actual-turn_18e2dff47358dea8_1-2",
+        "missing_validation_commands": [],
+        "reasons": [],
+        "status": "evidence_complete",
+        "unfinished_call_ids": [],
+        "unresolved_argument_call_ids": []
+      },
+      "events": [
+        {
+          "CallID": "actual-turn_18e2dff47358dea8_1-1",
+          "Chunk": "",
+          "Err": "",
+          "Executor": "",
+          "Kind": "tool_started",
+          "Observation": "",
+          "Output": null,
+          "ToolArgs": "{\"path\":\"main.txt\"}",
+          "ToolName": "read_file",
+          "seq": "6"
+        },
+        {
+          "CallID": "actual-turn_18e2dff47358dea8_1-1",
+          "Chunk": "",
+          "Err": "",
+          "Executor": "",
+          "Kind": "tool_finished",
+          "Observation": "1\tbaseline",
+          "Output": {
+            "absolute_path": "/private/var/folders/p2/h8cppqy94j5f2q9xq6v8z7300000gp/T/TestExportManagedTimelineFixture1766492897/002/main.txt",
+            "asset_id": "asset_turn_18e2dff47358dea8_1_actual-turn_18e2dff47358dea8_1-1_001_26b084b1",
+            "display_range": {
+              "end_line": 1,
+              "start_line": 1
+            },
+            "kind": "file",
+            "line_count": 1,
+            "path": "main.txt"
+          },
+          "ToolArgs": "",
+          "ToolName": "read_file",
+          "seq": "7"
+        },
+        {
+          "CallID": "actual-turn_18e2dff47358dea8_1-2",
+          "Chunk": "",
+          "Err": "",
+          "Executor": "",
+          "Kind": "tool_started",
+          "Observation": "",
+          "Output": null,
+          "ToolArgs": "{\"new\":\"candidate turn_18e2dff47358dea8_1\\n\",\"old\":\"baseline\\n\",\"path\":\"main.txt\"}",
+          "ToolName": "edit_file",
+          "seq": "11"
+        },
+        {
+          "CallID": "actual-turn_18e2dff47358dea8_1-2",
+          "Chunk": "",
+          "Err": "",
+          "Executor": "",
+          "Kind": "tool_finished",
+          "Observation": "Edited main.txt at line 1:\n-1\tbaseline\n-2\t\n+1\tcandidate turn_18e2dff47358dea8_1\n+2\t",
+          "Output": null,
+          "ToolArgs": "",
+          "ToolName": "edit_file",
+          "seq": "12"
+        },
+        {
+          "CallID": "actual-turn_18e2dff47358dea8_1-3",
+          "Chunk": "",
+          "Err": "",
+          "Executor": "",
+          "Kind": "tool_started",
+          "Observation": "",
+          "Output": null,
+          "ToolArgs": "{\"command\":\"git diff --check\"}",
+          "ToolName": "run_command",
+          "seq": "16"
+        },
+        {
+          "CallID": "actual-turn_18e2dff47358dea8_1-3",
+          "Chunk": "",
+          "Err": "",
+          "Executor": "",
+          "Kind": "tool_finished",
+          "Observation": "{\n  \"status\": \"completed\",\n  \"command\": \"git diff --check\",\n  \"exit_code\": 0,\n  \"duration_ms\": 19,\n  \"decision\": \"allow\"\n}",
+          "Output": null,
+          "ToolArgs": "",
+          "ToolName": "run_command",
+          "seq": "17"
+        },
+        {
+          "CallID": "",
+          "Chunk": "",
+          "Err": "",
+          "Executor": "",
+          "Kind": "turn_finished",
+          "Observation": "",
+          "Output": null,
+          "ToolArgs": "",
+          "ToolName": "",
+          "seq": "21"
+        }
+      ]
+    }
+  },
+  "event_page": {
+    "schema": "task-event-page/v1",
+    "task_id": "ctask_afa62a7e-0bce-414b-b338-c5c4a3e00b38",
+    "after": "0",
+    "events": [
+      {
+        "schema_version": 1,
+        "event_id": "cte_bf48e132-fd27-41b7-bb08-f41a0dd8afe9",
+        "task_id": "ctask_afa62a7e-0bce-414b-b338-c5c4a3e00b38",
+        "task_seq": "1",
+        "task_revision": "1",
+        "kind": "task.created",
+        "recorded_at": "2026-10-29T02:44:02.314993Z",
+        "source": {
+          "kind": "task_request",
+          "request_id": "task"
+        },
+        "payload": {
+          "goal": "offline managed task"
+        }
+      },
+      {
+        "schema_version": 1,
+        "event_id": "cte_ee4b8798-972b-404d-95fd-29b23a92fba6",
+        "task_id": "ctask_afa62a7e-0bce-414b-b338-c5c4a3e00b38",
+        "task_seq": "2",
+        "task_revision": "2",
+        "kind": "participation.attached",
+        "recorded_at": "2026-10-29T02:44:02.319326Z",
+        "participation_id": "part_0f848495-ad80-4766-8124-fe227e154148",
+        "source": {
+          "kind": "task_request",
+          "request_id": "executor"
+        },
+        "payload": {
+          "agent_id": "codeagent:offline-server",
+          "capabilities": [
+            "read_session",
+            "read_artifacts",
+            "link_attempt"
+          ],
+          "observation_level": "managed",
+          "participation_id": "part_0f848495-ad80-4766-8124-fe227e154148",
+          "role": "executor",
+          "session_ref": {
+            "kind": "local",
+            "server_id": "offline-server",
+            "session_id": "20261029-024402-8a703239",
+            "store_id": "cstore_a1e1dfe6d1cdf9c4011be4fc5445da6f"
+          },
+          "task_id": "ctask_afa62a7e-0bce-414b-b338-c5c4a3e00b38"
+        }
+      },
+      {
+        "schema_version": 1,
+        "event_id": "cte_651f13fc-aadb-4f97-a234-15f6b44ae716",
+        "task_id": "ctask_afa62a7e-0bce-414b-b338-c5c4a3e00b38",
+        "task_seq": "3",
+        "task_revision": "3",
+        "kind": "participation.attached",
+        "recorded_at": "2026-10-29T02:44:02.323088Z",
+        "participation_id": "part_a450558f-0efd-43a6-8aa1-c41aebc4f114",
+        "source": {
+          "kind": "task_request",
+          "request_id": "planner"
+        },
+        "payload": {
+          "agent_id": "agent_0ac7cbc3-aaf6-452f-801d-1d1ae098dc5b",
+          "capabilities": [
+            "submit_plan"
+          ],
+          "observation_level": "reported",
+          "participation_id": "part_a450558f-0efd-43a6-8aa1-c41aebc4f114",
+          "role": "planner",
+          "session_ref": {
+            "agent_id": "agent_0ac7cbc3-aaf6-452f-801d-1d1ae098dc5b",
+            "kind": "external",
+            "runtime_kind": "codex",
+            "session_handle": "external_941632a9-4df6-4efd-b53f-fc642639b96e"
+          },
+          "task_id": "ctask_afa62a7e-0bce-414b-b338-c5c4a3e00b38"
+        }
+      },
+      {
+        "schema_version": 1,
+        "event_id": "cte_4eea0b03-0217-4727-b135-f040f56f3c14",
+        "task_id": "ctask_afa62a7e-0bce-414b-b338-c5c4a3e00b38",
+        "task_seq": "4",
+        "task_revision": "4",
+        "kind": "participation.attached",
+        "recorded_at": "2026-10-29T02:44:02.326384Z",
+        "participation_id": "part_9ef0b7c0-062c-4915-9bc0-a7c7d9d0d625",
+        "source": {
+          "kind": "task_request",
+          "request_id": "reviewer"
+        },
+        "payload": {
+          "agent_id": "agent_0ac7cbc3-aaf6-452f-801d-1d1ae098dc5b",
+          "capabilities": [
+            "submit_review"
+          ],
+          "observation_level": "reported",
+          "participation_id": "part_9ef0b7c0-062c-4915-9bc0-a7c7d9d0d625",
+          "role": "reviewer",
+          "session_ref": {
+            "agent_id": "agent_0ac7cbc3-aaf6-452f-801d-1d1ae098dc5b",
+            "kind": "external",
+            "runtime_kind": "codex",
+            "session_handle": "external_941632a9-4df6-4efd-b53f-fc642639b96e"
+          },
+          "task_id": "ctask_afa62a7e-0bce-414b-b338-c5c4a3e00b38"
+        }
+      },
+      {
+        "schema_version": 1,
+        "event_id": "cte_af03a63c-f7a7-4a97-a513-5e8ba4ca0f9b",
+        "task_id": "ctask_afa62a7e-0bce-414b-b338-c5c4a3e00b38",
+        "task_seq": "5",
+        "task_revision": "5",
+        "kind": "plan.reported",
+        "recorded_at": "2026-10-29T02:44:02.329222Z",
+        "participation_id": "part_a450558f-0efd-43a6-8aa1-c41aebc4f114",
+        "attempt_id": "attempt_7ad9a655-31c3-4dc1-80ce-dfa963c0706a",
+        "source": {
+          "kind": "report",
+          "request_id": "plan",
+          "producer_submission_id": "plan"
+        },
+        "payload": {
+          "artifact_id": "artifact_3e3d29ff-b0af-4cb2-8e43-10c39fa0823b",
+          "attempt_id": "attempt_7ad9a655-31c3-4dc1-80ce-dfa963c0706a",
+          "capture_mode": "reported",
+          "content_hash": "620c4b7c81a7c8e0d91db36cc9768f4e4bc014fef41483b619f1bf5106947c6b",
+          "kind": "plan",
+          "source_ref": {
+            "kind": "report",
+            "producer_submission_id": "plan",
+            "request_id": "plan"
+          },
+          "truncated": false,
+          "version": "1"
+        }
+      },
+      {
+        "schema_version": 1,
+        "event_id": "cte_28b5dac8-a0e1-4f5f-a305-d35333e1ee04",
+        "task_id": "ctask_afa62a7e-0bce-414b-b338-c5c4a3e00b38",
+        "task_seq": "6",
+        "task_revision": "6",
+        "kind": "run.prepared",
+        "recorded_at": "2026-10-29T02:44:02.480235Z",
+        "participation_id": "part_0f848495-ad80-4766-8124-fe227e154148",
+        "source": {
+          "kind": "task_request",
+          "request_id": "run"
+        },
+        "payload": {
+          "baseline": {
+            "artifact_id": "blob_6deacc3e-71df-4ac9-932f-3dfb6467f23a",
+            "hash": "f58a1acd588dfdaf7c71c1ce942f5bf821fe2d3f8e441ef9866587c4be3e385e",
+            "version": "1"
+          },
+          "command_id": "command_4afc7d16-b2cf-4e7e-81fd-1a46ec716e12",
+          "control_epoch": "1",
+          "executor_participation_id": "part_0f848495-ad80-4766-8124-fe227e154148",
+          "max_iterations": 2,
+          "plan_artifact_id": "artifact_3e3d29ff-b0af-4cb2-8e43-10c39fa0823b",
+          "plan_hash": "620c4b7c81a7c8e0d91db36cc9768f4e4bc014fef41483b619f1bf5106947c6b",
+          "plan_version": "1",
+          "review_policy": {
+            "files": [
+              "main.txt"
+            ],
+            "validation_commands": [
+              "git diff --check"
+            ]
+          },
+          "reviewer_participation_id": "part_9ef0b7c0-062c-4915-9bc0-a7c7d9d0d625",
+          "run_id": "run_7f653810-cb54-45de-a531-dff554039639",
+          "server_id": "offline-server",
+          "state": "prepared",
+          "store_id": "cstore_a1e1dfe6d1cdf9c4011be4fc5445da6f",
+          "task_id": "ctask_afa62a7e-0bce-414b-b338-c5c4a3e00b38",
+          "workflow": {
+            "hash": "15b5d3a15e99bf991091eb144999a5dd4ccfb8e97bc525a0f51151273f841084",
+            "name": "coding_collaboration_v1",
+            "version_id": "1"
+          },
+          "workspace": {
+            "git_dir": "/private/var/folders/p2/h8cppqy94j5f2q9xq6v8z7300000gp/T/TestExportManagedTimelineFixture1766492897/002/.git",
+            "git_identity": "16777229:100382592",
+            "root": "/private/var/folders/p2/h8cppqy94j5f2q9xq6v8z7300000gp/T/TestExportManagedTimelineFixture1766492897/002",
+            "root_identity": "16777229:100382591"
+          }
+        }
+      },
+      {
+        "schema_version": 1,
+        "event_id": "cte_421bf38d-9941-427f-9735-b8f910aaa98d",
+        "task_id": "ctask_afa62a7e-0bce-414b-b338-c5c4a3e00b38",
+        "task_seq": "7",
+        "task_revision": "7",
+        "kind": "workflow.submitted",
+        "recorded_at": "2026-10-29T02:44:02.483144Z",
+        "source": {
+          "kind": "command",
+          "request_id": "command_4afc7d16-b2cf-4e7e-81fd-1a46ec716e12"
+        },
+        "payload": {
+          "command_id": "command_4afc7d16-b2cf-4e7e-81fd-1a46ec716e12",
+          "flux_task_id": "1",
+          "payload_hash": "59322a730a36c5993e510ff39bc836244a8a24fec9e0bfd07030b2bb22f17c58",
+          "source_store_id": "cstore_a1e1dfe6d1cdf9c4011be4fc5445da6f",
+          "workflow": {
+            "hash": "15b5d3a15e99bf991091eb144999a5dd4ccfb8e97bc525a0f51151273f841084",
+            "name": "coding_collaboration_v1",
+            "version_id": "1"
+          }
+        }
+      },
+      {
+        "schema_version": 1,
+        "event_id": "cte_b4b20a07-f013-4c12-936b-51d58ad36941",
+        "task_id": "ctask_afa62a7e-0bce-414b-b338-c5c4a3e00b38",
+        "task_seq": "8",
+        "task_revision": "8",
+        "kind": "dispatch.reserved",
+        "recorded_at": "2026-10-29T02:44:02.645354Z",
+        "participation_id": "part_0f848495-ad80-4766-8124-fe227e154148",
+        "source": {
+          "kind": "task_request",
+          "request_id": "dag-dispatch-1"
+        },
+        "payload": {
+          "expected_workspace_hash": "f58a1acd588dfdaf7c71c1ce942f5bf821fe2d3f8e441ef9866587c4be3e385e",
+          "iteration": 1,
+          "message": "Implement the approved plan. Keep the Session's permissions and Runtime configuration.\n{\"text\":\"update main.txt then run git diff --check\"}\nRequired foreground validation after the final edit:\ngit diff --check",
+          "participation_id": "part_0f848495-ad80-4766-8124-fe227e154148",
+          "request_id": "managed_a90ba090-1031-4452-9135-890e7f21ba5d",
+          "session_id": "20261029-024402-8a703239",
+          "source": {
+            "control_epoch": "1",
+            "dispatch_id": "dispatch_37a78a5f-7830-43e2-90b3-e3fd1b614af8",
+            "run_id": "run_7f653810-cb54-45de-a531-dff554039639",
+            "server_id": "offline-server",
+            "store_id": "cstore_a1e1dfe6d1cdf9c4011be4fc5445da6f",
+            "task_id": "ctask_afa62a7e-0bce-414b-b338-c5c4a3e00b38"
+          }
+        }
+      },
+      {
+        "schema_version": 1,
+        "event_id": "cte_40c3d82f-4080-429c-90c6-18fe94a06248",
+        "task_id": "ctask_afa62a7e-0bce-414b-b338-c5c4a3e00b38",
+        "task_seq": "9",
+        "task_revision": "9",
+        "kind": "attempt.linked",
+        "recorded_at": "2026-10-29T02:44:02.647823Z",
+        "participation_id": "part_0f848495-ad80-4766-8124-fe227e154148",
+        "attempt_id": "attempt_481ca34d-c31c-47ee-873e-4e38dfae8c89",
+        "source": {
+          "kind": "session_event",
+          "server_id": "offline-server",
+          "store_id": "cstore_a1e1dfe6d1cdf9c4011be4fc5445da6f",
+          "session_id": "20261029-024402-8a703239",
+          "turn_id": "turn_18e2dff47358dea8_1",
+          "request_id": "managed_a90ba090-1031-4452-9135-890e7f21ba5d"
+        },
+        "payload": {
+          "control_epoch": "1",
+          "run_id": "run_7f653810-cb54-45de-a531-dff554039639",
+          "status": "queued"
+        }
+      },
+      {
+        "schema_version": 1,
+        "event_id": "cte_b7318908-2303-4f08-956f-d37d3fdba167",
+        "task_id": "ctask_afa62a7e-0bce-414b-b338-c5c4a3e00b38",
+        "task_seq": "10",
+        "task_revision": "10",
+        "kind": "attempt.started",
+        "recorded_at": "2026-10-29T02:44:02.675789Z",
+        "participation_id": "part_0f848495-ad80-4766-8124-fe227e154148",
+        "attempt_id": "attempt_481ca34d-c31c-47ee-873e-4e38dfae8c89",
+        "source": {
+          "kind": "session_event",
+          "server_id": "offline-server",
+          "store_id": "cstore_a1e1dfe6d1cdf9c4011be4fc5445da6f",
+          "session_id": "20261029-024402-8a703239",
+          "turn_id": "turn_18e2dff47358dea8_1",
+          "request_id": "managed_a90ba090-1031-4452-9135-890e7f21ba5d",
+          "seq": "2"
+        },
+        "payload": {
+          "status": "running",
+          "task_acceptance": "not_reviewed"
+        }
+      },
+      {
+        "schema_version": 1,
+        "event_id": "cte_b2be693d-d0a4-4344-ada7-a5c7230fa888",
+        "task_id": "ctask_afa62a7e-0bce-414b-b338-c5c4a3e00b38",
+        "task_seq": "11",
+        "task_revision": "11",
+        "kind": "attempt.completed",
+        "recorded_at": "2026-10-29T02:44:02.920489Z",
+        "participation_id": "part_0f848495-ad80-4766-8124-fe227e154148",
+        "attempt_id": "attempt_481ca34d-c31c-47ee-873e-4e38dfae8c89",
+        "source": {
+          "kind": "session_event",
+          "server_id": "offline-server",
+          "store_id": "cstore_a1e1dfe6d1cdf9c4011be4fc5445da6f",
+          "session_id": "20261029-024402-8a703239",
+          "turn_id": "turn_18e2dff47358dea8_1",
+          "request_id": "managed_a90ba090-1031-4452-9135-890e7f21ba5d",
+          "seq": "21"
+        },
+        "payload": {
+          "status": "completed",
+          "task_acceptance": "not_reviewed"
+        }
+      },
+      {
+        "schema_version": 1,
+        "event_id": "cte_cb889885-2943-4279-a310-deec40891019",
+        "task_id": "ctask_afa62a7e-0bce-414b-b338-c5c4a3e00b38",
+        "task_seq": "12",
+        "task_revision": "12",
+        "kind": "artifact.captured",
+        "recorded_at": "2026-10-29T02:44:03.3737Z",
+        "participation_id": "part_0f848495-ad80-4766-8124-fe227e154148",
+        "attempt_id": "attempt_481ca34d-c31c-47ee-873e-4e38dfae8c89",
+        "source": {
+          "kind": "session_event",
+          "server_id": "offline-server",
+          "store_id": "cstore_a1e1dfe6d1cdf9c4011be4fc5445da6f",
+          "session_id": "20261029-024402-8a703239",
+          "turn_id": "turn_18e2dff47358dea8_1",
+          "request_id": "managed_a90ba090-1031-4452-9135-890e7f21ba5d",
+          "seq": "21"
+        },
+        "payload": {
+          "artifact": {
+            "artifact_id": "blob_9e78f4f4-4599-4087-8efd-121102a5a752",
+            "attempt_id": "attempt_481ca34d-c31c-47ee-873e-4e38dfae8c89",
+            "capture_mode": "immutable",
+            "content_hash": "4bddf4fdd3f1a50f6409f9d7eeecfde5166796d93a226caed350675d7b992862",
+            "kind": "review_bundle",
+            "source_ref": {
+              "kind": "session_event",
+              "request_id": "managed_a90ba090-1031-4452-9135-890e7f21ba5d",
+              "seq": "21",
+              "server_id": "offline-server",
+              "session_id": "20261029-024402-8a703239",
+              "store_id": "cstore_a1e1dfe6d1cdf9c4011be4fc5445da6f",
+              "turn_id": "turn_18e2dff47358dea8_1"
+            },
+            "truncated": false,
+            "version": "1"
+          },
+          "validation_status": "evidence_complete"
+        }
+      },
+      {
+        "schema_version": 1,
+        "event_id": "cte_5be83e32-5414-4638-9dfe-7c7762c1077d",
+        "task_id": "ctask_afa62a7e-0bce-414b-b338-c5c4a3e00b38",
+        "task_seq": "13",
+        "task_revision": "13",
+        "kind": "review.recorded",
+        "recorded_at": "2026-10-29T02:44:03.389907Z",
+        "participation_id": "part_9ef0b7c0-062c-4915-9bc0-a7c7d9d0d625",
+        "attempt_id": "attempt_481ca34d-c31c-47ee-873e-4e38dfae8c89",
+        "source": {
+          "kind": "reported",
+          "producer_submission_id": "submission-1"
+        },
+        "payload": {
+          "action": "pending",
+          "decision_id": "review_a910796d-cefa-4947-837b-bf953e51ad1e",
+          "iteration": 1,
+          "review": {
+            "artifact": {
+              "artifact_id": "blob_9e78f4f4-4599-4087-8efd-121102a5a752",
+              "hash": "4bddf4fdd3f1a50f6409f9d7eeecfde5166796d93a226caed350675d7b992862",
+              "version": "1"
+            },
+            "control_epoch": "1",
+            "findings": [
+              "improve edge case"
+            ],
+            "plan": {
+              "artifact_id": "artifact_3e3d29ff-b0af-4cb2-8e43-10c39fa0823b",
+              "hash": "620c4b7c81a7c8e0d91db36cc9768f4e4bc014fef41483b619f1bf5106947c6b",
+              "version": "1"
+            },
+            "producer_submission_id": "submission-1",
+            "request_id": "review-1",
+            "reviewed_attempt_id": "attempt_481ca34d-c31c-47ee-873e-4e38dfae8c89",
+            "reviewer_participation_id": "part_9ef0b7c0-062c-4915-9bc0-a7c7d9d0d625",
+            "run_id": "run_7f653810-cb54-45de-a531-dff554039639",
+            "verdict": "request_changes"
+          }
+        }
+      },
+      {
+        "schema_version": 1,
+        "event_id": "cte_791092ac-96b6-4ad2-96f5-ae45fc53313d",
+        "task_id": "ctask_afa62a7e-0bce-414b-b338-c5c4a3e00b38",
+        "task_seq": "14",
+        "task_revision": "14",
+        "kind": "review.gate_consumed",
+        "recorded_at": "2026-10-29T02:44:03.837707Z",
+        "participation_id": "part_9ef0b7c0-062c-4915-9bc0-a7c7d9d0d625",
+        "attempt_id": "attempt_481ca34d-c31c-47ee-873e-4e38dfae8c89",
+        "source": {
+          "kind": "gate",
+          "request_id": "review_a910796d-cefa-4947-837b-bf953e51ad1e"
+        },
+        "payload": {
+          "action": "repair",
+          "decision_id": "review_a910796d-cefa-4947-837b-bf953e51ad1e",
+          "iteration": 1,
+          "review": {
+            "artifact": {
+              "artifact_id": "blob_9e78f4f4-4599-4087-8efd-121102a5a752",
+              "hash": "4bddf4fdd3f1a50f6409f9d7eeecfde5166796d93a226caed350675d7b992862",
+              "version": "1"
+            },
+            "control_epoch": "1",
+            "findings": [
+              "improve edge case"
+            ],
+            "plan": {
+              "artifact_id": "artifact_3e3d29ff-b0af-4cb2-8e43-10c39fa0823b",
+              "hash": "620c4b7c81a7c8e0d91db36cc9768f4e4bc014fef41483b619f1bf5106947c6b",
+              "version": "1"
+            },
+            "producer_submission_id": "submission-1",
+            "request_id": "review-1",
+            "reviewed_attempt_id": "attempt_481ca34d-c31c-47ee-873e-4e38dfae8c89",
+            "reviewer_participation_id": "part_9ef0b7c0-062c-4915-9bc0-a7c7d9d0d625",
+            "run_id": "run_7f653810-cb54-45de-a531-dff554039639",
+            "verdict": "request_changes"
+          }
+        }
+      },
+      {
+        "schema_version": 1,
+        "event_id": "cte_9b3a73bb-c8a1-4adb-9767-4916288b34fe",
+        "task_id": "ctask_afa62a7e-0bce-414b-b338-c5c4a3e00b38",
+        "task_seq": "15",
+        "task_revision": "15",
+        "kind": "dispatch.reserved",
+        "recorded_at": "2026-10-29T02:44:04.085107Z",
+        "participation_id": "part_0f848495-ad80-4766-8124-fe227e154148",
+        "source": {
+          "kind": "task_request",
+          "request_id": "dag-dispatch-2"
+        },
+        "payload": {
+          "expected_workspace_hash": "5b0e6c4e8c85041d78615e15af9404fb60bd987762361be52c3f01da30bc855d",
+          "iteration": 2,
+          "message": "Repair the reviewed candidate according to these findings:\nimprove edge case\nRequired foreground validation after the final edit:\ngit diff --check",
+          "participation_id": "part_0f848495-ad80-4766-8124-fe227e154148",
+          "request_id": "managed_02afb691-e324-4665-93b9-c2f7f4c955e6",
+          "session_id": "20261029-024402-8a703239",
+          "source": {
+            "control_epoch": "1",
+            "dispatch_id": "dispatch_69c4b3df-82cf-4525-ab58-852d6977bb28",
+            "run_id": "run_7f653810-cb54-45de-a531-dff554039639",
+            "server_id": "offline-server",
+            "store_id": "cstore_a1e1dfe6d1cdf9c4011be4fc5445da6f",
+            "task_id": "ctask_afa62a7e-0bce-414b-b338-c5c4a3e00b38"
+          }
+        }
+      },
+      {
+        "schema_version": 1,
+        "event_id": "cte_bac27918-7e2e-4678-a782-ac57c4da88ba",
+        "task_id": "ctask_afa62a7e-0bce-414b-b338-c5c4a3e00b38",
+        "task_seq": "16",
+        "task_revision": "16",
+        "kind": "attempt.linked",
+        "recorded_at": "2026-10-29T02:44:04.087142Z",
+        "participation_id": "part_0f848495-ad80-4766-8124-fe227e154148",
+        "attempt_id": "attempt_32703256-5467-4563-80f8-964678caad94",
+        "source": {
+          "kind": "session_event",
+          "server_id": "offline-server",
+          "store_id": "cstore_a1e1dfe6d1cdf9c4011be4fc5445da6f",
+          "session_id": "20261029-024402-8a703239",
+          "turn_id": "turn_18e2dff4c92564a0_2",
+          "request_id": "managed_02afb691-e324-4665-93b9-c2f7f4c955e6"
+        },
+        "payload": {
+          "control_epoch": "1",
+          "run_id": "run_7f653810-cb54-45de-a531-dff554039639",
+          "status": "queued"
+        }
+      },
+      {
+        "schema_version": 1,
+        "event_id": "cte_9a202049-c83f-4a7b-9621-217d548b0898",
+        "task_id": "ctask_afa62a7e-0bce-414b-b338-c5c4a3e00b38",
+        "task_seq": "17",
+        "task_revision": "17",
+        "kind": "attempt.started",
+        "recorded_at": "2026-10-29T02:44:04.122334Z",
+        "participation_id": "part_0f848495-ad80-4766-8124-fe227e154148",
+        "attempt_id": "attempt_32703256-5467-4563-80f8-964678caad94",
+        "source": {
+          "kind": "session_event",
+          "server_id": "offline-server",
+          "store_id": "cstore_a1e1dfe6d1cdf9c4011be4fc5445da6f",
+          "session_id": "20261029-024402-8a703239",
+          "turn_id": "turn_18e2dff4c92564a0_2",
+          "request_id": "managed_02afb691-e324-4665-93b9-c2f7f4c955e6",
+          "seq": "23"
+        },
+        "payload": {
+          "status": "running",
+          "task_acceptance": "not_reviewed"
+        }
+      },
+      {
+        "schema_version": 1,
+        "event_id": "cte_90611a62-1b3b-4d73-bd1f-447874c9dec5",
+        "task_id": "ctask_afa62a7e-0bce-414b-b338-c5c4a3e00b38",
+        "task_seq": "18",
+        "task_revision": "18",
+        "kind": "attempt.completed",
+        "recorded_at": "2026-10-29T02:44:04.300751Z",
+        "participation_id": "part_0f848495-ad80-4766-8124-fe227e154148",
+        "attempt_id": "attempt_32703256-5467-4563-80f8-964678caad94",
+        "source": {
+          "kind": "session_event",
+          "server_id": "offline-server",
+          "store_id": "cstore_a1e1dfe6d1cdf9c4011be4fc5445da6f",
+          "session_id": "20261029-024402-8a703239",
+          "turn_id": "turn_18e2dff4c92564a0_2",
+          "request_id": "managed_02afb691-e324-4665-93b9-c2f7f4c955e6",
+          "seq": "42"
+        },
+        "payload": {
+          "status": "completed",
+          "task_acceptance": "not_reviewed"
+        }
+      },
+      {
+        "schema_version": 1,
+        "event_id": "cte_f0a5ad8b-6946-48b1-8efe-11582cb7d67c",
+        "task_id": "ctask_afa62a7e-0bce-414b-b338-c5c4a3e00b38",
+        "task_seq": "19",
+        "task_revision": "19",
+        "kind": "artifact.captured",
+        "recorded_at": "2026-10-29T02:44:04.835713Z",
+        "participation_id": "part_0f848495-ad80-4766-8124-fe227e154148",
+        "attempt_id": "attempt_32703256-5467-4563-80f8-964678caad94",
+        "source": {
+          "kind": "session_event",
+          "server_id": "offline-server",
+          "store_id": "cstore_a1e1dfe6d1cdf9c4011be4fc5445da6f",
+          "session_id": "20261029-024402-8a703239",
+          "turn_id": "turn_18e2dff4c92564a0_2",
+          "request_id": "managed_02afb691-e324-4665-93b9-c2f7f4c955e6",
+          "seq": "42"
+        },
+        "payload": {
+          "artifact": {
+            "artifact_id": "blob_32f83c16-d7ff-464c-b27b-44b214a9e089",
+            "attempt_id": "attempt_32703256-5467-4563-80f8-964678caad94",
+            "capture_mode": "immutable",
+            "content_hash": "888404c945a3efacd0fc562931ca1642e487d64685ab34d62ce463dbcad6b202",
+            "kind": "review_bundle",
+            "source_ref": {
+              "kind": "session_event",
+              "request_id": "managed_02afb691-e324-4665-93b9-c2f7f4c955e6",
+              "seq": "42",
+              "server_id": "offline-server",
+              "session_id": "20261029-024402-8a703239",
+              "store_id": "cstore_a1e1dfe6d1cdf9c4011be4fc5445da6f",
+              "turn_id": "turn_18e2dff4c92564a0_2"
+            },
+            "truncated": false,
+            "version": "2"
+          },
+          "validation_status": "evidence_complete"
+        }
+      },
+      {
+        "schema_version": 1,
+        "event_id": "cte_e4e6fe73-e762-447f-8ac1-3bb4484d08ff",
+        "task_id": "ctask_afa62a7e-0bce-414b-b338-c5c4a3e00b38",
+        "task_seq": "20",
+        "task_revision": "20",
+        "kind": "review.recorded",
+        "recorded_at": "2026-10-29T02:44:04.850648Z",
+        "participation_id": "part_9ef0b7c0-062c-4915-9bc0-a7c7d9d0d625",
+        "attempt_id": "attempt_32703256-5467-4563-80f8-964678caad94",
+        "source": {
+          "kind": "reported",
+          "producer_submission_id": "submission-2"
+        },
+        "payload": {
+          "action": "pending",
+          "decision_id": "review_b4562529-23e3-400f-9798-ac425ad63b98",
+          "iteration": 2,
+          "review": {
+            "artifact": {
+              "artifact_id": "blob_32f83c16-d7ff-464c-b27b-44b214a9e089",
+              "hash": "888404c945a3efacd0fc562931ca1642e487d64685ab34d62ce463dbcad6b202",
+              "version": "2"
+            },
+            "control_epoch": "1",
+            "findings": [
+              "improve edge case"
+            ],
+            "plan": {
+              "artifact_id": "artifact_3e3d29ff-b0af-4cb2-8e43-10c39fa0823b",
+              "hash": "620c4b7c81a7c8e0d91db36cc9768f4e4bc014fef41483b619f1bf5106947c6b",
+              "version": "1"
+            },
+            "producer_submission_id": "submission-2",
+            "request_id": "review-2",
+            "reviewed_attempt_id": "attempt_32703256-5467-4563-80f8-964678caad94",
+            "reviewer_participation_id": "part_9ef0b7c0-062c-4915-9bc0-a7c7d9d0d625",
+            "run_id": "run_7f653810-cb54-45de-a531-dff554039639",
+            "verdict": "pass"
+          }
+        }
+      },
+      {
+        "schema_version": 1,
+        "event_id": "cte_2b76c188-b456-45a1-9de7-3b9703ae30c2",
+        "task_id": "ctask_afa62a7e-0bce-414b-b338-c5c4a3e00b38",
+        "task_seq": "21",
+        "task_revision": "21",
+        "kind": "review.gate_consumed",
+        "recorded_at": "2026-10-29T02:44:05.33911Z",
+        "participation_id": "part_9ef0b7c0-062c-4915-9bc0-a7c7d9d0d625",
+        "attempt_id": "attempt_32703256-5467-4563-80f8-964678caad94",
+        "source": {
+          "kind": "gate",
+          "request_id": "review_b4562529-23e3-400f-9798-ac425ad63b98"
+        },
+        "payload": {
+          "action": "pass",
+          "decision_id": "review_b4562529-23e3-400f-9798-ac425ad63b98",
+          "iteration": 2,
+          "review": {
+            "artifact": {
+              "artifact_id": "blob_32f83c16-d7ff-464c-b27b-44b214a9e089",
+              "hash": "888404c945a3efacd0fc562931ca1642e487d64685ab34d62ce463dbcad6b202",
+              "version": "2"
+            },
+            "control_epoch": "1",
+            "findings": [
+              "improve edge case"
+            ],
+            "plan": {
+              "artifact_id": "artifact_3e3d29ff-b0af-4cb2-8e43-10c39fa0823b",
+              "hash": "620c4b7c81a7c8e0d91db36cc9768f4e4bc014fef41483b619f1bf5106947c6b",
+              "version": "1"
+            },
+            "producer_submission_id": "submission-2",
+            "request_id": "review-2",
+            "reviewed_attempt_id": "attempt_32703256-5467-4563-80f8-964678caad94",
+            "reviewer_participation_id": "part_9ef0b7c0-062c-4915-9bc0-a7c7d9d0d625",
+            "run_id": "run_7f653810-cb54-45de-a531-dff554039639",
+            "verdict": "pass"
+          }
+        }
+      },
+      {
+        "schema_version": 1,
+        "event_id": "cte_1b70198c-acd2-48e4-9cb8-f67a26ffc9c2",
+        "task_id": "ctask_afa62a7e-0bce-414b-b338-c5c4a3e00b38",
+        "task_seq": "22",
+        "task_revision": "22",
+        "kind": "task.accepted",
+        "recorded_at": "2026-10-29T02:44:05.446019Z",
+        "participation_id": "part_9ef0b7c0-062c-4915-9bc0-a7c7d9d0d625",
+        "attempt_id": "attempt_32703256-5467-4563-80f8-964678caad94",
+        "source": {
+          "kind": "gate",
+          "request_id": "review_b4562529-23e3-400f-9798-ac425ad63b98"
+        },
+        "payload": {
+          "artifact": {
+            "artifact_id": "blob_32f83c16-d7ff-464c-b27b-44b214a9e089",
+            "hash": "888404c945a3efacd0fc562931ca1642e487d64685ab34d62ce463dbcad6b202",
+            "version": "2"
+          },
+          "decision_id": "review_b4562529-23e3-400f-9798-ac425ad63b98",
+          "status": "task_accepted"
+        }
+      }
+    ],
+    "next_cursor": "22",
+    "has_more": false,
+    "resync_required": false
+  },
+  "fixture_only": true,
+  "provenance": "offline actual Agent Loop + SQLite + Flux + MCP, two edits, request_changes/pass/finalize",
+  "snapshot": {
+    "schema": "task-snapshot/v1",
+    "task_id": "ctask_afa62a7e-0bce-414b-b338-c5c4a3e00b38",
+    "workspace_ref": "workspace_8a8ad3a97a574c3db39d0486c80151a50e3d91e81956a7061bc94d8cd004ed21",
+    "goal": "offline managed task",
+    "acceptance": [
+      "validate after edit"
+    ],
+    "mode": "managed_collaboration",
+    "state": "completed",
+    "phase": "completed",
+    "revision": "22",
+    "snapshot_task_seq": "22",
+    "current_attempt_id": "attempt_32703256-5467-4563-80f8-964678caad94",
+    "workflow_ref": "1",
+    "task_acceptance": "accepted",
+    "managed_run": {
+      "run_id": "run_7f653810-cb54-45de-a531-dff554039639",
+      "task_id": "ctask_afa62a7e-0bce-414b-b338-c5c4a3e00b38",
+      "server_id": "offline-server",
+      "store_id": "cstore_a1e1dfe6d1cdf9c4011be4fc5445da6f",
+      "control_epoch": "1",
+      "state": "completed",
+      "workspace": {
+        "root": "/private/var/folders/p2/h8cppqy94j5f2q9xq6v8z7300000gp/T/TestExportManagedTimelineFixture1766492897/002",
+        "root_identity": "16777229:100382591",
+        "git_dir": "/private/var/folders/p2/h8cppqy94j5f2q9xq6v8z7300000gp/T/TestExportManagedTimelineFixture1766492897/002/.git",
+        "git_identity": "16777229:100382592"
+      },
+      "plan_artifact_id": "artifact_3e3d29ff-b0af-4cb2-8e43-10c39fa0823b",
+      "plan_version": "1",
+      "plan_hash": "620c4b7c81a7c8e0d91db36cc9768f4e4bc014fef41483b619f1bf5106947c6b",
+      "executor_participation_id": "part_0f848495-ad80-4766-8124-fe227e154148",
+      "reviewer_participation_id": "part_9ef0b7c0-062c-4915-9bc0-a7c7d9d0d625",
+      "max_iterations": 2,
+      "workflow": {
+        "name": "coding_collaboration_v1",
+        "version_id": "1",
+        "hash": "15b5d3a15e99bf991091eb144999a5dd4ccfb8e97bc525a0f51151273f841084"
+      },
+      "command_id": "command_4afc7d16-b2cf-4e7e-81fd-1a46ec716e12",
+      "flux_task_id": "1",
+      "review_policy": {
+        "files": [
+          "main.txt"
+        ],
+        "validation_commands": [
+          "git diff --check"
+        ]
+      },
+      "baseline": {
+        "artifact_id": "blob_6deacc3e-71df-4ac9-932f-3dfb6467f23a",
+        "version": "1",
+        "hash": "f58a1acd588dfdaf7c71c1ce942f5bf821fe2d3f8e441ef9866587c4be3e385e"
+      },
+      "current_iteration": 2,
+      "current_bundle": {
+        "artifact_id": "blob_32f83c16-d7ff-464c-b27b-44b214a9e089",
+        "version": "2",
+        "hash": "888404c945a3efacd0fc562931ca1642e487d64685ab34d62ce463dbcad6b202"
+      }
+    },
+    "participations": [
+      {
+        "participation_id": "part_0f848495-ad80-4766-8124-fe227e154148",
+        "task_id": "ctask_afa62a7e-0bce-414b-b338-c5c4a3e00b38",
+        "agent_id": "codeagent:offline-server",
+        "role": "executor",
+        "session_ref": {
+          "kind": "local",
+          "server_id": "offline-server",
+          "store_id": "cstore_a1e1dfe6d1cdf9c4011be4fc5445da6f",
+          "session_id": "20261029-024402-8a703239"
+        },
+        "observation_level": "managed",
+        "capabilities": [
+          "read_session",
+          "read_artifacts",
+          "link_attempt"
+        ]
+      },
+      {
+        "participation_id": "part_a450558f-0efd-43a6-8aa1-c41aebc4f114",
+        "task_id": "ctask_afa62a7e-0bce-414b-b338-c5c4a3e00b38",
+        "agent_id": "agent_0ac7cbc3-aaf6-452f-801d-1d1ae098dc5b",
+        "role": "planner",
+        "session_ref": {
+          "kind": "external",
+          "agent_id": "agent_0ac7cbc3-aaf6-452f-801d-1d1ae098dc5b",
+          "runtime_kind": "codex",
+          "session_handle": "external_941632a9-4df6-4efd-b53f-fc642639b96e"
+        },
+        "observation_level": "reported",
+        "capabilities": [
+          "submit_plan"
+        ]
+      },
+      {
+        "participation_id": "part_9ef0b7c0-062c-4915-9bc0-a7c7d9d0d625",
+        "task_id": "ctask_afa62a7e-0bce-414b-b338-c5c4a3e00b38",
+        "agent_id": "agent_0ac7cbc3-aaf6-452f-801d-1d1ae098dc5b",
+        "role": "reviewer",
+        "session_ref": {
+          "kind": "external",
+          "agent_id": "agent_0ac7cbc3-aaf6-452f-801d-1d1ae098dc5b",
+          "runtime_kind": "codex",
+          "session_handle": "external_941632a9-4df6-4efd-b53f-fc642639b96e"
+        },
+        "observation_level": "reported",
+        "capabilities": [
+          "submit_review"
+        ]
+      }
+    ],
+    "attempts": [
+      {
+        "attempt_id": "attempt_7ad9a655-31c3-4dc1-80ce-dfa963c0706a",
+        "task_id": "ctask_afa62a7e-0bce-414b-b338-c5c4a3e00b38",
+        "participation_id": "part_a450558f-0efd-43a6-8aa1-c41aebc4f114",
+        "stage": "planning",
+        "iteration": 1,
+        "status": "reported",
+        "source_ref": {
+          "kind": "report",
+          "request_id": "plan",
+          "producer_submission_id": "plan"
+        },
+        "execution_evidence": null
+      },
+      {
+        "attempt_id": "attempt_481ca34d-c31c-47ee-873e-4e38dfae8c89",
+        "task_id": "ctask_afa62a7e-0bce-414b-b338-c5c4a3e00b38",
+        "participation_id": "part_0f848495-ad80-4766-8124-fe227e154148",
+        "stage": "implementing",
+        "iteration": 1,
+        "status": "completed",
+        "source_ref": {
+          "kind": "session_event",
+          "server_id": "offline-server",
+          "store_id": "cstore_a1e1dfe6d1cdf9c4011be4fc5445da6f",
+          "session_id": "20261029-024402-8a703239",
+          "turn_id": "turn_18e2dff47358dea8_1",
+          "request_id": "managed_a90ba090-1031-4452-9135-890e7f21ba5d"
+        },
+        "execution_evidence": {
+          "last_mutation_call_id": "actual-turn_18e2dff47358dea8_1-2",
+          "missing_validation_commands": [],
+          "reasons": [],
+          "status": "evidence_complete",
+          "unfinished_call_ids": [],
+          "unresolved_argument_call_ids": []
+        }
+      },
+      {
+        "attempt_id": "attempt_32703256-5467-4563-80f8-964678caad94",
+        "task_id": "ctask_afa62a7e-0bce-414b-b338-c5c4a3e00b38",
+        "participation_id": "part_0f848495-ad80-4766-8124-fe227e154148",
+        "stage": "reworking",
+        "iteration": 2,
+        "status": "completed",
+        "source_ref": {
+          "kind": "session_event",
+          "server_id": "offline-server",
+          "store_id": "cstore_a1e1dfe6d1cdf9c4011be4fc5445da6f",
+          "session_id": "20261029-024402-8a703239",
+          "turn_id": "turn_18e2dff4c92564a0_2",
+          "request_id": "managed_02afb691-e324-4665-93b9-c2f7f4c955e6"
+        },
+        "execution_evidence": {
+          "last_mutation_call_id": "actual-turn_18e2dff4c92564a0_2-2",
+          "missing_validation_commands": [],
+          "reasons": [],
+          "status": "evidence_complete",
+          "unfinished_call_ids": [],
+          "unresolved_argument_call_ids": []
+        }
+      }
+    ],
+    "artifact_refs": [
+      {
+        "artifact_id": "artifact_3e3d29ff-b0af-4cb2-8e43-10c39fa0823b",
+        "attempt_id": "attempt_7ad9a655-31c3-4dc1-80ce-dfa963c0706a",
+        "kind": "plan",
+        "version": "1",
+        "content_hash": "620c4b7c81a7c8e0d91db36cc9768f4e4bc014fef41483b619f1bf5106947c6b",
+        "capture_mode": "reported",
+        "source_ref": {
+          "kind": "report",
+          "request_id": "plan",
+          "producer_submission_id": "plan"
+        },
+        "truncated": false,
+        "content": {
+          "text": "update main.txt then run git diff --check"
+        }
+      },
+      {
+        "artifact_id": "blob_9e78f4f4-4599-4087-8efd-121102a5a752",
+        "attempt_id": "attempt_481ca34d-c31c-47ee-873e-4e38dfae8c89",
+        "kind": "review_bundle",
+        "version": "1",
+        "content_hash": "4bddf4fdd3f1a50f6409f9d7eeecfde5166796d93a226caed350675d7b992862",
+        "capture_mode": "immutable",
+        "source_ref": {
+          "kind": "session_event",
+          "server_id": "offline-server",
+          "store_id": "cstore_a1e1dfe6d1cdf9c4011be4fc5445da6f",
+          "session_id": "20261029-024402-8a703239",
+          "turn_id": "turn_18e2dff47358dea8_1",
+          "request_id": "managed_a90ba090-1031-4452-9135-890e7f21ba5d",
+          "seq": "21"
+        },
+        "truncated": false
+      },
+      {
+        "artifact_id": "blob_32f83c16-d7ff-464c-b27b-44b214a9e089",
+        "attempt_id": "attempt_32703256-5467-4563-80f8-964678caad94",
+        "kind": "review_bundle",
+        "version": "2",
+        "content_hash": "888404c945a3efacd0fc562931ca1642e487d64685ab34d62ce463dbcad6b202",
+        "capture_mode": "immutable",
+        "source_ref": {
+          "kind": "session_event",
+          "server_id": "offline-server",
+          "store_id": "cstore_a1e1dfe6d1cdf9c4011be4fc5445da6f",
+          "session_id": "20261029-024402-8a703239",
+          "turn_id": "turn_18e2dff4c92564a0_2",
+          "request_id": "managed_02afb691-e324-4665-93b9-c2f7f4c955e6",
+          "seq": "42"
+        },
+        "truncated": false
+      }
+    ],
+    "pending_attention": null,
+    "available_actions": [
+      "read_task",
+      "read_events",
+      "submit_plan"
+    ],
+    "usage": null,
+    "cost_usd": null
+  }
+}
