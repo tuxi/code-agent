@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 )
 
 var userAssetErrorMessages = map[string]string{
@@ -53,6 +54,9 @@ type APIError struct {
 	Code    string
 	Message string
 	Body    string
+	// RetryAfter is the minimum wait requested by the provider. It is not
+	// capped by the client's local exponential-backoff limit.
+	RetryAfter time.Duration
 }
 
 // authFailureHints are the substrings that mark a 401/403 as an authentication

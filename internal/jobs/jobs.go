@@ -9,6 +9,7 @@
 package jobs
 
 import (
+	"code-agent/internal/processexec"
 	"context"
 	"errors"
 	"fmt"
@@ -67,6 +68,12 @@ type Sink interface {
 	JobStarted(snap Snapshot)
 	JobOutput(id string, chunk []byte)
 	JobFinished(snap Snapshot)
+}
+
+// ExecutionLeaseSink is optional durable host admission for work that outlives
+// a Turn. A lease must be held from before exec until process-tree cleanup.
+type ExecutionLeaseSink interface {
+	AcquireJobLease(dir string, owner Owner) (func(), error)
 }
 
 // Job is one background command. Its mutable fields are guarded by mu; callers
@@ -169,6 +176,14 @@ func (r *Registry) Start(dir, command string, argv []string, owner Owner) *Job {
 	r.jobs[id] = job
 	r.order = append(r.order, id)
 	r.mu.Unlock()
+	release := func() {}
+	var leaseErr error
+	if guard, ok := r.Sink.(ExecutionLeaseSink); ok {
+		release, leaseErr = guard.AcquireJobLease(dir, owner)
+		if release == nil {
+			release = func() {}
+		}
+	}
 
 	if r.Sink != nil {
 		r.Sink.JobStarted(job.Snapshot())
@@ -181,9 +196,21 @@ func (r *Registry) Start(dir, command string, argv []string, owner Owner) *Job {
 	if r.Sink != nil {
 		w = &sinkWriter{buf: out, sink: r.Sink, id: id}
 	}
+	if leaseErr != nil {
+		fmt.Fprintf(w, "failed admission: %v\n", leaseErr)
+		cancel()
+		release()
+		job.finish(Failed, -1)
+		if r.Sink != nil {
+			r.Sink.JobFinished(job.Snapshot())
+		}
+		return job
+	}
 
 	if note := argvContractNote(argv); note != "" {
 		fmt.Fprintf(w, "failed to start: %s\n", note)
+		cancel()
+		release()
 		job.finish(Failed, -1)
 		if r.Sink != nil {
 			r.Sink.JobFinished(job.Snapshot())
@@ -192,11 +219,15 @@ func (r *Registry) Start(dir, command string, argv []string, owner Owner) *Job {
 	}
 
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	cleanup := processexec.Configure(cmd)
 	cmd.Dir = dir
 	cmd.Stdout = w
 	cmd.Stderr = w
 
 	if err := cmd.Start(); err != nil {
+		cleanup()
+		cancel()
+		release()
 		fmt.Fprintf(w, "failed to start: %v\n", err)
 		job.finish(Failed, -1)
 		if r.Sink != nil {
@@ -207,6 +238,8 @@ func (r *Registry) Start(dir, command string, argv []string, owner Owner) *Job {
 
 	go func() {
 		err := cmd.Wait()
+		cleanup()
+		cancel()
 		job.mu.Lock()
 		if job.status != Canceled {
 			var exitErr *exec.ExitError
@@ -226,6 +259,7 @@ func (r *Registry) Start(dir, command string, argv []string, owner Owner) *Job {
 		if r.Sink != nil {
 			r.Sink.JobFinished(job.Snapshot())
 		}
+		release()
 		close(job.done)
 	}()
 

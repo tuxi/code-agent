@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"time"
 
+	"code-agent/internal/collab"
 	"code-agent/internal/model"
 	"code-agent/internal/session"
 )
@@ -20,11 +21,24 @@ func (s *Store) ReserveTurnInput(ctx context.Context, input session.TurnInput, a
 		return session.TurnInput{}, false, 0, err
 	}
 	defer tx.Rollback()
+	if input.ManagedTask != nil && (accepted.SessionID != input.SessionID || accepted.TurnID != input.TurnID || accepted.Kind != "turn_accepted") {
+		return session.TurnInput{}, false, 0, collab.ErrConflict
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE coding_task_meta SET value=value WHERE key='store_id'`); err != nil {
+		return session.TurnInput{}, false, 0, err
+	}
+	if err = checkTurnInputAdmission(ctx, tx, input); err != nil {
+		return session.TurnInput{}, false, 0, err
+	}
 	stored, err := scanTurnInput(tx.QueryRowContext(ctx, `
 		SELECT session_id, request_id, turn_id, payload_hash, text, wire_model, resolved_model, assets, local_assets,
 		       sender_session_id, sender_turn_id, message_id, correlation_id, intent, accepted_seq, state, created_at, updated_at
 		FROM turn_inputs WHERE session_id=? AND request_id=?`, input.SessionID, input.RequestID))
 	if err == nil {
+		stored.ManagedTask, err = managedRefForInput(ctx, tx, stored.SessionID, stored.RequestID)
+		if err != nil {
+			return session.TurnInput{}, false, 0, err
+		}
 		return stored, false, 0, tx.Commit()
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
@@ -70,6 +84,9 @@ func (s *Store) ReserveTurnInput(ctx context.Context, input session.TurnInput, a
 		return session.TurnInput{}, false, 0, err
 	}
 	input.AcceptedSeq = seq
+	if err = bindManagedAttempt(ctx, tx, input); err != nil {
+		return session.TurnInput{}, false, 0, err
+	}
 	if err := tx.Commit(); err != nil {
 		return session.TurnInput{}, false, 0, err
 	}
@@ -82,6 +99,12 @@ func (s *Store) StartTurnInput(ctx context.Context, input session.TurnInput, ses
 		return err
 	}
 	defer tx.Rollback()
+	if _, err = tx.ExecContext(ctx, `UPDATE coding_task_meta SET value=value WHERE key='store_id'`); err != nil {
+		return err
+	}
+	if err = checkTurnInputAdmission(ctx, tx, input); err != nil {
+		return err
+	}
 	if err := s.saveSessionTx(ctx, tx, sess); err != nil {
 		return err
 	}
@@ -103,10 +126,14 @@ func (s *Store) SetTurnInputState(ctx context.Context, sessionID, requestID stri
 }
 
 func (s *Store) TurnInput(ctx context.Context, sessionID, requestID string) (session.TurnInput, error) {
-	return scanTurnInput(s.db.QueryRowContext(ctx, `
+	input, err := scanTurnInput(s.db.QueryRowContext(ctx, `
 		SELECT session_id, request_id, turn_id, payload_hash, text, wire_model, resolved_model, assets, local_assets,
 		       sender_session_id, sender_turn_id, message_id, correlation_id, intent, accepted_seq, state, created_at, updated_at
 		FROM turn_inputs WHERE session_id=? AND request_id=?`, sessionID, requestID))
+	if err == nil {
+		input.ManagedTask, err = managedRefForInput(ctx, s.db, sessionID, requestID)
+	}
+	return input, err
 }
 
 func (s *Store) RecoverableTurnInputs(ctx context.Context) ([]session.TurnInput, error) {
@@ -117,16 +144,27 @@ func (s *Store) RecoverableTurnInputs(ctx context.Context) ([]session.TurnInput,
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 	var out []session.TurnInput
 	for rows.Next() {
 		input, err := scanTurnInput(rows)
 		if err != nil {
+			rows.Close()
 			return nil, err
 		}
 		out = append(out, input)
 	}
-	return out, rows.Err()
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return nil, err
+	}
+	for i := range out {
+		out[i].ManagedTask, err = managedRefForInput(ctx, s.db, out[i].SessionID, out[i].RequestID)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
 }
 
 type rowScanner interface{ Scan(...any) error }

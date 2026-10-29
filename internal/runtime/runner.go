@@ -98,6 +98,10 @@ func BuildRunner(cfg settings.Settings, mc settings.ModelConfig, provider model.
 		// deployments whose client tools run long (e.g. DreamAI media generation).
 		ClientToolTimeout: time.Duration(cfg.Agent.ClientToolTimeoutSeconds) * time.Second,
 	}
+	runner.ModelSelection = model.Selection{ResolvedModel: settings.ModelID(mc.Name, mc), Provider: mc.Catalog.ConnectionID, ConfigurationID: settings.ModelConfigurationID(mc)}
+	if runner.ModelSelection.Provider == "" {
+		runner.ModelSelection.Provider, _, _ = strings.Cut(runner.ModelSelection.ResolvedModel, "/")
+	}
 	// after_turn stop policy (8.5): an operator-configured after_turn hook owns
 	// the finalize stop decision, REPLACING the harness's built-in default
 	// policy. Same sh -c runner as the tool hooks; suppressed on no-subprocess

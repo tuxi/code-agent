@@ -15,7 +15,7 @@ import (
 type RequestStat struct {
 	At                 time.Time
 	Model              string
-	PromptTokens       int  // from the successful response; 0 on failure
+	PromptTokens       int  // sum of observed attempt usage, including failures
 	CachedPromptTokens int  // portion of PromptTokens served from the prompt cache
 	CompletionTokens   int  // output tokens, for cost accounting
 	Attempts           int  // inner calls made (>= 1)
@@ -32,6 +32,7 @@ type RequestStat struct {
 type Attempt struct {
 	Latency    time.Duration
 	ErrorClass string // "" on success
+	Usage      Usage  // observed usage; absent upstream accounting is unknown
 }
 
 // Observer receives one RequestStat per Complete call. Implementations must be

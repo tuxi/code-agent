@@ -18,6 +18,7 @@ import (
 	fluxtool "github.com/tuxi/flux-workflow/tool"
 	"gorm.io/gorm"
 
+	"code-agent/internal/collab"
 	"code-agent/internal/model"
 	"code-agent/internal/tools"
 )
@@ -84,8 +85,9 @@ func fluxDBPath(workspaceRoot string) string {
 // compilation; flux-workflow owns execution; code-agent owns provider, tools,
 // policy, events and billing.
 type FluxWorkflowTool struct {
-	provider  model.Provider
-	modelName string
+	provider       model.Provider
+	modelName      string
+	executionGuard collab.ExecutionGuard
 }
 
 type fluxWorkflowInput struct {
@@ -100,8 +102,12 @@ type fluxWorkflowInput struct {
 	TimeoutMS   *int64                    `json:"timeout_ms"`
 }
 
-func NewFluxWorkflowTool(provider model.Provider, modelName string) *FluxWorkflowTool {
-	return &FluxWorkflowTool{provider: provider, modelName: modelName}
+func NewFluxWorkflowTool(provider model.Provider, modelName string, guards ...collab.ExecutionGuard) *FluxWorkflowTool {
+	t := &FluxWorkflowTool{provider: provider, modelName: modelName}
+	if len(guards) > 0 {
+		t.executionGuard = guards[0]
+	}
+	return t
 }
 
 func (t *FluxWorkflowTool) Name() string { return "plan_workflow" }
@@ -124,6 +130,9 @@ func (t *FluxWorkflowTool) InputSchema() json.RawMessage {
 }
 
 func (t *FluxWorkflowTool) Execute(ctx context.Context, ec tools.ExecutionContext, input json.RawMessage) (tools.ToolResult, error) {
+	if t.executionGuard != nil && ec.NestedExecutor != nil {
+		ec.NestedExecutor = &leasedNestedExecutor{next: ec.NestedExecutor, guard: t.executionGuard, root: ec.WorkspaceRoot, sessionID: ec.SessionID}
+	}
 	var args fluxWorkflowInput
 	if err := json.Unmarshal(input, &args); err != nil {
 		return tools.ToolResult{Content: "invalid input: " + err.Error()}, nil
@@ -269,11 +278,11 @@ func registerFluxWorkflow(ctx context.Context, rt *workflowruntime.Runtime, def 
 	return err
 }
 
-func RegisterFluxTool(registry *tools.Registry, provider model.Provider, modelName string) {
+func RegisterFluxTool(registry *tools.Registry, provider model.Provider, modelName string, guards ...collab.ExecutionGuard) {
 	if registry == nil {
 		return
 	}
-	_ = registry.Register(NewFluxWorkflowTool(provider, modelName))
+	_ = registry.Register(NewFluxWorkflowTool(provider, modelName, guards...))
 	_ = registry.Register(&workflowStatusTool{})
 	_ = registry.Register(&workflowListTool{})
 	_ = registry.Register(&workflowDefTool{})

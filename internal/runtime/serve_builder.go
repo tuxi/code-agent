@@ -12,6 +12,7 @@ import (
 	"code-agent/internal/agent"
 	"code-agent/internal/app"
 	"code-agent/internal/approve"
+	"code-agent/internal/collab"
 	"code-agent/internal/conversation"
 	"code-agent/internal/credential"
 	"code-agent/internal/model"
@@ -60,6 +61,7 @@ type ServeRunBuilder struct {
 	automationStore tools.AutomationStore
 	workflowRunner  tools.WorkflowRunner
 	sessionTrace    tools.SessionTraceFunc
+	executionGuard  collab.ExecutionGuard
 }
 
 func (b *ServeRunBuilder) SetSessionControl(control tools.SessionControl) {
@@ -93,16 +95,31 @@ func (b *ServeRunBuilder) SetSessionTrace(trace tools.SessionTraceFunc) {
 	b.mu.Unlock()
 }
 
+func (b *ServeRunBuilder) SetTaskExecutionGuard(guard collab.ExecutionGuard) {
+	b.mu.Lock()
+	b.executionGuard = guard
+	b.mu.Unlock()
+}
+
 // NewServeRunBuilder constructs the builder with the initial model + provider.
 // set is the merged settings view (permissions/verify/hooks + infrastructure),
 // provided by the assembler — desktop loads disk settings.json, embedded parses
 // the host-injected SettingsJSON.
 func NewServeRunBuilder(set settings.Settings, mc settings.ModelConfig, provider model.Provider, cred credential.Resolver, toolReg *tools.Registry, wsReg *WorkspaceRegistry, _ *agent.RunnerRef) *ServeRunBuilder {
+	var guard collab.ExecutionGuard
+	if toolReg != nil {
+		if raw, ok := toolReg.Get("plan_workflow"); ok {
+			if workflow, ok := raw.(*FluxWorkflowTool); ok {
+				guard = workflow.executionGuard
+			}
+		}
+	}
 	return &ServeRunBuilder{
 		Set: set, ToolReg: toolReg, WSReg: wsReg,
 		rules:   approve.NewRuleStore("", set.Permissions.Allow, set.Permissions.Deny),
 		wsRules: make(map[string]*approve.RuleStore),
 		mc:      mc, provider: provider, credential: cred,
+		executionGuard: guard,
 	}
 }
 
@@ -251,18 +268,31 @@ func resolveTurnModel(cfg settings.Settings, defaultMC settings.ModelConfig, req
 	if requested == "" {
 		return defaultMC, nil
 	}
-	if selected, err := app.SelectModel(requested, cfg); err == nil {
+	// Resolve only configured references, including namespaced catalog IDs. Do
+	// not let SelectModel's CLI built-in shortcuts silently switch a connection.
+	alias := requested
+	if _, ok := cfg.Models[alias]; !ok {
+		for _, candidate := range cfg.ModelNames() {
+			if settings.ModelID(candidate, cfg.Models[candidate]) == requested {
+				alias = candidate
+				break
+			}
+		}
+	}
+	if _, ok := cfg.Models[alias]; ok {
+		selected, err := app.SelectModel(alias, cfg)
+		if err != nil {
+			return settings.ModelConfig{}, ModelUnavailableError{Requested: requested, Cause: err}
+		}
+		if selected.Name == "" {
+			selected.Name = alias
+		}
 		return selected, nil
-	} else if strings.HasPrefix(requested, "provider.") {
-		return settings.ModelConfig{}, ModelUnavailableError{Requested: requested, Cause: err}
 	}
-	if !isGatewayModelEndpoint(defaultMC.BaseURL) {
-		// Cross-session turns may pass a model override string (e.g.
-		// "deepseek-v4-flash") that the target runtime can't resolve as
-		// a named model config. Fall back to the default.
-		fmt.Fprintf(os.Stderr, "[serve-builder] model override %q unavailable for direct provider, using default %q\n", requested, defaultMC.Model)
-		return defaultMC, nil
+	if strings.HasPrefix(requested, "provider.") || strings.Contains(requested, "/") || !isGatewayModelEndpoint(defaultMC.BaseURL) {
+		return settings.ModelConfig{}, ModelUnavailableError{Requested: requested}
 	}
+
 	// Legacy: bare string override that doesn't match any named model
 	// config but the provider is Gateway. Accept and use as-is.
 	legacy := defaultMC
@@ -381,7 +411,7 @@ func (b *ServeRunBuilder) ReleaseConversationAssetRefs(ctx context.Context, cred
 // workspace, merges client-registered tools, and wires plan tools + client waiter.
 func (b *ServeRunBuilder) Build(ctx conversation.RuntimeContext) conversation.TurnRunner {
 	b.mu.RLock()
-	defaultMC, baseProvider, baseCredential, control := b.mc, b.provider, b.credential, b.control
+	defaultMC, baseProvider, baseCredential, control, executionGuard := b.mc, b.provider, b.credential, b.control, b.executionGuard
 	cfg := b.Set
 	b.mu.RUnlock()
 
@@ -403,6 +433,12 @@ func (b *ServeRunBuilder) Build(ctx conversation.RuntimeContext) conversation.Tu
 	// Rebuild whenever the turn selected a model or supplied a session
 	// credential. The effective chain is session → injected/configured/env.
 	effectiveCredential := effectiveCredentialResolver(ctx.Credential, baseCredential)
+	if mc.Model != "" && (ctx.Model != "" || cfg.Models != nil) {
+		if ok, reason, _, _ := settings.ProbeModelAvailability(context.Background(), cfg, mc, effectiveCredential); !ok {
+			return failedTurnRunner{err: ModelUnavailableError{Requested: ctx.Model, Cause: fmt.Errorf("%s", reason)}}
+		}
+	}
+
 	provider := baseProvider
 	if ctx.Model != "" || ctx.Credential != nil || mc.Name != defaultMC.Name {
 		p, err := BuildProvider(mc, cfg.Provider, effectiveCredential)
@@ -458,6 +494,11 @@ func (b *ServeRunBuilder) Build(ctx conversation.RuntimeContext) conversation.Tu
 	// replacement so the subagent inherits this turn's model, resolver, and
 	// workspace-scoped read-only tools.
 	rebindTurnTask(turnTools, cfg, mc, provider, effectiveCredential, workspacePath, skillReg)
+	if ctx.ManagedTask != nil {
+		turnTools = managedTurnTools(turnTools)
+		ctx.ClientTools = nil
+		ctx.ClientWaiter = nil
+	}
 
 	// Resolve the permission store for this workspace. Each workspace gets its
 	// own RuleStore so an "Always allow" grant stays scoped to that workspace's
@@ -484,6 +525,10 @@ func (b *ServeRunBuilder) Build(ctx conversation.RuntimeContext) conversation.Tu
 	ctx.PlanApprover = wrapped
 
 	runner := BuildRunner(cfg, mc, provider, turnTools, skillReg, ctx.Approver, ctx.Publisher, wsRules, workspacePath)
+	if ctx.Model != "" {
+		requested := ctx.Model
+		runner.ModelSelection.RequestedModel = &requested
+	}
 	runner.ReservedTurnID = ctx.TurnID
 	runner.RequestID = ctx.RequestID
 	runner.SessionControl = control
@@ -514,7 +559,7 @@ func (b *ServeRunBuilder) Build(ctx conversation.RuntimeContext) conversation.Tu
 	// plan_workflow is turn-scoped: bind the selected provider/model after model
 	// override and after client tools have been merged. Its Execute path projects
 	// runner.Tools, so workspace MCP and session client tools become DAG nodes.
-	runner.Tools.Replace(NewFluxWorkflowTool(provider, mc.Model))
+	runner.Tools.Replace(NewFluxWorkflowTool(provider, mc.Model, executionGuard))
 	// Wire only this turn's plan tools, approver, and client tool waiter. No
 	// runner reference escapes the per-turn registry.
 	planRef.R = runner

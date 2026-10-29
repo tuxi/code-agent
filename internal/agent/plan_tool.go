@@ -109,7 +109,8 @@ func (t *proposePlanTool) InputSchema() json.RawMessage {
 		"plan_path": {
 			Type: "string",
 			Description: "Workspace-relative path to the complete markdown plan under " +
-				".codeagent/plans/ (for example .codeagent/plans/add-auth.md).",
+				".codeagent/plans/ (for example .codeagent/plans/add-auth.md). " +
+				"Preferred; legacy callers may omit it only when prior assistant text contains the full plan.",
 		},
 		"allowed_prompts": {
 			Type: "array",
@@ -133,7 +134,7 @@ func (t *proposePlanTool) InputSchema() json.RawMessage {
 			Type: "array", Description: "Unresolved questions that could materially change the design. Must be empty.",
 			Items: &tools.Property{Type: "string"},
 		},
-	}, "plan_path", "evidence_paths", "verification", "blocking_unknowns").JSON()
+	}, "evidence_paths", "verification", "blocking_unknowns").JSON()
 }
 
 func (t *proposePlanTool) Execute(_ context.Context, ec tools.ExecutionContext, input json.RawMessage) (tools.ToolResult, error) {

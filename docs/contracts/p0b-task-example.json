@@ -1,0 +1,168 @@
+{
+  "fixture_only": true,
+  "snapshot": {
+    "schema": "task-snapshot/v1",
+    "task_id": "ctask_example",
+    "workspace_ref": "workspace_example",
+    "goal": "修复事件输出预算并补充回归测试",
+    "acceptance": [
+      "实际 Diff 符合范围",
+      "定向测试通过",
+      "独立审查通过"
+    ],
+    "mode": "collaborative",
+    "state": "waiting",
+    "phase": "reviewing",
+    "wait_reason": "external_review",
+    "revision": "8",
+    "snapshot_task_seq": "108",
+    "workflow_ref": null,
+    "task_acceptance": "not_reviewed",
+    "participations": [
+      {
+        "participation_id": "part_plan",
+        "agent_id": "agent_codex",
+        "role": "planner",
+        "session_ref": {
+          "kind": "external",
+          "runtime_kind": "codex",
+          "agent_id": "agent_codex",
+          "session_handle": "external_context_1",
+          "native_session_id": null
+        },
+        "observation_level": "reported",
+        "capabilities": [
+          "submit_plan"
+        ],
+        "task_id": "ctask_example"
+      },
+      {
+        "participation_id": "part_execute",
+        "agent_id": "agent_codeagent",
+        "role": "executor",
+        "session_ref": {
+          "kind": "local",
+          "server_id": "server_example",
+          "store_id": "store_example",
+          "session_id": "session_execute"
+        },
+        "observation_level": "managed",
+        "capabilities": [
+          "read_session",
+          "read_artifacts"
+        ],
+        "task_id": "ctask_example"
+      },
+      {
+        "participation_id": "part_review",
+        "agent_id": "agent_codex",
+        "role": "reviewer",
+        "session_ref": {
+          "kind": "external",
+          "runtime_kind": "codex",
+          "agent_id": "agent_codex",
+          "session_handle": "external_context_1",
+          "native_session_id": null
+        },
+        "observation_level": "reported",
+        "capabilities": [
+          "submit_review"
+        ],
+        "task_id": "ctask_example"
+      }
+    ],
+    "attempts": [
+      {
+        "attempt_id": "attempt_plan_1",
+        "participation_id": "part_plan",
+        "stage": "planning",
+        "iteration": 1,
+        "status": "reported",
+        "source_ref": {
+          "producer_submission_id": "submission_plan_1",
+          "kind": "report"
+        },
+        "execution_evidence": null,
+        "task_id": "ctask_example"
+      },
+      {
+        "attempt_id": "attempt_execute_1",
+        "participation_id": "part_execute",
+        "stage": "implementing",
+        "iteration": 1,
+        "status": "completed",
+        "source_ref": {
+          "server_id": "server_example",
+          "store_id": "store_example",
+          "session_id": "session_execute",
+          "turn_id": "turn_execute_1",
+          "request_id": "request_execute_1"
+        },
+        "execution_evidence": {
+          "status": "evidence_complete"
+        },
+        "task_id": "ctask_example"
+      }
+    ],
+    "artifact_refs": [
+      {
+        "artifact_id": "artifact_patch_1",
+        "attempt_id": "attempt_execute_1",
+        "kind": "patch",
+        "version": "1",
+        "content_hash": null,
+        "capture_mode": "reported_reference",
+        "source_ref": {
+          "server_id": "server_example",
+          "store_id": "store_example",
+          "session_id": "session_execute",
+          "turn_id": "turn_execute_1"
+        },
+        "truncated": false
+      }
+    ],
+    "pending_attention": null,
+    "available_actions": [
+      "read_task",
+      "read_events",
+      "submit_plan",
+      "submit_review"
+    ],
+    "usage": null,
+    "cost_usd": null,
+    "current_attempt_id": "attempt_execute_1"
+  },
+  "event_page": {
+    "schema": "task-event-page/v1",
+    "task_id": "ctask_example",
+    "after": "105",
+    "events": [
+      {
+        "schema_version": 1,
+        "event_id": "cte_execute_done",
+        "task_id": "ctask_example",
+        "task_seq": "108",
+        "task_revision": "8",
+        "kind": "attempt.completed",
+        "recorded_at": "2026-10-27T12:00:00Z",
+        "participation_id": "part_execute",
+        "attempt_id": "attempt_execute_1",
+        "source": {
+          "kind": "session_event",
+          "server_id": "server_example",
+          "store_id": "store_example",
+          "session_id": "session_execute",
+          "turn_id": "turn_execute_1",
+          "seq": "215"
+        },
+        "payload": {
+          "execution_evidence": "evidence_complete",
+          "task_acceptance": "not_reviewed"
+        }
+      }
+    ],
+    "next_cursor": "108",
+    "has_more": false,
+    "resync_required": false
+  }
+}

@@ -3,6 +3,7 @@ package shell
 import (
 	"bytes"
 	"code-agent/internal/jobs"
+	"code-agent/internal/processexec"
 	"code-agent/internal/sandbox"
 	"code-agent/internal/tools"
 	"code-agent/internal/truncate"
@@ -29,6 +30,9 @@ type RunCommandTool struct {
 	Policy         sandbox.CommandPolicy
 	Timeout        time.Duration
 	MaxOutputBytes int
+	// ForegroundOnly is a host execution-domain constraint. Ordinary turns
+	// retain background jobs; managed v1 cannot recover detached processes.
+	ForegroundOnly bool
 
 	// Jobs holds background commands started with "background": true. It is
 	// shared with the job_* tools so they inspect the same set. Defaulted by
@@ -69,6 +73,7 @@ type backgroundResult struct {
 // blob: exit_code drives success/failure, duration_ms is observability, and
 // decision/note explain any policy action.
 type commandResult struct {
+	Status     string `json:"status,omitempty"` // command outcome, never a task/review verdict
 	Command    string `json:"command"`
 	Stdout     string `json:"stdout,omitempty"`
 	Stderr     string `json:"stderr,omitempty"`
@@ -83,7 +88,7 @@ func (t *RunCommandTool) Name() string {
 }
 
 func (t *RunCommandTool) Description() string {
-	return "Run a command in the workspace and get structured output (stdout, stderr, exit_code, duration_ms). " +
+	description := "Run a command in the workspace and get structured output (stdout, stderr, exit_code, duration_ms). " +
 		"Read-only and build commands (ls, cat, grep, git status/diff/log, go build/test/vet, cargo check) run directly; " +
 		"commands that mutate the tree or reach the network (rm, mv, curl, git checkout/commit/push) require user confirmation; " +
 		"a few catastrophic commands are blocked. " +
@@ -92,11 +97,17 @@ func (t *RunCommandTool) Description() string {
 		"Redirect — e.g. `go test > /tmp/out` or `mysql < schema.sql`. " +
 		"Still: (1) the command runs from the workspace ROOT, so pass a path argument rather than `cd`; " +
 		"(2) output is already captured and truncated for you, so DON'T pipe to head/tail/grep — just run the bare command and read the result; " +
-		"(3) to filter, run the tool's own flag (e.g. `go test -run TestName`) rather than piping. " +
-		`Set "background": true for a long build/test that would otherwise block — you get a job_id back immediately; then poll job_status / job_logs, or stop it with job_cancel.`
+		"(3) to filter, run the tool's own flag (e.g. `go test -run TestName`) rather than piping. "
+	if t.ForegroundOnly {
+		return description + "This managed execution domain supports foreground commands only."
+	}
+	return description + `Set "background": true for a long build/test that would otherwise block — you get a job_id back immediately; then poll job_status / job_logs, or stop it with job_cancel.`
 }
 
 func (t *RunCommandTool) InputSchema() json.RawMessage {
+	if t.ForegroundOnly {
+		return tools.Object(map[string]tools.Property{"command": {Type: "string", Description: "A foreground command executed under this Session's normal permission policy."}}, "command").JSON()
+	}
 	return tools.Object(map[string]tools.Property{
 		"command": {
 			Type:        "string",
@@ -135,6 +146,9 @@ func (t *RunCommandTool) Execute(ctx context.Context, ec tools.ExecutionContext,
 	command := strings.TrimSpace(in.Command)
 	if command == "" {
 		return tools.ToolResult{}, fmt.Errorf("command is required")
+	}
+	if in.Background && t.ForegroundOnly {
+		return tools.ToolResult{}, errors.New("managed_background_disabled: use foreground execution in managed collaboration v1")
 	}
 
 	// Convert backtick command substitution `cmd` to $(cmd) so it flows
@@ -219,6 +233,8 @@ func (t *RunCommandTool) Execute(ctx context.Context, ec tools.ExecutionContext,
 	defer cancel()
 
 	cmd := exec.CommandContext(cmdCtx, args[0], args[1:]...)
+	cleanup := processexec.Configure(cmd)
+	defer cleanup()
 	cmd.Dir = rootAbs
 
 	var stdout, stderr bytes.Buffer
@@ -232,6 +248,7 @@ func (t *RunCommandTool) Execute(ctx context.Context, ec tools.ExecutionContext,
 	duration := time.Since(start)
 
 	res := commandResult{
+		Status:     "completed",
 		Command:    command,
 		Stdout:     truncate.Head(stdout.String(), t.MaxOutputBytes),
 		Stderr:     truncate.Head(stderr.String(), t.MaxOutputBytes),
@@ -241,12 +258,18 @@ func (t *RunCommandTool) Execute(ctx context.Context, ec tools.ExecutionContext,
 	}
 
 	if errors.Is(cmdCtx.Err(), context.DeadlineExceeded) {
+		res.Status = "timed_out"
 		res.ExitCode = -1
 		res.Note = fmt.Sprintf("timed out after %s", t.Timeout)
 		return t.result(res)
 	}
+	if errors.Is(cmdCtx.Err(), context.Canceled) {
+		res.Status, res.ExitCode, res.Note = "cancelled", -1, "command cancelled"
+		return t.result(res)
+	}
 
 	if runErr != nil {
+		res.Status = "failed"
 		var exitErr *exec.ExitError
 		if errors.As(runErr, &exitErr) {
 			res.ExitCode = exitErr.ExitCode()
@@ -309,6 +332,8 @@ func (t *RunCommandTool) executeShell(ctx context.Context, ec tools.ExecutionCon
 	defer cancel()
 
 	cmd := exec.CommandContext(cmdCtx, "sh", "-c", command)
+	cleanup := processexec.Configure(cmd)
+	defer cleanup()
 	cmd.Dir = rootAbs
 
 	var stdout, stderr bytes.Buffer
@@ -322,6 +347,7 @@ func (t *RunCommandTool) executeShell(ctx context.Context, ec tools.ExecutionCon
 	duration := time.Since(start)
 
 	res := commandResult{
+		Status:     "completed",
 		Command:    command,
 		Stdout:     truncate.Head(stdout.String(), t.MaxOutputBytes),
 		Stderr:     truncate.Head(stderr.String(), t.MaxOutputBytes),
@@ -331,12 +357,18 @@ func (t *RunCommandTool) executeShell(ctx context.Context, ec tools.ExecutionCon
 	}
 
 	if errors.Is(cmdCtx.Err(), context.DeadlineExceeded) {
+		res.Status = "timed_out"
 		res.ExitCode = -1
 		res.Note = fmt.Sprintf("timed out after %s", t.Timeout)
 		return t.result(res)
 	}
+	if errors.Is(cmdCtx.Err(), context.Canceled) {
+		res.Status, res.ExitCode, res.Note = "cancelled", -1, "command cancelled"
+		return t.result(res)
+	}
 
 	if runErr != nil {
+		res.Status = "failed"
 		var exitErr *exec.ExitError
 		if errors.As(runErr, &exitErr) {
 			res.ExitCode = exitErr.ExitCode()

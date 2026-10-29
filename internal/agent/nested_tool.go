@@ -28,13 +28,18 @@ func (r *Runner) ExecuteNestedTool(
 		nestedCallID = parentCallID + ":" + tool.Name()
 	}
 	executor := r.executorFor(tool, true)
+	argumentErr := tools.ValidateInput(tool, input)
+	eventExecutor := executor
+	if argumentErr != nil {
+		eventExecutor = "server"
+	}
 	started := time.Now()
 	r.emit(Event{
 		Kind:     EventToolStarted,
 		CallID:   nestedCallID,
 		ToolName: tool.Name(),
 		ToolArgs: string(input),
-		Executor: executor,
+		Executor: eventExecutor,
 	})
 
 	finish := func(result tools.ToolResult, err error) (tools.ToolResult, error) {
@@ -56,6 +61,9 @@ func (r *Runner) ExecuteNestedTool(
 		return result, err
 	}
 
+	if argumentErr != nil {
+		return finish(tools.ToolResult{Content: argumentErr.Error(), Output: argumentErr.JSON()}, argumentErr)
+	}
 	if executor != "client" {
 		if block := r.preHookBlock(ctx, tool.Name(), input); block != "" {
 			return finish(tools.ToolResult{Content: "The tool call was blocked. " + block}, nil)

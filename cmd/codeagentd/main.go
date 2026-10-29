@@ -24,6 +24,8 @@ import (
 	"code-agent/internal/app"
 	"code-agent/internal/automation"
 	"code-agent/internal/buildinfo"
+	"code-agent/internal/collab"
+	"code-agent/internal/collabflux"
 	"code-agent/internal/controlplane"
 	"code-agent/internal/conversation"
 	"code-agent/internal/credential"
@@ -218,6 +220,8 @@ func run() error {
 	active := conversation.NewActiveTurnRegistry()
 	subs := conversation.NewSubscriptionManager()
 	rb := runtime.NewServeRunBuilder(cfg, mc, provider, cfg.CredentialResolver(baseResolver), toolReg, wsReg, planRef)
+	taskExecutionGuard, _ := repo.(collab.ExecutionGuard)
+	rb.SetTaskExecutionGuard(taskExecutionGuard)
 	executor := conversation.NewTurnExecutor(repo, eventStore, active, subs, rb)
 	executor.SetAssetRefReleaseService(rb)
 	maxConcurrentTurns := cfg.RuntimeMaxConcurrentTurns()
@@ -308,11 +312,11 @@ func run() error {
 	}
 	owner.SetTarget(controlplane.NewRuntimeTarget(executor, eventStore, repo, managedWorktrees))
 	rb.SetSessionControl(owner)
-	rb.SetWorkflowRunner(runtime.NewWorkflowRunner(owner, wsReg))
+	rb.SetWorkflowRunner(runtime.NewWorkflowRunner(owner, wsReg, taskExecutionGuard))
 	rb.SetSessionTrace(runtime.NewSessionTraceFunc())
 	// Workflow-mode automations (workflow_ref) trigger a template directly.
 	if dispatcher != nil {
-		dispatcher.SetWorkflowRunner(runtime.NewAutomationWorkflowRunner(runtime.NewHeadlessRuntime(owner, wsReg)))
+		dispatcher.SetWorkflowRunner(runtime.NewAutomationWorkflowRunner(runtime.NewHeadlessRuntime(owner, wsReg, taskExecutionGuard)))
 	}
 	runtime.SetFluxExternalResolver(owner)
 	if err := owner.Start(ctx); err != nil {
@@ -353,6 +357,32 @@ func run() error {
 		return err
 	}
 	defer settingsWatcher.Close()
+	var managedTasks *collabflux.Service
+	if taskPort, ok := repo.(collab.RepositoryProvider); ok {
+		taskRepo := taskPort.TaskRepository(runtimeInfo.ServerID)
+		if taskRepo != nil {
+			managedTasks, err = collabflux.OpenService(ctx, filepath.Join(sharingDir, "managed-collaboration", "flux.db"), collabflux.ServiceOptions{Tasks: taskRepo, Actor: collab.Principal{ID: "runtime-owner", LocalSessions: true}, ProtectedPathsForSession: func(probeCtx context.Context, id string) ([]string, error) {
+				sess, e := repo.Load(probeCtx, id)
+				if e != nil {
+					return nil, e
+				}
+				cfgMu.RLock()
+				paths := append([]string(nil), cfg.Permissions.ProtectedPaths...)
+				cfgMu.RUnlock()
+				paths = append(paths, settings.LoadProjectSettings(sess.WorkspacePath, os.Stderr).Permissions.ProtectedPaths...)
+				return paths, nil
+			}, Dispatch: func(admissionCtx context.Context, ref collab.ManagedTurnRef) error {
+				_, err := executor.AcceptManagedDispatch(admissionCtx, ctx, collab.Principal{ID: "runtime-owner", LocalSessions: true}, ref)
+				return err
+			}})
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "codeagentd: managed collaboration unavailable:", err)
+			} else {
+				defer managedTasks.Close()
+				capabilities = append(capabilities, "task_managed_workflow_v1", "task_review_gate_v1")
+			}
+		}
+	}
 	handler := server.NewMux(repo, eventStore, executor, server.MuxOptions{
 		Sharing:       sharing,
 		ServerName:    buildinfo.ServerName(),
@@ -409,11 +439,14 @@ func run() error {
 		WorkflowList:           runtime.NewWorkflowListFunc(),
 		WorkflowDetail:         runtime.NewWorkflowDetailFunc(),
 		WorkflowSnapshotByTask: runtime.NewWorkflowSnapshotByTaskFunc(),
-		WorkflowRun:            runtime.NewHeadlessRuntime(owner, wsReg).SubmitHeadlessRun,
+		WorkflowRun:            runtime.NewHeadlessRuntime(owner, wsReg, taskExecutionGuard).SubmitHeadlessRun,
 		WorkflowSaveTemplate:   runtime.NewSaveTemplateFunc(),
-		WorkflowResume:         runtime.NewHeadlessRuntime(owner, wsReg).ResumeRun,
+		WorkflowResume:         runtime.NewHeadlessRuntime(owner, wsReg, taskExecutionGuard).ResumeRun,
 		AutomationStore:        automationStore,
 	})
+	if managedTasks != nil {
+		handler = server.WithManagedTasks(handler, repo.(collab.RepositoryProvider).TaskRepository(runtimeInfo.ServerID), managedTasks, auth)
+	}
 	sharing.SetCoreHandler(handler)
 	markStartup("http_handler")
 

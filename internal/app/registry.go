@@ -69,7 +69,7 @@ type builtinModelTemplate struct {
 	Temperature       float64  // provider-recommended default (0 = use global default)
 
 	// ReasoningEffort is the model's official default thinking budget
-	// ("low"|"medium"|"high"|"x-high"|"max"; "" = provider default). Filled
+	// ("low"|"medium"|"high"|"xhigh"|"max"; "" = provider default). Filled
 	// into ModelConfig.ReasoningEffort when the config leaves it empty.
 	ReasoningEffort string
 	// SupportedReasoningEfforts lists the effort levels the provider's API
@@ -182,10 +182,12 @@ var builtinConnections = map[string]builtinConnection{
 		ProviderType: "openai",
 		DisplayName:  "OpenCode Go", Summary: "低订阅费开源编程模型（首月 $5，之后 $10/月）", Kind: "api_key",
 		Models: []builtinModelTemplate{
-			{ID: "gpt-5.6-luna", RuntimeAlias: "opencode", API: "responses", ContextWindow: 1_000_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text"}, InputPricePerM: 0.22, OutputPricePerM: 0.66, SupportedReasoningEfforts: []string{"low", "medium", "high", "x-high", "max"}, CanDisableReasoning: boolPtr(true), ReasoningEffort: "medium"},
+			{ID: "gpt-5.6-luna", RuntimeAlias: "opencode", API: "responses", ContextWindow: 1_000_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text"}, InputPricePerM: 0.22, OutputPricePerM: 0.66, SupportedReasoningEfforts: []string{"low", "medium", "high", "xhigh", "max"}, CanDisableReasoning: boolPtr(true), ReasoningEffort: "medium"},
 			{ID: "deepseek-v4.1-flash", RuntimeAlias: "opencode", ContextWindow: 1_000_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text"}, InputPricePerM: 0.22, OutputPricePerM: 0.66, SupportedReasoningEfforts: []string{"low", "medium", "high"}, CanDisableReasoning: boolPtr(true), ReasoningEffort: "low"},
 			{ID: "deepseek-v4-flash-vision-exp", RuntimeAlias: "opencode", ContextWindow: 1_000_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text", "image"}, InputPricePerM: 0.22, OutputPricePerM: 0.66, SupportedReasoningEfforts: []string{"low", "medium", "high"}, CanDisableReasoning: boolPtr(true), ReasoningEffort: "low"},
 			{ID: "deepseek-v4-pro", RuntimeAlias: "opencode", ContextWindow: 1_000_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text"}, InputPricePerM: 0.66, OutputPricePerM: 1.98, SupportedReasoningEfforts: []string{"low", "medium", "high"}, CanDisableReasoning: boolPtr(true), ReasoningEffort: "low"},
+			{ID: "glm-5.3-flash-free", RuntimeAlias: "opencode", ContextWindow: 1_000_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text"}, InputPricePerM: 0.22, OutputPricePerM: 0.66, SupportedReasoningEfforts: []string{"low", "medium", "high"}, CanDisableReasoning: boolPtr(true), ReasoningEffort: "low"},
+			{ID: "deepseek-v4.1-flash-free", RuntimeAlias: "opencode", ContextWindow: 1_000_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text"}, InputPricePerM: 0.22, OutputPricePerM: 0.66, SupportedReasoningEfforts: []string{"low", "medium", "high"}, CanDisableReasoning: boolPtr(true), ReasoningEffort: "low"},
 			{ID: "kimi-k3", RuntimeAlias: "opencode", ContextWindow: 1_000_000, SupportsTools: true, InputModalities: []string{"text"}, InputPricePerM: 3.00, OutputPricePerM: 15.00, Temperature: 1.0},
 			{ID: "kimi-k2.7-code", RuntimeAlias: "opencode", ContextWindow: 256_000, SupportsTools: true, InputModalities: []string{"text"}, InputPricePerM: 1.2, OutputPricePerM: 5.6, Temperature: 1.0},
 			{ID: "glm-5.3", RuntimeAlias: "opencode", ContextWindow: 128_000, SupportsTools: true, InputModalities: []string{"text"}, InputPricePerM: 1.40, OutputPricePerM: 4.40, Temperature: 0.2},

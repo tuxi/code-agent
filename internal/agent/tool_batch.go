@@ -37,6 +37,7 @@ type toolCallPlan struct {
 	input            json.RawMessage // model-facing input; safe for approval and events
 	wireInput        json.RawMessage // resolved immediately before MCP/local execution
 	referenceErr     error
+	argumentErr      *tools.ArgumentError
 	step             Step
 	tool             tools.Tool
 	known            bool
@@ -51,7 +52,7 @@ type toolCallPlan struct {
 // for approval or mutate the workspace) are serial barriers, so no two effects
 // ever overlap and at most one approval is pending at a time (P8.8 §4.1/§6).
 func (p toolCallPlan) parallelizable() bool {
-	if !p.valid || p.executor == "client" {
+	if !p.valid || p.executor == "client" || p.argumentErr != nil || p.referenceErr != nil {
 		return false
 	}
 	return !tools.HasSideEffectsFor(p.tool, p.input)
@@ -117,11 +118,19 @@ func (r *Runner) executeToolBatch(
 		if known {
 			schema = tool.InputSchema()
 		}
-		p.wireInput, p.referenceErr = reference.ResolveInput(input, schema, sess.ReferenceLedger, sess.ID, time.Now())
+		if p.valid && len(input) > 0 && !json.Valid(input) {
+			p.argumentErr = tools.ValidateInput(tool, input)
+			p.wireInput = input
+		} else {
+			p.wireInput, p.referenceErr = reference.ResolveInput(input, schema, sess.ReferenceLedger, sess.ID, time.Now())
+		}
 		if p.referenceErr != nil {
 			// Retain model-provided input for events/approval. The call becomes a
 			// normal tool-result error instead of ever reaching the MCP server.
 			p.wireInput = input
+		}
+		if p.valid && p.referenceErr == nil && p.argumentErr == nil {
+			p.argumentErr = tools.ValidateInput(tool, p.wireInput)
 		}
 		if call.Function.Name == webSearchToolName {
 			*webSearches++
@@ -152,13 +161,19 @@ func (r *Runner) executeToolBatch(
 
 		group := plans[g[0]:g[1]]
 		for _, p := range group {
+			executor := p.executor
+			if p.argumentErr != nil || p.referenceErr != nil {
+				// executor=client is an execution instruction on Agent Wire. An
+				// invalid call must only produce a server-side error lifecycle.
+				executor = "server"
+			}
 			r.emit(Event{
 				Kind:     EventToolStarted,
 				CallID:   p.call.ID,
 				Step:     p.step.Index,
 				ToolName: p.call.Function.Name,
 				ToolArgs: p.call.Function.Arguments,
-				Executor: p.executor,
+				Executor: executor,
 			})
 		}
 
@@ -233,7 +248,7 @@ func (r *Runner) runToolCall(ctx context.Context, p toolCallPlan) toolCallResult
 	// Pre-tool hook (8.5): a configured command may block the call. Only
 	// consulted for a real tool, so an unknown call still reports plainly.
 	var blockReason string
-	if p.valid && p.executor != "client" && p.referenceErr == nil {
+	if p.valid && p.executor != "client" && p.referenceErr == nil && p.argumentErr == nil {
 		blockReason = r.preHookBlock(ctx, p.call.Function.Name, p.wireInput)
 	}
 
@@ -242,7 +257,7 @@ func (r *Runner) runToolCall(ctx context.Context, p toolCallPlan) toolCallResult
 	// analysis, no I/O, no human prompt. Mirrors Claude Code's
 	// tool.validateInput() stage. Tools that don't implement Inspector skip
 	// this with zero overhead.
-	if p.valid && p.executor != "client" && blockReason == "" && p.referenceErr == nil {
+	if p.valid && p.executor != "client" && blockReason == "" && p.referenceErr == nil && p.argumentErr == nil {
 		if inspector, ok := p.tool.(tools.Inspector); ok {
 			if err := inspector.Inspect(p.wireInput, r.WorkspaceRoot); err != nil {
 				blockReason = "blocked: " + err.Error()
@@ -259,6 +274,9 @@ func (r *Runner) runToolCall(ctx context.Context, p toolCallPlan) toolCallResult
 		execErr = fmt.Errorf("unknown tool: %s", p.call.Function.Name)
 	case p.referenceErr != nil:
 		execErr = p.referenceErr
+	case p.argumentErr != nil:
+		execErr = p.argumentErr
+		output = p.argumentErr.JSON()
 	case p.webSearchOrdinal > 0 && p.webSearchOrdinal > r.maxWebSearches():
 		observation = fmt.Sprintf(
 			"Search budget reached: %d web searches already this turn (limit %d). "+

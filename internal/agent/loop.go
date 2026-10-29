@@ -34,8 +34,9 @@ type cooldownSample struct {
 }
 
 type Runner struct {
-	Model     model.Provider
-	ModelName string
+	Model          model.Provider
+	ModelName      string
+	ModelSelection model.Selection
 	// ProviderName is the display provider brand behind Model (e.g. "deepseek",
 	// "openrouter", "openai") — set by the runner builder from the resolved model
 	// config, distinct from the wire transport type. Carried on model_request
@@ -366,6 +367,7 @@ func nextSessionTurnID(sess *session.Session) string {
 
 // emit sends an event to the configured Emitter, if any. Nil-safe.
 func (r *Runner) emit(e Event) {
+	observeModelVerification(e)
 	if r.Emitter == nil {
 		return
 	}
@@ -1046,6 +1048,8 @@ func (r *Runner) drive(ctx context.Context, sess *session.Session) (TurnResult, 
 			Tools:           toolDefs,
 		}, &streamedText, &streamedReasoning)
 
+		r.recordModelCall(sess, resp)
+		usage := resp.AccountingUsage()
 		// Ordinary assistant content and provider reasoning are independent
 		// channels. Keep the former only for propose_plan's legacy content fallback;
 		// publish the latter as the authoritative, persisted thinking snapshot.
@@ -1074,15 +1078,18 @@ func (r *Runner) drive(ctx context.Context, sess *session.Session) (TurnResult, 
 		// events creates two persisted, user-visible copies of one failure.
 		r.emit(Event{
 			Kind:               EventModelFinished,
-			PromptTokens:       resp.Usage.PromptTokens,
-			CompletionTokens:   resp.Usage.CompletionTokens,
-			TotalTokens:        resp.Usage.TotalTokens,
-			CachedPromptTokens: resp.Usage.CachedPromptTokens,
-			BillingUnits:       resp.Usage.BillingUnits,
+			ModelSelection:     r.selectionForResponse(resp),
+			ModelSucceeded:     modelCallSucceeded(resp, err),
+			PromptTokens:       usage.PromptTokens,
+			CompletionTokens:   usage.CompletionTokens,
+			TotalTokens:        usage.TotalTokens,
+			CachedPromptTokens: usage.CachedPromptTokens,
+			BillingUnits:       usage.BillingUnits,
 			Elapsed:            time.Since(modelStart),
 		})
-		turn.ModelBillingUnits += resp.Usage.BillingUnits
-		turn.BillingUnits += resp.Usage.BillingUnits
+		turn.ModelBillingUnits += usage.BillingUnits
+		turn.BillingUnits += usage.BillingUnits
+		turn.TokensUsed += usage.PromptTokens + usage.CompletionTokens
 		if err != nil {
 			return turn, err
 		}
@@ -1109,7 +1116,6 @@ func (r *Runner) drive(ctx context.Context, sess *session.Session) (TurnResult, 
 		}
 
 		turn.PromptTokens = resp.Usage.PromptTokens
-		turn.TokensUsed += resp.Usage.PromptTokens + resp.Usage.CompletionTokens
 		sess.PromptTokens = resp.Usage.PromptTokens
 		// This call's prompt size is the true post-compaction size if a compaction
 		// just ran, so finalize its observability stat here. A measurement still at
@@ -1495,22 +1501,24 @@ func (r *Runner) finalAnswerAfterLimit(ctx context.Context, sess *session.Sessio
 		Messages:        msgs,
 		// No Tools: the model must answer with text, not request more tools.
 	}, nil, nil)
+	r.recordModelCall(sess, resp)
+	usage := resp.AccountingUsage()
 	if resp.ReasoningContent != "" && !errors.Is(err, context.Canceled) {
 		r.emit(Event{Kind: EventThinking, Text: resp.ReasoningContent})
 	}
-	r.emit(Event{Kind: EventModelFinished, PromptTokens: resp.Usage.PromptTokens, CompletionTokens: resp.Usage.CompletionTokens, TotalTokens: resp.Usage.TotalTokens, CachedPromptTokens: resp.Usage.CachedPromptTokens, BillingUnits: resp.Usage.BillingUnits, Elapsed: time.Since(start), Err: errString(err)})
-	tok := resp.Usage.PromptTokens + resp.Usage.CompletionTokens
+	r.emit(Event{Kind: EventModelFinished, ModelSelection: r.selectionForResponse(resp), ModelSucceeded: modelCallSucceeded(resp, err), PromptTokens: usage.PromptTokens, CompletionTokens: usage.CompletionTokens, TotalTokens: usage.TotalTokens, CachedPromptTokens: usage.CachedPromptTokens, BillingUnits: usage.BillingUnits, Elapsed: time.Since(start), Err: errString(err)})
+	tok := usage.PromptTokens + usage.CompletionTokens
 	// A leaked tool-call markup (deepseek, when forced to answer with no tools) is
 	// not an answer — don't show the user noise or persist it; fall back cleanly.
 	// The call still consumed tokens, so report them regardless.
 	if err != nil || resp.Content == "" || LooksLikeToolCallLeak(resp.Content) {
-		return stepLimitMessage, tok, resp.Usage.BillingUnits
+		return stepLimitMessage, tok, usage.BillingUnits
 	}
 
 	sess.Messages = append(sess.Messages, model.Message{Role: model.RoleAssistant, Content: resp.Content})
 	sess.PromptTokens = resp.Usage.PromptTokens
 	sess.UpdatedAt = time.Now()
-	return resp.Content, tok, resp.Usage.BillingUnits
+	return resp.Content, tok, usage.BillingUnits
 }
 
 // Checkpointer persists the session mid-turn, at the consistent boundary after

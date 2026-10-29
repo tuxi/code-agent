@@ -291,6 +291,7 @@ type Request struct {
 }
 
 type Response struct {
+	ActualModel string `json:"actual_model,omitempty"` // upstream ID; empty when unreported
 	// Content is the assistant's text. It may be empty when the model only
 	// returns tool calls.
 	Content string `json:"content"`
@@ -315,6 +316,9 @@ type Response struct {
 
 	// 读 API 响应里的 usage，作为 token 计量
 	Usage Usage `json:"usage,omitempty"`
+	// accountingUsage sums observed usage across retries/fallbacks. Usage itself
+	// remains the last physical response's prompt size for context management.
+	accountingUsage *Usage
 
 	Raw []byte `json:"raw,omitempty"`
 }

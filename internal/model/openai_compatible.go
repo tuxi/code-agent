@@ -266,6 +266,7 @@ type streamOptions struct {
 }
 
 type chatCompletionResponse struct {
+	Model   string `json:"model"`
 	Choices []struct {
 		Message struct {
 			Content string `json:"content"`
@@ -352,6 +353,7 @@ func pickReasoning(reasoningContent, reasoning string, details []reasoningDetail
 
 // streamChunk is one SSE delta in an OpenAI-compatible streaming response.
 type streamChunk struct {
+	Model string `json:"model"`
 	// Error is emitted by an OpenAI-compatible gateway when the upstream request
 	// failed after the HTTP response had already switched to SSE. It must not be
 	// ignored as an empty chunk: doing so turns a failed turn into an empty
@@ -460,7 +462,7 @@ func reasoningEffortToOpenAI(effort string) string {
 // onText/onReasoning for their respective deltas as they arrive, accumulates
 // tool-call deltas (the loop needs them whole), and returns the same complete
 // Response Complete would.
-func (p *OpenAICompatibleProvider) CompleteStream(ctx context.Context, req Request, onText func(string), onReasoning func(string)) (Response, error) {
+func (p *OpenAICompatibleProvider) CompleteStream(ctx context.Context, req Request, onText func(string), onReasoning func(string)) (result Response, resultErr error) {
 	// Local endpoints (Ollama etc.) do not require a credential.
 	if !p.hasCredential() && !IsLocalBaseURL(p.BaseURL) {
 		return Response{}, fmt.Errorf("missing credential")
@@ -508,7 +510,7 @@ func (p *OpenAICompatibleProvider) CompleteStream(ctx context.Context, req Reque
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		raw, _ := io.ReadAll(resp.Body)
-		return Response{}, p.withCredentialContext(apiErrorFromBody(resp.StatusCode, raw), bearerSecret(httpReq))
+		return openAIFailureUsage(raw), p.withCredentialContext(withRetryAfter(apiErrorFromBody(resp.StatusCode, raw), resp.Header), bearerSecret(httpReq))
 	}
 
 	var content strings.Builder
@@ -516,8 +518,14 @@ func (p *OpenAICompatibleProvider) CompleteStream(ctx context.Context, req Reque
 	calls := map[int]*ToolCall{}
 	var order []int
 	var finishReason string
+	var actualModel string
 	var usage Usage
 	sawDone := false
+	defer func() {
+		if resultErr != nil {
+			result = Response{ActualModel: actualModel, FinishReason: finishReason, Usage: usage}
+		}
+	}()
 
 	sc := bufio.NewScanner(resp.Body)
 	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024) // SSE lines can be large
@@ -535,6 +543,18 @@ func (p *OpenAICompatibleProvider) CompleteStream(ctx context.Context, req Reque
 		if json.Unmarshal([]byte(payload), &chunk) != nil {
 			continue // tolerate keep-alives / partial lines
 		}
+		// A usage snapshot can accompany an error chunk. Keep it before
+		// classifying the error, without treating repeated snapshots as deltas.
+		if chunk.Model != "" {
+			actualModel = chunk.Model
+		}
+		if u := chunk.Usage; u != nil {
+			cached := u.PromptCacheHitTokens
+			if cached == 0 {
+				cached = u.PromptTokensDetails.CachedTokens
+			}
+			usage = Usage{PromptTokens: u.PromptTokens, CompletionTokens: u.CompletionTokens, TotalTokens: u.TotalTokens, CachedPromptTokens: cached, BillingUnits: u.BillingUnits}
+		}
 		if chunk.Error != nil {
 			message := chunk.Error.Message
 			if message == "" {
@@ -548,14 +568,7 @@ func (p *OpenAICompatibleProvider) CompleteStream(ctx context.Context, req Reque
 			apiErr := apiErrorFromPayload(http.StatusBadGateway, chunk.Error)
 			apiErr.Message = message
 			apiErr.Body = payload
-			return Response{}, apiErr
-		}
-		if u := chunk.Usage; u != nil {
-			cached := u.PromptCacheHitTokens
-			if cached == 0 {
-				cached = u.PromptTokensDetails.CachedTokens
-			}
-			usage = Usage{PromptTokens: u.PromptTokens, CompletionTokens: u.CompletionTokens, TotalTokens: u.TotalTokens, CachedPromptTokens: cached, BillingUnits: u.BillingUnits}
+			return Response{}, withRetryAfter(apiErr, resp.Header)
 		}
 		if len(chunk.Choices) == 0 {
 			continue
@@ -612,6 +625,7 @@ func (p *OpenAICompatibleProvider) CompleteStream(ctx context.Context, req Reque
 		toolCalls = append(toolCalls, *calls[idx])
 	}
 	return Response{
+		ActualModel:      actualModel,
 		Content:          strings.TrimSpace(content.String()),
 		ReasoningContent: strings.TrimSpace(reasoningContent.String()),
 		ToolCalls:        toolCalls,
@@ -683,7 +697,7 @@ func (p *OpenAICompatibleProvider) Complete(ctx context.Context, req Request) (R
 	// "decode response" failure. Parse the structured error best-effort for a
 	// better message.
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return Response{}, p.withCredentialContext(apiErrorFromBody(resp.StatusCode, raw), bearerSecret(httpReq))
+		return openAIFailureUsage(raw), p.withCredentialContext(withRetryAfter(apiErrorFromBody(resp.StatusCode, raw), resp.Header), bearerSecret(httpReq))
 	}
 
 	// A 200 with an empty body is a truncated upstream response (seen from
@@ -708,11 +722,11 @@ func (p *OpenAICompatibleProvider) Complete(ctx context.Context, req Request) (R
 	// "no choices" decode error was non-retryable, so a transient upstream
 	// overload ended the turn and forced the user to resend.
 	if decoded.Error != nil {
-		return Response{}, apiErrorFromPayload(http.StatusBadGateway, decoded.Error)
+		return decoded.usageResponse(), withRetryAfter(apiErrorFromPayload(http.StatusBadGateway, decoded.Error), resp.Header)
 	}
 
 	if len(decoded.Choices) == 0 {
-		return Response{}, fmt.Errorf("model api returned no choices: raw=%s", string(raw))
+		return decoded.usageResponse(), fmt.Errorf("model api returned no choices: raw=%s", string(raw))
 	}
 
 	// Cached-prompt tokens: prefer deepseek's explicit field, fall back to the
@@ -727,6 +741,7 @@ func (p *OpenAICompatibleProvider) Complete(ctx context.Context, req Request) (R
 	// (see pickReasoning); select one rather than accumulating duplicates.
 	reasoning := pickReasoning(choice.Message.ReasoningContent, choice.Message.Reasoning, choice.Message.ReasoningDetails)
 	return Response{
+		ActualModel:      decoded.Model,
 		Content:          strings.TrimSpace(choice.Message.Content),
 		ReasoningContent: strings.TrimSpace(reasoning),
 		ToolCalls:        choice.Message.ToolCalls,

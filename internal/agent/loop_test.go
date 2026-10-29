@@ -15,8 +15,12 @@ import (
 
 // TestRunnerNativeLoop drives one turn end to end against a real model: the
 // agent should call at least one tool and produce a final answer. Skipped
-// unless DEEPSEEK_API_KEY is set.
+// unless explicitly opted in AND DEEPSEEK_API_KEY is set. A configured key is
+// not permission for an ordinary offline test run to contact a paid model.
 func TestRunnerNativeLoop(t *testing.T) {
+	if os.Getenv("CODEAGENT_LIVE_TESTS") != "1" {
+		t.Skip("set CODEAGENT_LIVE_TESTS=1 to opt into the live runner test")
+	}
 	apiKey := os.Getenv("DEEPSEEK_API_KEY")
 	if apiKey == "" {
 		t.Skip("DEEPSEEK_API_KEY not set; skipping live runner test")

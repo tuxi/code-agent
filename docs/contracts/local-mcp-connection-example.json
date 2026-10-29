@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "endpoint": "https://127.0.0.1:8797",
+  "server_id": "example-server",
+  "store_id": "example-store",
+  "instance_id": "example-instance",
+  "daemon_pid": 4242,
+  "expires_at": "2026-10-28T12:00:00Z",
+  "access_token": "EXAMPLE-ONLY-NOT-A-REAL-CREDENTIAL-00000000"
+}

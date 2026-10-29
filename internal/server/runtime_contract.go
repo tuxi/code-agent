@@ -9,6 +9,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"time"
 
 	"code-agent/internal/buildinfo"
 	"code-agent/internal/credential"
@@ -38,10 +39,13 @@ type RuntimeInfo struct {
 }
 
 type RuntimeModelCatalog struct {
-	Schema              string                   `json:"schema"`
-	Revision            int64                    `json:"revision"`
-	DefaultRuntimeAlias string                   `json:"default_runtime_alias"`
-	Connections         []RuntimeModelConnection `json:"connections"`
+	DefaultModel              string                   `json:"default_model"`
+	VerificationScope         string                   `json:"verification_scope"`
+	VerificationMaxAgeSeconds int64                    `json:"verification_max_age_seconds"`
+	Schema                    string                   `json:"schema"`
+	Revision                  int64                    `json:"revision"`
+	DefaultRuntimeAlias       string                   `json:"default_runtime_alias"`
+	Connections               []RuntimeModelConnection `json:"connections"`
 }
 
 type RuntimeModelConnection struct {
@@ -65,14 +69,20 @@ type RuntimeConnectionCredential struct {
 }
 
 type RuntimeModelDescriptor struct {
-	RuntimeAlias      string   `json:"runtime_alias"`
-	WireModelID       string   `json:"wire_model_id"`
-	DisplayName       string   `json:"display_name"`
-	ContextWindow     int      `json:"context_window,omitempty"`
-	SupportsTools     bool     `json:"supports_tools"`
-	SupportsReasoning bool     `json:"supports_reasoning"`
-	InputModalities   []string `json:"input_modalities"`
-	Available         bool     `json:"available"`
+	ID                string     `json:"id"`
+	Configured        bool       `json:"configured"`
+	Verified          bool       `json:"verified"`
+	VerifiedAt        *time.Time `json:"verified_at,omitempty"`
+	ActualModel       string     `json:"actual_model,omitempty"`
+	ConfigurationID   string     `json:"configuration_id"`
+	RuntimeAlias      string     `json:"runtime_alias"`
+	WireModelID       string     `json:"wire_model_id"`
+	DisplayName       string     `json:"display_name"`
+	ContextWindow     int        `json:"context_window,omitempty"`
+	SupportsTools     bool       `json:"supports_tools"`
+	SupportsReasoning bool       `json:"supports_reasoning"`
+	InputModalities   []string   `json:"input_modalities"`
+	Available         bool       `json:"available"`
 	// UnavailableReason explains why Available is false (wire v2). Omitted when
 	// the model is available.
 	UnavailableReason string `json:"unavailable_reason,omitempty"`
@@ -103,7 +113,7 @@ func BuildRuntimeModelCatalog(cfg settings.Settings, injected credential.Resolve
 // durable identity of the current session data source.
 func BuildRuntimeContract(cfg settings.Settings, root, displayName, profile string, injected credential.Resolver) (RuntimeInfo, RuntimeModelCatalog, error) {
 	catalog := buildRuntimeModelCatalog(cfg, injected)
-	fingerprint, err := json.Marshal(catalog)
+	fingerprint, err := catalogConfigurationFingerprint(catalog)
 	if err != nil {
 		return RuntimeInfo{}, RuntimeModelCatalog{}, err
 	}
@@ -151,6 +161,9 @@ func buildRuntimeModelCatalog(cfg settings.Settings, injected credential.Resolve
 	modelNames := cfg.ModelNames()
 	for _, alias := range modelNames {
 		mc := cfg.Models[alias]
+		if mc.Name == "" {
+			mc.Name = alias
+		}
 		if strings.TrimSpace(mc.Model) == "" {
 			continue
 		}
@@ -210,16 +223,23 @@ func buildRuntimeModelCatalog(cfg settings.Settings, injected credential.Resolve
 				group.connection.Credential = &RuntimeConnectionCredential{Status: credStatus, Source: credSource}
 			}
 		}
-		group.connection.Models = append(group.connection.Models, RuntimeModelDescriptor{
+		descriptor := RuntimeModelDescriptor{
+			ID: settings.ModelID(alias, mc), Configured: true, ConfigurationID: settings.ModelConfigurationID(mc),
 			RuntimeAlias: alias, WireModelID: mc.Model, DisplayName: displayName,
 			ContextWindow: mc.ContextWindow, SupportsTools: supportsTools,
-			SupportsReasoning:         mc.Catalog.SupportsReasoning != nil && *mc.Catalog.SupportsReasoning,
-			InputModalities:           modalities, Available: available,
+			SupportsReasoning: mc.Catalog.SupportsReasoning != nil && *mc.Catalog.SupportsReasoning,
+			InputModalities:   modalities, Available: available,
 			UnavailableReason:         reason,
 			ReasoningEffort:           mc.ReasoningEffort,
 			SupportedReasoningEfforts: mc.Catalog.SupportedReasoningEfforts,
 			CanDisableReasoning:       mc.Catalog.CanDisableReasoning,
-		})
+		}
+		if verification, ok := model.RecentVerification(descriptor.ConfigurationID, time.Now()); ok {
+			descriptor.Verified = true
+			descriptor.VerifiedAt = &verification.At
+			descriptor.ActualModel = verification.ActualModel
+		}
+		group.connection.Models = append(group.connection.Models, descriptor)
 		included[alias] = struct{}{}
 	}
 	connectionIDs := make([]string, 0, len(groups))
@@ -246,56 +266,42 @@ func buildRuntimeModelCatalog(cfg settings.Settings, injected credential.Resolve
 	} else {
 		defaultAlias = ""
 	}
+	// A configured default may use the opaque AgentKit alias omitted from the
+	// public list. Resolve it to the same connection/model configuration.
+	if defaultAlias == "" {
+		if mc, ok := cfg.Models[cfg.DefaultModel]; ok {
+			if mc.Name == "" {
+				mc.Name = cfg.DefaultModel
+			}
+			for _, c := range connections {
+				for _, m := range c.Models {
+					if m.ConfigurationID == settings.ModelConfigurationID(mc) {
+						defaultAlias = m.RuntimeAlias
+						break
+					}
+				}
+			}
+		}
+	}
+	defaultID := ""
+	for _, connection := range connections {
+		for _, m := range connection.Models {
+			if m.RuntimeAlias == defaultAlias {
+				defaultID = m.ID
+			}
+		}
+	}
 	return RuntimeModelCatalog{
+		DefaultModel: defaultID, VerificationScope: "process", VerificationMaxAgeSeconds: int64(model.VerificationMaxAge / time.Second),
 		Schema: "runtime-model-catalog/v2", DefaultRuntimeAlias: defaultAlias,
 		Connections: connections,
 	}
 }
 
-// probeModelAvailability reports whether a model can be called right now and
-// the connection-level credential status to surface. A model is available when
-// its credential resolves to a non-zero value, its endpoint needs no
-// credential (local base URL / source none), or its credential is declared
-// as injected (the real secret will be provided by the host at runtime; the
-// env-based resolver chain won't see it at catalog-build time).
+// probeModelAvailability is a non-networking local readiness check; injected
+// credential declarations alone do not establish availability.
 func probeModelAvailability(cfg settings.Settings, mc settings.ModelConfig, resolver credential.Resolver, ctx context.Context) (available bool, reason, credStatus, credSource string) {
-	// Declared as injected → treat as configured (the secret is not in the
-	// env chain — it arrives via injectSecrets / Reconfigure at runtime).
-	if !mc.Credential.IsZero() {
-		ns, name := mc.Credential.Namespace, mc.Credential.Name
-		if entries, ok := cfg.Credentials[ns]; ok {
-			if cc, ok := entries[name]; ok && (cc.Source == "injected" || cc.Source == "jwt" || cc.Source == "keychain") {
-				return true, "", "configured", "injected"
-			}
-		}
-	}
-	// No credential ref and a local base URL → no auth needed.
-	if mc.Credential.IsZero() {
-		if model.IsLocalBaseURL(mc.BaseURL) {
-			return true, "", "none", "none"
-		}
-		// No credential declared at all: treat as unavailable-but-listed so the
-		// host sees why the model cannot run.
-		return false, "no_auth", "missing", ""
-	}
-	// Resolve through the chain (env / credentials section / injected).
-	resolved, err := resolver.Resolve(ctx, mc.Credential.Target())
-	if err != nil {
-		return false, "no_auth", "missing", ""
-	}
-	if resolved.IsZero() {
-		return false, "no_auth", "missing", "env"
-	}
-	return true, "", "configured", credentialSourceFor(mc.Credential)
-}
-
-// credentialSourceFor maps a credential ref's namespace to the wire "source"
-// label. Injected credentials (gateway) are declared, not probed.
-func credentialSourceFor(ref settings.CredentialRef) string {
-	if ref.Namespace == "gateway" {
-		return "injected"
-	}
-	return "env"
+	return settings.ProbeModelAvailability(ctx, cfg, mc, resolver)
 }
 
 func normalizedModalities(values []string) []string {
@@ -346,4 +352,19 @@ func decodeAliasComponent(value string) (string, error) {
 		return "", fmt.Errorf("non-canonical runtime alias component")
 	}
 	return decoded, nil
+}
+
+// Verification timestamps must not churn the durable configuration revision.
+func catalogConfigurationFingerprint(catalog RuntimeModelCatalog) ([]byte, error) {
+	catalog.Connections = append([]RuntimeModelConnection(nil), catalog.Connections...)
+	for i := range catalog.Connections {
+		c := &catalog.Connections[i]
+		c.Models = append([]RuntimeModelDescriptor(nil), c.Models...)
+		for j := range c.Models {
+			c.Models[j].Verified = false
+			c.Models[j].VerifiedAt = nil
+			c.Models[j].ActualModel = ""
+		}
+	}
+	return json.Marshal(catalog)
 }

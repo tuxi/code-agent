@@ -17,12 +17,12 @@ import (
 type EventKind string
 
 const (
-	EventTurnAccepted   EventKind = "turn_accepted"
-	EventTurnQueued     EventKind = "turn_queued"
-	EventTurnStarted    EventKind = "turn_started"
-	EventModelStarted   EventKind = "model_started"   // about to call the model
-	EventModelRequest   EventKind = "model_request"   // the request envelope: model, advertised tools, context shape
-	EventModelFinished  EventKind = "model_finished"  // model returned (carries latency)
+	EventTurnAccepted  EventKind = "turn_accepted"
+	EventTurnQueued    EventKind = "turn_queued"
+	EventTurnStarted   EventKind = "turn_started"
+	EventModelStarted  EventKind = "model_started"  // about to call the model
+	EventModelRequest  EventKind = "model_request"  // the request envelope: model, advertised tools, context shape
+	EventModelFinished EventKind = "model_finished" // model returned (carries latency)
 	// EventModelRetrying: a model call failed with a transient error and the
 	// resilience layer is about to retry it (or to replay a failed stream
 	// without streaming). Ephemeral — live-only progress, like the token and
@@ -208,6 +208,8 @@ type Event struct {
 	PlanState PlanStatus
 
 	// Model / thinking.
+	ModelSelection     *model.Selection
+	ModelSucceeded     *bool         // call outcome; does not imply tool/test/task success
 	Text               string        // reasoning delta/snapshot or final answer, selected by Kind
 	PromptTokens       int           // ModelFinished: current invocation context size
 	CompletionTokens   int           // ModelFinished: current invocation output

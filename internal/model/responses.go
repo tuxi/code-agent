@@ -328,6 +328,7 @@ func filterLocalWebSearch(tools []responsesTool) []responsesTool {
 // whole HTTP body; in streaming mode the terminal event (response.completed /
 // response.incomplete / response.failed) embeds one as its "response" field.
 type responsesResponse struct {
+	Model  string              `json:"model"`
 	ID     string              `json:"id"`
 	Status string              `json:"status"` // completed | incomplete | failed | in_progress
 	Output []responsesOutput   `json:"output"`
@@ -431,6 +432,7 @@ func responsesFromOutput(r responsesResponse) Response {
 		finish = "length"
 	}
 	return Response{
+		ActualModel:      r.Model,
 		Content:          strings.TrimSpace(content.String()),
 		ReasoningContent: strings.TrimSpace(reasoning.String()),
 		ToolCalls:        calls,
@@ -486,7 +488,7 @@ func (p *ResponsesProvider) Complete(ctx context.Context, req Request) (Response
 	// (proxy/HTML error page), and we must not mask a retryable status as a
 	// "decode response" failure.
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return Response{}, p.withCredentialContext(apiErrorFromBody(resp.StatusCode, raw), bearerSecret(httpReq))
+		return responsesFailureUsage(raw), p.withCredentialContext(withRetryAfter(apiErrorFromBody(resp.StatusCode, raw), resp.Header), bearerSecret(httpReq))
 	}
 
 	var decoded responsesResponse
@@ -504,7 +506,7 @@ func (p *ResponsesProvider) Complete(ctx context.Context, req Request) (Response
 			apiErr.Code = errorCode(decoded.Error.Code)
 			apiErr.Message = decoded.Error.Message
 		}
-		return Response{}, apiErr
+		return failedResponse(responsesFromOutput(decoded)), withRetryAfter(apiErr, resp.Header)
 	}
 
 	return responsesFromOutput(decoded), nil
@@ -525,7 +527,7 @@ type responsesStreamEvent struct {
 // format there is no "data: [DONE]" marker: the stream ends with a terminal
 // event (response.completed / response.incomplete / response.failed) whose
 // embedded response object is authoritative for usage, tool calls, and text.
-func (p *ResponsesProvider) CompleteStream(ctx context.Context, req Request, onText, onReasoning func(string)) (Response, error) {
+func (p *ResponsesProvider) CompleteStream(ctx context.Context, req Request, onText, onReasoning func(string)) (result Response, resultErr error) {
 	if !p.hasCredential() && !IsLocalBaseURL(p.BaseURL) {
 		return Response{}, fmt.Errorf("missing credential")
 	}
@@ -563,9 +565,15 @@ func (p *ResponsesProvider) CompleteStream(ctx context.Context, req Request, onT
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		raw, _ := io.ReadAll(resp.Body)
-		return Response{}, p.withCredentialContext(apiErrorFromBody(resp.StatusCode, raw), bearerSecret(httpReq))
+		return responsesFailureUsage(raw), p.withCredentialContext(withRetryAfter(apiErrorFromBody(resp.StatusCode, raw), resp.Header), bearerSecret(httpReq))
 	}
 
+	var observed Response
+	defer func() {
+		if resultErr != nil {
+			result = failedResponse(observed)
+		}
+	}()
 	sc := bufio.NewScanner(resp.Body)
 	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024) // SSE lines can be large
 	for sc.Scan() {
@@ -582,6 +590,12 @@ func (p *ResponsesProvider) CompleteStream(ctx context.Context, req Request, onT
 		var ev responsesStreamEvent
 		if json.Unmarshal([]byte(payload), &ev) != nil {
 			continue // tolerate keep-alives / partial lines
+		}
+		if ev.Response != nil {
+			observed.ActualModel = ev.Response.Model
+			if ev.Response.Usage != nil {
+				observed.Usage = ev.Response.Usage.toUsage()
+			}
 		}
 		switch ev.Type {
 		case "response.output_text.delta":
@@ -614,7 +628,7 @@ func (p *ResponsesProvider) CompleteStream(ctx context.Context, req Request, onT
 			if apiErr.Message == "" {
 				apiErr.Message = "model stream returned an error: " + payload
 			}
-			return Response{}, apiErr
+			return Response{}, withRetryAfter(apiErr, resp.Header)
 		}
 	}
 	if err := sc.Err(); err != nil {

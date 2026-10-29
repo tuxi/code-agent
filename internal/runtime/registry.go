@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"code-agent/internal/agent"
+	"code-agent/internal/collab"
 	"code-agent/internal/credential"
 	"code-agent/internal/jobs"
 	"code-agent/internal/lsp"
@@ -185,7 +186,8 @@ func BuildBaseRegistry(ctx context.Context, cfg settings.Settings, mc settings.M
 	// longer owns a private shell registry, so the planner is available on both
 	// desktop and sandboxed/iOS profiles.
 	if provider != nil && cfg.Agent.ToolAllowed("plan_workflow") {
-		RegisterFluxTool(registry, provider, mc.Model)
+		guard, _ := store.(collab.ExecutionGuard)
+		RegisterFluxTool(registry, provider, mc.Model, guard)
 	}
 
 	// Cross-session control plane (Phase A): list_sessions and read_session.

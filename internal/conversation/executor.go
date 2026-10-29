@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"code-agent/internal/agent"
+	"code-agent/internal/collab"
 	"code-agent/internal/credential"
 	"code-agent/internal/model"
 	"code-agent/internal/session"
@@ -505,17 +506,8 @@ func (e *TurnExecutor) AcceptCrossSessionMessage(ctx, executionCtx context.Conte
 	notify := func(admission TurnAdmission, err error) {
 		once.Do(func() { results <- admissionResult{admission: admission, err: err} })
 	}
-	// Cross-session dispatches: the target session may have no active WebSocket
-	// sink (the user sees the conversation in the list but hasn't opened its
-	// detail page). Without a sink, approval requests cannot reach any client and
-	// the blocked turn would hang indefinitely. Run the target turn at the full
-	// tier so side-effecting tools execute without blocking on an unreachable
-	// approval prompt. The source-side send_to_session tool is itself gated by
-	// the source workspace's approval chain (it was declared SideEffecting); the
-	// target's deny rules and protected paths still hold at the full tier.
-	if envelope.Intent == "request" {
-		e.active.SetApprovalMode(sessionID, "full")
-	}
+	// Source-side delegation approval never grants target-side tool permission.
+	// A target without an approval sink must keep waiting for a human.
 
 	provenance := &session.CrossSessionProvenance{
 		SenderSessionID: envelope.SenderSessionID, SenderTurnID: envelope.SenderTurnID,
@@ -536,15 +528,12 @@ func (e *TurnExecutor) AcceptCrossSessionMessage(ctx, executionCtx context.Conte
 		// A newly created session may have no model yet — the server default
 		// will be resolved by the runner builder.
 		model := envelope.Model
-		if model == "" {
+		if err == nil && model == "" {
 			model = sess.Model
 		}
 		if err == nil {
 			_, err = e.executeWithSessionAssets(executionCtx, sess, envelope.MessageID, envelope.Text, model, "", nil, nil, provenance, notify)
 		}
-		// Clear the per-turn tier override so a later interactive turn of this
-		// conversation runs at the workspace default, not the workflow's full tier.
-		e.active.SetApprovalMode(sessionID, "")
 		notify(TurnAdmission{}, err)
 	}()
 	select {
@@ -738,6 +727,11 @@ func (e *TurnExecutor) driveTurn(
 	run func(ctx context.Context, runner TurnRunner, prepared bool) (agent.TurnResult, error),
 	recordStatus func(sess *session.Session, runErr error),
 ) (agent.TurnResult, error) {
+	releaseTask, taskErr := e.acquireTaskExecution(parentCtx, sess, requestID, preclaimed)
+	if taskErr != nil {
+		return agent.TurnResult{}, taskErr
+	}
+	defer releaseTask()
 	// Repair provider-invalid legacy history before reserving or starting any
 	// model work. Runner also guards this boundary for direct CLI/TUI callers,
 	// but the executor owns durable sessions and must persist the repair now so a
@@ -931,6 +925,7 @@ func (e *TurnExecutor) driveTurn(
 
 	// 4. Build a fresh turnRunner for this turn.
 	rctx := RuntimeContext{
+		ManagedTask:     managedAdmissionRef(parentCtx),
 		Session:         sess,
 		TurnID:          turnID,
 		Model:           wireModel,
@@ -1036,6 +1031,14 @@ func (e *TurnExecutor) claimRequest(ctx context.Context, sessionID, requestID, p
 			Assets:        append([]model.GatewayAssetRef(nil), assets...), CreatedAt: time.Now().UTC(),
 			LocalAssets: append([]model.LocalAssetRef(nil), localAssets...),
 			Provenance:  provenance,
+			ManagedTask: managedAdmissionRef(ctx),
+		}
+		if input.ManagedTask != nil {
+			encoded, _ := json.Marshal(struct {
+				PayloadHash string
+				Source      collab.ManagedTurnRef
+			}{input.PayloadHash, *input.ManagedTask})
+			input.PayloadHash = collab.PayloadHash(encoded)
 		}
 		event := agent.Event{
 			Kind: agent.EventTurnAccepted, SessionID: sessionID, TurnID: proposedTurnID,
@@ -1383,6 +1386,18 @@ func (e *TurnExecutor) recoverTurnInputs(ctx context.Context, sessionID string) 
 		terminal, terminalState := e.durableTurnTerminal(ctx, input.SessionID, input.TurnID)
 		if terminal {
 			_ = repo.SetTurnInputState(ctx, input.SessionID, input.RequestID, terminalState)
+			e.releaseRecovery(claimKey)
+			continue
+		}
+		if input.ManagedTask != nil {
+			if !e.HasActivity(input.SessionID) {
+				if guard, ok := e.repo.(collab.ExecutionGuard); ok {
+					if err := guard.RequireTaskRecovery(ctx, input.SessionID, input.RequestID); err != nil {
+						e.releaseRecovery(claimKey)
+						return rescheduled, err
+					}
+				}
+			}
 			e.releaseRecovery(claimKey)
 			continue
 		}

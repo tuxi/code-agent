@@ -10,6 +10,9 @@ import (
 // Existing indexes are never dropped/rebuilt on open. Expensive first-time
 // creation has its own progress event, so the host can identify a long migration.
 func ensureSecondaryIndexes(db *sql.DB) error {
+	if err := ensureTaskSchema(db); err != nil {
+		return fmt.Errorf("migrate coding tasks: %w", err)
+	}
 	for _, index := range []struct{ name, definition string }{
 		{"idx_session_events_session", `CREATE INDEX IF NOT EXISTS idx_session_events_session ON session_events(session_id, at)`},
 		{"idx_session_events_session_seq", `CREATE INDEX IF NOT EXISTS idx_session_events_session_seq ON session_events(session_id, id)`},

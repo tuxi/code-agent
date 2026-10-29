@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"code-agent/internal/collab"
 	"code-agent/internal/model"
 )
 
@@ -43,6 +44,7 @@ type TurnInput struct {
 	Assets        []model.GatewayAssetRef
 	LocalAssets   []model.LocalAssetRef
 	Provenance    *CrossSessionProvenance
+	ManagedTask   *collab.ManagedTurnRef
 	AcceptedSeq   int64
 	State         TurnInputState
 	CreatedAt     time.Time

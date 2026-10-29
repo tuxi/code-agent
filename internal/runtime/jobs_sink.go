@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"code-agent/internal/agent"
+	"code-agent/internal/collab"
 	"code-agent/internal/jobs"
 	"code-agent/internal/session"
 	"context"
@@ -52,6 +53,13 @@ const (
 // process/server context (jobs outlive turns, so never a turn context).
 func NewJobEventSink(ctx context.Context, store session.EventStore) *JobEventSink {
 	return &JobEventSink{ctx: ctx, store: store, pending: make(map[string]*pendingOutput)}
+}
+
+func (s *JobEventSink) AcquireJobLease(dir string, owner jobs.Owner) (func(), error) {
+	if guard, ok := s.store.(collab.ExecutionGuard); ok {
+		return guard.AcquireTaskExecution(context.WithoutCancel(s.ctx), owner.SessionID, dir, "background:"+owner.TurnID+":"+owner.CallID, nil)
+	}
+	return func() {}, nil
 }
 
 // SetLiveResolver wires live fan-out for both child partitions and parent-stream

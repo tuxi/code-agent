@@ -71,3 +71,5 @@ internal/tools/project_graph/indexstore-helper/.swiftpm/
 /user-assets
 /.workbuddy-ai
 /.workbuddy
+/.build
+/.codex

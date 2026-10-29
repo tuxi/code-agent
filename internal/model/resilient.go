@@ -32,7 +32,8 @@ type ResilientProvider struct {
 	// deadline (the caller's context still applies).
 	Timeout time.Duration
 	// Backoff is the base delay before the first retry; retry n waits roughly
-	// Backoff * 2^(n-1), jittered and capped at MaxBackoff.
+	// Backoff * 2^(n-1), jittered and capped at MaxBackoff. A provider's
+	// Retry-After is a separate minimum and may exceed MaxBackoff.
 	Backoff    time.Duration
 	MaxBackoff time.Duration
 
@@ -62,7 +63,8 @@ type RetryInfo struct {
 	Err error
 	// Fallback marks the stream→non-stream boundary rather than a timed retry:
 	// the streaming attempt failed and the same request is being replayed
-	// without streaming. Attempt/MaxAttempts are zero and Delay is unset then.
+	// without streaming. Attempt/MaxAttempts are zero; Delay may carry a
+	// provider-requested wait before the replay.
 	Fallback bool
 }
 
@@ -128,7 +130,13 @@ func (p *ResilientProvider) Complete(ctx context.Context, req Request) (resp Res
 	// the outcome regardless of which return path fired).
 	start := time.Now()
 	stat := RequestStat{At: start, Model: req.Model}
+	var totalUsage Usage
+	var lastResponse Response
 	defer func() {
+		if err != nil {
+			resp = failedResponse(lastResponse)
+		}
+		resp.accountingUsage = &totalUsage
 		if p.Observer == nil {
 			return
 		}
@@ -137,11 +145,10 @@ func (p *ResilientProvider) Complete(ctx context.Context, req Request) (resp Res
 			stat.Retries = 0
 		}
 		stat.Success = err == nil
-		if err == nil {
-			stat.PromptTokens = resp.Usage.PromptTokens
-			stat.CachedPromptTokens = resp.Usage.CachedPromptTokens
-			stat.CompletionTokens = resp.Usage.CompletionTokens
-		} else {
+		stat.PromptTokens = totalUsage.PromptTokens
+		stat.CachedPromptTokens = totalUsage.CachedPromptTokens
+		stat.CompletionTokens = totalUsage.CompletionTokens
+		if err != nil {
 			stat.ErrorClass = errorClass(err)
 		}
 		p.Observer.Observe(stat)
@@ -161,12 +168,12 @@ func (p *ResilientProvider) Complete(ctx context.Context, req Request) (resp Res
 		}
 		attemptStart := time.Now()
 		resp, err = p.Inner.Complete(attemptCtx, req)
+		lastResponse = resp
+		totalUsage.add(resp.AccountingUsage())
 		attemptDur := time.Since(attemptStart)
 		if cancel != nil {
 			cancel()
 		}
-		class := errorClass(err) // "" on success
-		stat.Trace = append(stat.Trace, Attempt{Latency: attemptDur, ErrorClass: class})
 		if err == nil {
 			// A transport-successful response can still be an unusable no-op
 			// (no text, no tool calls — seen from OpenRouter's multi-provider
@@ -175,9 +182,12 @@ func (p *ResilientProvider) Complete(ctx context.Context, req Request) (resp Res
 			// and nothing was emitted to the user for an empty turn.
 			if verr := resp.ValidateAssistantTurn(); verr != nil {
 				err = fmt.Errorf("%w (finish_reason=%q)", verr, resp.FinishReason)
-			} else {
-				return resp, nil
 			}
+		}
+		class := errorClass(err)
+		stat.Trace = append(stat.Trace, Attempt{Latency: attemptDur, ErrorClass: class, Usage: resp.AccountingUsage()})
+		if err == nil {
+			return resp, nil
 		}
 		if class == "timeout" {
 			stat.TimedOut = true
@@ -195,7 +205,7 @@ func (p *ResilientProvider) Complete(ctx context.Context, req Request) (resp Res
 		if attempt == attempts {
 			break
 		}
-		delay := p.backoffFor(attempt)
+		delay := max(p.backoffFor(attempt), providerRetryDelay(err))
 		// Announce the upcoming retry to the caller's notifier (if any) so a live
 		// client can explain the stall instead of just spinning.
 		notifyRetry(ctx, RetryInfo{Attempt: attempt, MaxAttempts: attempts, Delay: delay, Err: err})
@@ -240,37 +250,50 @@ func (p *ResilientProvider) CompleteStream(ctx context.Context, req Request, onT
 		// duplicate). This rescues OpenRouter's occasional zero-delta streams.
 		if verr := resp.ValidateAssistantTurn(); verr != nil {
 			err = fmt.Errorf("%w (finish_reason=%q)", verr, resp.FinishReason)
-			resp = Response{}
 		}
 	}
+	// A failed streaming attempt may already have consumed tokens. Emit its
+	// telemetry separately from Complete's fallback stat, with no double count.
+	usage := resp.AccountingUsage()
+	if p.Observer != nil {
+		p.Observer.Observe(RequestStat{
+			At: start, Model: req.Model, Attempts: 1, Success: err == nil,
+			ErrorClass: errorClass(err), TimedOut: errorClass(err) == "timeout",
+			Latency:            time.Since(start),
+			PromptTokens:       usage.PromptTokens,
+			CachedPromptTokens: usage.CachedPromptTokens,
+			CompletionTokens:   usage.CompletionTokens,
+			Trace:              []Attempt{{Latency: time.Since(start), ErrorClass: errorClass(err), Usage: usage}},
+		})
+	}
 	if err == nil {
-		if p.Observer != nil {
-			p.Observer.Observe(RequestStat{
-				At: start, Model: req.Model, Attempts: 1, Success: true,
-				Latency:            time.Since(start),
-				PromptTokens:       resp.Usage.PromptTokens,
-				CachedPromptTokens: resp.Usage.CachedPromptTokens,
-				CompletionTokens:   resp.Usage.CompletionTokens,
-				Trace:              []Attempt{{Latency: time.Since(start)}},
-			})
-		}
 		return resp, nil
 	}
 	if ctx.Err() != nil { // caller canceled — terminal, no fallback work
-		return Response{}, ctx.Err()
+		return failedResponse(resp), ctx.Err()
 	}
 	// A Gateway user-quota error cannot be repaired by switching from stream to
 	// non-stream. Returning it directly avoids one needless second request (and
 	// any configured retry budget) after the allowance is known to be exhausted.
 	if isQuotaExceeded(err) || isUserAssetError(err) {
-		return Response{}, err
+		return failedResponse(resp), err
 	}
 	//p.logf("[provider] stream failed: %s — falling back to non-streamed retry\n", errorClass(err))
 	// Announce the stream→non-stream boundary: the live preview died, and a
 	// non-streamed replay is about to run (its own retries are announced
 	// separately by Complete).
-	notifyRetry(ctx, RetryInfo{Err: err, Fallback: true})
-	return p.Complete(ctx, req)
+	delay := providerRetryDelay(err)
+	notifyRetry(ctx, RetryInfo{Err: err, Fallback: true, Delay: delay})
+	if delay > 0 {
+		p.logf("[provider] stream failed: %s — falling back in %s\n", errorClass(err), delay)
+		if !p.wait(ctx, delay) {
+			return failedResponse(resp), ctx.Err()
+		}
+	}
+	fallback, fallbackErr := p.Complete(ctx, req)
+	usage.add(fallback.AccountingUsage())
+	fallback.accountingUsage = &usage
+	return fallback, fallbackErr
 }
 
 // logf writes a one-line transport notice. Defaults to stderr.

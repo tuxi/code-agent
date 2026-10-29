@@ -5,6 +5,7 @@ import (
 	"context"
 
 	"code-agent/internal/agent"
+	"code-agent/internal/collab"
 	"code-agent/internal/credential"
 	"code-agent/internal/model"
 	"code-agent/internal/session"
@@ -48,6 +49,8 @@ type AssetRefReleaseService interface {
 // everything a per-turn Runtime needs — session state, event publisher, and
 // approvers — so the factory signature stays stable as more fields are added.
 type RuntimeContext struct {
+	// ManagedTask is trusted host provenance, never decoded from agent_input.
+	ManagedTask     *collab.ManagedTurnRef
 	Session         *session.Session
 	TurnID          string        // reserved before acceptance; stable across queued → terminal lifecycle events
 	Publisher       agent.Emitter // TurnExecutor assembles the composite emitter

@@ -467,6 +467,8 @@ type MuxOptions struct {
 // multi-session clients. WebSocket hello capabilities remain a backwards-
 // compatible feature list; this endpoint is the source of truth for execution.
 type RuntimeCapabilities struct {
+	TaskLinks                  bool `json:"task_links_v1"`
+	TaskTimeline               bool `json:"task_timeline_v1"`
 	MultiSessionExecution      bool `json:"multi_session_execution_v1"`
 	SessionScopedClientTools   bool `json:"session_scoped_client_tools_v1"`
 	ActivitySnapshot           bool `json:"activity_snapshot_v1"`
@@ -606,6 +608,8 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 		attentionSupported = attentionSupported && capability.SupportsAttentionSnapshot()
 	}
 	runtimeCapabilities := opts.RuntimeCapabilities
+	runtimeCapabilities.TaskLinks = registerTaskRoutes(mux, repo, opts.RuntimeInfo.ServerID)
+	runtimeCapabilities.TaskTimeline = runtimeCapabilities.TaskLinks
 	runtimeCapabilities.PublicGitClone = opts.CloneService != nil
 	runtimeCapabilities.WorkspaceGitBranch = opts.GitBranches != nil
 	runtimeCapabilities.ConversationFork = opts.SessionForks != nil
@@ -672,6 +676,9 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 			// Live rebuild with the latest injected credentials (A2): a
 			// POST /v1/secrets makes models available without a restart.
 			catalog = opts.RuntimeModelsBuilder()
+		}
+		if current, supported := executor.DefaultModelReference(); supported {
+			catalog = catalogWithRuntimeDefault(catalog, current)
 		}
 		writeJSON(w, r, http.StatusOK, catalog)
 	})

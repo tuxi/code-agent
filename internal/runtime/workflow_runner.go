@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 
+	"code-agent/internal/collab"
 	"code-agent/internal/tools"
 )
 
@@ -19,13 +20,18 @@ import (
 type workflowRunner struct {
 	control tools.SessionControl
 	wsReg   *WorkspaceRegistry
+	guard   collab.ExecutionGuard
 }
 
 // NewWorkflowRunner builds the tools.WorkflowRunner for the `workflow`
 // conversation tool. control backs the session tools a cross-workspace run
 // needs; wsReg provides per-workspace MCP tools for tool_sequence steps.
-func NewWorkflowRunner(control tools.SessionControl, wsReg *WorkspaceRegistry) tools.WorkflowRunner {
-	return &workflowRunner{control: control, wsReg: wsReg}
+func NewWorkflowRunner(control tools.SessionControl, wsReg *WorkspaceRegistry, guards ...collab.ExecutionGuard) tools.WorkflowRunner {
+	r := &workflowRunner{control: control, wsReg: wsReg}
+	if len(guards) > 0 {
+		r.guard = guards[0]
+	}
+	return r
 }
 
 var _ tools.WorkflowRunner = (*workflowRunner)(nil)
@@ -51,7 +57,7 @@ func (r *workflowRunner) SaveTemplate(ctx context.Context, workspaceRoot, name, 
 }
 
 func (r *workflowRunner) Run(ctx context.Context, workspaceRoot, name string, input map[string]any) (int64, error) {
-	return NewHeadlessRuntime(r.control, r.wsReg).SubmitHeadlessRun(ctx, workspaceRoot, name, input)
+	return NewHeadlessRuntime(r.control, r.wsReg, r.guard).SubmitHeadlessRun(ctx, workspaceRoot, name, input)
 }
 
 // Delete soft-deletes a saved template: un-mark it (is_template=0) and drop
@@ -126,7 +132,7 @@ func (r *workflowRunner) SaveToolSequence(ctx context.Context, workspaceRoot, na
 // suffix-matches exactly one mcp__<server>__<tool> wire name is rewritten;
 // zero or multiple matches fail with candidates.
 func (r *workflowRunner) resolveStepTools(ctx context.Context, workspaceRoot string, m *ToolSequenceManifest) error {
-	hr := NewHeadlessRuntime(r.control, r.wsReg)
+	hr := NewHeadlessRuntime(r.control, r.wsReg, r.guard)
 	ec := hr.BuildHeadlessContext(workspaceRoot, "resolve-tools")
 	available := map[string]bool{}
 	for _, tool := range ec.ToolRegistry.Visible() {
@@ -167,7 +173,7 @@ func (r *workflowRunner) resolveStepTools(ctx context.Context, workspaceRoot str
 // state asynchronously; tools are re-projected first so a rebuilt runtime
 // after daemon restart does not fail with "tool not found".
 func (r *workflowRunner) ResumeTask(ctx context.Context, workspaceRoot string, taskID int64, resumeFrom string) error {
-	return NewHeadlessRuntime(r.control, r.wsReg).ResumeRun(ctx, workspaceRoot, taskID, resumeFrom)
+	return NewHeadlessRuntime(r.control, r.wsReg, r.guard).ResumeRun(ctx, workspaceRoot, taskID, resumeFrom)
 }
 
 // RunSnapshot returns a run's full snapshot (task status + output + node

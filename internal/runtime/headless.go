@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"code-agent/internal/collab"
 	"code-agent/internal/tools"
 	"code-agent/internal/tools/sessions"
 )
@@ -27,14 +28,19 @@ type HeadlessRunFunc func(ctx context.Context, workspaceRoot, workflowName strin
 type HeadlessRuntime struct {
 	control tools.SessionControl
 	wsReg   *WorkspaceRegistry
+	guard   collab.ExecutionGuard
 }
 
 // NewHeadlessRuntime builds a HeadlessRuntime from a session control plane and
 // the workspace registry (for per-workspace MCP tools). A nil control disables
 // session tools; a nil wsReg means the headless registry carries only the
 // built-in session tools (no MCP).
-func NewHeadlessRuntime(control tools.SessionControl, wsReg *WorkspaceRegistry) *HeadlessRuntime {
-	return &HeadlessRuntime{control: control, wsReg: wsReg}
+func NewHeadlessRuntime(control tools.SessionControl, wsReg *WorkspaceRegistry, guards ...collab.ExecutionGuard) *HeadlessRuntime {
+	r := &HeadlessRuntime{control: control, wsReg: wsReg}
+	if len(guards) > 0 {
+		r.guard = guards[0]
+	}
+	return r
 }
 
 // headlessNestedExecutor runs a tool directly. Unlike the agent loop's
@@ -43,10 +49,18 @@ func NewHeadlessRuntime(control tools.SessionControl, wsReg *WorkspaceRegistry) 
 // permission context). Tools that need a turn (ask_user, client tools) are
 // not in the headless registry to begin with.
 type headlessNestedExecutor struct {
-	base tools.ExecutionContext
+	base  tools.ExecutionContext
+	guard collab.ExecutionGuard
 }
 
 func (e *headlessNestedExecutor) ExecuteNestedTool(ctx context.Context, _, callID string, tool tools.Tool, input json.RawMessage) (tools.ToolResult, error) {
+	if e.guard != nil {
+		release, err := e.guard.AcquireTaskExecution(ctx, e.base.SessionID, e.base.WorkspaceRoot, "headless:"+callID, nil)
+		if err != nil {
+			return tools.ToolResult{}, err
+		}
+		defer release()
+	}
 	ec := e.base
 	ec.CallID = callID
 	ec.NestedExecutor = e
@@ -89,7 +103,15 @@ func (r *HeadlessRuntime) BuildHeadlessContext(workspaceRoot, callID string) too
 		SessionIndex:   SessionIndex(),
 		ToolRegistry:   reg,
 	}
-	ne := &headlessNestedExecutor{base: ec}
+	guard := r.guard
+	if guard == nil {
+		if raw, ok := reg.Get("plan_workflow"); ok {
+			if workflow, ok := raw.(*FluxWorkflowTool); ok {
+				guard = workflow.executionGuard
+			}
+		}
+	}
+	ne := &headlessNestedExecutor{base: ec, guard: guard}
 	ec.NestedExecutor = ne
 	return ec
 }

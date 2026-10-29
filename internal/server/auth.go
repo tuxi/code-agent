@@ -29,6 +29,7 @@ type runtimeAuthError struct {
 }
 
 type sharedDeviceAuthContextKey struct{}
+type runtimeOwnerAuthContextKey struct{}
 
 func ValidateServerAccessToken(token string) error {
 	if len([]byte(token)) < minimumServerAccessTokenBytes {
@@ -131,7 +132,7 @@ func WithServerAuth(next http.Handler, auth ServerAuth) http.Handler {
 			writeRuntimeAuthError(w, r, "runtime_auth_invalid", "Server access token is invalid")
 			return
 		}
-		next.ServeHTTP(w, r)
+		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), runtimeOwnerAuthContextKey{}, true)))
 	})
 }
 

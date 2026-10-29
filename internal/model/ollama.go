@@ -392,6 +392,7 @@ func (p *OllamaProvider) Complete(ctx context.Context, req Request) (Response, e
 	}
 
 	return Response{
+		ActualModel:      or.Model,
 		Content:          strings.TrimSpace(or.Message.Content),
 		ReasoningContent: strings.TrimSpace(or.Message.Thinking),
 		ToolCalls:        toolCalls,
@@ -411,7 +412,7 @@ func (p *OllamaProvider) Complete(ctx context.Context, req Request) (Response, e
 // Ollama's native streaming emits NDJSON where each line carries the next
 // token(s) as a content or thinking delta (NOT accumulated text). Each delta is
 // passed to the matching callback and accumulated into the final Response.
-func (p *OllamaProvider) CompleteStream(ctx context.Context, req Request, onText, onReasoning func(string)) (Response, error) {
+func (p *OllamaProvider) CompleteStream(ctx context.Context, req Request, onText, onReasoning func(string)) (result Response, resultErr error) {
 	body := ollamaChatRequest{
 		Model:     req.Model,
 		Think:     reasoningEffortOrDefault(req.ReasoningEffort, "low"),
@@ -449,11 +450,17 @@ func (p *OllamaProvider) CompleteStream(ctx context.Context, req Request, onText
 	}
 
 	var (
-		content   strings.Builder
-		reasoning strings.Builder
-		toolCalls []ToolCall
-		usage     Usage
+		content     strings.Builder
+		reasoning   strings.Builder
+		toolCalls   []ToolCall
+		usage       Usage
+		actualModel string
 	)
+	defer func() {
+		if resultErr != nil {
+			result = Response{ActualModel: actualModel, Usage: usage}
+		}
+	}()
 
 	sc := bufio.NewScanner(resp.Body)
 	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
@@ -467,6 +474,9 @@ func (p *OllamaProvider) CompleteStream(ctx context.Context, req Request, onText
 			continue
 		}
 
+		if chunk.Model != "" {
+			actualModel = chunk.Model
+		}
 		// Ollama's native streaming sends content deltas (not accumulated
 		// text). Each chunk IS the next token/word — pass it directly.
 		if chunk.Message.Content != "" {
@@ -517,6 +527,7 @@ func (p *OllamaProvider) CompleteStream(ctx context.Context, req Request, onText
 	}
 
 	return Response{
+		ActualModel:      actualModel,
 		Content:          finalContent,
 		ReasoningContent: strings.TrimSpace(reasoning.String()),
 		ToolCalls:        toolCalls,

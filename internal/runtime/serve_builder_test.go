@@ -412,7 +412,7 @@ func TestServeRunBuilderBuildAppliesReasoningEffortOverride(t *testing.T) {
 		},
 	}
 	cfg := settings.Settings{Models: map[string]settings.ModelConfig{alias: base}}
-	builder := NewServeRunBuilder(cfg, base, nil, nil, tools.NewRegistry(), NewWorkspaceRegistry(""), nil)
+	builder := NewServeRunBuilder(cfg, base, nil, credential.StaticResolver{base.Credential.Target(): {Type: credential.Bearer, Secret: "test-only"}}, tools.NewRegistry(), NewWorkspaceRegistry(""), nil)
 	runner := builder.Build(conversation.RuntimeContext{
 		Session:         &session.Session{ID: "s", WorkspacePath: t.TempDir()},
 		Model:           alias,
@@ -436,7 +436,7 @@ func TestServeRunBuilderBuildRejectsUnsupportedReasoningEffort(t *testing.T) {
 		},
 	}
 	cfg := settings.Settings{Models: map[string]settings.ModelConfig{alias: base}}
-	builder := NewServeRunBuilder(cfg, base, nil, nil, tools.NewRegistry(), NewWorkspaceRegistry(""), nil)
+	builder := NewServeRunBuilder(cfg, base, nil, credential.StaticResolver{base.Credential.Target(): {Type: credential.Bearer, Secret: "test-only"}}, tools.NewRegistry(), NewWorkspaceRegistry(""), nil)
 	tr := builder.Build(conversation.RuntimeContext{
 		Session:         &session.Session{ID: "s", WorkspacePath: t.TempDir()},
 		Model:           alias,
