@@ -227,7 +227,7 @@ type Event struct {
 	// the 1-based ordinal of the attempt that just failed, MaxAttempts the total
 	// allowed, RetryDelayMs the backoff before the next attempt. RetryFallback
 	// marks the stream→non-stream replay boundary instead of a timed retry
-	// (Attempt/MaxAttempts are 0 and RetryDelayMs unset then).
+	// (Attempt/MaxAttempts are 0; RetryDelayMs may carry the provider's wait).
 	Attempt       int
 	MaxAttempts   int
 	RetryDelayMs  int

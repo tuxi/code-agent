@@ -337,7 +337,7 @@ and MUST clear that notice when the invocation resolves (`model_finished`).
 | `invocation_id` | string | Same id as the paired `model_started` / `model_finished`, so a client attaches the notice to the in-flight invocation |
 | `attempt` | int | Ordinal of the attempt that just failed (1-based); `0` for the fallback case |
 | `max_attempts` | int | Total attempts allowed for this call (`retries + 1`); `0` for the fallback case |
-| `retry_delay_ms` | int | Backoff before the next attempt in milliseconds; omitted for the fallback case |
+| `retry_delay_ms` | int | Wait before the next attempt in milliseconds, including any provider minimum; may also be set for stream fallback when the provider requests a wait; omitted when zero |
 | `retry_fallback` | bool | `true` when this is the stream→non-stream replay boundary (the streaming attempt failed) rather than a timed retry; `attempt` / `max_attempts` are `0` then |
 | `err` | string | The failure that triggered the retry, trimmed and capped; may be empty |
 

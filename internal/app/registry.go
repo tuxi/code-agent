@@ -177,7 +177,7 @@ var builtinConnections = map[string]builtinConnection{
 	//	DisplayName:  "Talkify Gateway", Summary: "使用 Talkify 账户、订阅模型和云端能力", Kind: "gateway",
 	//},
 	"opencode-go": {
-		BaseURL: "https://opencode.ai/zen/go/v1", Env: "OPENCODE_GO_API_KEY",
+		BaseURL: "https://opencode.ai/inference/go/openai/v1", Env: "OPENCODE_GO_API_KEY",
 		WireModel:    "qwen3.8-flash",
 		ProviderType: "openai",
 		DisplayName:  "OpenCode Go", Summary: "低订阅费开源编程模型（首月 $5，之后 $10/月）", Kind: "api_key",
