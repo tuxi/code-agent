@@ -1,6 +1,6 @@
 # P0-C1：Reviewer 证据的分级获取（最小设计）
 
-2026-10-30。状态：**已实现，离线与真实 bundle 回归通过；WorkBuddy 原生复验待连接器重启**。只扩展 `codeagent_get_artifacts` 的入参与返回，不新增工具、不新增调度器、不新增 Agent 类型、不修改 TimelineKit。
+2026-10-30。状态：**已实现；离线回归与 WorkBuddy 原生复验均通过**。只扩展 `codeagent_get_artifacts` 的入参与返回，不新增工具、不新增调度器、不新增 Agent 类型、不修改 TimelineKit。
 
 ## 问题
 
@@ -134,6 +134,20 @@ type ArtifactInput struct {
 单文件分页实测：`ThumbnailProvider.swift` 12,800 B，`limit=4096` 时 4 页；`ProjectBrowserThumbnailTests.swift` 18,731 B，默认 2 页、4 KiB 时 5 页，拼接后 `file_patch_sha256` 与顶层 `diff_sha256` 均可核对。
 
 一个实现中发现的问题：`model_calls` 占 summary 的 7,134 B（15 条调用元数据），与代码审查无关，已在 reviewer 视图整体移除；executor 视图仍保留。
+
+## 已知限制：硬上限不覆盖 MCP 包装开销
+
+原生复验实测（Case 001）：
+
+| 请求 | patch 字节 | MCP 响应字节 | 倍率 |
+| --- | --- | --- | --- |
+| summary | 0 | 7,945 | — |
+| 单页 | 18,731 | 42,897 | 2.29× |
+| 48 字节分片 | 48 | 8,665 | 固定开销约 8.6 KB |
+
+两个来源：SDK 把同一份 JSON 同时放进 `structuredContent` 与 `content[].text`；分页响应每次都重发 `files` 数组。
+
+因此 32 KiB 的硬上限对应约 75 KB 线上响应，接近触发客户端落盘的 92.5 KB。**上限约束的是 patch 字节，不是客户端实际收到的体积。** 后续若需修正，最小方向是分页响应不带 `files`，或把默认 chunk 降到 8 KiB；本轮不扩大范围。
 
 ## 影响面
 
