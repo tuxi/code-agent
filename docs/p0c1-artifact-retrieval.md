@@ -73,11 +73,14 @@ type ArtifactInput struct {
 
 `next_offset=0` 表示该文件已取完。二进制文件恒为 `binary=true, patch_bytes=0, patch=""`，不内联。
 
-### 4. 体积约束
+### 4. 体积约束（按 MCP 线上体积定，不按 patch 字节定）
 
-- 单次响应硬上限 32 KiB（可调常量），超出即切片，不报错。
+MCP SDK 把同一份 JSON 同时写进 `structuredContent` 与 `content[].text`（`server.go`：只有 handler 未提供 `Content` 时才补 text，这是兼容性默认值）。实测倍率约 2.3×，因此上限必须按客户端实际收到的字节来定：
+
+- patch 分片硬上限 **8 KiB**，对应线上约 18–21 KB。
 - `Limit` 只能调小，不能突破硬上限。
-- summary 模式目标 < 8 KiB；按 Case 001 实测应约 1.5 KiB。
+- summary 保留完整文件清单，Case 001 实测线上 7,945 B。
+- 分页响应不再重复 `files` 数组，只带该文件的路径、状态、哈希与 offset。
 
 ### 5. 版本守卫
 
@@ -106,7 +109,9 @@ type ArtifactInput struct {
 | --- | --- |
 | `TestArtifactsSummaryFitsBudget` | 真实 Case 001 证据的 summary 响应 < 8 KiB |
 | `TestArtifactsPerFilePagination` | 逐文件按 `next_offset` 取完，拼接后 `patch_sha256` 与 summary 一致，累计内容 sha256 == `diff_sha256` |
-| `TestArtifactsChunkCap` | 单次响应 ≤ 32 KiB，`Limit` 调大也不能突破 |
+| `TestPageWireBudgetAndNoFileList` | 序列化后的 MCP 结果 ≤ 24 KiB；分页响应不含 `files`；wire/patch 倍率 ≤ 3.0 |
+| `TestCapClampsAndAdvancesDeterministically` | `Limit` 超过上限时被夹到 8 KiB，`next_offset` 精确等于 8 KiB |
+| `TestEscapingHeavyAndLongPath` | 引号、反斜杠、Tab、中文、Emoji、180 字符路径下分页仍为合法 UTF-8 且哈希可复算 |
 | `TestArtifactsEvidenceMismatch` | `expect_diff_sha256` 不符时返回 `evidence_mismatch`，不返回任何 patch |
 | `TestArtifactsBinaryNotInlined` | 3 个 PNG 返回 `binary=true` 且 `patch` 为空 |
 | `TestArtifactsCommandsDeduped` | reviewer 默认不含命令正文；`include_commands=true` 时只返回 stdout，且带 `call_id` |
@@ -148,6 +153,19 @@ type ArtifactInput struct {
 两个来源：SDK 把同一份 JSON 同时放进 `structuredContent` 与 `content[].text`；分页响应每次都重发 `files` 数组。
 
 因此 32 KiB 的硬上限对应约 75 KB 线上响应，接近触发客户端落盘的 92.5 KB。**上限约束的是 patch 字节，不是客户端实际收到的体积。** 后续若需修正，最小方向是分页响应不带 `files`，或把默认 chunk 降到 8 KiB；本轮不扩大范围。
+
+## 实测：优化前后
+
+| 指标 | 优化前 | 优化后 |
+| --- | --- | --- |
+| summary 线上体积 | 7,945 B | 7,945 B（不变，仍含文件清单） |
+| 单页最大线上体积 | 42,897 B（18,731 B patch） | **20,618 B**（8,192 B patch） |
+| 48 B 分片线上体积 | 8,665 B | 不再复现（分片不重发 files） |
+| 读完整 18,731 B 文件 | 1 次 / 42,897 B | 3 次 / 49,503 B |
+
+取舍：单次响应峰值降到原来的 48%，代价是大文件的总字节略增（多两次固定开销）。小文件（≤8 KiB patch）反而更省，因为不再重发 8 条文件清单。
+
+固定开销仍约 3 KB/次（两份 JSON 的元数据）。要再压只能去掉 `content[].text`，那会让只读文本内容的客户端拿不到数据，不做。
 
 ## 影响面
 

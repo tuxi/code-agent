@@ -20,8 +20,13 @@ import (
 // diff_sha256 is verifiable from the parts. Concatenating every chunk of one
 // file reproduces that file's patch, so file_patch_sha256 is verifiable too.
 const (
-	defaultChunkBytes = 16 << 10
-	maxChunkBytes     = 32 << 10
+	// The MCP SDK sends every tool result twice: once as structuredContent and
+	// once as content[].text (server.go sets the text only when the handler left
+	// Content nil, which is the compatibility-safe default). Measured overhead is
+	// about 2.3x, so the patch cap is sized against the client-visible payload,
+	// not the patch alone: 8 KiB of patch becomes roughly 18 KiB on the wire.
+	defaultChunkBytes = 8 << 10
+	maxChunkBytes     = 8 << 10
 	maxCommandOutput  = 4 << 10
 )
 
@@ -58,8 +63,8 @@ type ArtifactFile struct {
 type ArtifactView struct {
 	Mode            string         `json:"mode"`
 	Files           []ArtifactFile `json:"files,omitempty"`
-	TotalAdditions  int            `json:"total_additions"`
-	TotalDeletions  int            `json:"total_deletions"`
+	TotalAdditions  int            `json:"total_additions,omitempty"`
+	TotalDeletions  int            `json:"total_deletions,omitempty"`
 	Path            string         `json:"path,omitempty"`
 	Status          string         `json:"status,omitempty"`
 	Patch           string         `json:"patch,omitempty"`
@@ -247,18 +252,23 @@ func projectArtifacts(a Artifacts, req ArtifactRequest, bundlePath, bundleSHA st
 		return Artifacts{}, err
 	}
 	view := &ArtifactView{Mode: mode, EvidenceBundle: bundlePath, BundleSHA256: bundleSHA}
-	view.Files = make([]ArtifactFile, 0, len(files))
-	for _, f := range files {
-		view.TotalAdditions += f.additions
-		view.TotalDeletions += f.deletions
-		entry := ArtifactFile{Path: f.path, Status: f.status, Additions: f.additions, Deletions: f.deletions,
-			Binary: f.binary, PatchBytes: len(f.raw), FilePatchSHA256: f.sha, ContentProvided: !f.binary}
-		if f.binary {
-			entry.Note = "binary file: content not provided; this is metadata only and is NOT a visual review"
+	// A page response carries only its own file's metadata. Repeating the whole
+	// file list on every page doubled the fixed cost of pagination and bought
+	// nothing: the caller already has the list from the summary.
+	if mode != "file" {
+		view.Files = make([]ArtifactFile, 0, len(files))
+		for _, f := range files {
+			view.TotalAdditions += f.additions
+			view.TotalDeletions += f.deletions
+			entry := ArtifactFile{Path: f.path, Status: f.status, Additions: f.additions, Deletions: f.deletions,
+				Binary: f.binary, PatchBytes: len(f.raw), FilePatchSHA256: f.sha, ContentProvided: !f.binary}
+			if f.binary {
+				entry.Note = "binary file: content not provided; this is metadata only and is NOT a visual review"
+			}
+			view.Files = append(view.Files, entry)
 		}
-		view.Files = append(view.Files, entry)
+		view.Note = "patch bytes are UTF-8; concatenate all file patches in order to reproduce diff_sha256"
 	}
-	view.Note = "patch bytes are UTF-8; concatenate all file patches in order to reproduce diff_sha256"
 
 	switch mode {
 	case "summary":
@@ -279,6 +289,7 @@ func projectArtifacts(a Artifacts, req ArtifactRequest, bundlePath, bundleSHA st
 		view.Path, view.Status = target.path, target.status
 		view.PatchBytes, view.FilePatchSHA256 = len(target.raw), target.sha
 		view.Binary, view.ContentProvided = target.binary, !target.binary
+		view.Note = "UTF-8 byte offsets; concatenate pages in order to reproduce file_patch_sha256"
 		if target.binary {
 			view.Complete = true
 			view.Note = "binary file: content not provided; metadata only, NOT a visual review"
