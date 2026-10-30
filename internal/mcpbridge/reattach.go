@@ -57,7 +57,7 @@ func NewReattachedFromManifest(ctx context.Context, path, workspace, id, baselin
 	if !validID(id) || !regexp.MustCompile(`^[0-9a-f]{40}([0-9a-f]{24})?$`).MatchString(baseline) {
 		return nil, ConnectionInfo{}, errors.New("reattach requires an explicit session ID and full baseline commit")
 	}
-	c, info, err := newFromManifest(ctx, path, workspace, baseline)
+	c, info, err := newFromManifest(ctx, path, workspace, baseline, "")
 	if err != nil {
 		return nil, info, err
 	}

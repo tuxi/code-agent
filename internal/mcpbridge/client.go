@@ -27,6 +27,19 @@ import (
 
 const maxResponse = 8 << 20
 
+// ErrObserveOnly is returned by every mutating path when the process is bound
+// in observation mode. Unregistering write tools is the first boundary; this
+// method-level guard is the second, so a later code path cannot dispatch by
+// accident.
+var ErrObserveOnly = errors.New("this bridge is bound in read-only observation mode; it cannot create, send, cancel, or run tasks")
+
+func (c *Client) requireWritable() error {
+	if c.observeOnly {
+		return ErrObserveOnly
+	}
+	return nil
+}
+
 // Event is a bounded subset of agent-wire, not a second runtime event model.
 type Event struct {
 	ModelCallEvidence
@@ -91,6 +104,8 @@ type Client struct {
 	gitDir         string
 	gitInfo        os.FileInfo
 	baseline       string
+	delivery       string
+	observeOnly    bool
 	http           *http.Client
 	ctx            context.Context
 	cancel         context.CancelFunc
@@ -109,10 +124,10 @@ type Client struct {
 }
 
 func New(ctx context.Context, endpoint, token, workspace string) (*Client, error) {
-	return newClient(ctx, endpoint, token, workspace, "")
+	return newClient(ctx, endpoint, token, workspace, "", "")
 }
 
-func newClient(ctx context.Context, endpoint, token, workspace, baseline string) (*Client, error) {
+func newClient(ctx context.Context, endpoint, token, workspace, baseline, delivery string) (*Client, error) {
 	u, err := parseEndpoint(endpoint)
 	if err != nil {
 		return nil, err
@@ -136,19 +151,33 @@ func newClient(ctx context.Context, endpoint, token, workspace, baseline string)
 	if err != nil || canonical != root {
 		return nil, errors.New("workspace must be the repository root")
 	}
-	status, truncated, err := gitOutput(ctx, root, "status", "--porcelain", "--untracked-files=normal")
-	if err != nil {
-		return nil, err
-	}
-	if baseline == "" && (truncated || strings.TrimSpace(status) != "") {
-		return nil, errors.New("P0-A requires a clean isolated repository, including untracked files; for a previously used Session use --reattach-session with its original --baseline-commit, never clean/reset user changes or reuse --attach-empty-session")
+	// Execution binding keeps its strict clean/HEAD invariant. Observation
+	// binding is a separate mode: it reviews a recorded commit range and must
+	// not be able to weaken the checks that guard a live workspace.
+	if delivery == "" {
+		status, truncated, err := gitOutput(ctx, root, "status", "--porcelain", "--untracked-files=normal")
+		if err != nil {
+			return nil, err
+		}
+		if baseline == "" && (truncated || strings.TrimSpace(status) != "") {
+			return nil, errors.New("P0-A requires a clean isolated repository, including untracked files; for a previously used Session use --reattach-session with its original --baseline-commit, never clean/reset user changes or reuse --attach-empty-session")
+		}
 	}
 	head, _, err := gitOutput(ctx, root, "rev-parse", "HEAD")
 	if err != nil {
 		return nil, err
 	}
-	if baseline != "" && strings.TrimSpace(head) != baseline {
-		return nil, errors.New("workspace HEAD differs from the explicitly supplied baseline")
+	pinned := strings.TrimSpace(head)
+	switch {
+	case delivery != "":
+		if err := validateCommitRange(ctx, root, baseline, delivery); err != nil {
+			return nil, err
+		}
+		pinned = baseline
+	case baseline != "":
+		if strings.TrimSpace(head) != baseline {
+			return nil, errors.New("workspace HEAD differs from the explicitly supplied baseline")
+		}
 	}
 	rootInfo, err := os.Stat(root)
 	if err != nil {
@@ -164,7 +193,7 @@ func newClient(ctx context.Context, endpoint, token, workspace, baseline string)
 		return nil, err
 	}
 	runCtx, cancel := context.WithCancel(ctx)
-	c := &Client{base: u, token: token, root: root, rootInfo: rootInfo, gitDir: gitDir, gitInfo: gitInfo, baseline: strings.TrimSpace(head), ctx: runCtx, cancel: cancel,
+	c := &Client{base: u, token: token, root: root, rootInfo: rootInfo, gitDir: gitDir, gitInfo: gitInfo, baseline: pinned, delivery: delivery, observeOnly: delivery != "", ctx: runCtx, cancel: cancel,
 		http:     &http.Client{Timeout: 10 * time.Second, Transport: &http.Transport{}, CheckRedirect: func(*http.Request, []*http.Request) error { return errors.New("runtime redirects are disabled") }},
 		controls: map[string]json.RawMessage{}, submissions: map[string]*submission{}, expectations: map[string]*executionevidence.Expectations{}}
 	return c, nil
@@ -266,6 +295,9 @@ func validID(id string) bool {
 func (c *Client) Create(ctx context.Context, requestID string) (SessionRef, error) {
 	c.sendMu.Lock()
 	defer c.sendMu.Unlock()
+	if err := c.requireWritable(); err != nil {
+		return SessionRef{}, err
+	}
 	if !validID(requestID) {
 		return SessionRef{}, errors.New("valid request_id is required")
 	}
@@ -393,6 +425,9 @@ func (c *Client) Send(ctx context.Context, id, requestID, message, model string)
 func (c *Client) SendWithExpectations(ctx context.Context, id, requestID, message, model string, development *executionevidence.Expectations) (Receipt, error) {
 	c.sendMu.Lock()
 	defer c.sendMu.Unlock()
+	if err := c.requireWritable(); err != nil {
+		return Receipt{}, err
+	}
 	if err := c.checkSession(id); err != nil {
 		return Receipt{}, err
 	}
@@ -687,6 +722,9 @@ func (c *Client) Wait(ctx context.Context, id, turnID string, cursor int64, time
 func (c *Client) Cancel(ctx context.Context, id string) error {
 	c.sendMu.Lock()
 	defer c.sendMu.Unlock()
+	if err := c.requireWritable(); err != nil {
+		return err
+	}
 	if err := c.checkSession(id); err != nil {
 		return err
 	}

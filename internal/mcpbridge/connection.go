@@ -63,15 +63,15 @@ func loadConnection(path string) (connectionManifest, [32]byte, error) {
 // NewFromManifest connects to an explicitly granted existing instance. It never
 // starts a daemon, creates a session, selects a model, or submits a turn.
 func NewFromManifest(ctx context.Context, path, workspace string) (*Client, ConnectionInfo, error) {
-	return newFromManifest(ctx, path, workspace, "")
+	return newFromManifest(ctx, path, workspace, "", "")
 }
 
-func newFromManifest(ctx context.Context, path, workspace, baseline string) (*Client, ConnectionInfo, error) {
+func newFromManifest(ctx context.Context, path, workspace, baseline, delivery string) (*Client, ConnectionInfo, error) {
 	m, digest, err := loadConnection(path)
 	if err != nil {
 		return nil, ConnectionInfo{}, fmt.Errorf("connection_grant: %w", err)
 	}
-	c, err := newClient(ctx, m.Endpoint, m.AccessToken, workspace, baseline)
+	c, err := newClient(ctx, m.Endpoint, m.AccessToken, workspace, baseline, delivery)
 	if err != nil {
 		return nil, ConnectionInfo{}, fmt.Errorf("workspace_binding: %w", err)
 	}

@@ -13,6 +13,9 @@ import (
 func (c *Client) AttachEmptySession(ctx context.Context, id string) (SessionRef, error) {
 	c.sendMu.Lock()
 	defer c.sendMu.Unlock()
+	if err := c.requireWritable(); err != nil {
+		return SessionRef{}, err
+	}
 	if !validID(id) {
 		return SessionRef{}, errors.New("valid session_id is required")
 	}

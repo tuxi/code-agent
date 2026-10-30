@@ -50,13 +50,15 @@ type taskReviewInput struct {
 	Review collab.ReviewInput `json:"review"`
 }
 
+// The SDK infers json.RawMessage as []byte/array, while B1 deliberately carries
+// arbitrary JSON payloads. These open object envelopes are declared explicitly;
+// concrete DTO and scope validation still happens before returning them.
+var taskReadSchema = map[string]any{"type": "object", "required": []string{"schema", "task_id"}, "properties": map[string]any{"schema": map[string]any{"type": "string"}, "task_id": map[string]any{"type": "string"}}, "additionalProperties": true}
+var reviewBundleSchema = map[string]any{"type": "object", "required": []string{"schema", "source", "attempt_id", "candidate"}, "additionalProperties": true}
+
 func registerTaskTools(s *mcp.Server, c *Client) {
 	ro := &mcp.ToolAnnotations{ReadOnlyHint: true}
-	// The SDK infers json.RawMessage as []byte/array, while B1 deliberately
-	// carries arbitrary JSON payloads. Declare open object envelopes explicitly;
-	// concrete DTO and scope validation still happens before returning them.
-	readSchema := map[string]any{"type": "object", "required": []string{"schema", "task_id"}, "properties": map[string]any{"schema": map[string]any{"type": "string"}, "task_id": map[string]any{"type": "string"}}, "additionalProperties": true}
-	bundleSchema := map[string]any{"type": "object", "required": []string{"schema", "source", "attempt_id", "candidate"}, "additionalProperties": true}
+	readSchema, bundleSchema := taskReadSchema, reviewBundleSchema
 	mcp.AddTool(s, &mcp.Tool{Name: "codeagent_create_task", Description: "Create an association Task only in the explicitly bound Session/workspace. Does not dispatch. Stable request_id is persistent."}, func(ctx context.Context, _ *mcp.CallToolRequest, in taskCreateInput) (*mcp.CallToolResult, collab.Receipt, error) {
 		v, e := c.CreateTask(ctx, in.RequestID, in.Goal, in.Acceptance)
 		return nil, v, e

@@ -15,6 +15,9 @@ type BindingInfo struct {
 	RuntimeID        string `json:"server_id,omitempty"`
 	StoreID          string `json:"store_id,omitempty"`
 	IdentityVerified bool   `json:"identity_verified"`
+	Delivery         string `json:"delivery_commit,omitempty"`
+	EvidenceBundle   string `json:"evidence_bundle,omitempty"`
+	BundleVerified   bool   `json:"bundle_verified,omitempty"`
 }
 
 type HandoffInput struct {

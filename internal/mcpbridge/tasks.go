@@ -92,6 +92,9 @@ func (c *Client) ReadTask(ctx context.Context, id string) (collab.Snapshot, erro
 }
 
 func (c *Client) CreateTask(ctx context.Context, request, goal string, acceptance []string) (collab.Receipt, error) {
+	if err := c.requireWritable(); err != nil {
+		return collab.Receipt{}, err
+	}
 	id, _, err := c.taskScope(ctx)
 	if err != nil {
 		return collab.Receipt{}, err
@@ -105,6 +108,9 @@ func (c *Client) CreateTask(ctx context.Context, request, goal string, acceptanc
 }
 
 func (c *Client) RegisterTaskAgent(ctx context.Context, in collab.ExternalInput) (collab.SessionRef, error) {
+	if err := c.requireWritable(); err != nil {
+		return collab.SessionRef{}, err
+	}
 	if _, _, err := c.taskScope(ctx); err != nil {
 		return collab.SessionRef{}, err
 	}
@@ -114,6 +120,9 @@ func (c *Client) RegisterTaskAgent(ctx context.Context, in collab.ExternalInput)
 }
 
 func (c *Client) ParticipateTask(ctx context.Context, id string, in collab.ParticipationInput) (collab.Receipt, error) {
+	if err := c.requireWritable(); err != nil {
+		return collab.Receipt{}, err
+	}
 	if _, err := c.ReadTask(ctx, id); err != nil {
 		return collab.Receipt{}, err
 	}
@@ -129,6 +138,9 @@ func (c *Client) ParticipateTask(ctx context.Context, id string, in collab.Parti
 }
 
 func (c *Client) ReportTask(ctx context.Context, id, kind string, in collab.ReportInput) (collab.Receipt, error) {
+	if err := c.requireWritable(); err != nil {
+		return collab.Receipt{}, err
+	}
 	if kind != "plan" && kind != "review" {
 		return collab.Receipt{}, collab.ErrInvalid
 	}
@@ -141,6 +153,9 @@ func (c *Client) ReportTask(ctx context.Context, id, kind string, in collab.Repo
 }
 
 func (c *Client) LinkTaskTurn(ctx context.Context, id string, in collab.AttemptInput) (collab.Receipt, error) {
+	if err := c.requireWritable(); err != nil {
+		return collab.Receipt{}, err
+	}
 	snap, err := c.ReadTask(ctx, id)
 	if err != nil {
 		return collab.Receipt{}, err
@@ -154,6 +169,9 @@ func (c *Client) LinkTaskTurn(ctx context.Context, id string, in collab.AttemptI
 }
 
 func (c *Client) LinkTaskArtifact(ctx context.Context, id string, in collab.ArtifactInput) (collab.Receipt, error) {
+	if err := c.requireWritable(); err != nil {
+		return collab.Receipt{}, err
+	}
 	snap, err := c.ReadTask(ctx, id)
 	if err != nil {
 		return collab.Receipt{}, err
@@ -189,6 +207,9 @@ func (c *Client) TaskEvents(ctx context.Context, id, after string, limit int) (c
 }
 
 func (c *Client) StartTaskRun(ctx context.Context, id string, in collab.StartRunInput) (collab.Receipt, error) {
+	if err := c.requireWritable(); err != nil {
+		return collab.Receipt{}, err
+	}
 	if _, err := c.ReadTask(ctx, id); err != nil {
 		return collab.Receipt{}, err
 	}
@@ -243,6 +264,9 @@ func (c *Client) ReadReviewBundle(ctx context.Context, id, artifact string) (col
 }
 
 func (c *Client) ReviewTaskRun(ctx context.Context, id, runID string, in collab.ReviewInput) (collab.Receipt, error) {
+	if err := c.requireWritable(); err != nil {
+		return collab.Receipt{}, err
+	}
 	snap, err := c.ReadTask(ctx, id)
 	if err != nil {
 		return collab.Receipt{}, err

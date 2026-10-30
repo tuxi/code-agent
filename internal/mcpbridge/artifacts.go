@@ -87,6 +87,12 @@ type Artifacts struct {
 	TurnID            string                    `json:"turn_id"`
 	TurnStatus        string                    `json:"turn_status"`
 	Baseline          string                    `json:"baseline_commit"`
+	EvidenceSource    string                    `json:"evidence_source"`
+	DeliveryCommit    string                    `json:"delivery_commit,omitempty"`
+	HeadCommit        string                    `json:"head_commit,omitempty"`
+	HeadMoved         bool                      `json:"head_moved"`
+	WorktreeDirty     bool                      `json:"worktree_dirty"`
+	EvidenceComplete  bool                      `json:"evidence_complete"`
 	Diff              string                    `json:"diff"`
 	DiffSHA256        string                    `json:"diff_sha256"`
 	Truncated         bool                      `json:"truncated"`
@@ -133,49 +139,66 @@ func (c *Client) artifacts(ctx context.Context, id, turnID string) (Artifacts, e
 			return Artifacts{}, errors.New("another turn is active; stop writers before review")
 		}
 	}
-	head, _, err := gitOutput(ctx, c.root, "rev-parse", "HEAD")
-	if err != nil {
-		return Artifacts{}, err
-	}
-	if strings.TrimSpace(head) != c.baseline {
-		return Artifacts{}, errors.New("HEAD changed during experiment; baseline attribution is invalid")
-	}
-	diff, truncated, err := gitOutput(ctx, c.root, "diff", "--no-ext-diff", "--no-textconv", c.baseline, "--")
-	if err != nil {
-		return Artifacts{}, err
-	}
-	untracked, cut, err := gitOutput(ctx, c.root, "ls-files", "--others", "--exclude-standard", "-z")
-	if err != nil {
-		return Artifacts{}, err
-	}
-	truncated = truncated || cut
-	for _, path := range strings.Split(untracked, "\x00") {
-		if path == "" {
-			continue
+	var diff string
+	var truncated bool
+	if c.observeOnly {
+		diff, truncated, err = c.rangeDiff(ctx)
+		if err != nil {
+			return Artifacts{}, err
 		}
-		if len(diff) >= maxGitOutput {
-			truncated = true
-			break
+	} else {
+		head, _, err := gitOutput(ctx, c.root, "rev-parse", "HEAD")
+		if err != nil {
+			return Artifacts{}, err
 		}
-		info, err := os.Lstat(filepath.Join(c.root, path))
-		if err != nil || !info.Mode().IsRegular() {
-			truncated = true
-			continue
+		if strings.TrimSpace(head) != c.baseline {
+			return Artifacts{}, errors.New("HEAD changed during experiment; baseline attribution is invalid")
 		}
-		patch, cut, err := gitOutput(ctx, c.root, "diff", "--no-index", "--no-ext-diff", "--no-textconv", "--", "/dev/null", path)
+		diff, truncated, err = gitOutput(ctx, c.root, "diff", "--no-ext-diff", "--no-textconv", c.baseline, "--")
+		if err != nil {
+			return Artifacts{}, err
+		}
+		untracked, cut, err := gitOutput(ctx, c.root, "ls-files", "--others", "--exclude-standard", "-z")
 		if err != nil {
 			return Artifacts{}, err
 		}
 		truncated = truncated || cut
-		diff += patch
-	}
-	if len(diff) > maxGitOutput {
-		diff = diff[:maxGitOutput]
-		truncated = true
+		for _, path := range strings.Split(untracked, "\x00") {
+			if path == "" {
+				continue
+			}
+			if len(diff) >= maxGitOutput {
+				truncated = true
+				break
+			}
+			info, err := os.Lstat(filepath.Join(c.root, path))
+			if err != nil || !info.Mode().IsRegular() {
+				truncated = true
+				continue
+			}
+			patch, cut, err := gitOutput(ctx, c.root, "diff", "--no-index", "--no-ext-diff", "--no-textconv", "--", "/dev/null", path)
+			if err != nil {
+				return Artifacts{}, err
+			}
+			truncated = truncated || cut
+			diff += patch
+		}
+		if len(diff) > maxGitOutput {
+			diff = diff[:maxGitOutput]
+			truncated = true
+		}
 	}
 	hash := sha256.Sum256([]byte(diff))
 	a := Artifacts{ModelCalls: []ModelCallEvidence{}, TaskAcceptance: "not_reviewed", ExecutionEvidence: r.ExecutionEvidence, EvidenceNote: r.EvidenceNote, Experimental: true, SessionID: id, TurnID: turnID, TurnStatus: r.Status, Baseline: c.baseline, Diff: diff, DiffSHA256: hex.EncodeToString(hash[:]), Truncated: truncated,
 		CommandResults: []CommandEvidence{}, UnparsedResults: []string{}, Note: "P0-A current workspace diff, not an immutable or per-turn snapshot. Stop writers before review. Inspect command exit codes; no test PASS is inferred."}
+	a.EvidenceSource, a.EvidenceComplete = "workspace", !truncated
+	if c.observeOnly {
+		head, dirty := c.headState(ctx)
+		a.EvidenceSource = "commit_range"
+		a.DeliveryCommit, a.HeadCommit, a.WorktreeDirty = c.delivery, head, dirty
+		a.HeadMoved = head != c.delivery
+		a.Note = "Recorded commit-range evidence: diff covers baseline..delivery and is unaffected by the current HEAD, branch, or uncommitted changes. Worktree state is reported separately (head_commit/head_moved/worktree_dirty) and is NOT part of the reviewed diff. Validation covers recorded Turn events only; acceptance remains not_reviewed."
+	}
 	for _, e := range r.Events {
 		if e.Kind == "model_finished" {
 			a.ModelCalls = append(a.ModelCalls, e.ModelCallEvidence)

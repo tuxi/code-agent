@@ -144,6 +144,12 @@ type Handoff struct {
 	Validation        *executionevidence.Report `json:"validation,omitempty"`
 	EvidenceNote      string                    `json:"evidence_note,omitempty"`
 	Baseline          string                    `json:"baseline_commit"`
+	EvidenceSource    string                    `json:"evidence_source"`
+	DeliveryCommit    string                    `json:"delivery_commit,omitempty"`
+	HeadCommit        string                    `json:"head_commit,omitempty"`
+	HeadMoved         bool                      `json:"head_moved"`
+	WorktreeDirty     bool                      `json:"worktree_dirty"`
+	EvidenceComplete  bool                      `json:"evidence_complete"`
 	DiffSHA256        string                    `json:"diff_sha256"`
 	DiffTruncated     bool                      `json:"diff_truncated"`
 	ChangedFiles      []string                  `json:"changed_files"`
@@ -213,15 +219,34 @@ func (c *Client) Handoff(ctx context.Context, id, turn string) (Handoff, error) 
 	if !r.Terminal {
 		return Handoff{}, errors.New("Turn changed while collecting handoff")
 	}
-	tracked, cut, err := gitOutput(ctx, c.root, "diff", "--name-only", "-z", "--no-ext-diff", "--no-textconv", c.baseline, "--")
-	if err != nil {
-		return Handoff{}, err
-	}
-	untracked, cut2, err := gitOutput(ctx, c.root, "ls-files", "--others", "--exclude-standard", "-z")
-	if err != nil {
-		return Handoff{}, err
+	var tracked, untracked string
+	var cut, cut2 bool
+	if c.observeOnly {
+		names, truncated, err := c.rangeFiles(ctx)
+		if err != nil {
+			return Handoff{}, err
+		}
+		cut = truncated
+		tracked = strings.Join(names, "\x00")
+		if tracked != "" {
+			tracked += "\x00"
+		}
+	} else {
+		tracked, cut, err = gitOutput(ctx, c.root, "diff", "--name-only", "-z", "--no-ext-diff", "--no-textconv", c.baseline, "--")
+		if err != nil {
+			return Handoff{}, err
+		}
+		untracked, cut2, err = gitOutput(ctx, c.root, "ls-files", "--others", "--exclude-standard", "-z")
+		if err != nil {
+			return Handoff{}, err
+		}
 	}
 	h := Handoff{SessionID: id, TurnID: turn, ExecutionStatus: a.TurnStatus, ValidationStatus: "unknown", AcceptanceStatus: "not_reviewed", Validation: a.ExecutionEvidence, EvidenceNote: a.EvidenceNote, Baseline: a.Baseline, DiffSHA256: a.DiffSHA256, DiffTruncated: a.Truncated, FilesTruncated: cut || cut2, ChangedFiles: []string{}, Commands: []HandoffCommand{}, UnparsedCallIDs: a.UnparsedResults, ArtifactTool: "codeagent_get_artifacts", Note: "Current workspace evidence, not an immutable/per-Turn snapshot. Validation covers recorded Turn events only, not external changes or visual acceptance. attempt_id is unknown here; use Task Snapshot for authoritative associations/acceptance. Read referenced evidence on demand."}
+	h.EvidenceSource, h.EvidenceComplete = a.EvidenceSource, a.EvidenceComplete
+	if c.observeOnly {
+		h.DeliveryCommit, h.HeadCommit, h.HeadMoved, h.WorktreeDirty = a.DeliveryCommit, a.HeadCommit, a.HeadMoved, a.WorktreeDirty
+		h.Note = "Recorded commit-range evidence: changed_files and diff cover baseline..delivery and are unaffected by the current HEAD, branch, or uncommitted changes. head_commit/head_moved/worktree_dirty are reported separately and excluded from the reviewed diff. attempt_id is unknown here; use Task Snapshot for authoritative associations/acceptance. Validation covers recorded Turn events only, not external changes or visual acceptance."
+	}
 	if h.Validation != nil {
 		h.ValidationStatus = "partial"
 		if h.Validation.Status == "evidence_complete" {
