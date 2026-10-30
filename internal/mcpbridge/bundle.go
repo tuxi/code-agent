@@ -205,11 +205,13 @@ func (b *BundleReader) ReviewHandoff(_ context.Context, turnID, taskID string) (
 	return h, nil
 }
 
-func (b *BundleReader) ReviewArtifacts(_ context.Context, turnID string) (Artifacts, error) {
-	if turnID != b.bundle.TurnID {
+func (b *BundleReader) ReviewArtifacts(_ context.Context, req ArtifactRequest) (Artifacts, error) {
+	if req.TurnID != b.bundle.TurnID {
 		return Artifacts{}, fmt.Errorf("bundle contains only Turn %s", b.bundle.TurnID)
 	}
-	return b.bundle.Artifacts, nil
+	// The stored bundle is never rewritten: the projection is applied to a copy
+	// for this response only, so historical bundles keep their exact bytes.
+	return projectArtifacts(b.bundle.Artifacts, req, b.path, b.digest)
 }
 
 func (b *BundleReader) TaskSnapshot(_ context.Context, taskID string) (collab.Snapshot, error) {

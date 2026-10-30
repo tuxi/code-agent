@@ -1,6 +1,6 @@
 # P0-C1：Reviewer 证据的分级获取（最小设计）
 
-2026-10-30。状态：**设计，未实现**。只扩展 `codeagent_get_artifacts` 的入参与返回，不新增工具、不新增调度器、不新增 Agent 类型、不修改 TimelineKit。
+2026-10-30。状态：**已实现，离线与真实 bundle 回归通过；WorkBuddy 原生复验待连接器重启**。只扩展 `codeagent_get_artifacts` 的入参与返回，不新增工具、不新增调度器、不新增 Agent 类型、不修改 TimelineKit。
 
 ## 问题
 
@@ -122,6 +122,18 @@ type ArtifactInput struct {
 - 不引入新的 Agent 类型或角色。
 - 不修改 TimelineKit、不重跑它的任务。
 - 不接入豆包，等本设计落地后再评估。
+
+## 实测结果（Case 001 真实 bundle）
+
+| 指标 | 改动前 | 改动后 |
+| --- | --- | --- |
+| `get_artifacts` 默认响应 | 92,518 字符（超客户端上限） | **3,978 字符** |
+| 是否含完整 Diff | 是 | 否（`diff` 为空） |
+| 是否含命令正文 | 是（9 条含 stdout） | 否（走 `get_handoff`） |
+
+单文件分页实测：`ThumbnailProvider.swift` 12,800 B，`limit=4096` 时 4 页；`ProjectBrowserThumbnailTests.swift` 18,731 B，默认 2 页、4 KiB 时 5 页，拼接后 `file_patch_sha256` 与顶层 `diff_sha256` 均可核对。
+
+一个实现中发现的问题：`model_calls` 占 summary 的 7,134 B（15 条调用元数据），与代码审查无关，已在 reviewer 视图整体移除；executor 视图仍保留。
 
 ## 影响面
 

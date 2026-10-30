@@ -19,7 +19,7 @@ type ReviewReader interface {
 	ReadSession(ctx context.Context, turnID string, cursor int64) (ReadResult, error)
 	AwaitUpdate(ctx context.Context, turnID string, cursor int64, timeout time.Duration) (Update, error)
 	ReviewHandoff(ctx context.Context, turnID, taskID string) (Handoff, error)
-	ReviewArtifacts(ctx context.Context, turnID string) (Artifacts, error)
+	ReviewArtifacts(ctx context.Context, req ArtifactRequest) (Artifacts, error)
 	TaskSnapshot(ctx context.Context, taskID string) (collab.Snapshot, error)
 	ReviewBundle(ctx context.Context, taskID, artifactID string) (collab.ReviewBundle, error)
 }
@@ -40,8 +40,12 @@ func (r clientReviewReader) AwaitUpdate(ctx context.Context, turnID string, curs
 func (r clientReviewReader) ReviewHandoff(ctx context.Context, turnID, taskID string) (Handoff, error) {
 	return r.c.HandoffForTask(ctx, r.c.BoundSessionID(), turnID, taskID)
 }
-func (r clientReviewReader) ReviewArtifacts(ctx context.Context, turnID string) (Artifacts, error) {
-	return r.c.Artifacts(ctx, r.c.BoundSessionID(), turnID)
+func (r clientReviewReader) ReviewArtifacts(ctx context.Context, req ArtifactRequest) (Artifacts, error) {
+	a, err := r.c.Artifacts(ctx, r.c.BoundSessionID(), req.TurnID)
+	if err != nil {
+		return Artifacts{}, err
+	}
+	return projectArtifacts(a, req, "", "")
 }
 func (r clientReviewReader) TaskSnapshot(ctx context.Context, taskID string) (collab.Snapshot, error) {
 	return r.c.ReadTask(ctx, taskID)
@@ -95,8 +99,8 @@ func ReviewerServer(r ReviewReader) *mcp.Server {
 		}
 		return nil, v, nil
 	})
-	mcp.AddTool(s, &mcp.Tool{Name: "codeagent_get_artifacts", Description: "The recorded commit-range diff and command evidence for this exact Turn.", Annotations: ro}, func(ctx context.Context, _ *mcp.CallToolRequest, in reviewArtifactInput) (*mcp.CallToolResult, any, error) {
-		v, e := r.ReviewArtifacts(ctx, in.TurnID)
+	mcp.AddTool(s, &mcp.Tool{Name: "codeagent_get_artifacts", Description: "Recorded commit-range evidence. Default mode is a per-file summary with no diff body and no command output. Read one file with path, then follow next_offset until complete; offsets are UTF-8 bytes. Binary files return metadata only.", Annotations: ro}, func(ctx context.Context, _ *mcp.CallToolRequest, in reviewArtifactInput) (*mcp.CallToolResult, any, error) {
+		v, e := r.ReviewArtifacts(ctx, in.request())
 		if e != nil {
 			return nil, nil, e
 		}
@@ -133,5 +137,16 @@ type reviewHandoffInput struct {
 	TaskID string `json:"task_id,omitempty"`
 }
 type reviewArtifactInput struct {
-	TurnID string `json:"turn_id"`
+	TurnID           string `json:"turn_id"`
+	Diff             string `json:"diff,omitempty" jsonschema:"summary (default) returns per-file metadata only; file returns one file's patch; full returns the whole diff"`
+	Path             string `json:"path,omitempty" jsonschema:"Exact path from the summary, used with diff=file"`
+	Offset           int    `json:"offset,omitempty" jsonschema:"UTF-8 byte offset into that file's patch; start at 0"`
+	Limit            int    `json:"limit,omitempty" jsonschema:"Maximum bytes to return, capped at 32768"`
+	IncludeCommands  *bool  `json:"include_commands,omitempty" jsonschema:"Default false; command exit codes are already in get_handoff"`
+	ExpectDiffSHA256 string `json:"expect_diff_sha256,omitempty" jsonschema:"Reject the request if the bound evidence differs"`
+}
+
+func (in reviewArtifactInput) request() ArtifactRequest {
+	return ArtifactRequest{TurnID: in.TurnID, Mode: in.Diff, Path: in.Path, Offset: in.Offset,
+		Limit: in.Limit, IncludeCommands: in.IncludeCommands, ExpectDiffSHA: in.ExpectDiffSHA256}
 }

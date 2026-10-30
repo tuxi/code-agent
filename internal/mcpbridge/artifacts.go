@@ -65,16 +65,17 @@ func contains(args []string, s string) bool {
 // CommandEvidence is a recorded foreground command result, not a model claim.
 // ExitCode is a pointer so absent results/background jobs cannot become PASS.
 type CommandEvidence struct {
-	Status     string `json:"status,omitempty"`
-	CallID     string `json:"call_id"`
-	SourceSeq  int64  `json:"source_seq,omitempty"`
-	Command    string `json:"command"`
-	ExitCode   *int   `json:"exit_code"`
-	Stdout     string `json:"stdout,omitempty"`
-	Stderr     string `json:"stderr,omitempty"`
-	DurationMS int64  `json:"duration_ms"`
-	Decision   string `json:"decision"`
-	Note       string `json:"note,omitempty"`
+	Status          string `json:"status,omitempty"`
+	CallID          string `json:"call_id"`
+	SourceSeq       int64  `json:"source_seq,omitempty"`
+	Command         string `json:"command"`
+	ExitCode        *int   `json:"exit_code"`
+	Stdout          string `json:"stdout,omitempty"`
+	Stderr          string `json:"stderr,omitempty"`
+	DurationMS      int64  `json:"duration_ms"`
+	Decision        string `json:"decision"`
+	Note            string `json:"note,omitempty"`
+	OutputTruncated bool   `json:"output_truncated,omitempty"`
 }
 
 type Artifacts struct {
@@ -99,6 +100,7 @@ type Artifacts struct {
 	CommandResults    []CommandEvidence         `json:"command_results"`
 	UnparsedResults   []string                  `json:"unparsed_command_call_ids"`
 	Note              string                    `json:"note"`
+	View              *ArtifactView             `json:"view,omitempty"`
 }
 
 func (c *Client) Artifacts(ctx context.Context, id, turnID string) (Artifacts, error) {
