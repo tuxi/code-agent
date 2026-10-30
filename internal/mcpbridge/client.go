@@ -141,7 +141,7 @@ func newClient(ctx context.Context, endpoint, token, workspace, baseline string)
 		return nil, err
 	}
 	if baseline == "" && (truncated || strings.TrimSpace(status) != "") {
-		return nil, errors.New("P0-A requires a clean isolated repository, including untracked files")
+		return nil, errors.New("P0-A requires a clean isolated repository, including untracked files; for a previously used Session use --reattach-session with its original --baseline-commit, never clean/reset user changes or reuse --attach-empty-session")
 	}
 	head, _, err := gitOutput(ctx, root, "rev-parse", "HEAD")
 	if err != nil {
@@ -535,25 +535,18 @@ func (c *Client) Read(ctx context.Context, id, turnID string, since int64) (Read
 		_, _ = c.connect(observeCtx, id) // read-only reconnect; durable HTTP evidence remains readable
 		cancel()
 	}
-	events, err := c.events(ctx, id, since)
+	all, err := c.events(ctx, id, 0)
 	if err != nil {
 		return ReadResult{}, err
 	}
-	// Cursor limits event delivery, never lifecycle state. Otherwise reading
-	// after the terminal event would incorrectly return "waiting" forever.
-	all := events
-	if since > 0 {
-		all, err = c.events(ctx, id, 0)
-		if err != nil {
-			return ReadResult{}, err
-		}
-	}
+	// Derive lifecycle and delta from one durable observation. Two requests can
+	// otherwise pair a newer terminal state with an older delivery cursor.
 	r := ReadResult{SessionID: id, TurnID: turnID, Status: "waiting", Cursor: since, Events: []Event{}, PendingControls: []any{}}
-	for _, e := range events {
+	for _, e := range all {
 		if e.Seq > r.Cursor {
 			r.Cursor = e.Seq
 		}
-		if e.TurnID != turnID {
+		if e.Seq <= since || e.TurnID != turnID {
 			continue
 		}
 		r.Events = append(r.Events, e)

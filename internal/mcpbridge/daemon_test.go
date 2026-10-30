@@ -168,6 +168,21 @@ func TestDaemonStdioToolRoundTrip(t *testing.T) {
 	if artifacts.ExecutionEvidence == nil || artifacts.ExecutionEvidence.Status != "evidence_complete" {
 		t.Fatalf("execution evidence incomplete: %+v", artifacts.ExecutionEvidence)
 	}
+	var update mcpbridge.Update
+	call("codeagent_wait_for_update", mcpbridge.UpdateInput{SessionID: ref.ID, TurnID: receipt.TurnID, AfterCursor: state.Cursor, TimeoutSeconds: 0}, &update)
+	if !update.Terminal || update.Changed || update.HandoffTool != "codeagent_get_handoff" {
+		t.Fatalf("quiet terminal replay: %+v", update)
+	}
+	var admission mcpbridge.Admission
+	call("codeagent_lookup_admission", mcpbridge.AdmissionInput{SessionID: ref.ID, RequestID: "local-turn"}, &admission)
+	if admission.Receipt == nil || admission.Receipt.TurnID != receipt.TurnID {
+		t.Fatalf("durable admission missing: %+v", admission)
+	}
+	var handoff mcpbridge.Handoff
+	call("codeagent_get_handoff", mcpbridge.ArtifactInput{SessionID: ref.ID, TurnID: receipt.TurnID}, &handoff)
+	if handoff.ValidationStatus != "complete" || handoff.AcceptanceStatus != "not_reviewed" || handoff.DiffSHA256 != artifacts.DiffSHA256 || len(handoff.Commands) != 1 || handoff.Commands[0].Evidence.SourceSeq <= 0 {
+		t.Fatalf("real daemon handoff: %+v", handoff)
+	}
 	for _, call := range artifacts.ModelCalls {
 		if call.Selection == nil || call.Selection.RequestedModel != nil || call.Selection.ResolvedModel != "local/scripted" || call.Selection.ActualModel != "served-scripted" || call.PromptTokens != 10 || call.Succeeded == nil || !*call.Succeeded {
 			t.Fatalf("model call=%+v", call)
@@ -187,6 +202,10 @@ func TestDaemonStdioToolRoundTrip(t *testing.T) {
 }
 
 func startExperimentRuntime(t *testing.T, ctx context.Context, root string, config []byte, token string) string {
+	return startObservedExperimentRuntime(t, ctx, root, config, token, nil)
+}
+
+func startObservedExperimentRuntime(t *testing.T, ctx context.Context, root string, config []byte, token string, observe func(*http.Request)) string {
 	t.Helper()
 	// Assemble the real production components with MCP discovery deliberately
 	// disabled. A test must not start the user's configured global MCP servers.
@@ -228,7 +247,13 @@ func startExperimentRuntime(t *testing.T, ctx context.Context, root string, conf
 	builder := runtime.NewServeRunBuilder(cfg, mc, model, cred, registry, workspaces, plan)
 	executor := conversation.NewTurnExecutor(repo, events, conversation.NewActiveTurnRegistry(), conversation.NewSubscriptionManager(), builder)
 	t.Cleanup(executor.Shutdown)
-	daemon := httptest.NewServer(server.WithServerAuth(server.NewMux(repo, events, executor, server.MuxOptions{RuntimeModelsBuilder: func() server.RuntimeModelCatalog { return server.BuildRuntimeModelCatalog(cfg, cred) }}), server.ServerAuth{Enabled: true, Token: token}))
+	handler := server.WithServerAuth(server.NewMux(repo, events, executor, server.MuxOptions{RuntimeInfo: server.RuntimeInfo{ServerID: "offline-fixture"}, RuntimeModelsBuilder: func() server.RuntimeModelCatalog { return server.BuildRuntimeModelCatalog(cfg, cred) }}), server.ServerAuth{Enabled: true, Token: token})
+	daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if observe != nil {
+			observe(r)
+		}
+		handler.ServeHTTP(w, r)
+	}))
 	t.Cleanup(daemon.Close)
 	return daemon.URL
 }

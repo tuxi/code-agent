@@ -39,18 +39,31 @@ type CancelInput struct {
 	SessionID string `json:"session_id"`
 }
 
+type UpdateInput struct {
+	SessionID      string `json:"session_id"`
+	TurnID         string `json:"turn_id"`
+	AfterCursor    int64  `json:"after_cursor" jsonschema:"Last durable cursor returned by this tool; initially use the admission cursor"`
+	TimeoutSeconds int    `json:"timeout_seconds,omitempty" jsonschema:"0 for snapshot; maximum 30 seconds; use 30 while waiting"`
+}
+
+type AdmissionInput struct {
+	SessionID string `json:"session_id"`
+	RequestID string `json:"request_id"`
+}
+
 func Server(c *Client) *mcp.Server {
-	s := mcp.NewServer(&mcp.Implementation{Name: "codeagent-p0a", Version: "0.2.0-experimental"}, &mcp.ServerOptions{Instructions: "One explicitly bound isolated workspace/Session; owner credentials never expand this scope. Manual Collaboration keeps direct Session delegation and mutable current-workspace artifacts. Optional Task tools require a verified Runtime/Store grant; managed run/review tools also require advertised daemon capabilities. Managed Collaboration uses immutable review bundles, exact Attempt/epoch bindings and Flux scheduling. Do not send manual work into a managed Attempt. Reattachment observes durable work; it never replays unknown tool side effects or restores approvals. recorded review, gate_accepted, Turn completed, Flux success and Task accepted are distinct. Inspect actual Diff and verification evidence. Never infer PASS from missing tests. Approvals belong to the user in AgentKit. External Codex remains reported, not lifecycle-managed. Do not commit, install dependencies, or delegate recursively."})
+	s := mcp.NewServer(&mcp.Implementation{Name: "codeagent-p0a", Version: "0.3.0-experimental"}, &mcp.ServerOptions{Instructions: "One explicitly bound workspace/Session; owner credentials never expand scope. Default async workflow: connection_info -> send stable request_id -> end this response with the durable receipt. Do not poll or schedule wakeups. User observes/approves in Talkify and returns to this chat; then get_handoff once for the exact Turn and review targeted evidence. Wait only when explicitly requested. Missing receipt: lookup_admission; unknown is not unsubmitted. If native tools are absent, diagnose project configuration; never construct PTY/stdio drivers. Manual artifacts remain mutable; execution, validation and acceptance differ. Optional Task tools require a verified Runtime/Store grant; managed run/review tools also require advertised daemon capabilities. Managed Collaboration uses immutable review bundles, exact Attempt/epoch bindings and Flux scheduling. Do not send manual work into a managed Attempt. Reattachment observes durable work; it never replays unknown tool side effects or restores approvals. recorded review, gate_accepted, Turn completed, Flux success and Task accepted are distinct. Inspect actual Diff and verification evidence. Never infer PASS from missing tests. Approvals belong to the user in AgentKit. External Codex remains reported, not lifecycle-managed. Do not commit, install dependencies, or delegate recursively."})
 	mcp.AddTool(s, &mcp.Tool{Name: "codeagent_list_models", Description: "Read the daemon model catalog and default. Availability checks local configuration and credentials, not API success. Verification has the scope and age reported by the runtime.", Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true}}, func(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, ModelCatalog, error) {
 		v, e := c.ListModels(ctx)
 		return nil, v, e
 	})
+	registerCollaborationUXTools(s, c)
 
 	mcp.AddTool(s, &mcp.Tool{Name: "codeagent_create_session", Description: "Create the single experiment session in the pre-bound isolated repository. Retries are only cached within this bridge process."}, func(ctx context.Context, _ *mcp.CallToolRequest, in CreateInput) (*mcp.CallToolResult, SessionRef, error) {
 		v, e := c.Create(ctx, in.RequestID)
 		return nil, v, e
 	})
-	mcp.AddTool(s, &mcp.Tool{Name: "codeagent_send_to_session", Description: "Delegate with optional namespaced model from codeagent_list_models. Omit model to inherit the runtime default. Selection applies only at a new Turn boundary. Returns after durable admission; retry uncertain outcomes with identical request_id and payload."}, func(ctx context.Context, _ *mcp.CallToolRequest, in SendInput) (*mcp.CallToolResult, Receipt, error) {
+	mcp.AddTool(s, &mcp.Tool{Name: "codeagent_send_to_session", Description: "Delegate with optional namespaced model from codeagent_list_models. Omit model to inherit the runtime default. Selection applies only at a new Turn boundary. Returns after durable admission, not completion. Default: retain receipt, tell user to observe Talkify and return here for review, then END THIS RESPONSE without wait/read polling or scheduled wakeups. Missing receipt: lookup_admission first; retry only identical request_id and payload. Declare development checks and include them in the Executor message."}, func(ctx context.Context, _ *mcp.CallToolRequest, in SendInput) (*mcp.CallToolResult, Receipt, error) {
 		v, e := c.SendWithExpectations(ctx, in.SessionID, in.RequestID, in.Message, in.Model, in.Development)
 		return nil, v, e
 	})
@@ -58,7 +71,7 @@ func Server(c *Client) *mcp.Server {
 		v, e := c.Read(ctx, in.SessionID, in.TurnID, in.Cursor)
 		return nil, v, e
 	})
-	mcp.AddTool(s, &mcp.Tool{Name: "codeagent_wait_sessions", Description: "P0-A waits on one exact session/turn, at most 30 seconds. Keep using the original admission cursor. Timeout does not cancel execution.", Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true}}, func(ctx context.Context, _ *mcp.CallToolRequest, in WaitInput) (*mcp.CallToolResult, ReadResult, error) {
+	mcp.AddTool(s, &mcp.Tool{Name: "codeagent_wait_sessions", Description: "On explicit user request only; default is submit and end response. P0-A waits on one exact session/turn, at most 30 seconds. Keep using the original admission cursor. Timeout does not cancel execution.", Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true}}, func(ctx context.Context, _ *mcp.CallToolRequest, in WaitInput) (*mcp.CallToolResult, ReadResult, error) {
 		if in.TimeoutSeconds < 0 || in.TimeoutSeconds > 30 {
 			return nil, ReadResult{}, errors.New("timeout_seconds must be between 0 and 30")
 		}

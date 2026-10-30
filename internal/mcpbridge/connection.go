@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"time"
 )
@@ -68,11 +69,11 @@ func NewFromManifest(ctx context.Context, path, workspace string) (*Client, Conn
 func newFromManifest(ctx context.Context, path, workspace, baseline string) (*Client, ConnectionInfo, error) {
 	m, digest, err := loadConnection(path)
 	if err != nil {
-		return nil, ConnectionInfo{}, err
+		return nil, ConnectionInfo{}, fmt.Errorf("connection_grant: %w", err)
 	}
 	c, err := newClient(ctx, m.Endpoint, m.AccessToken, workspace, baseline)
 	if err != nil {
-		return nil, ConnectionInfo{}, err
+		return nil, ConnectionInfo{}, fmt.Errorf("workspace_binding: %w", err)
 	}
 	c.binding = &connectionBinding{path: path, digest: digest}
 	var runtime struct {
@@ -93,7 +94,7 @@ func newFromManifest(ctx context.Context, path, workspace, baseline string) (*Cl
 	}
 	if err != nil {
 		c.Close()
-		return nil, ConnectionInfo{}, err
+		return nil, ConnectionInfo{}, fmt.Errorf("runtime_identity: %w", err)
 	}
 	c.binding.verifiedStoreID = m.StoreID
 	c.binding.verifiedServerID = m.ServerID

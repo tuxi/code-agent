@@ -67,6 +67,7 @@ func contains(args []string, s string) bool {
 type CommandEvidence struct {
 	Status     string `json:"status,omitempty"`
 	CallID     string `json:"call_id"`
+	SourceSeq  int64  `json:"source_seq,omitempty"`
 	Command    string `json:"command"`
 	ExitCode   *int   `json:"exit_code"`
 	Stdout     string `json:"stdout,omitempty"`
@@ -97,6 +98,10 @@ type Artifacts struct {
 func (c *Client) Artifacts(ctx context.Context, id, turnID string) (Artifacts, error) {
 	c.sendMu.Lock()
 	defer c.sendMu.Unlock()
+	return c.artifacts(ctx, id, turnID)
+}
+
+func (c *Client) artifacts(ctx context.Context, id, turnID string) (Artifacts, error) {
 	if err := c.checkSession(id); err != nil {
 		return Artifacts{}, err
 	}
@@ -194,6 +199,7 @@ func (c *Client) Artifacts(ctx context.Context, id, turnID string) (Artifacts, e
 			continue
 		}
 		command.CallID = e.CallID
+		command.SourceSeq = e.Seq
 		a.CommandResults = append(a.CommandResults, command)
 	}
 	return a, nil

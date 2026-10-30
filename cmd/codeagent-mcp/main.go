@@ -28,10 +28,23 @@ func run() error {
 	reattach := flag.String("reattach-session", "", "Explicit existing session; requires manifest and baseline-commit; never resumes execution")
 	baseline := flag.String("baseline-commit", "", "Original full HEAD for reattachment; dirty changes are preserved")
 	check := flag.Bool("check-connection", false, "Verify granted instance and print non-secret identity without starting MCP or a turn")
+	printConfig := flag.Bool("print-project-config", false, "Print project-scoped TOML for the actual workspace; no credentials read, files written or network calls")
 	workspace := flag.String("workspace", "", "Absolute isolated Git repository (clean unless explicit existing-session reattach)")
 	tokenEnv := flag.String("token-env", "CODEAGENT_BRIDGE_TOKEN", "Environment variable containing the daemon access token")
 	experimental := flag.Bool("experimental-p0a", false, "Enable isolated technical experiment; no production recovery guarantees")
 	flag.Parse()
+	if *printConfig {
+		binary, err := os.Executable()
+		if err != nil {
+			return err
+		}
+		config, err := projectConfig(binary, *manifest, *workspace, *attach, *reattach, *baseline)
+		if err != nil {
+			return err
+		}
+		_, err = fmt.Fprint(os.Stdout, config)
+		return err
+	}
 	if !*experimental {
 		return fmt.Errorf("explicit --experimental-p0a is required")
 	}
@@ -69,19 +82,26 @@ func run() error {
 	defer c.Close()
 	if *attach != "" {
 		if _, err = c.AttachEmptySession(ctx, *attach); err != nil {
-			return err
+			return fmt.Errorf("session_binding: %w; a previously used Session requires explicit reattach and its original baseline", err)
 		}
 	}
 	if *check {
+		binding, err := c.BindingInfo(ctx)
+		if err != nil {
+			return err
+		}
 		return json.NewEncoder(os.Stdout).Encode(struct {
 			mcpbridge.ConnectionInfo
-			AttachedSessionID string `json:"attached_session_id,omitempty"`
+			AttachedSessionID   string `json:"attached_session_id,omitempty"`
+			WorkspacePath       string `json:"workspace_path"`
+			BaselineCommit      string `json:"baseline_commit"`
+			NativeToolDiscovery string `json:"native_tool_discovery"`
 		}{info, func() string {
 			if *reattach != "" {
 				return *reattach
 			}
 			return *attach
-		}()})
+		}(), binding.Workspace, binding.Baseline, "not_tested: check codeagent_connection_info in the actual project chat; do not use a temporary stdio/PTY driver"})
 	}
 	return mcpbridge.Server(c).Run(ctx, &mcp.StdioTransport{})
 }

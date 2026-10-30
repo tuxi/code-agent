@@ -3,6 +3,7 @@ package mcpbridge
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -66,7 +67,7 @@ func NewReattachedFromManifest(ctx context.Context, path, workspace, id, baselin
 	}
 	if err = c.reattach(ctx, id); err != nil {
 		c.Close()
-		return nil, info, err
+		return nil, info, fmt.Errorf("session_reattach: %w", err)
 	}
 	return c, info, nil
 }
