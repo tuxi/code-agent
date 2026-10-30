@@ -213,6 +213,37 @@ status      = execution completed / validation unknown / acceptance not_reviewed
 - 没有跨进程派发租约。两个 executor Bridge 仍可能在同一 workspace 各建 Session，这属于独立风险，本次未处理。
 - 同一 Session 的后续 Turn 不在本包内。需要新证据就重新导出，不要复用旧包。
 
+## 十、Case 001 实际接入记录（2026-10-30）
+
+### 10.1 WorkBuddy 客户端配置落点
+
+| 位置 | 实际情况 |
+| --- | --- |
+| `~/.workbuddy-ai/mcp.json` | **不被读取**，日志中无解析记录 |
+| `~/.workbuddy-ai/connectors/default/mcp.json` | **未被修改**，`codeagent` 出现 0 次，mtime 仍为 2026-07-08 |
+| `~/.workbuddy-ai/connectors/<account>/connector-states.v3.json` | 账户级 store，aes-256-gcm 加密，无法明文核对 |
+| `~/.workbuddy-ai/mcp-approvals.json` | 明文可核：`<sha256>::codeagent_reviewer` |
+
+结论：**没有可手写的明文配置路径**，只能经 UI「MCP Server Management」添加并信任。手写配置文件无效，这是排障时最容易走错的一步。
+
+### 10.2 原生调用结果
+
+| 工具 | 结果 |
+| --- | --- |
+| `codeagent_connection_info` | `bundle_verified=true`、`identity_verified=false`（离线包无实时身份，正确）、Session `20261030-052252-b8f78ce8`、`34e59c4e..8def8a27` |
+| `codeagent_get_handoff` | `commit_range` / `completed` / `unknown` / `not_reviewed`、`evidence_complete=true`、`diff_sha256=21bb4e94…`、8 文件、9 命令 |
+| `codeagent_get_artifacts` | 调用成功，但结果 **92,518 字符**，超过客户端单次上限并落盘 |
+
+`get_artifacts` 的问题已单列为 [P0-C1 分级获取设计](p0c1-artifact-retrieval.md)。
+
+### 10.3 派生证据包
+
+Case 001 是**返工 Turn**：`turn_started` 携带返工指令、`turn_finished` 是修复报告、`thinking` 含根因。原样提供给审查方等于提前给出答案。
+
+因此该次复核使用派生包：`read.events` 只保留 `turn_accepted`，diff/handoff/命令证据不动，源与派生的 sha256 记在包的 `PROVENANCE.txt`。**这是 independent recheck，不是 blind review**：交付代码注释里仍写着 `Regression (Codex review, …)` 与"首轨为空"的场景。
+
+要获得真正的盲审，必须在返工之前导出，或选择不含指令与报告的 Turn。
+
 ## 关联
 
-[P0-A MCP 实验](p0a-mcp-experiment.md)、[双 GUI 接入](dual-gui-implementation.md)、[Case 001](collaboration-cases/001-timelinekit.md)、[外部 agent 协作调研](cross-agent-collaboration-research.md)
+[P0-A MCP 实验](p0a-mcp-experiment.md)、[P0-C1 分级获取](p0c1-artifact-retrieval.md)、[双 GUI 接入](dual-gui-implementation.md)、[Case 001](collaboration-cases/001-timelinekit.md)、[外部 agent 协作调研](cross-agent-collaboration-research.md)
