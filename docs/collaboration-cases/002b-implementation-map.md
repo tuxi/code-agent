@@ -2,6 +2,8 @@
 
 2026-10-31。状态：**只读核查，未改任何代码**。基于 v2 设计（`cfdbfc3`）逐项对照现有实现。
 
+> **2026-10-31 修正**：本文两处结论已被 [调用链核实](002b-callchain-verification.md) 推翻——①daemon 只用一个会话库，`workspace_path` 是列不是分库键，因此"跨库事务"问题不存在；②`request_id` 幂等由 `turn_inputs` 主键在准入事务内保证，不是事后检测。下文相关段落已就地标注。
+
 核查方式：阅读 `internal/server/{auth,router,ws,control,mux}.go`、`internal/runtime/store.go`、`internal/controlplane/owner.go`、`internal/mcpbridge/{handoff,connection}.go`；只读查询 `~/.codeagent` 下的库结构。未启动 Turn、未调用模型。
 
 ## 0. 结论摘要
@@ -28,8 +30,8 @@
 | 8 | 撤销后既有连接失效 | `ws.go:294-305`（revision） | 有 revision 概念，但只用于释放 sink | 无撤销集合、无主动关闭 | 中 |
 | 9 | 撤销只阻断后续，不取消在跑 Turn | `router.go:98-105`（turn 上下文 `WithoutCancel`） | Turn 生命周期独立于连接，天然满足 | 无需改动，但要在文档与测试里固化 | 低 |
 | 10 | workspace 稳定身份 | `internal/runtime/store.go:202-217` | 路径 → `basename-sha256(abs)[:12]` 作为 store key | **无 EvalSymlinks、无 dev/ino**；目录替换后仍命中同一 key | 高 |
-| 11 | 单 Grant 单 Session 原子性 | `mux.go:937-984` → `repo.Create` | 创建走单一 repo 调用 | 无"每 grant 一次"约束；无跨库事务（见 §5） | 中 |
-| 12 | request_id 并发幂等 | `internal/mcpbridge/handoff.go:83-108` | 通过扫描 `turn_accepted` 事件**事后**判定 | 准入时不去重；并发提交会产出两个 Turn，随后 lookup 报 `ambiguous durable admission` | 高 |
+| 11 | 单 Grant 单 Session 原子性 | `mux.go:937-984` → `repo.Create` | 创建走单一 repo 调用 | 无"每 grant 一次"约束；**同库单事务即可**（§5 已修正） | 中 |
+| 12 | request_id 并发幂等 | `session/sqlite/turn_input.go:18` | **已由 `turn_inputs` 主键 `(session_id, request_id)` 在准入事务内保证**，`turn_accepted` 同事务 | 无需实现，只需补并发测试（§4 已修正） | 低 |
 | 13 | 审计（attempted / outcome 分离） | 无 | — | 仓库内无请求级审计；`grep audit` 仅命中 settings/credential/permission | 高 |
 | 14 | Bridge 侧 manifest 携带 scope | `internal/mcpbridge/connection.go`（`loadConnection`） | manifest 有 schema_version / endpoint / server_id / store_id / pid / expires_at / access_token | 无 `scope` 字段；Bridge 无法区分 owner 与 scoped | 中 |
 | 15 | Bridge 工具面不变 | `internal/mcpbridge/reviewer_tools.go`、`mcp.go` | 已支持按 profile 注册不同工具面 | 无需改动（executor 面复用） | 低 |
@@ -56,9 +58,7 @@ v2 要求"入站校验"和"出站过滤"是两条独立强制边界。现状：
 
 **单 Grant 单 Session**：`POST /v1/conversations` 直接调 `repo.Create`，没有"该 grant 已创建过 Session"的检查，也没有对 `created_session` 的条件更新。实现时需要一条原子写：`UPDATE grants SET created_session=? WHERE grant_id=? AND created_session IS NULL`，用受影响行数判定，而不是"先查再写"。
 
-**request_id**：`LookupAdmission` 是**读事件流事后判定**，不是准入去重。两个连接同时提交同一 request_id，可能各自准入一个 Turn；之后 lookup 发现两条 `turn_accepted`，直接返回 `ambiguous durable admission`——即"检测到冲突，但冲突已经发生"。
-
-这是 v2 测试矩阵里"重复 request_id 同 payload → 返回同一 receipt"无法达成的根因。需要准入路径上的原子去重（唯一索引或事务内 `INSERT ... ON CONFLICT DO NOTHING` + 回读），且必须在 sessions.db 内完成，才能与 `turn_accepted` 同一事务。
+**request_id（已修正）**：`ReserveTurnInput`（`session/sqlite/turn_input.go:18`）在单事务内先按 `(session_id, request_id)` 查询、命中即返回既有记录，再插入 `turn_inputs` 与 `turn_accepted` 事件。表上 `PRIMARY KEY (session_id, request_id)` 保证并发下不会重复。`LookupAdmission` 扫事件只是客户端侧确认，不是去重机制。
 
 ## 5. 跨库事务一致性
 
@@ -70,13 +70,9 @@ index.db     wal
 sessions.db  wal
 ```
 
-SQLite 的跨库原子提交只在**非 WAL** 下成立。因此：
+SQLite 的跨库原子提交只在**非 WAL** 下成立。但**这个问题不存在**（已修正）：daemon 只用一个会话库，`grants`、`owner_grant_id`、`session_delegations` 与会话表同库，单事务即可。
 
-- `grants`（control.db）+ Session 归属（sessions.db）**不能**放在一个事务里。
-- 可行方案：把 `grants` 与 `session_delegations` 放进 **sessions.db**（与归属同库，单事务），control.db 只保留实例租约这类跨 workspace 的数据。代价是每个 workspace 一份 grant 表，跨 workspace 的 grant 需要多库写入——但那本来也不是最小设计要支持的能力（一 Grant 一 Workspace）。
-- 若坚持放 control.db，则必须接受"最终一致 + 补偿"：签发先写 grants，再写归属，失败回滚靠幂等重试。这会引入 v2 想避免的中间态。
-
-**建议**：grants 落 sessions.db。
+`control.db` 只保留 `session_owners` 这类实例租约，不参与授权。
 
 ## 6. workspace 身份绑定位置
 
@@ -86,12 +82,12 @@ SQLite 的跨库原子提交只在**非 WAL** 下成立。因此：
 
 | 场景 | 现状 | v2 要求 |
 | --- | --- | --- |
-| 路径改名/移动 | 新 key → 新库，旧会话"消失" | 拒绝并要求重新授权（现状更糟：静默换库） |
+| 路径改名/移动 | 会话仍在 daemon 库里（`workspace_path` 列变化）；只有**换 daemon/换 cwd** 才会换库 | 拒绝并要求重新授权 |
 | 符号链接访问 | 不同 key → 不同库 | 解析后比较 |
 | 同路径删除重建（换仓库） | **同一 key，同一库** | 用 `(dev, ino)` 拒绝 |
 | 大小写差异（大小写不敏感卷） | 可能不同 key | 规范化 |
 
-注意：`storePath` 没有任何 inode 信息，所以"目录替换"这条风险当前是**真实存在**的，不是理论问题。
+注意：`storePath` 没有任何 inode 信息。对**会话存储**而言目录替换不换库（路径哈希只决定 daemon 自己的库位置），但 Grant 的 workspace 绑定若只看 `workspace_path` 字符串，目录替换后仍会匹配——这条风险依然真实。
 
 ## 7. 审计与业务原子性
 
