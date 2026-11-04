@@ -109,7 +109,52 @@ func (t *ApplyPatchTool) Execute(ctx context.Context, ec tools.ExecutionContext,
 			Content: "Patch did not apply; no files were changed.\n\n" + msg,
 		}, nil
 	}
-	return tools.ToolResult{Content: "Patch applied successfully."}, nil
+	return tools.ToolResult{
+		Content: "Patch applied successfully.",
+		// Counted from the patch itself, and only on the path where the applier
+		// reported success — both backends share this return, so a dry-run
+		// mismatch never contributes lines.
+		Wrote: patchWrites(patch),
+	}, nil
+}
+
+// patchWrites reports what a unified diff touches, for the turn diffstat. Binary
+// patches and pure mode changes count as a file with zero lines (the file did
+// change, but "lines" is not a meaningful measure for them). A rename counts as
+// modified with its hunk lines: v1 does not split it into added+deleted.
+func patchWrites(patch string) []tools.FileWrite {
+	files, _, err := gitdiff.Parse(strings.NewReader(patch))
+	if err != nil {
+		return nil
+	}
+	out := make([]tools.FileWrite, 0, len(files))
+	for _, f := range files {
+		path := stripPatchPrefix(f.NewName)
+		status := tools.WriteModified
+		switch {
+		case f.IsDelete:
+			path = stripPatchPrefix(f.OldName)
+			status = tools.WriteDeleted
+		case f.IsNew:
+			status = tools.WriteAdded
+		}
+		if path == "" {
+			continue
+		}
+		w := tools.FileWrite{Path: path, Status: status}
+		for _, frag := range f.TextFragments {
+			for _, line := range frag.Lines {
+				switch line.Op {
+				case gitdiff.OpAdd:
+					w.Added++
+				case gitdiff.OpDelete:
+					w.Removed++
+				}
+			}
+		}
+		out = append(out, w)
+	}
+	return out
 }
 
 // validatePatchPaths applies the workspace boundary before selecting a patch

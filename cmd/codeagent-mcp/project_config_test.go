@@ -39,3 +39,33 @@ func TestProjectConfigUsesActualWorktreeWithoutReadingGrant(t *testing.T) {
 		t.Fatal("reattach without baseline")
 	}
 }
+
+func TestProjectConfigNeverRequiresCollaborationForChat(t *testing.T) {
+	for _, mode := range []struct {
+		name, attach, reattach, baseline string
+	}{
+		{name: "new"},
+		{name: "empty", attach: "s1"},
+		{name: "reattach", reattach: "s1", baseline: strings.Repeat("a", 40)},
+	} {
+		t.Run(mode.name, func(t *testing.T) {
+			config, err := projectConfig("/local/codeagent-mcp", "/private/missing-grant.json", t.TempDir(), mode.attach, mode.reattach, mode.baseline)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var required []string
+			for _, line := range strings.Split(config, "\n") {
+				line = strings.TrimSpace(line)
+				if strings.HasPrefix(line, "required") {
+					required = append(required, line)
+				}
+			}
+			if len(required) != 1 || required[0] != "required = false" {
+				t.Fatalf("collaboration must explicitly remain optional: %v", required)
+			}
+			if !strings.Contains(config, "\nenabled = true\n") {
+				t.Fatal("optional collaboration should still be enabled")
+			}
+		})
+	}
+}

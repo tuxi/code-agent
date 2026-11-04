@@ -10,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	"code-agent/internal/model"
+	"code-agent/internal/session"
 )
 
 const maxUserAssetsPerTurn = 4
@@ -53,6 +54,17 @@ func decodeAndValidateAgentInput(data []byte, imageInput bool) (AgentInput, *Age
 		return AgentInput{}, rejectInput("", "invalid_input", "invalid agent_input envelope")
 	}
 	requestID := rawString(raw["request_id"])
+	for key := range raw {
+		if key != "validation_contract" && strings.EqualFold(key, "validation_contract") {
+			return AgentInput{}, rejectInput(requestID, "invalid_validation_contract", "validation_contract must use its canonical field name")
+		}
+	}
+	if value, present := raw["validation_contract"]; present {
+		var contract session.ValidationContract
+		if !unambiguousValidationEnvelope(data) || json.Unmarshal(value, &contract) != nil || rawString(raw["kind"]) != "text" || !validValidationRequestID(requestID) {
+			return AgentInput{}, rejectInput(requestID, "invalid_validation_contract", "valid validation_contract and stable request_id are required on text input")
+		}
+	}
 	var input AgentInput
 	if err := json.Unmarshal(data, &input); err != nil {
 		return AgentInput{}, rejectInput(requestID, "invalid_input", "invalid agent_input envelope")

@@ -15,7 +15,25 @@ import (
 
 var _ session.TurnInputStore = (*Store)(nil)
 
+func (s *Store) SupportsValidationContracts() bool { return true }
+
 func (s *Store) ReserveTurnInput(ctx context.Context, input session.TurnInput, accepted session.EventRecord) (session.TurnInput, bool, int64, error) {
+	if input.ValidationContract != nil {
+		copy, err := input.ValidationContract.CloneValidated()
+		if err != nil {
+			return session.TurnInput{}, false, 0, err
+		}
+		persisted, err := session.AcceptedValidation(accepted, input)
+		if err != nil || persisted == nil {
+			return session.TurnInput{}, false, 0, session.ErrInvalidValidationContract
+		}
+		want, _ := copy.Hash()
+		got, _ := persisted.Hash()
+		if got != want {
+			return session.TurnInput{}, false, 0, session.ErrInvalidValidationContract
+		}
+		input.ValidationContract = copy
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return session.TurnInput{}, false, 0, err
@@ -36,6 +54,10 @@ func (s *Store) ReserveTurnInput(ctx context.Context, input session.TurnInput, a
 		FROM turn_inputs WHERE session_id=? AND request_id=?`, input.SessionID, input.RequestID))
 	if err == nil {
 		stored.ManagedTask, err = managedRefForInput(ctx, tx, stored.SessionID, stored.RequestID)
+		if err != nil {
+			return session.TurnInput{}, false, 0, err
+		}
+		stored.ValidationContract, err = loadValidationContract(ctx, tx, stored)
 		if err != nil {
 			return session.TurnInput{}, false, 0, err
 		}
@@ -133,6 +155,9 @@ func (s *Store) TurnInput(ctx context.Context, sessionID, requestID string) (ses
 	if err == nil {
 		input.ManagedTask, err = managedRefForInput(ctx, s.db, sessionID, requestID)
 	}
+	if err == nil {
+		input.ValidationContract, err = loadValidationContract(ctx, s.db, input)
+	}
 	return input, err
 }
 
@@ -163,8 +188,31 @@ func (s *Store) RecoverableTurnInputs(ctx context.Context) ([]session.TurnInput,
 		if err != nil {
 			return nil, err
 		}
+		out[i].ValidationContract, err = loadValidationContract(ctx, s.db, out[i])
+		if err != nil {
+			return nil, err
+		}
 	}
 	return out, nil
+}
+
+func loadValidationContract(ctx context.Context, q interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}, input session.TurnInput) (*session.ValidationContract, error) {
+	if input.AcceptedSeq == 0 {
+		return nil, nil
+	}
+	var record session.EventRecord
+	var payload string
+	err := q.QueryRowContext(ctx, `SELECT session_id, turn_id, kind, COALESCE(payload, '') FROM session_events WHERE id=?`, input.AcceptedSeq).Scan(&record.SessionID, &record.TurnID, &record.Kind, &payload)
+	if err != nil {
+		return nil, err
+	}
+	if record.SessionID != input.SessionID || record.TurnID != input.TurnID || record.Kind != "turn_accepted" {
+		return nil, session.ErrInvalidValidationContract
+	}
+	record.Payload = json.RawMessage(payload)
+	return session.AcceptedValidation(record, input)
 }
 
 type rowScanner interface{ Scan(...any) error }

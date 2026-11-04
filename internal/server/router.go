@@ -8,6 +8,7 @@ import (
 	"code-agent/internal/agent"
 	"code-agent/internal/approve"
 	"code-agent/internal/model"
+	"code-agent/internal/session"
 )
 
 // CommandTarget is the command plane: the actions a client triggers on a session.
@@ -44,6 +45,13 @@ type RequestAssetMessageTarget interface {
 // Local assets are intentionally independent from the image_input capability.
 type RequestLocalAssetMessageTarget interface {
 	SendMessageWithRequestIDAndAllAssets(ctx context.Context, requestID, text, model, effort string, assets []model.GatewayAssetRef, localAssets []model.LocalAssetRef) (agent.TurnResult, error)
+}
+
+// ValidationMessageTarget must preserve the contract through durable admission.
+// Legacy command targets cannot silently discard it.
+type ValidationMessageTarget interface {
+	SupportsValidationContracts() bool
+	SendMessageWithValidationContract(context.Context, string, string, string, string, []model.GatewayAssetRef, []model.LocalAssetRef, *session.ValidationContract) (agent.TurnResult, error)
 }
 
 // ApprovalResolver is the control plane: deliver a client's approval verdict to
@@ -112,6 +120,19 @@ func (r Router) Route(ctx context.Context, data []byte) {
 		m, rejected := decodeAndValidateAgentInput(data, r.ImageInput)
 		if rejected != nil {
 			r.reject(*rejected)
+			return
+		}
+		if m.ValidationContract != nil {
+			target, ok := r.Commands.(ValidationMessageTarget)
+			if !ok || !target.SupportsValidationContracts() {
+				r.reject(*rejectInput(m.RequestID, "validation_contract_unsupported", "durable validation contracts are unavailable"))
+				return
+			}
+			turnCtx := context.WithoutCancel(ctx)
+			go func() {
+				result, err := target.SendMessageWithValidationContract(turnCtx, m.RequestID, m.Text, m.Model, m.ReasoningEffort, copyGatewayAssetRefs(m.Assets), copyLocalAssetRefs(m.LocalAssets), m.ValidationContract)
+				r.rejectTurnError(m.RequestID, result, err)
+			}()
 			return
 		}
 		switch m.Kind {

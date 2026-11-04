@@ -32,6 +32,16 @@
 
 本版本不自动编辑用户配置、轮换 owner grant、创建 Session 或启动 Daemon。配置输出只是审阅入口；无法从 Bridge 内部修正 Desktop 的项目信任或热加载状态。
 
+### MCP 故障不阻塞普通对话
+
+2026-11-03：TimelineKit 的旧手工配置使用 `required = true`，临时授权过期且原 Daemon 退出后，Bridge 在 initialize 前安全退出，Codex 因必需服务未就绪而拒绝创建对话。生成器现在明确输出 `required = false`，服务仍启用，但失败只影响协作工具。该行为使用 Codex 原生可选 MCP 配置，不引入自定义握手或自动恢复协议。
+
+合并配置时，必须替换同一 server 表内原有的 `required = true`，不能重复追加同名键，也不能新增一个不同名称的条目后留下原必需条目。生成器不会自动迁移已有配置。其他 MCP 客户端应使用其原生可选服务设置；`required` 是 Codex 客户端设置，不属于 MCP 协议。
+
+授权过期时，由用户在 Talkify 重新授权后重连；工作区或原基线改变时，停止委派并核对任务绑定。不能自动刷新 owner 授权、修改旧基线或静默创建新 Session。任务交付后设置 `enabled = false` 停用该任务绑定；新任务使用新的 Session/基线。若只需普通 Codex 对话，无需启动 Talkify 或恢复授权。
+
+此修正不使 Bridge 在无效授权下继续提供执行工具：启动仍执行原有身份校验。客户端可选服务语义负责让普通对话继续；委派前仍须成功调用 `codeagent_connection_info`。CLI 回归验证配置策略，真实客户端恢复结果以桌面验收为准。TimelineKit 的两个旧配置已停用，用户确认普通消息恢复；新生成配置下服务故障的桌面验收尚未重复执行。
+
 ## 默认异步委派与按需等待
 
 ```text

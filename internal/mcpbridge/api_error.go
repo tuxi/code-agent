@@ -16,6 +16,8 @@ type RuntimeAPIError struct {
 	Message    string `json:"message"`
 	HTTPStatus int    `json:"http_status"`
 	TraceID    string `json:"trace_id,omitempty"`
+	Retryable  bool   `json:"retryable"`
+	NextAction string `json:"next_action"`
 }
 
 func (e *RuntimeAPIError) Error() string {
@@ -45,7 +47,11 @@ var safeRuntimeErrors = map[string]safeRuntimeError{
 func (e *RuntimeAPIError) Unwrap() error { return safeRuntimeErrors[e.Code].cause }
 
 func readRuntimeAPIError(status int, body io.Reader) error {
-	out := &RuntimeAPIError{Code: "runtime_http_error", Message: fmt.Sprintf("Runtime request failed with HTTP %d.", status), HTTPStatus: status}
+	out := &RuntimeAPIError{Code: "runtime_http_error", Message: fmt.Sprintf("Runtime request failed with HTTP %d.", status), HTTPStatus: status,
+		NextAction: "Inspect the Runtime status and original request before retrying. A missing response is not proof that execution was not admitted."}
+	if status == 401 || status == 403 {
+		out.NextAction = "Check the local MCP authorization and operation scope in Talkify, then reconnect and verify identities. Do not bypass authorization or resubmit uncertain work."
+	}
 	b, err := io.ReadAll(io.LimitReader(body, (16<<10)+1))
 	if err != nil || len(b) > 16<<10 {
 		return out
@@ -66,6 +72,9 @@ func readRuntimeAPIError(status int, body io.Reader) error {
 	} // legacy bare task error
 	if safe, ok := safeRuntimeErrors[code]; ok && safe.status == status {
 		out.Code, out.Message = code, safe.message
+		if code == "recovery_required" || code == "managed_workspace" {
+			out.NextAction = "Inspect the original managed task and recovery evidence. Do not clear leases, force-resume, or replay side effects."
+		}
 	}
 	if id, err := uuid.Parse(response.TraceID); err == nil && id.String() == response.TraceID && id != uuid.Nil {
 		out.TraceID = response.TraceID

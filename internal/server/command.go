@@ -6,6 +6,7 @@ import (
 	"code-agent/internal/agent"
 	"code-agent/internal/assetref"
 	"code-agent/internal/model"
+	"code-agent/internal/session"
 )
 
 // Command-plane messages (client -> server): they trigger an action on a session
@@ -58,20 +59,21 @@ type RegisterTools struct {
 // the v1 send_message / cancel_turn flat types. The Router dispatches by Kind.
 // See docs/protocols/agent-wire-v1.1-client-tool-execution.md §1.
 type AgentInput struct {
-	Type        string                  `json:"type"`                   // always "agent_input"
-	Kind        string                  `json:"kind"`                   // "text" | "tool_result" | "command" | "system"
-	RequestID   string                  `json:"request_id,omitempty"`   // stable client idempotency key for a turn-starting input
-	Text        string                  `json:"text,omitempty"`         // kind="text" | "command"
-	Model       string                  `json:"model,omitempty"`        // optional: model profile name to use this turn
+	ValidationContract *session.ValidationContract `json:"validation_contract,omitempty"`
+	Type               string                      `json:"type"`                 // always "agent_input"
+	Kind               string                      `json:"kind"`                 // "text" | "tool_result" | "command" | "system"
+	RequestID          string                      `json:"request_id,omitempty"` // stable client idempotency key for a turn-starting input
+	Text               string                      `json:"text,omitempty"`       // kind="text" | "command"
+	Model              string                      `json:"model,omitempty"`      // optional: model profile name to use this turn
 	// ReasoningEffort overrides the resolved model's default thinking budget for
 	// THIS turn ("low"|"medium"|"high"|"x-high"|"max" | reserved "off" = disable
 	// reasoning, requires can_disable_reasoning). Empty keeps the model's
 	// configured default. Validated against the model's supported efforts; an
 	// unsupported value rejects the turn. Only meaningful on kind="text".
 	ReasoningEffort string                  `json:"reasoning_effort,omitempty"` // kind="text": per-turn thinking budget override
-	Assets      []model.GatewayAssetRef `json:"assets,omitempty"`       // kind="text": Gateway-owned user asset refs
-	LocalAssets []model.LocalAssetRef   `json:"local_assets,omitempty"` // kind="text": workspace-local attachment refs
-	ToolResult  *ToolResult             `json:"tool_result,omitempty"`  // kind="tool_result"
+	Assets          []model.GatewayAssetRef `json:"assets,omitempty"`           // kind="text": Gateway-owned user asset refs
+	LocalAssets     []model.LocalAssetRef   `json:"local_assets,omitempty"`     // kind="text": workspace-local attachment refs
+	ToolResult      *ToolResult             `json:"tool_result,omitempty"`      // kind="tool_result"
 	// kind="system" fields (v1.1 parses but stubs out the semantics):
 	Command      string `json:"command,omitempty"`
 	CommandKey   string `json:"command_key,omitempty"`

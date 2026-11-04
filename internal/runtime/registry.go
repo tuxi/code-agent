@@ -59,6 +59,7 @@ func RegisterBuiltinTools(registry *tools.Registry, cfg settings.Settings, cred 
 		filesystem.NewReadFileTool(),
 		filesystem.NewCreateFileTool(),
 		filesystem.NewEditFileTool(),
+		filesystem.NewInsertFileTool(),
 		search.NewGrepTool(),
 		skill.NewLoadSkillTool(skillReg, cfg.GlobalSkillsDir, filepath.Join(root, "skills")),
 	}

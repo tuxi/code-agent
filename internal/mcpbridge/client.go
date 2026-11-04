@@ -21,6 +21,7 @@ import (
 
 	"code-agent/internal/collab"
 	"code-agent/internal/executionevidence"
+	"code-agent/internal/session"
 
 	"github.com/coder/websocket"
 )
@@ -42,6 +43,8 @@ func (c *Client) requireWritable() error {
 
 // Event is a bounded subset of agent-wire, not a second runtime event model.
 type Event struct {
+	ValidationContract     json.RawMessage `json:"validation_contract,omitempty"`
+	ValidationContractHash string          `json:"validation_contract_hash,omitempty"`
 	ModelCallEvidence
 	Kind            string `json:"kind,omitempty"`
 	Type            string `json:"type,omitempty"`
@@ -73,6 +76,7 @@ type Receipt struct {
 }
 
 type ReadResult struct {
+	ValidationProvenance
 	SessionID         string                    `json:"session_id"`
 	TurnID            string                    `json:"turn_id"`
 	Status            string                    `json:"status"`
@@ -176,7 +180,7 @@ func newClient(ctx context.Context, endpoint, token, workspace, baseline, delive
 		pinned = baseline
 	case baseline != "":
 		if strings.TrimSpace(head) != baseline {
-			return nil, errors.New("workspace HEAD differs from the explicitly supplied baseline")
+			return nil, bridgeError("baseline_changed", nil)
 		}
 	}
 	rootInfo, err := os.Stat(root)
@@ -236,7 +240,7 @@ func (c *Client) request(ctx context.Context, method, path string, body, out any
 	req.Header.Set("Content-Type", "application/json")
 	res, err := c.http.Do(req)
 	if err != nil {
-		return fmt.Errorf("runtime transport failed: %w", err)
+		return bridgeError("runtime_unreachable", err)
 	}
 	defer res.Body.Close()
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
@@ -245,7 +249,7 @@ func (c *Client) request(ctx context.Context, method, path string, body, out any
 	if strings.HasSuffix(u.Path, "/events") {
 		for _, header := range []string{"X-Codeagent-Replay-Truncated", "X-Codeagent-Has-More-Older", "X-Codeagent-Turn-Fragment"} {
 			if value := res.Header.Get(header); value != "" && value != "0" && value != "false" {
-				return errors.New("runtime event history is incomplete; refusing partial replay")
+				return bridgeError("evidence_incomplete", nil)
 			}
 		}
 	}
@@ -309,7 +313,7 @@ func (c *Client) Create(ctx context.Context, requestID string) (SessionRef, erro
 	}
 	var ref SessionRef
 	if err := c.request(ctx, "POST", "/v1/conversations", map[string]any{"workspace_path": c.root, "execution_policy": "shared_workspace"}, &ref); err != nil {
-		return ref, fmt.Errorf("create outcome may be unknown; inspect daemon before retrying: %w", err)
+		return ref, admissionError("create_unknown", "", requestID, err)
 	}
 	if !validID(ref.ID) || ref.WorkspacePath != c.root {
 		return ref, errors.New("runtime created an unexpected session/workspace")
@@ -324,7 +328,7 @@ func (c *Client) checkSession(id string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if id == "" || c.id != id {
-		return errors.New("session is not owned by this P0-A bridge")
+		return bridgeError("session_mismatch", nil)
 	}
 	return nil
 }
@@ -357,7 +361,7 @@ func (c *Client) connect(ctx context.Context, id string) (*websocket.Conn, error
 	}
 	conn, _, err := websocket.Dial(ctx, u.String(), &websocket.DialOptions{HTTPClient: c.http, HTTPHeader: http.Header{"Authorization": []string{"Bearer " + c.token}}})
 	if err != nil {
-		return nil, errors.New("runtime WebSocket connection failed")
+		return nil, bridgeError("runtime_unreachable", err)
 	}
 	conn.SetReadLimit(maxResponse)
 	_, hello, err := conn.Read(ctx)
@@ -423,6 +427,10 @@ func (c *Client) Send(ctx context.Context, id, requestID, message, model string)
 // SendWithExpectations opts a development turn into evidence checks. The
 // contract is process-local P0-A metadata, not a new Runtime Task or loop gate.
 func (c *Client) SendWithExpectations(ctx context.Context, id, requestID, message, model string, development *executionevidence.Expectations) (Receipt, error) {
+	return c.sendWithExpectations(ctx, id, requestID, message, model, development, false)
+}
+
+func (c *Client) sendWithExpectations(ctx context.Context, id, requestID, message, model string, development *executionevidence.Expectations, durable bool) (Receipt, error) {
 	c.sendMu.Lock()
 	defer c.sendMu.Unlock()
 	if err := c.requireWritable(); err != nil {
@@ -432,22 +440,25 @@ func (c *Client) SendWithExpectations(ctx context.Context, id, requestID, messag
 		return Receipt{}, err
 	}
 	if !validID(requestID) || strings.TrimSpace(message) == "" || len(message) > 64<<10 {
-		return Receipt{}, errors.New("valid request_id and nonempty message (max 64 KiB) are required")
+		return Receipt{}, bridgeError("invalid_tool_arguments", nil)
 	}
 	payload := map[string]any{"type": "agent_input", "kind": "text", "request_id": requestID, "text": message, "model": model}
-	data, _ := json.Marshal(payload)
+	var contract *session.ValidationContract
 	if development != nil {
-		if len(development.ValidationCommands) > 32 {
-			return Receipt{}, errors.New("at most 32 validation commands may be declared")
+		var err error
+		contract, err = (&session.ValidationContract{Version: session.ValidationContractVersion, ValidationCommands: development.ValidationCommands, ManualChecks: development.ManualChecks}).CloneValidated()
+		if err != nil {
+			return Receipt{}, bridgeError("invalid_validation_contract", err)
 		}
-		copy := &executionevidence.Expectations{ValidationCommands: append([]string{}, development.ValidationCommands...)}
-		for _, command := range copy.ValidationCommands {
-			if strings.TrimSpace(command) == "" || len(command) > 4096 {
-				return Receipt{}, errors.New("validation commands must be nonempty and at most 4096 bytes")
+		development = &executionevidence.Expectations{ValidationCommands: contract.ValidationCommands, ManualChecks: contract.ManualChecks}
+		if durable {
+			if err := c.requireValidationCapability(ctx); err != nil {
+				return Receipt{}, err
 			}
+			payload["validation_contract"] = contract
 		}
-		development = copy
 	}
+	data, _ := json.Marshal(payload)
 	identity, _ := json.Marshal(struct {
 		Payload     json.RawMessage
 		Development *executionevidence.Expectations
@@ -455,10 +466,14 @@ func (c *Client) SendWithExpectations(ctx context.Context, id, requestID, messag
 	hash := sha256.Sum256(identity)
 	if previous := c.submissions[requestID]; previous != nil {
 		if previous.recovered {
-			return Receipt{}, errors.New("request_id was admitted before reattachment; read its exact Turn instead of resubmitting")
+			e := admissionError("already_admitted", id, requestID, nil)
+			if previous.receipt != nil {
+				e.TurnID = previous.receipt.TurnID
+			}
+			return Receipt{}, e
 		}
 		if previous.hash != hash {
-			return Receipt{}, errors.New("request_id was already used for a different payload")
+			return Receipt{}, admissionError("request_conflict", id, requestID, nil)
 		}
 		if previous.receipt != nil {
 			return *previous.receipt, nil
@@ -478,16 +493,16 @@ func (c *Client) SendWithExpectations(ctx context.Context, id, requestID, messag
 			payload["model"] = resolved
 			data, _ = json.Marshal(payload)
 		}
-		for _, previous := range c.submissions {
+		for previousRequest, previous := range c.submissions {
 			if previous.receipt == nil {
-				return Receipt{}, errors.New("another submission has an unknown outcome; resolve it before starting new work")
+				return Receipt{}, admissionError("admission_unknown", id, previousRequest, nil)
 			}
 			r, err := c.Read(ctx, id, previous.receipt.TurnID, 0)
 			if err != nil {
 				return Receipt{}, err
 			}
 			if !terminal(r.Status) {
-				return Receipt{}, errors.New("P0-A allows only one active turn; wait or cancel it first")
+				return Receipt{}, bridgeError("session_busy", nil)
 			}
 		}
 		c.mu.Lock()
@@ -502,7 +517,7 @@ func (c *Client) SendWithExpectations(ctx context.Context, id, requestID, messag
 		return Receipt{}, err
 	}
 	if err := conn.Write(admitCtx, websocket.MessageText, data); err != nil {
-		return Receipt{}, errors.New("submission outcome unknown; retry the identical request_id and payload")
+		return Receipt{}, admissionError("admission_unknown", id, requestID, err)
 	}
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
@@ -515,13 +530,23 @@ func (c *Client) SendWithExpectations(ctx context.Context, id, requestID, messag
 		}
 		events, err := c.events(admitCtx, id, 0)
 		if err != nil {
-			return Receipt{}, err
+			return Receipt{}, admissionError("admission_unknown", id, requestID, err)
 		}
 		for _, e := range events {
 			if e.Kind == "turn_accepted" && e.RequestID == requestID && e.TurnID != "" && e.Seq > 0 {
+				if durable && contract != nil {
+					persisted, _, err := c.validationFromEvents(events, id, e.TurnID)
+					if err != nil {
+						return Receipt{}, admissionError("admission_unknown", id, requestID, err)
+					}
+					want, _ := contract.Hash()
+					if persisted == nil || persistedHash(persisted) != want {
+						return Receipt{}, admissionError("admission_unknown", id, requestID, bridgeError("evidence_incomplete", nil))
+					}
+				}
 				r := Receipt{true, id, e.TurnID, requestID, e.Seq}
 				c.submissions[requestID].receipt = &r
-				if development != nil {
+				if development != nil && !durable {
 					c.mu.Lock()
 					c.expectations[r.TurnID] = development
 					c.mu.Unlock()
@@ -531,7 +556,7 @@ func (c *Client) SendWithExpectations(ctx context.Context, id, requestID, messag
 		}
 		select {
 		case <-admitCtx.Done():
-			return Receipt{}, errors.New("admission outcome unknown; retry the identical request_id and payload")
+			return Receipt{}, admissionError("admission_unknown", id, requestID, admitCtx.Err())
 		case <-ticker.C:
 		}
 	}
@@ -668,14 +693,30 @@ func (c *Client) Read(ctx context.Context, id, turnID string, since int64) (Read
 		r.AttentionRequired = true
 		r.Attention = attentionFor(r)
 	}
-	c.mu.Lock()
-	expected := c.expectations[turnID]
-	c.mu.Unlock()
+	contract, provenance, err := c.validationFromEvents(all, id, turnID)
+	if err != nil {
+		return ReadResult{}, err
+	}
+	r.ValidationProvenance = provenance
+	var expected *executionevidence.Expectations
+	if contract != nil {
+		expected = &executionevidence.Expectations{ValidationCommands: contract.ValidationCommands, ManualChecks: contract.ManualChecks}
+	} else {
+		c.mu.Lock()
+		expected = c.expectations[turnID]
+		c.mu.Unlock()
+		if expected != nil {
+			r.ValidationSource = "legacy_process_local"
+		}
+	}
 	if expected == nil && c.reattached {
-		r.EvidenceNote = "validation expectations were process-local and were not recovered; no execution-evidence verdict is inferred"
+		r.EvidenceNote = "no persisted validation contract was declared; process-local expectations cannot be recovered; no execution-evidence verdict is inferred"
 	}
 	if expected != nil {
 		evidence := developmentEvidence(all, turnID, *expected, r.Status, r.AttentionRequired)
+		if len(expected.ManualChecks) > 0 {
+			r.PendingManualChecks = append([]string(nil), expected.ManualChecks...)
+		}
 		r.ExecutionEvidence = &evidence
 	}
 	return r, nil

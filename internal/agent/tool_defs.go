@@ -13,8 +13,11 @@ import (
 // tool only describes its own name, description, and input schema, and this
 // adapter translates that into what the model expects.
 //
-// Internal tools (registered with RegisterInternal, e.g. apply_patch) are
-// excluded by Registry.Visible() and therefore never advertised to the model.
+// Tools registered with RegisterInternal are withheld from the model —
+// Registry.Visible() skips them, so they never reach a request. That is not how
+// apply_patch works: it is registered normally and advertised, and its blast
+// radius is bounded by the approval layer (auto mode leaves it to a human, see
+// docs/p9.1 §12.6) rather than by hiding it.
 func toolDefinitions(registry *tools.Registry) []model.ToolDefinition {
 	visible := registry.Visible()
 	defs := make([]model.ToolDefinition, 0, len(visible))

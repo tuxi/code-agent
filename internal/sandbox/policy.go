@@ -11,6 +11,7 @@ package sandbox
 
 import (
 	"strings"
+	"unicode/utf8"
 
 	"code-agent/internal/sandbox/ast"
 )
@@ -313,19 +314,22 @@ func (p CommandPolicy) classifyWithSubstitutions(originalCommand string, subs []
 
 // stripSubstitutions removes all $(...) command substitutions from a command,
 // replacing each with a placeholder so the outer structure remains intact.
+//
+// Bytes outside a stripped span are copied verbatim: the result is fed back into
+// Classify, and re-encoding CJK text here would classify a mangled string.
 func stripSubstitutions(command string) string {
 	var b strings.Builder
+	b.Grow(len(command))
 	inSingle, inDouble := false, false
-	i := 0
-	for i < len(command) {
-		r := rune(command[i])
+	for i := 0; i < len(command); {
+		r, size := utf8.DecodeRuneInString(command[i:])
 		switch {
 		case inSingle:
 			if r == '\'' {
 				inSingle = false
 			}
-			b.WriteRune(r)
-			i++
+			b.WriteString(command[i : i+size])
+			i += size
 		case inDouble:
 			if strings.HasPrefix(command[i:], "$(") {
 				_, end := extractBracketContent(command[i+2:])
@@ -335,24 +339,24 @@ func stripSubstitutions(command string) string {
 				if r == '"' {
 					inDouble = false
 				}
-				b.WriteRune(r)
-				i++
+				b.WriteString(command[i : i+size])
+				i += size
 			}
 		case r == '\'':
 			inSingle = true
-			b.WriteRune(r)
-			i++
+			b.WriteString(command[i : i+size])
+			i += size
 		case r == '"':
 			inDouble = true
-			b.WriteRune(r)
-			i++
+			b.WriteString(command[i : i+size])
+			i += size
 		case strings.HasPrefix(command[i:], "$("):
 			_, end := extractBracketContent(command[i+2:])
 			b.WriteString("''") // placeholder so adjacent tokens don't merge
 			i += 2 + end + 1
 		default:
-			b.WriteRune(r)
-			i++
+			b.WriteString(command[i : i+size])
+			i += size
 		}
 	}
 	return strings.TrimSpace(b.String())

@@ -1,0 +1,123 @@
+{
+  "schema": "manual-collaboration-v1c-candidate/v1",
+  "recorded_on": "2026-11-04",
+  "timezone": "Asia/Shanghai",
+  "release_status": "NO_GO_pending_V1d_and_baseline_disposition",
+  "third_party_model_authorized": false,
+  "deployed": false,
+  "candidate": {
+    "commit": null,
+    "base_commit": "ca92dc9a61cd97541604a54b4fd1c9ed932f1367",
+    "source_identity_sha256": "948067957ad47ee6124928794edfd603be836446557753eeed4620bf755f18ee",
+    "source_files_sha256": {
+      "cmd/codeagent-mcp/main.go": "6c739d3df9d1c1e6b7d5a5d2e4660ff29c57fd3f84a8ef2939b06e4c3a15e8da",
+      "cmd/codeagent-mcp/manual_test.go": "5272ed6d3b7283362c24f2ae2f9ba5d53eb19c9f6282772a175b3dd82dc3d5d7",
+      "cmd/codeagent-mcp/project_config.go": "6b6ae1ea2ba858e3fc2a08853f149e7d43f64502e77f8801dbbb813f2573f009",
+      "cmd/codeagent-mcp/project_config_test.go": "715a40e51d3db91c1200878823cc461e298b78f4d45152be085f2140b6fc89d7",
+      "go.mod": "917488249a5f1c1f3342a1ea966f4a1fa6df0276caa0062737ea7eb495b3b404",
+      "go.sum": "a569643a235f6082a603bdddb634e69337e6bf488cf07e2683ae2c415b16dd45",
+      "internal/agent/event.go": "377c4b5832a9fa7adc7fff1b59e37174715a0331d50dbfc639f0fcce49eaefa8",
+      "internal/conversation/executor.go": "c04e9aa8ac6a680196e9c910ebc029e9dde5453575c8bcaa01a3223de596daa5",
+      "internal/conversation/validation_contract.go": "216029939ffd8f626f6070d22889c72217a1d0f5beb198de7201f77d2be4b973",
+      "internal/conversation/validation_contract_test.go": "491e9e4b5e87848b648effdc313a8910d1822543f469c7d7093c2218a4b860ab",
+      "internal/executionevidence/check.go": "353d5bc1b0ce4081da3acf4364a2b2b8a3251ebc095298a798d774aa5bc62546",
+      "internal/executionevidence/manual_checks_test.go": "9be50f168d6d6f55c79a6b6622a4a4edde003a0ba3b7c048bdb9347c82bef66d",
+      "internal/mcpbridge/api_error.go": "e905c8d66cc55dda28d364ab37b0ca3f6a7ddbc16b9feca850b0919369d59810",
+      "internal/mcpbridge/artifacts.go": "ccc91179a38f3c5db44287b636798032f231399025acd14595250e00da9ed6fb",
+      "internal/mcpbridge/client.go": "a2283ad816073976262f8df966bdc532f6b3ce06d9c64eb0765f4ca4f6bfa706",
+      "internal/mcpbridge/connection.go": "c3931be50387b705d12764141d0300447235ebd554d5da013e2debd5e7e7e804",
+      "internal/mcpbridge/connection_test.go": "c929c92bbd23e65d7b1e8128bebd9bf274032314518cd5c9b926efb3570d4996",
+      "internal/mcpbridge/diagnostic.go": "fd35400ed52f22f321972eb3bc03a1069e87eecd7e9b7bd8d5e1ca94eb52c3cb",
+      "internal/mcpbridge/diagnostic_test.go": "bc68ebf23dd005e12f32a1533f92abdcec606c2b6058e465701c187b822fe182",
+      "internal/mcpbridge/handoff.go": "1a5291aaae7ace96f27fecf22b99b997ee7b9266bbfa986a88ca7aaf39dfcd7f",
+      "internal/mcpbridge/manual_daemon_test.go": "022d2787d2855fc82b8a387f4fcc9a0d1f53b09eb0069c728c55d7d5d063c40b",
+      "internal/mcpbridge/manual_service.go": "b298f07bbc75c21010970aafcf00ca7e89a1239777254cf98c1c6da96e968d55",
+      "internal/mcpbridge/manual_test.go": "4b28a9f203e815bb7f3c49fbbcefbeba6a9bdac4fefaf8eb2b14ec18c949bcc5",
+      "internal/mcpbridge/manual_tools.go": "8c41bd10c97e7b4ca55a5f67312ae71940fb5793d5f71f1a6fbcab43fd884f2c",
+      "internal/mcpbridge/reattach.go": "1ace35284a443286bd9ac7fd5dd8421b4bb21d296be849a50aa6ad9e5b9994b8",
+      "internal/mcpbridge/testdata/v1c_compat/main.go": "a91a13b28dd7575e2fe0638e1c9ff0e1295c42c9fd92fe5ca27fd40d2f12a9b8",
+      "internal/mcpbridge/v1c_compatibility_test.go": "16e37da9b919dd6e207384bcb34dcb89f7cc9595d9ae750d86e4559088e80c95",
+      "internal/mcpbridge/validation_contract.go": "42d45e782f1ab32da111114eb6a037a009cc88e9ea7f77da9e0a35f50005f018",
+      "internal/mcpbridge/validation_contract_test.go": "146b4f56127eaf90c545bc6a7b1e6f1cc4e0e127ada929b22c52a9c3771f789e",
+      "internal/server/command.go": "fb32e7845ed59371ea95cd2bbb365d96cebe0eccdc91375391492a7f426af7fc",
+      "internal/server/mux.go": "68642ba55ead3fd2b5c8aee96d7dd78c34357a03698429a021418ec2f677eeb0",
+      "internal/server/router.go": "fc8b395f2933f35a52dffc20808fe3925b0aa6672a30f75da73778c47f9f4b5a",
+      "internal/server/user_assets.go": "1bf3af77e028a4a3502d39a087501f60b121583ded34241f74e8eb98f891dee7",
+      "internal/server/validation_contract.go": "d02036fcbc1525d5d9fb07a0a5372627c41a2e35cd740abd1ee381efb7eea8c6",
+      "internal/server/validation_contract_test.go": "1eb1b9793a35fe10dc5b2182603e26182a83e982993234cb7e01e876a451216a",
+      "internal/server/wire.go": "0aaeb7d87a8387324e74c3e63db66c60a8809118e0617abf689f2c522cd3ad2c",
+      "internal/session/sqlite/turn_input.go": "7ef2e3708c47469ea81ffd9f78ac2e65877cdaac4cebc6878b1ed5a882c1c13d",
+      "internal/session/sqlite/validation_contract_feasibility_test.go": "8cd2cc47e14fa922f8e54eedf6a2f66b16bd0d254d0ca859df471de54e8752c2",
+      "internal/session/sqlite/validation_contract_test.go": "560eb52a18da3cc4a22e7ec0c3058a5255ea54ec25889ae9e2583cd4e44d52be",
+      "internal/session/turn_input.go": "d697826e47ea202acc4e1bdb5e8ecf46a9df68a6e10ce5af7e49192776fe8d64",
+      "internal/session/validation_contract.go": "02902d25a3bf89199e90472950fdf6f1d52749cf6cc8394f45cbd875afa4f0fe",
+      "internal/session/validation_contract_test.go": "4e478cce6a482bcd2ee0816bf4635a4a9eb252977463846304158bca0e4c04bb"
+    },
+    "note": "Uncommitted reviewed overlay; excludes other workspace changes. This is not the deployed binary version."
+  },
+  "compatibility_fixture": "internal/mcpbridge/testdata/v1c_compat/main.go",
+  "observed_ui_heads": {
+    "AgentKit": "00a0967271ac2fa4d22156b071d61e964e0e58d3",
+    "Talkify": "901cf877ea2f500563f68411e42d877438dca792"
+  },
+  "ui_build_or_desktop_acceptance_in_C3": false,
+  "protocols": {
+    "agent_wire_major": 1,
+    "validation_contract_version": 1,
+    "capability": "durable_validation_contract_v1",
+    "task_protocol_changed": false,
+    "sqlite_schema_changed": false,
+    "new_manual_tools": 11,
+    "legacy_executor_tools": 22,
+    "reviewer_tools": 7
+  },
+  "verification": {
+    "cross_version_processes": "passed twice in independent local clones using actual baseline/candidate Bridge CLI processes",
+    "cross_version_top_level_tests": 1,
+    "cross_version_subcases": 2,
+    "cross_version_provider_calls": 0,
+    "targeted_regression": {
+      "top_level": 57,
+      "passed": 56,
+      "skipped": 1,
+      "failed": 0,
+      "race_reports": 0
+    },
+    "targeted_vet": "passed",
+    "codeagentd_and_bridge_build": "passed",
+    "script_syntax": "passed",
+    "full_repository_suite": "not_run",
+    "server_full_suite": "not_rerun_in_C3; 4 failures reproduced on baseline in C2 remain unresolved",
+    "desktop_acceptance": "pending V1-d",
+    "real_model_acceptance": "not_run; requires separate authorization",
+    "notes": "Runtime fixture uses actual versioned SQLite/TurnExecutor/NewMux with deterministic tool-free Runner in a separate process, not the Talkify-packaged Daemon. Other regression tests use only loopback scripted Providers."
+  },
+  "known_server_baseline_failures": [
+    "TestProviderStoreUpsertBuiltinFillsModelsFromRegistry",
+    "TestSharedEnrollmentWaitsForHostAcknowledgement",
+    "TestSharedEnrollmentTimeoutRevokesPendingStateAndKeepsBootstrapRetryable",
+    "TestRouterTerminatesEveryPreAcceptFailureWithoutRejectingAcceptedTurns"
+  ],
+  "rollback": {
+    "automatic_downgrade_allowed": false,
+    "pending_contract_input_requires_current_version": true,
+    "delete_history_or_leases": false,
+    "restore_revoked_grant": false,
+    "managed_recovery_protection_preserved": true
+  },
+  "build_environment": {
+    "go_version": "go version go1.25.4 darwin/arm64",
+    "dependency_downloads": false,
+    "go_mod_sha256": "917488249a5f1c1f3342a1ea966f4a1fa6df0276caa0062737ea7eb495b3b404",
+    "go_sum_sha256": "a569643a235f6082a603bdddb634e69337e6bf488cf07e2683ae2c415b16dd45"
+  },
+  "observed_binaries_sha256": {
+    "baseline-bridge": "593d64439a4f8d3f24297fb7c0ce8836479188d8ed47bfc0cfbb2181e72411a6",
+    "candidate-bridge": "faf1fa0d16724030fe780c0202daccee23368818d0bfa6ec8f50ede55de60317",
+    "baseline-runtime-fixture": "b7b3d8ce813e611794efcae686e0115e7056b25fa4da93e3ebbaece743f4c188",
+    "candidate-runtime-fixture": "184395fa137ae8957a74b9e42044e3b4d83bd3ab253fd4a1203596f6a98af507",
+    "candidate-codeagentd": "bae6da3ccd72718d104fcf2bb541b61c1c8d6be9c91d565d3de43a6940f19606"
+  },
+  "verifier_sha256": "de852de5fffd941f4613ad6b93d13935a4ce2033ac1eb0aa65c73e8c31c53a84",
+  "release_record_sha256": "836a7e248dcb24c7e62d48630e49198cee64bd283762d20360cbb32c439f4b64"
+}

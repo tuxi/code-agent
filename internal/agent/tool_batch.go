@@ -61,17 +61,19 @@ func (p toolCallPlan) parallelizable() bool {
 // toolCallResult is a worker's pure output: the observation and side-channels,
 // with no shared-state mutation. The main goroutine commits it in order.
 type toolCallResult struct {
-	observation string
-	output      json.RawMessage
-	assetRefs   []assets.Ref
-	usage       *tools.ToolUsage
-	nestedUsage []*tools.ToolUsage
-	modelUsage  *tools.ModelUsage
-	executed    bool
-	succeeded   bool
-	stepError   string // non-empty => a genuine tool error (not a cancel)
-	fatalErr    error  // auth/quota: commit this result, then terminate the turn
-	toolStart   time.Time
+	observation  string
+	output       json.RawMessage
+	assetRefs    []assets.Ref
+	usage        *tools.ToolUsage
+	nestedUsage  []*tools.ToolUsage
+	modelUsage   *tools.ModelUsage
+	wrote        []tools.FileWrite
+	nestedWrites []tools.FileWrite
+	executed     bool
+	succeeded    bool
+	stepError    string // non-empty => a genuine tool error (not a cancel)
+	fatalErr     error  // auth/quota: commit this result, then terminate the turn
+	toolStart    time.Time
 }
 
 // executeToolBatch runs one assistant message's tool calls under the
@@ -312,6 +314,16 @@ func (r *Runner) runToolCall(ctx context.Context, p toolCallPlan) toolCallResult
 			res.usage = toolResult.Usage
 			res.nestedUsage = toolResult.NestedUsages
 			res.modelUsage = toolResult.ModelUsage
+			// Diffstat input. Wrote is trusted only from the built-in write tools:
+			// the field is a plain JSON-serializable struct, so accepting it from
+			// any registered tool would make it a forgeable channel for turn
+			// statistics. NestedWrites carries the same reports aggregated by a
+			// composite tool (Flux), which is the only way nested writes reach the
+			// parent turn.
+			if builtinWriteTools[p.call.Function.Name] {
+				res.wrote = toolResult.Wrote
+			}
+			res.nestedWrites = toolResult.NestedWrites
 			// Post-tool hook (8.5): fire-and-forget side effect (format/lint).
 			r.postHook(ctx, p.call.Function.Name, p.wireInput, observation)
 			// Post-tool-result hook: chained transform that CAN modify the
@@ -347,6 +359,17 @@ func (r *Runner) runToolCall(ctx context.Context, p toolCallPlan) toolCallResult
 	return res
 }
 
+// builtinWriteTools are the only tool names whose ToolResult.Wrote is trusted.
+// Everything else — client-proxied tools, MCP tools, managed tools — may return
+// that field but it is dropped, so it cannot become a channel for inflating a
+// turn's diffstat.
+var builtinWriteTools = map[string]bool{
+	"apply_patch": true,
+	"edit_file":   true,
+	"insert_file": true,
+	"create_file": true,
+}
+
 // commitToolResult finalizes one call on the main goroutine, in model order:
 // skill/todo telemetry, Observation enrichment, the Step, asset normalization,
 // the ToolFinished event, and the tool-result message.
@@ -356,6 +379,23 @@ func (r *Runner) commitToolResult(ctx context.Context, sess *session.Session, tu
 	}
 	if res.succeeded {
 		turn.SucceededToolCalls++
+	}
+	// Diffstat sums what each call reported writing. This must not key off
+	// res.succeeded: the write tools return recoverable failures as ordinary
+	// observations (nil error), which succeed==true would count as an edit — the
+	// retry-three-times case that would show "+36 −12" for one real edit. A tool
+	// fills Wrote only after the bytes reached disk, so an empty report here means
+	// nothing was written no matter how the call ended.
+	if len(res.wrote) > 0 || len(res.nestedWrites) > 0 {
+		if turn.DiffStat == nil {
+			turn.DiffStat = &TurnDiffStat{}
+		}
+		for _, w := range res.wrote {
+			turn.DiffStat.Add(w)
+		}
+		for _, w := range res.nestedWrites {
+			turn.DiffStat.Add(w)
+		}
 	}
 	if res.usage != nil {
 		applyToolUsage(turn, res.usage, p.call.ID)

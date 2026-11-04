@@ -230,7 +230,7 @@ func (a *ModeApprover) autoApprove(toolName string, input json.RawMessage) (stri
 // still gate specific MCP tools precisely.
 func (a *ModeApprover) autoApproveTier(toolName string, input json.RawMessage) (string, bool) {
 	switch toolName {
-	case "edit_file", "create_file":
+	case "edit_file", "create_file", "insert_file":
 		path, ok := decodePath(input)
 		if !ok || !a.insideWorkspace(path) {
 			return "", false
@@ -267,7 +267,7 @@ func (a *ModeApprover) autoApproveTier(toolName string, input json.RawMessage) (
 // consulted for those, so the hard line survives.
 func (a *ModeApprover) fullApprove(toolName string, input json.RawMessage) (string, bool) {
 	switch toolName {
-	case "edit_file", "create_file":
+	case "edit_file", "create_file", "insert_file":
 		if path, ok := decodePath(input); ok && sandbox.IsPathProtected(path, sandbox.ProtectedPaths(nil)) {
 			return "", false
 		}

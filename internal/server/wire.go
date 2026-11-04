@@ -11,6 +11,7 @@ import (
 	"code-agent/internal/agent"
 	"code-agent/internal/assetref"
 	"code-agent/internal/model"
+	"code-agent/internal/session"
 	"code-agent/internal/tools"
 )
 
@@ -18,6 +19,8 @@ import (
 // single place transport concerns are expressed; the core struct is left
 // untouched. Field order groups the common header first, then per-kind fields.
 type wireEvent struct {
+	ValidationContract     *session.ValidationContract `json:"validation_contract,omitempty"`
+	ValidationContractHash string                      `json:"validation_contract_hash,omitempty"`
 	// Common header (§3.1). event_id and parent_session_id are stamped by the
 	// emitter, not by toWire, which keeps toWire pure and golden-testable.
 	EventID         string `json:"event_id,omitempty"`
@@ -88,6 +91,10 @@ type wireEvent struct {
 	SucceededToolCalls int              `json:"succeeded_tool_calls,omitempty"`
 	BillableToolCalls  int              `json:"billable_tool_calls,omitempty"`
 	ElapsedMS          int64            `json:"elapsed_ms,omitempty"`
+	// DiffStat is what the turn wrote (terminal kinds only, never turn_paused).
+	// Absent when the turn wrote nothing: clients read absence as "unknown" and
+	// must not render "0 files".
+	DiffStat *agent.TurnDiffStat `json:"diffstat,omitempty"`
 
 	// Model retry notice (model_retrying). Live-only, like the deltas: it is
 	// never persisted, so a reconnecting client does not replay it.
@@ -123,6 +130,10 @@ type wireError struct {
 // rfc3339Millis is the timestamp format on the wire: RFC3339 with millisecond
 // precision, always UTC. Cross-language clients parse it natively.
 const rfc3339Millis = "2006-01-02T15:04:05.000Z07:00"
+
+// maxWireDiffFiles caps diffstat.files. The three summary numbers are always the
+// full-turn values, so a clipped list never understates the turn.
+const maxWireDiffFiles = 200
 
 // toWire is the pure Layer-2 mapping from a core event to its wire form. It does
 // NOT assign event_id or parent_session_id — the emitter owns those (transport
@@ -181,18 +192,24 @@ func toWire(e agent.Event) wireEvent {
 		ExecutedToolCalls:  e.ExecutedToolCalls,
 		SucceededToolCalls: e.SucceededToolCalls,
 		BillableToolCalls:  e.BillableToolCalls,
-		Attempt:            e.Attempt,
-		MaxAttempts:        e.MaxAttempts,
-		RetryDelayMS:       e.RetryDelayMs,
-		RetryFallback:      e.RetryFallback,
-		BeforeTokens:       e.BeforeTokens,
-		AfterTokens:        e.AfterTokens,
-		SavedTokens:        e.SavedTokens,
-		SummaryChars:       e.SummaryChars,
-		Ratio:              e.Ratio,
-		Ineffective:        e.Ineffective,
-		ExitCode:           e.ExitCode,
-		Err:                e.Err,
+		// Truncation is a wire concern (contract caps files at 200), so it happens
+		// here and never touches the core event: the summary counts stay full-turn.
+		DiffStat:      e.DiffStat.Limited(maxWireDiffFiles),
+		Attempt:       e.Attempt,
+		MaxAttempts:   e.MaxAttempts,
+		RetryDelayMS:  e.RetryDelayMs,
+		RetryFallback: e.RetryFallback,
+		BeforeTokens:  e.BeforeTokens,
+		AfterTokens:   e.AfterTokens,
+		SavedTokens:   e.SavedTokens,
+		SummaryChars:  e.SummaryChars,
+		Ratio:         e.Ratio,
+		Ineffective:   e.Ineffective,
+		ExitCode:      e.ExitCode,
+		Err:           e.Err,
+	}
+	if e.Kind == agent.EventTurnAccepted {
+		w.ValidationContract, w.ValidationContractHash = e.ValidationContract, e.ValidationContractHash
 	}
 	if e.Kind == agent.EventTurnFailed && e.Err != "" {
 		w.Error = &wireError{Code: e.ErrorCode, Message: e.Err}

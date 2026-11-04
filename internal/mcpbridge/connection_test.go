@@ -201,3 +201,47 @@ func TestLocalMCPConnectionSharedFixture(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestGrantDiagnosticsDistinguishExpiryStopAndReplacement(t *testing.T) {
+	path, original := writeGrant(t, "http://127.0.0.1:9876")
+	for _, tc := range []struct {
+		code string
+		edit func(*connectionManifest)
+	}{
+		{"grant_expired", func(m *connectionManifest) { m.ExpiresAt = time.Now().Add(-time.Hour).UTC().Format(time.RFC3339) }},
+		{"daemon_stopped", func(m *connectionManifest) { m.DaemonPID = 1 << 30 }},
+		{"grant_invalid", func(m *connectionManifest) { m.AccessToken = "PRIVATE" }},
+	} {
+		t.Run(tc.code, func(t *testing.T) {
+			m := original
+			tc.edit(&m)
+			saveGrant(t, path, m)
+			_, _, err := loadConnection(path)
+			requireDiagnostic(t, err, tc.code)
+			if strings.Contains(err.Error(), "PRIVATE") || strings.Contains(err.Error(), original.AccessToken) {
+				t.Fatal("credential reflected", err)
+			}
+		})
+	}
+	saveGrant(t, path, original)
+	_, digest, err := loadConnection(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	c := &Client{ctx: ctx, binding: &connectionBinding{path: path, digest: digest}}
+	replaced := original
+	replaced.InstanceID = "replacement"
+	saveGrant(t, path, replaced)
+	requireDiagnostic(t, c.checkBinding(), "grant_replaced")
+	saveGrant(t, path, original)
+	cancel()
+	requireDiagnostic(t, c.checkBinding(), "connection_closed")
+	// Startup wrappers retain typed diagnostics for CLI/log consumers.
+	expired := original
+	expired.ExpiresAt = time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)
+	saveGrant(t, path, expired)
+	_, _, err = NewFromManifest(context.Background(), path, "/not-inspected")
+	requireDiagnostic(t, err, "grant_expired")
+}

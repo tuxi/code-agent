@@ -272,7 +272,7 @@ func (p *permissionDialogCmp) SetSize() tea.Cmd {
 	case "run_command":
 		p.width = int(float64(p.windowSize.Width) * 0.4)
 		p.height = int(float64(p.windowSize.Height) * 0.3)
-	case "edit_file", "create_file", "apply_patch":
+	case "edit_file", "create_file", "insert_file", "apply_patch":
 		p.width = int(float64(p.windowSize.Width) * 0.8)
 		p.height = int(float64(p.windowSize.Height) * 0.8)
 	default:
@@ -354,6 +354,36 @@ func renderCreatePreview(raw map[string]any, width int) []string {
 	}
 	for _, ln := range preview {
 		lines = append(lines, body.Render(runewidth.Truncate(ln, width, "…")))
+	}
+	return lines
+}
+
+// renderInsertPreview shows what insert_file will add and where: the human is
+// approving a write, so the anchor line plus the inserted lines are the signal —
+// a raw JSON blob would hide the text being added.
+func renderInsertPreview(raw map[string]any, width int) []string {
+	t := theme.CurrentTheme()
+	bg := t.Background()
+	meta := lipgloss.NewStyle().Background(bg).Foreground(t.TextMuted())
+	ok := lipgloss.NewStyle().Background(bg).Foreground(t.Success())
+
+	content, _ := raw["content"].(string)
+	if content == "" {
+		return nil
+	}
+
+	where := "at the top of the file"
+	if line, ok := raw["line"].(float64); ok && line > 0 {
+		where = fmt.Sprintf("after line %d", int(line))
+	}
+
+	lines := []string{meta.Render("── insert " + where + " ──")}
+	preview := strings.Split(strings.TrimRight(content, "\n"), "\n")
+	if len(preview) > 20 {
+		preview = append(preview[:20:20], meta.Render(fmt.Sprintf("… %d more lines", len(preview)-20)))
+	}
+	for _, ln := range preview {
+		lines = append(lines, ok.Render(runewidth.Truncate("+ "+ln, width, "…")))
 	}
 	return lines
 }
@@ -528,6 +558,8 @@ func renderApprovalPreview(req ApprovalRequest, width int) []string {
 		return renderPatchPreview(raw, innerW)
 	case "create_file":
 		return renderCreatePreview(raw, innerW)
+	case "insert_file":
+		return renderInsertPreview(raw, innerW)
 	case "run_command":
 		return renderCommandPreview(raw, innerW)
 	default:

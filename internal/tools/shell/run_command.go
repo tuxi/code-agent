@@ -471,26 +471,29 @@ var redirectPatterns = []string{">>", ">", "2>", "&>", "<"}
 // .git, .ssh) are blocked. Redirects to paths outside the workspace are noted
 // but not blocked. Returns "" if all redirect targets are safe.
 func checkRedirectTargets(command, rootAbs string) string {
-	// Walk the command, tracking quote state, to find redirect targets.
+	// Walk the command byte-by-byte, tracking quote state, to find redirect
+	// targets. Every character this scan compares against is ASCII, and a UTF-8
+	// continuation byte can never equal one of them, so a byte scan is safe here
+	// (and avoids the byte-as-rune re-encoding mistake).
 	inSingle, inDouble := false, false
 	i := 0
 	for i < len(command) {
-		r := rune(command[i])
+		c := command[i]
 		switch {
 		case inSingle:
-			if r == '\'' {
+			if c == '\'' {
 				inSingle = false
 			}
 			i++
 		case inDouble:
-			if r == '"' {
+			if c == '"' {
 				inDouble = false
 			}
 			i++
-		case r == '\'':
+		case c == '\'':
 			inSingle = true
 			i++
-		case r == '"':
+		case c == '"':
 			inDouble = true
 			i++
 		default:

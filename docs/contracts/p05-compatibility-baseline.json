@@ -1,0 +1,85 @@
+{
+  "schema": "collaboration-compatibility-baseline/v1",
+  "recorded_on": "2026-10-29",
+  "timezone": "Asia/Shanghai",
+  "milestone": "P0.5 core read-only desktop presentation accepted",
+  "execution_authorized": false,
+  "repositories": {
+    "code-agent": {
+      "commit": "639bf9aa8d0d78abc904ed0dd0d55c1c026e79e5",
+      "backend_commit": "44324f31146a23d2fdd06ec0d0560023068ae1bf",
+      "go_mod_sha256": "917488249a5f1c1f3342a1ea966f4a1fa6df0276caa0062737ea7eb495b3b404",
+      "go_sum_sha256": "a569643a235f6082a603bdddb634e69337e6bf488cf07e2683ae2c415b16dd45"
+    },
+    "AgentKit": {
+      "commit": "ba3e38de1c377fde3a457939e2d10140a379fbf6",
+      "source_export_only": true,
+      "uncommitted_worktree_changes_excluded": true,
+      "package_resolved_sha256": "6b922000b4a3a5a7d31a980b00c83503d06dca1da00f4113192f2da7fead083d"
+    },
+    "chater": {
+      "commit": "568fa93780844a0c9d42b91de7a8a0efbfc89604",
+      "source_export_only": true,
+      "uncommitted_worktree_changes_excluded": true,
+      "local_agentkit_commit": "ba3e38de1c377fde3a457939e2d10140a379fbf6",
+      "scheme": "Talkify-MacDirect",
+      "configuration": "Debug-MacDirect",
+      "package_resolved_sha256": "d2526dbe452980f2180fee1e12d8512e79e0822fbde0066772a72ad90a4dce1f"
+    }
+  },
+  "dependency_graphs": {
+    "note": "Unit tests and Xcode app build used different existing resolved graphs. Preserve both; do not silently resolve main branches again.",
+    "agentkit_unit_tests": [
+      {"identity": "clienttoolprotocol", "revision": "bbba2e62bc6cb9de0be34addc8f960bc43172ef0"},
+      {"identity": "swift-cmark", "revision": "7898f1b3e4befeecee56cb4a3bc8eebd2cb63219"},
+      {"identity": "swift-markdown", "revision": "27b7fc1a19068bcea3d2072db0ce86360d1400ed"}
+    ],
+    "talkify_app": [
+      {"identity": "alamofire", "revision": "bda9ed57d72988a3a2ada33d824583541f86eac6", "version": "5.12.2"},
+      {"identity": "alibabacloud-oss-swift-sdk-v2", "revision": "335c1777bf3c4aa86d7212c03e515de53b192418", "version": "0.4.0"},
+      {"identity": "clienttoolprotocol", "revision": "e88faee3a73c1ded11ef55afc7a4dc57b29e10e0"},
+      {"identity": "kingfisher", "revision": "410984bf301f4fa224fe56277b3f8672cc465c79", "version": "8.11.0"},
+      {"identity": "swift-asn1", "revision": "3b6410f7dee09eb33cdd26260c5fd47fda19b0e2", "version": "1.7.3"},
+      {"identity": "swift-cmark", "revision": "a7ecfef490df1b17927ea828bc2a73cc0b69990d"},
+      {"identity": "swift-crypto", "revision": "95ba0316a9b733e92bb6b071255ff46263bbe7dc", "version": "3.15.1"},
+      {"identity": "swift-markdown", "revision": "392b73b858efe3dacec0e8a91c6e7fd19af0bb98"},
+      {"identity": "xmlcoder", "revision": "42f62383dbcd074440cb1f6a750b9c02df9e7325", "version": "0.18.2"}
+    ]
+  },
+  "protocols": {
+    "runtime_info": "runtime-info/v1",
+    "agent_wire_major": 1,
+    "runtime_model_catalog": "runtime-model-catalog/v2",
+    "task_snapshot": "task-snapshot/v1",
+    "task_event_page": "task-event-page/v1",
+    "task_event_schema_version": 1,
+    "coding_task_sqlite_schema_version": "3",
+    "review_bundle": "coding_review_bundle_v1",
+    "mcp_implementation": {"name": "codeagent-p0a", "version": "0.2.0-experimental"},
+    "managed_required_capabilities": ["task_links_v1", "task_timeline_v1", "task_managed_workflow_v1", "task_review_gate_v1", "task_executor_model_v1"],
+    "replay_read_capabilities": ["task_timeline_v1"]
+  },
+  "fixtures": [
+    {"path": "docs/contracts/p05a-managed-task-example.json", "sha256": "3c6d22838cf24a5e0adf45241be8ba5de7f41da247c5cfbc9a349dabe2753fd5"},
+    {"path": "docs/contracts/p05-replay-export.json", "sha256": "5a6dfb9b3925bc3e30efcd27e94e2903ee151e2a2982b8e17e9ba1e7e9a912cb"},
+    {"path": "docs/contracts/task-executor-model.json", "sha256": "c943412dc89ff214de9f047eee8803bcc848194a706e45e7442b733aa06658c8"}
+  ],
+  "verification": {
+    "go_targeted_race": "passed, see docs/p05-closeout.md",
+    "go_build_all": "passed",
+    "go_affected_packages_vet": "passed",
+    "agentkit_index_snapshot_tests": {"executed": 26, "passed": 25, "skipped": 1, "failed": 0},
+    "talkify_index_snapshot_mac_build": "passed, isolated DerivedData, no deployment",
+    "desktop_replay": "user confirmed list/detail/two frozen rounds/Accepted/view recreation/server switching",
+    "outage": "35-second replay process pause; HTTP timeout then unchanged Snapshot; sidebar recovered per user",
+    "real_model_managed_acceptance": "not verified",
+    "strict_execution_isolation": "not verified",
+    "deployed_binaries_match_commits": "not established; future experiment must record binary hashes"
+  },
+  "scope_freeze": {
+    "new_task_ui": false,
+    "new_scheduling": false,
+    "new_agent_adapters": false,
+    "legacy_recovery_required_preserved": true
+  }
+}

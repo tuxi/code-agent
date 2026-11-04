@@ -110,7 +110,7 @@ func (a *AutoApprover) ApproveAudited(toolName string, input json.RawMessage) (a
 // set is not statically checkable without parsing the diff).
 func (a *AutoApprover) autoApprove(toolName string, input json.RawMessage) (string, bool) {
 	switch toolName {
-	case "edit_file", "create_file":
+	case "edit_file", "create_file", "insert_file":
 		path, ok := decodePath(input)
 		if !ok || path == "" {
 			return "", false // can't see the target → fail-safe to human

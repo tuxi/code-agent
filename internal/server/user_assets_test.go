@@ -27,7 +27,9 @@ type failingRequestCommands struct {
 	result agent.TurnResult
 }
 
-func (c failingRequestCommands) SendMessageWithRequestID(context.Context, string, string, string) (agent.TurnResult, error) {
+var _ RequestMessageTarget = failingRequestCommands{}
+
+func (c failingRequestCommands) SendMessageWithRequestID(context.Context, string, string, string, string) (agent.TurnResult, error) {
 	return c.result, errors.New("internal provider configuration error")
 }
 

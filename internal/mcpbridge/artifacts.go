@@ -79,6 +79,7 @@ type CommandEvidence struct {
 }
 
 type Artifacts struct {
+	ValidationProvenance
 	ModelCalls        []ModelCallEvidence       `json:"model_calls"`
 	TaskAcceptance    string                    `json:"task_acceptance"`
 	ExecutionEvidence *executionevidence.Report `json:"execution_evidence,omitempty"`
@@ -127,18 +128,20 @@ func (c *Client) artifacts(ctx context.Context, id, turnID string) (Artifacts, e
 		return Artifacts{}, err
 	}
 	if !terminal(r.Status) {
-		return Artifacts{}, errors.New("wait for the exact turn to finish before collecting artifacts")
+		e := bridgeError("turn_not_terminal", nil)
+		e.SessionID, e.TurnID = id, turnID
+		return Artifacts{}, e
 	}
-	for _, s := range c.submissions {
+	for request, s := range c.submissions {
 		if s.receipt == nil {
-			return Artifacts{}, errors.New("submission outcome unknown; cannot collect stable evidence")
+			return Artifacts{}, admissionError("admission_unknown", id, request, nil)
 		}
 		state, err := c.Read(ctx, id, s.receipt.TurnID, 0)
 		if err != nil {
 			return Artifacts{}, err
 		}
 		if !terminal(state.Status) {
-			return Artifacts{}, errors.New("another turn is active; stop writers before review")
+			return Artifacts{}, bridgeError("session_busy", nil)
 		}
 	}
 	var diff string
@@ -154,7 +157,7 @@ func (c *Client) artifacts(ctx context.Context, id, turnID string) (Artifacts, e
 			return Artifacts{}, err
 		}
 		if strings.TrimSpace(head) != c.baseline {
-			return Artifacts{}, errors.New("HEAD changed during experiment; baseline attribution is invalid")
+			return Artifacts{}, bridgeError("baseline_changed", nil)
 		}
 		diff, truncated, err = gitOutput(ctx, c.root, "diff", "--no-ext-diff", "--no-textconv", c.baseline, "--")
 		if err != nil {
@@ -193,6 +196,7 @@ func (c *Client) artifacts(ctx context.Context, id, turnID string) (Artifacts, e
 	hash := sha256.Sum256([]byte(diff))
 	a := Artifacts{ModelCalls: []ModelCallEvidence{}, TaskAcceptance: "not_reviewed", ExecutionEvidence: r.ExecutionEvidence, EvidenceNote: r.EvidenceNote, Experimental: true, SessionID: id, TurnID: turnID, TurnStatus: r.Status, Baseline: c.baseline, Diff: diff, DiffSHA256: hex.EncodeToString(hash[:]), Truncated: truncated,
 		CommandResults: []CommandEvidence{}, UnparsedResults: []string{}, Note: "P0-A current workspace diff, not an immutable or per-turn snapshot. Stop writers before review. Inspect command exit codes; no test PASS is inferred."}
+	a.ValidationProvenance = r.ValidationProvenance
 	a.EvidenceSource, a.EvidenceComplete = "workspace", !truncated
 	if c.observeOnly {
 		head, dirty := c.headState(ctx)

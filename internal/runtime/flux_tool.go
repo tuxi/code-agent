@@ -170,7 +170,8 @@ func (t *FluxWorkflowTool) Execute(ctx context.Context, ec tools.ExecutionContex
 	})
 	usage := &fluxUsageCollector{}
 	nestedUsage := &nestedUsageCollector{}
-	fluxReg := projectFluxTools(ctx, ec, nestedUsage)
+	nestedWrites := &nestedWriteCollector{}
+	fluxReg := projectFluxTools(ctx, ec, nestedUsage, nestedWrites)
 	if len(fluxReg.List()) == 0 {
 		emitWorkflowFailure(ec, workflowID, "planning", "no eligible tools are available")
 		return tools.ToolResult{Content: "flux workflow failed: no eligible tools are available"}, nil
@@ -267,6 +268,7 @@ func (t *FluxWorkflowTool) Execute(ctx context.Context, ec tools.ExecutionContex
 		Output:       out,
 		ModelUsage:   usage.snapshot(),
 		NestedUsages: nestedUsage.snapshot(),
+		NestedWrites: nestedWrites.snapshot(),
 	}, nil
 }
 
@@ -692,7 +694,7 @@ func newFluxRuntime(workspaceRoot string) (*workflowruntime.Runtime, error) {
 	return workflowruntime.NewLocal(filepath.Join(dir, "flux-workflows.db"))
 }
 
-func projectFluxTools(ctx context.Context, ec tools.ExecutionContext, usage *nestedUsageCollector) *fluxtool.Registry {
+func projectFluxTools(ctx context.Context, ec tools.ExecutionContext, usage *nestedUsageCollector, writes *nestedWriteCollector) *fluxtool.Registry {
 	reg := fluxtool.NewRegistry()
 	visible := ec.ToolRegistry.Visible()
 	sort.SliceStable(visible, func(i, j int) bool { return visible[i].Name() < visible[j].Name() })
@@ -700,7 +702,7 @@ func projectFluxTools(ctx context.Context, ec tools.ExecutionContext, usage *nes
 		if candidate == nil || fluxExcludedTools[candidate.Name()] {
 			continue
 		}
-		reg.Register(&codeAgentFluxTool{tool: candidate, ec: ec, usage: usage, attempts: map[string]int{}})
+		reg.Register(&codeAgentFluxTool{tool: candidate, ec: ec, usage: usage, writes: writes, attempts: map[string]int{}})
 	}
 	return reg
 }
@@ -709,6 +711,7 @@ type codeAgentFluxTool struct {
 	tool     tools.Tool
 	ec       tools.ExecutionContext
 	usage    *nestedUsageCollector
+	writes   *nestedWriteCollector
 	mu       sync.Mutex
 	attempts map[string]int
 }
@@ -760,6 +763,11 @@ func (t *codeAgentFluxTool) Execute(execCtx context.Context, input map[string]an
 	if result.Usage != nil {
 		t.usage.add(result.Usage)
 	}
+	// A node's writes belong to the enclosing turn: the node ran as this call, so
+	// its report is folded here and leaves with the Flux tool's own result.
+	// NestedWrites covers a node that is itself composite.
+	t.writes.add(result.Wrote)
+	t.writes.add(result.NestedWrites)
 	return fluxtool.Success(fluxToolResultData(result)), nil
 }
 
@@ -851,6 +859,36 @@ func (c *nestedUsageCollector) snapshot() []*tools.ToolUsage {
 	defer c.mu.Unlock()
 	out := make([]*tools.ToolUsage, len(c.usages))
 	copy(out, c.usages)
+	return out
+}
+
+// nestedWriteCollector is the write-side twin of nestedUsageCollector: nodes run
+// through ExecuteNestedTool, which never reaches the runner's commit step, so
+// their writes would otherwise vanish from the parent turn's diffstat. Nodes may
+// run concurrently, hence the lock. A nil collector is valid (headless paths pass
+// one that goes nowhere) and records nothing.
+type nestedWriteCollector struct {
+	mu     sync.Mutex
+	writes []tools.FileWrite
+}
+
+func (c *nestedWriteCollector) add(ws []tools.FileWrite) {
+	if c == nil || len(ws) == 0 {
+		return
+	}
+	c.mu.Lock()
+	c.writes = append(c.writes, ws...)
+	c.mu.Unlock()
+}
+
+func (c *nestedWriteCollector) snapshot() []tools.FileWrite {
+	if c == nil {
+		return nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make([]tools.FileWrite, len(c.writes))
+	copy(out, c.writes)
 	return out
 }
 
@@ -1086,8 +1124,12 @@ func (t *FluxWorkflowTool) executeRetry(
 	defer rt.Shutdown()
 
 	// Re-register tools — the in-memory tool registry is empty after recovery.
+	// Writes are not collected here for the same reason nested usages are not:
+	// this path returns its own status payload rather than a ToolResult carrying
+	// nested telemetry. Billing (NestedUsages) has always behaved this way; the
+	// diffstat follows it instead of half-fixing one of the two.
 	nestedUsage := &nestedUsageCollector{}
-	fluxReg := projectFluxTools(ctx, ec, nestedUsage)
+	fluxReg := projectFluxTools(ctx, ec, nestedUsage, nil)
 	for _, projected := range fluxReg.List() {
 		rt.ToolRegistry().Register(projected)
 	}

@@ -16,6 +16,7 @@ import (
 // Commands are compared exactly after trimming outer whitespace. They should be
 // foreground, non-mutating checks; formatters belong before these checks.
 type Expectations struct {
+	ManualChecks       []string `json:"manual_checks,omitempty"`
 	ValidationCommands []string `json:"validation_commands"`
 }
 
@@ -148,6 +149,11 @@ func Check(events []Event, expected Expectations, turnStatus string, pendingHuma
 	}
 	if len(r.UnresolvedArgumentCallIDs) > 0 {
 		r.Reasons = append(r.Reasons, "unresolved_tool_argument_errors")
+	}
+	// No trusted human-result input exists in this contract version. Machine
+	// command success or assistant prose cannot satisfy a declared manual check.
+	if len(expected.ManualChecks) > 0 {
+		r.Reasons = append(r.Reasons, "manual_checks_unverified")
 	}
 	if pendingHuman {
 		r.Status = "attention_required"

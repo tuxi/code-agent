@@ -106,7 +106,7 @@ func Reflect(steps []StepView) ReflectionContext {
 // pre-mutation self-check before the first edit that follows a failure.
 func IsMutatingTool(tool string) bool {
 	switch tool {
-	case "edit_file", "create_file", "write_file", "apply_patch":
+	case "edit_file", "create_file", "insert_file", "write_file", "apply_patch":
 		return true
 	}
 	return false
@@ -132,7 +132,7 @@ func MutatedPaths(tool, input string) []string {
 
 func mutatedPaths(tool, input string) []string {
 	switch tool {
-	case "edit_file", "create_file", "write_file":
+	case "edit_file", "create_file", "insert_file", "write_file":
 		var in struct {
 			Path string `json:"path"`
 		}

@@ -34,21 +34,22 @@ type CrossSessionProvenance struct {
 // ResolvedModel is frozen execution identity and deliberately excluded from the
 // payload hash.
 type TurnInput struct {
-	SessionID     string
-	RequestID     string
-	TurnID        string
-	PayloadHash   string
-	Text          string
-	WireModel     string
-	ResolvedModel string
-	Assets        []model.GatewayAssetRef
-	LocalAssets   []model.LocalAssetRef
-	Provenance    *CrossSessionProvenance
-	ManagedTask   *collab.ManagedTurnRef
-	AcceptedSeq   int64
-	State         TurnInputState
-	CreatedAt     time.Time
-	UpdatedAt     time.Time
+	SessionID          string
+	RequestID          string
+	TurnID             string
+	PayloadHash        string
+	Text               string
+	WireModel          string
+	ResolvedModel      string
+	Assets             []model.GatewayAssetRef
+	LocalAssets        []model.LocalAssetRef
+	Provenance         *CrossSessionProvenance
+	ManagedTask        *collab.ManagedTurnRef
+	ValidationContract *ValidationContract // authoritative content lives in the accepted event
+	AcceptedSeq        int64
+	State              TurnInputState
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
 }
 
 // TurnInputStore is optional so existing external stores remain source

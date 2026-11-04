@@ -422,6 +422,11 @@ type TurnResult struct {
 	SucceededToolCalls int
 	BillableToolCalls  int
 
+	// DiffStat accumulates what this turn wrote, call by call. Nil until the
+	// first successful write. It is copied onto every terminal event (finished/
+	// failed/cancelled, never paused) so the client can show "edited N files".
+	DiffStat *TurnDiffStat
+
 	// billedToolCallIDs prevents a replayed managed result from being counted
 	// twice if the same call is observed again within this drive.
 	billedToolCallIDs map[string]struct{}
@@ -1186,6 +1191,7 @@ func (r *Runner) drive(ctx context.Context, sess *session.Session) (TurnResult, 
 				ExecutedToolCalls:  turn.ExecutedToolCalls,
 				SucceededToolCalls: turn.SucceededToolCalls,
 				BillableToolCalls:  turn.BillableToolCalls,
+				DiffStat:           turn.DiffStat,
 			})
 			return turn, nil
 		}
@@ -1240,14 +1246,34 @@ func (r *Runner) drive(ctx context.Context, sess *session.Session) (TurnResult, 
 	if r.PlanState == PlanStatusPlanning {
 		turn.Final = "Planning paused at the step limit before a review-ready plan was proposed. Continue discovery, then call propose_plan."
 		turn.HitStepLimit = true
-		r.emit(Event{Kind: EventTurnFinished, Text: turn.Final})
+		r.emit(Event{
+			Kind:               EventTurnFinished,
+			Text:               turn.Final,
+			BillingUnits:       turn.BillingUnits,
+			ModelBillingUnits:  turn.ModelBillingUnits,
+			ToolBillingUnits:   turn.ToolBillingUnits,
+			ExecutedToolCalls:  turn.ExecutedToolCalls,
+			SucceededToolCalls: turn.SucceededToolCalls,
+			BillableToolCalls:  turn.BillableToolCalls,
+			DiffStat:           turn.DiffStat,
+		})
 		return turn, nil
 	}
 	if r.independentTaskAvailable() && r.plannedMutation && !r.independentReviewPassed &&
 		(r.mutatedVerifiableCode || r.Reflector == nil) && r.changeReviewCount < 1 {
 		turn.Final = "Step limit reached with unreviewed code changes. Continue with a change_review task before finalizing."
 		turn.HitStepLimit = true
-		r.emit(Event{Kind: EventTurnFinished, Text: turn.Final})
+		r.emit(Event{
+			Kind:               EventTurnFinished,
+			Text:               turn.Final,
+			BillingUnits:       turn.BillingUnits,
+			ModelBillingUnits:  turn.ModelBillingUnits,
+			ToolBillingUnits:   turn.ToolBillingUnits,
+			ExecutedToolCalls:  turn.ExecutedToolCalls,
+			SucceededToolCalls: turn.SucceededToolCalls,
+			BillableToolCalls:  turn.BillableToolCalls,
+			DiffStat:           turn.DiffStat,
+		})
 		return turn, nil
 	}
 	final, finalTokens, finalBillingUnits := r.finalAnswerAfterLimit(ctx, sess)
@@ -1266,6 +1292,7 @@ func (r *Runner) drive(ctx context.Context, sess *session.Session) (TurnResult, 
 		ExecutedToolCalls:  turn.ExecutedToolCalls,
 		SucceededToolCalls: turn.SucceededToolCalls,
 		BillableToolCalls:  turn.BillableToolCalls,
+		DiffStat:           turn.DiffStat,
 	})
 	return turn, nil
 }

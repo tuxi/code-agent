@@ -132,7 +132,7 @@ func (r *HeadlessRuntime) EnsureToolsRegistered(ctx context.Context, workspaceRo
 		return fmt.Errorf("ensure tools: %w", err)
 	}
 	ec := r.BuildHeadlessContext(workspaceRoot, "headless:ensure")
-	fluxReg := projectFluxTools(ctx, ec, &nestedUsageCollector{})
+	fluxReg := projectFluxTools(ctx, ec, &nestedUsageCollector{}, nil)
 	if len(fluxReg.List()) == 0 {
 		return fmt.Errorf("ensure tools: no eligible tools are available")
 	}

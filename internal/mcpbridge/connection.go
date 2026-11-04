@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"time"
@@ -43,19 +42,25 @@ func loadConnection(path string) (connectionManifest, [32]byte, error) {
 	var m connectionManifest
 	b, err := readPrivateConnection(path)
 	if err != nil {
-		return m, [32]byte{}, err
+		return m, [32]byte{}, bridgeError("grant_invalid", err)
 	}
 	d := json.NewDecoder(bytes.NewReader(b))
 	d.DisallowUnknownFields()
 	if d.Decode(&m) != nil || d.Decode(new(any)) != io.EOF {
-		return connectionManifest{}, [32]byte{}, errors.New("invalid connection manifest")
+		return connectionManifest{}, [32]byte{}, bridgeError("grant_invalid", nil)
 	}
 	expires, err := time.Parse(time.RFC3339, m.ExpiresAt)
-	if err != nil || !expires.After(time.Now()) || expires.After(time.Now().Add(24*time.Hour)) || m.SchemaVersion != 1 || !validID(m.ServerID) || !validID(m.InstanceID) || (m.StoreID != "" && !validID(m.StoreID)) || m.DaemonPID <= 0 || !connectionProcessAlive(m.DaemonPID) || len(m.AccessToken) < 32 || len(m.AccessToken) > 4096 || bytes.ContainsAny([]byte(m.AccessToken), "\r\n\t ") {
-		return connectionManifest{}, [32]byte{}, errors.New("connection manifest is invalid, expired, or its daemon has stopped")
+	if err != nil || expires.After(time.Now().Add(24*time.Hour)) || m.SchemaVersion != 1 || !validID(m.ServerID) || !validID(m.InstanceID) || (m.StoreID != "" && !validID(m.StoreID)) || m.DaemonPID <= 0 || len(m.AccessToken) < 32 || len(m.AccessToken) > 4096 || bytes.ContainsAny([]byte(m.AccessToken), "\r\n\t ") {
+		return connectionManifest{}, [32]byte{}, bridgeError("grant_invalid", nil)
+	}
+	if !expires.After(time.Now()) {
+		return connectionManifest{}, [32]byte{}, bridgeError("grant_expired", nil)
+	}
+	if !connectionProcessAlive(m.DaemonPID) {
+		return connectionManifest{}, [32]byte{}, bridgeError("daemon_stopped", nil)
 	}
 	if _, err := parseEndpoint(m.Endpoint); err != nil {
-		return connectionManifest{}, [32]byte{}, err
+		return connectionManifest{}, [32]byte{}, bridgeError("grant_invalid", err)
 	}
 	return m, sha256.Sum256(b), nil
 }
@@ -67,11 +72,17 @@ func NewFromManifest(ctx context.Context, path, workspace string) (*Client, Conn
 }
 
 func newFromManifest(ctx context.Context, path, workspace, baseline, delivery string) (*Client, ConnectionInfo, error) {
+	return newFromManifestWithLifetime(ctx, ctx, path, workspace, baseline, delivery)
+}
+
+// Tool request cancellation must stop verification without owning the lifetime
+// of a successfully published Client.
+func newFromManifestWithLifetime(lifetime, ctx context.Context, path, workspace, baseline, delivery string) (*Client, ConnectionInfo, error) {
 	m, digest, err := loadConnection(path)
 	if err != nil {
 		return nil, ConnectionInfo{}, fmt.Errorf("connection_grant: %w", err)
 	}
-	c, err := newClient(ctx, m.Endpoint, m.AccessToken, workspace, baseline, delivery)
+	c, err := newClient(lifetime, m.Endpoint, m.AccessToken, workspace, baseline, delivery)
 	if err != nil {
 		return nil, ConnectionInfo{}, fmt.Errorf("workspace_binding: %w", err)
 	}
@@ -80,7 +91,7 @@ func newFromManifest(ctx context.Context, path, workspace, baseline, delivery st
 		ServerID string `json:"server_id"`
 	}
 	if err = c.request(ctx, "GET", "/v1/runtime/info", nil, &runtime); err == nil && runtime.ServerID != m.ServerID {
-		err = errors.New("runtime identity does not match the granted instance")
+		err = bridgeError("identity_mismatch", nil)
 	}
 	if err == nil && m.StoreID != "" {
 		var store struct {
@@ -89,7 +100,7 @@ func newFromManifest(ctx context.Context, path, workspace, baseline, delivery st
 		}
 		err = c.request(ctx, "GET", "/v1/tasks/capabilities", nil, &store)
 		if err == nil && (store.ServerID != m.ServerID || store.StoreID != m.StoreID) {
-			err = errors.New("task store identity does not match the granted instance")
+			err = bridgeError("identity_mismatch", nil)
 		}
 	}
 	if err != nil {
@@ -106,12 +117,15 @@ func (c *Client) checkBinding() error {
 	if c.binding == nil {
 		return nil
 	}
-	if c.ctx.Err() != nil {
-		return errors.New("local MCP connection is closed; authorize a new connection")
-	}
 	_, digest, err := loadConnection(c.binding.path)
-	if err != nil || digest != c.binding.digest {
-		return errors.New("local MCP grant was revoked, replaced, expired, or its daemon stopped; authorize a new connection")
+	if err != nil {
+		return err
+	}
+	if digest != c.binding.digest {
+		return bridgeError("grant_replaced", nil)
+	}
+	if c.ctx.Err() != nil {
+		return bridgeError("connection_closed", nil)
 	}
 	return nil
 }

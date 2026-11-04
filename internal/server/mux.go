@@ -467,6 +467,7 @@ type MuxOptions struct {
 // multi-session clients. WebSocket hello capabilities remain a backwards-
 // compatible feature list; this endpoint is the source of truth for execution.
 type RuntimeCapabilities struct {
+	DurableValidationContract  bool `json:"durable_validation_contract_v1"`
 	TaskLinks                  bool `json:"task_links_v1"`
 	TaskTimeline               bool `json:"task_timeline_v1"`
 	MultiSessionExecution      bool `json:"multi_session_execution_v1"`
@@ -608,6 +609,7 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 		attentionSupported = attentionSupported && capability.SupportsAttentionSnapshot()
 	}
 	runtimeCapabilities := opts.RuntimeCapabilities
+	runtimeCapabilities.DurableValidationContract = executor != nil && executor.SupportsValidationContracts()
 	runtimeCapabilities.TaskLinks = registerTaskRoutes(mux, repo, opts.RuntimeInfo.ServerID)
 	runtimeCapabilities.TaskTimeline = runtimeCapabilities.TaskLinks
 	runtimeCapabilities.PublicGitClone = opts.CloneService != nil
@@ -620,9 +622,15 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 	}
 	advertisedCapabilities := make([]string, 0, len(opts.Capabilities)+1)
 	for _, capability := range opts.Capabilities {
+		if capability == "durable_validation_contract_v1" && !runtimeCapabilities.DurableValidationContract {
+			continue
+		}
 		if capability != "history_pagination" || runtimeCapabilities.HistoryPagination {
 			advertisedCapabilities = append(advertisedCapabilities, capability)
 		}
+	}
+	if runtimeCapabilities.DurableValidationContract && !hasCapability(advertisedCapabilities, "durable_validation_contract_v1") {
+		advertisedCapabilities = append(advertisedCapabilities, "durable_validation_contract_v1")
 	}
 	if runtimeCapabilities.HistoryPagination && !hasCapability(advertisedCapabilities, "history_pagination") {
 		advertisedCapabilities = append(advertisedCapabilities, "history_pagination")
@@ -1327,6 +1335,18 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 		}
 		return conversation.NewTransportSession(id, executor), nil
 	}
+	capabilityResolver := opts.CapabilityResolver
+	if capabilityResolver != nil {
+		capabilityResolver = func(ctx context.Context) []string {
+			var caps []string
+			for _, cap := range opts.CapabilityResolver(ctx) {
+				if cap != "durable_validation_contract_v1" || runtimeCapabilities.DurableValidationContract {
+					caps = append(caps, cap)
+				}
+			}
+			return caps
+		}
+	}
 	ws = &WSHandler{
 		Resolve:            wsResolve,
 		ServerName:         opts.ServerName,
@@ -1334,7 +1354,7 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 		Accept:             opts.Accept,
 		Granter:            opts.Granter,
 		Prompts:            opts.Prompts,
-		CapabilityResolver: opts.CapabilityResolver,
+		CapabilityResolver: capabilityResolver,
 		SessionReady:       opts.SessionReady,
 	}
 	mux.Handle("GET /v1/conversations/{id}/stream", ws)

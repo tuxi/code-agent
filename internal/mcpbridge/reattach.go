@@ -16,15 +16,15 @@ func (c *Client) checkWorkspaceIdentity() error {
 	}
 	root, err := filepath.EvalSymlinks(c.root)
 	if err != nil || root != c.root {
-		return errors.New("workspace root was removed or redirected")
+		return bridgeError("workspace_mismatch", nil)
 	}
 	r, err := os.Stat(c.root)
 	if err != nil || !os.SameFile(c.rootInfo, r) {
-		return errors.New("workspace root identity changed")
+		return bridgeError("workspace_mismatch", nil)
 	}
 	g, err := os.Stat(c.gitDir)
 	if err != nil || !os.SameFile(c.gitInfo, g) {
-		return errors.New("workspace git identity changed")
+		return bridgeError("workspace_mismatch", nil)
 	}
 	return nil
 }
@@ -38,14 +38,14 @@ func (c *Client) verifyRuntimeIdentity(ctx context.Context) error {
 		return err
 	}
 	if c.binding == nil || info.Server != c.binding.verifiedServerID {
-		return errors.New("granted Runtime identity changed")
+		return bridgeError("identity_mismatch", nil)
 	}
 	info.Server, info.Store = "", ""
 	if err := c.request(ctx, "GET", "/v1/tasks/capabilities", nil, &info); err != nil {
 		return err
 	}
 	if info.Server != c.binding.verifiedServerID || info.Store != c.binding.verifiedStoreID {
-		return errors.New("granted Runtime/Store identity changed")
+		return bridgeError("identity_mismatch", nil)
 	}
 	return nil
 }
@@ -85,7 +85,7 @@ func (c *Client) reattach(ctx context.Context, id string) error {
 		return err
 	}
 	if detail.ID != id || detail.Workspace != c.root || detail.Policy != "shared_workspace" || detail.Archived != "" || detail.Rebind || detail.Fork != "" {
-		return errors.New("existing session identity, workspace, or execution policy does not match")
+		return bridgeError("session_mismatch", nil)
 	}
 	events, err := c.events(ctx, id, 0)
 	if err != nil {
@@ -122,6 +122,9 @@ func (c *Client) recoverAdmissions(id string, events []Event) error {
 		if !validID(e.TurnID) || !validID(e.RequestID) || turns[e.TurnID] || requests[e.RequestID] {
 			return errors.New("existing history contains ambiguous Turn/request admissions")
 		}
+		if _, _, err := c.validationFromEvents([]Event{e}, id, e.TurnID); err != nil {
+			return err
+		}
 		turns[e.TurnID], requests[e.RequestID] = true, true
 	}
 	for _, e := range events {
@@ -143,14 +146,14 @@ func (c *Client) checkReattachedAdmission(ctx context.Context, requestID string)
 	}
 	root, err := filepath.EvalSymlinks(c.root)
 	if err != nil || root != c.root {
-		return errors.New("bound workspace no longer resolves to the same root")
+		return bridgeError("workspace_mismatch", nil)
 	}
 	head, cut, err := gitOutput(ctx, c.root, "rev-parse", "HEAD")
 	if err != nil {
 		return err
 	}
 	if cut || strings.TrimSpace(head) != c.baseline {
-		return errors.New("workspace baseline changed; refusing new work")
+		return bridgeError("baseline_changed", nil)
 	}
 	events, err := c.events(ctx, c.id, 0)
 	if err != nil {
@@ -160,7 +163,7 @@ func (c *Client) checkReattachedAdmission(ctx context.Context, requestID string)
 		return err
 	}
 	if c.submissions[requestID] != nil {
-		return errors.New("request_id already admitted before reattachment; read its Turn, do not resubmit")
+		return admissionError("already_admitted", c.id, requestID, nil)
 	}
 	var activity struct {
 		Delta    *bool `json:"is_delta"`
@@ -184,7 +187,7 @@ func (c *Client) checkReattachedAdmission(ctx context.Context, requestID string)
 		}
 		matches++
 		if (row.State != "idle" && row.State != "done" && row.State != "failed" && row.State != "cancelled") || row.Approvals == nil || *row.Approvals != 0 || row.Tools == nil || *row.Tools != 0 {
-			return errors.New("existing session has active work or pending human controls; observe it without resubmission")
+			return bridgeError("session_busy", nil)
 		}
 	}
 	if matches > 1 {

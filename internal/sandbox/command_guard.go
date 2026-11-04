@@ -3,6 +3,7 @@ package sandbox
 import (
 	"fmt"
 	"strings"
+	"unicode/utf8"
 )
 
 // shellOperators are metacharacters that only a shell interprets. Phase A opened
@@ -578,33 +579,38 @@ func ContainsRedirect(command string) bool {
 // ConvertBackticks converts backtick command substitution `cmd` to $(cmd) so
 // the existing $() extraction and classification pipeline handles it.
 // Backticks inside single quotes are left unchanged (not expanded by shell).
+//
+// Every byte outside a converted backtick span is copied verbatim, including
+// non-ASCII text: the rewritten command is what actually executes, so any
+// re-encoding here would corrupt CJK arguments (UTF-8 bytes read as Latin-1
+// runes and written back out double-encoded).
 func ConvertBackticks(command string) string {
 	if !strings.Contains(command, "`") {
 		return command
 	}
 	var b strings.Builder
+	b.Grow(len(command))
 	inSingle := false
-	i := 0
-	for i < len(command) {
-		r := rune(command[i])
+	for i := 0; i < len(command); {
+		r, size := utf8.DecodeRuneInString(command[i:])
 		switch {
 		case inSingle:
 			if r == '\'' {
 				inSingle = false
 			}
-			b.WriteRune(r)
-			i++
+			b.WriteString(command[i : i+size])
+			i += size
 		case r == '\'':
 			inSingle = true
-			b.WriteRune(r)
-			i++
+			b.WriteString(command[i : i+size])
+			i += size
 		case r == '`':
 			// Found an opening backtick. Find the matching closing backtick.
 			end := strings.IndexRune(command[i+1:], '`')
 			if end < 0 {
 				// Unterminated — keep as-is.
-				b.WriteRune(r)
-				i++
+				b.WriteString(command[i : i+size])
+				i += size
 			} else {
 				inner := command[i+1 : i+1+end]
 				b.WriteString("$(")
@@ -613,8 +619,8 @@ func ConvertBackticks(command string) string {
 				i += end + 2
 			}
 		default:
-			b.WriteRune(r)
-			i++
+			b.WriteString(command[i : i+size])
+			i += size
 		}
 	}
 	return b.String()

@@ -19,6 +19,7 @@ const failBodyLines = 12 // a failed tool prints this many body lines (the failu
 var mutationTools = map[string]bool{
 	"edit_file":   true,
 	"create_file": true,
+	"insert_file": true,
 	"apply_patch": true,
 	"git_commit":  true,
 }
@@ -310,6 +311,8 @@ func toolAction(it Item) string {
 		return "$ " + firstArg(it.Args)
 	case "edit_file":
 		return "Update(" + firstArg(it.Args) + ")"
+	case "insert_file":
+		return "Insert(" + firstArg(it.Args) + ")"
 	case "apply_patch":
 		return "Apply Patch(" + firstArg(it.Args) + ")"
 	case "create_file":

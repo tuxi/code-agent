@@ -23,10 +23,13 @@ func (r *Registry) Register(tool Tool) error {
 	return r.register(tool, false)
 }
 
-// RegisterInternal adds a tool the runtime can execute but that is NEVER
-// exposed to the model — e.g. apply_patch, whose application must be gated by
-// the runtime, not chosen freely by the model. Internal tools are still
-// reachable via Get so the runtime can drive them directly.
+// RegisterInternal adds a tool the runtime can execute itself but that is never
+// offered to the model: Visible() skips it, Get still returns it, so a runtime
+// caller can drive it directly. "Internal" here means *hidden from the model*,
+// not "lives under internal/" and not "has side effects" — a side-effecting
+// tool the model may choose (apply_patch, run_command) is registered normally
+// and gated by the approval layer instead. Nothing currently uses this: every
+// tool that can be executed is also one the model is allowed to pick.
 func (r *Registry) RegisterInternal(tool Tool) error {
 	return r.register(tool, true)
 }

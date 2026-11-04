@@ -1,0 +1,37 @@
+{
+  "kind": "turn_finished",
+  "event_id": "evt_01J9Z4T3QX",
+  "at": "2026-11-04T04:12:08.441Z",
+  "session_id": "ses_01J9Z3K8",
+  "turn_id": "trn_01J9Z4R2",
+  "seq": 412,
+  "text": "Implemented the turn diffstat accumulator and its wire field.",
+  "executed_tool_calls": 4,
+  "succeeded_tool_calls": 4,
+  "billable_tool_calls": 0,
+  "diffstat": {
+    "files": [
+      {
+        "path": "internal/agent/event.go",
+        "added": 96,
+        "removed": 0,
+        "status": "modified"
+      },
+      {
+        "path": "internal/agent/tool_batch.go",
+        "added": 22,
+        "removed": 0,
+        "status": "modified"
+      },
+      {
+        "path": "docs/turn-diffstat-v1.md",
+        "added": 4,
+        "removed": 3,
+        "status": "modified"
+      }
+    ],
+    "files_changed": 3,
+    "added_lines": 122,
+    "removed_lines": 3
+  }
+}

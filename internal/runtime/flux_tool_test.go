@@ -46,7 +46,7 @@ func TestProjectFluxToolsUsesTurnRegistryAndExcludesControlTools(t *testing.T) {
 		t.Fatal(err)
 	}
 	ec := tools.ExecutionContext{ToolRegistry: registry, NestedExecutor: nestedExecutorStub{}}
-	projected := projectFluxTools(context.Background(), ec, &nestedUsageCollector{})
+	projected := projectFluxTools(context.Background(), ec, &nestedUsageCollector{}, nil)
 
 	if _, ok := projected.Get("read_file"); !ok {
 		t.Fatal("built-in tool was not projected")
@@ -637,7 +637,7 @@ func TestProjectFluxToolsSurfacesSessionToolOutputSchemas(t *testing.T) {
 		}
 	}
 	ec := tools.ExecutionContext{ToolRegistry: registry, NestedExecutor: nestedExecutorStub{}}
-	projected := projectFluxTools(context.Background(), ec, &nestedUsageCollector{})
+	projected := projectFluxTools(context.Background(), ec, &nestedUsageCollector{}, nil)
 
 	for _, name := range []string{"send_to_session", "wait_sessions", "read_session"} {
 		fluxTool, ok := projected.Get(name)

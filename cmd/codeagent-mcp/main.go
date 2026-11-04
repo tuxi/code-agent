@@ -29,7 +29,7 @@ func run() error {
 	observe := flag.String("observe-session", "", "Read-only observation of a completed session against a recorded commit range; requires manifest, baseline-commit and delivery-commit")
 	baseline := flag.String("baseline-commit", "", "Original full HEAD for reattachment/observation; dirty changes are preserved")
 	delivery := flag.String("delivery-commit", "", "Recorded full delivery commit for observation; the reviewed range is baseline..delivery")
-	profile := flag.String("profile", "executor", "executor (default) or reviewer (read-only tool surface)")
+	profile := flag.String("profile", "executor", "manual (lazy explicit bindings), executor (legacy default), managed, or reviewer (read-only)")
 	bundlePath := flag.String("evidence-bundle", "", "Offline frozen evidence bundle; exclusive with every live connection flag and requires no credential")
 	exportPath := flag.String("export-evidence", "", "Write a frozen evidence bundle for this bound session, then exit")
 	exportTurn := flag.String("export-turn", "", "Exact terminal Turn to freeze into --export-evidence")
@@ -42,12 +42,24 @@ func run() error {
 	tokenEnv := flag.String("token-env", "CODEAGENT_BRIDGE_TOKEN", "Environment variable containing the daemon access token")
 	experimental := flag.Bool("experimental-p0a", false, "Enable isolated technical experiment; no production recovery guarantees")
 	flag.Parse()
+	profileExplicit, tokenExplicit := false, false
+	flag.Visit(func(f *flag.Flag) {
+		profileExplicit = profileExplicit || f.Name == "profile"
+		tokenExplicit = tokenExplicit || f.Name == "token-env"
+	})
 	if *printConfig {
+		if *endpoint != "" || tokenExplicit || *observe != "" || *delivery != "" || *bundlePath != "" || *check || *exportPath != "" || *exportTurn != "" || *exportTask != "" || *exportArtifact != "" || *exportedBy != "" {
+			return fmt.Errorf("print-project-config does not accept runtime-url/token-env, observation, check or evidence export/bundle flags")
+		}
 		binary, err := os.Executable()
 		if err != nil {
 			return err
 		}
-		config, err := projectConfig(binary, *manifest, *workspace, *attach, *reattach, *baseline)
+		configProfile := ""
+		if profileExplicit {
+			configProfile = *profile
+		}
+		config, err := projectConfigForProfile(binary, *manifest, *workspace, *attach, *reattach, *baseline, configProfile)
 		if err != nil {
 			return err
 		}
@@ -57,11 +69,32 @@ func run() error {
 	if !*experimental {
 		return fmt.Errorf("explicit --experimental-p0a is required")
 	}
-	if *profile != "executor" && *profile != "reviewer" {
-		return fmt.Errorf("--profile must be executor or reviewer")
+	if *profile != "executor" && *profile != "reviewer" && *profile != "manual" && *profile != "managed" {
+		return fmt.Errorf("--profile must be manual, executor, managed or reviewer")
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
+	if *profile == "manual" {
+		if *endpoint != "" || tokenExplicit || *attach != "" || *reattach != "" || *observe != "" || *baseline != "" || *delivery != "" || *bundlePath != "" || *exportPath != "" || *exportTurn != "" || *exportTask != "" || *exportArtifact != "" || *exportedBy != "" {
+			return fmt.Errorf("manual requires connection-manifest/workspace and excludes fixed Session, runtime-url/token-env and evidence export/bundle flags")
+		}
+		service, err := mcpbridge.NewManualService(ctx, *manifest, *workspace)
+		if err != nil {
+			return err
+		}
+		defer service.Close()
+		if *check {
+			info, err := service.ConnectionInfo(ctx, "")
+			if err != nil {
+				return err
+			}
+			return json.NewEncoder(os.Stdout).Encode(struct {
+				mcpbridge.ManualConnectionInfo
+				NativeToolDiscovery string `json:"native_tool_discovery"`
+			}{info, "not_tested: verify native tools in the actual project chat"})
+		}
+		return mcpbridge.ManualServer(service).Run(ctx, &mcp.StdioTransport{})
+	}
 
 	// Offline reviewer: a frozen bundle is served with no credential, no HTTP
 	// client and no daemon access. This is the only mode a third-party client

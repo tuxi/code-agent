@@ -2,10 +2,12 @@ package agent
 
 import (
 	"encoding/json"
+	"sort"
 	"time"
 
 	"code-agent/internal/assetref"
 	"code-agent/internal/model"
+	"code-agent/internal/session"
 	"code-agent/internal/tools"
 )
 
@@ -143,6 +145,95 @@ const (
 // Event is a single point in a turn — a discriminated union where Kind selects
 // which fields are meaningful. It is plain data (no behavior, no pointers into
 // runtime state) so it can be rendered, logged, or sent over a wire unchanged.
+// DiffFile is one file's contribution to a turn's diffstat. The shape is defined
+// in tools because that is the producing side (tools may not import agent); this
+// alias keeps the event, the wire frame, and tools.ToolResult on one type.
+type DiffFile = tools.FileWrite
+
+// TurnDiffStat is what one turn wrote, accumulated across every successful write
+// call in the turn — including writes performed inside workflow nodes, which are
+// bubbled up through tools.ToolResult.NestedWrites.
+//
+// The counts are per-call sums, not net changes: a file edited three times adds
+// up all three edits. That is deliberate (see docs/turn-diffstat-v1.md §3) —
+// netting would need a snapshot of every file at turn start, and the workspace is
+// not guaranteed to be a git repository.
+type TurnDiffStat struct {
+	Files        []DiffFile `json:"files"`
+	FilesChanged int        `json:"files_changed"`
+	AddedLines   int        `json:"added_lines"`
+	RemovedLines int        `json:"removed_lines"`
+
+	// index maps Files[i].Path to i so repeated writes to one path merge in O(1)
+	// instead of rescanning. Never serialized.
+	index map[string]int
+}
+
+// Add folds one write report into the turn. A path seen more than once sums its
+// line counts and keeps the most "origin-like" status: a file created and then
+// edited stays added, and any deletion wins.
+func (d *TurnDiffStat) Add(w tools.FileWrite) {
+	if w.Path == "" {
+		return
+	}
+	if d.index == nil {
+		d.index = make(map[string]int, len(d.Files))
+		for i, f := range d.Files {
+			d.index[f.Path] = i
+		}
+	}
+	if i, ok := d.index[w.Path]; ok {
+		f := &d.Files[i]
+		f.Added += w.Added
+		f.Removed += w.Removed
+		f.Status = mergeWriteStatus(f.Status, w.Status)
+	} else {
+		d.index[w.Path] = len(d.Files)
+		d.Files = append(d.Files, w)
+	}
+	d.FilesChanged = len(d.Files)
+	d.AddedLines += w.Added
+	d.RemovedLines += w.Removed
+}
+
+// Empty reports whether the turn wrote nothing (the field is then omitted
+// entirely instead of shipping a zeroed object).
+func (d *TurnDiffStat) Empty() bool {
+	return d == nil || len(d.Files) == 0
+}
+
+// Limited returns a copy truncated to at most maxFiles entries, largest first by
+// added+removed. The three summary numbers keep their full-turn values, so a
+// clipped list never shrinks files_changed. The receiver is not modified.
+func (d *TurnDiffStat) Limited(maxFiles int) *TurnDiffStat {
+	if d.Empty() {
+		return nil
+	}
+	out := &TurnDiffStat{
+		Files:        append([]DiffFile(nil), d.Files...),
+		FilesChanged: d.FilesChanged,
+		AddedLines:   d.AddedLines,
+		RemovedLines: d.RemovedLines,
+	}
+	if maxFiles > 0 && len(out.Files) > maxFiles {
+		sort.SliceStable(out.Files, func(i, j int) bool {
+			return out.Files[i].Added+out.Files[i].Removed > out.Files[j].Added+out.Files[j].Removed
+		})
+		out.Files = out.Files[:maxFiles]
+	}
+	return out
+}
+
+func mergeWriteStatus(old, next string) string {
+	if old == tools.WriteDeleted || next == tools.WriteDeleted {
+		return tools.WriteDeleted
+	}
+	if old == tools.WriteAdded || next == tools.WriteAdded {
+		return tools.WriteAdded
+	}
+	return tools.WriteModified
+}
+
 type Event struct {
 	Kind EventKind
 	At   time.Time
@@ -150,13 +241,15 @@ type Event struct {
 	// Correlation IDs: which session and turn produced this event. A single
 	// console reads them as constant, but a multiplexed bus (concurrent runs, a
 	// web UI, DreamAI) needs them to keep streams from crossing.
-	SessionID     string
-	TurnID        string
-	RequestID     string // client-generated idempotency/correlation key for agent_input
-	UserAssets    []model.GatewayAssetRef
-	LocalAssets   []model.LocalAssetRef
-	QueuePosition int    // EventTurnQueued: one-based scheduler position
-	QueueReason   string // EventTurnQueued: global_capacity | session_serialization
+	SessionID              string
+	TurnID                 string
+	RequestID              string                      // client-generated idempotency/correlation key for agent_input
+	ValidationContract     *session.ValidationContract `json:"validation_contract,omitempty"`
+	ValidationContractHash string                      `json:"validation_contract_hash,omitempty"`
+	UserAssets             []model.GatewayAssetRef
+	LocalAssets            []model.LocalAssetRef
+	QueuePosition          int    // EventTurnQueued: one-based scheduler position
+	QueueReason            string // EventTurnQueued: global_capacity | session_serialization
 
 	// Seq is the monotonic per-store sequence number assigned when the event is
 	// persisted (v1.2 §4). It is 0 on the core path and stamped by the transport
@@ -222,6 +315,13 @@ type Event struct {
 	SucceededToolCalls int           // TurnFinished/Failed: executed calls without an execution error
 	BillableToolCalls  int           // TurnFinished/Failed: unique calls carrying a Gateway usage receipt
 	Elapsed            time.Duration // ModelFinished: how long the model call took (P3.8 uses this)
+
+	// DiffStat is what this turn wrote, filled only on the terminal kinds
+	// (turn_finished, turn_failed, turn_cancelled). It is nil when nothing was
+	// written, and it is deliberately absent from turn_paused: a paused turn
+	// resumes and re-emits turn_finished later, so a half-turn stat here would
+	// show the user two different numbers for the same turn.
+	DiffStat *TurnDiffStat
 
 	// ModelRetrying: the retry the resilience layer is about to make. Attempt is
 	// the 1-based ordinal of the attempt that just failed, MaxAttempts the total

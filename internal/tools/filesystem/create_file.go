@@ -2,7 +2,6 @@ package filesystem
 
 import (
 	"code-agent/internal/tools"
-	"code-agent/internal/workspace"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -64,37 +63,17 @@ func (t *CreateFileTool) Execute(ctx context.Context, ec tools.ExecutionContext,
 	default:
 	}
 
-	rootAbs, err := filepath.Abs(ec.WorkspaceRoot)
+	targetAbs, denied, err := resolveWriteTarget(ec, in.Path)
 	if err != nil {
 		return tools.ToolResult{}, err
 	}
-	targetAbs := workspace.ResolveToolPath(rootAbs, in.Path)
-	targetAbs, err = filepath.Abs(targetAbs)
-	if err != nil {
-		return tools.ToolResult{}, err
-	}
-	switch workspace.ClassifyPath(rootAbs, targetAbs) {
-	case workspace.PathManagedWorktree:
-		return tools.ToolResult{}, fmt.Errorf("path is not accessible: %s", in.Path)
-	case workspace.PathOutsideWorkspace:
-		if ec.PathAccessApprover == nil {
-			return tools.ToolResult{}, fmt.Errorf("path is outside the workspace: %s", in.Path)
-		}
-		if !ec.PathAccessApprover.ApproveExternalPath(targetAbs, "write") {
-			return tools.ToolResult{}, fmt.Errorf("access to external path was denied: %s", in.Path)
-		}
-		// approved — fall through to execute normally
-	case workspace.PathInsideWorkspace:
-		// proceed
+	if denied {
+		return tools.ToolResult{}, fmt.Errorf("access to external path was denied: %s", in.Path)
 	}
 
 	// In plan mode, only allow writes to the .codeagent/plans/ directory.
-	if ec.PlanMode {
-		plansDir := filepath.Join(rootAbs, ".codeagent", "plans")
-		if filepath.Ext(targetAbs) != ".md" || !workspace.IsSubPath(plansDir, targetAbs) {
-			return tools.ToolResult{}, fmt.Errorf(
-				"plan mode: can only create markdown files under .codeagent/plans/. Use edit_file to revise an existing plan.")
-		}
+	if err := checkPlanModeTarget(ec, targetAbs, in.Path, "create"); err != nil {
+		return tools.ToolResult{}, fmt.Errorf("%w. Use edit_file to revise an existing plan", err)
 	}
 
 	// File must not already exist — use edit_file for modifications.
@@ -122,12 +101,14 @@ func (t *CreateFileTool) Execute(ctx context.Context, ec tools.ExecutionContext,
 		return tools.ToolResult{}, err
 	}
 
-	lineCount := strings.Count(content, "\n")
-	if !strings.HasSuffix(content, "\n") && content != "" {
-		lineCount++
-	}
+	lineCount := countLines(content)
 	return tools.ToolResult{
 		Content: fmt.Sprintf("Created %s (%d lines)", in.Path, lineCount),
+		Wrote: []tools.FileWrite{{
+			Path:   diffPath(ec, targetAbs),
+			Added:  lineCount,
+			Status: tools.WriteAdded,
+		}},
 	}, nil
 }
 

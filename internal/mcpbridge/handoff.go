@@ -3,6 +3,7 @@ package mcpbridge
 import (
 	"context"
 	"errors"
+	"reflect"
 	"sort"
 	"strings"
 	"time"
@@ -130,6 +131,7 @@ type HandoffCommand struct {
 // Handoff is an index into existing evidence, not another Task protocol or a
 // model-authored completion report. Manual artifacts remain mutable.
 type Handoff struct {
+	ValidationProvenance
 	TaskID            string                    `json:"task_id,omitempty"`
 	TaskRevision      string                    `json:"task_revision,omitempty"`
 	TaskAcceptance    string                    `json:"task_acceptance,omitempty"`
@@ -219,6 +221,9 @@ func (c *Client) Handoff(ctx context.Context, id, turn string) (Handoff, error) 
 	if !r.Terminal {
 		return Handoff{}, errors.New("Turn changed while collecting handoff")
 	}
+	if r.Status != a.TurnStatus || !reflect.DeepEqual(r.ValidationProvenance, a.ValidationProvenance) {
+		return Handoff{}, bridgeError("evidence_incomplete", nil)
+	}
 	var tracked, untracked string
 	var cut, cut2 bool
 	if c.observeOnly {
@@ -242,6 +247,7 @@ func (c *Client) Handoff(ctx context.Context, id, turn string) (Handoff, error) 
 		}
 	}
 	h := Handoff{SessionID: id, TurnID: turn, ExecutionStatus: a.TurnStatus, ValidationStatus: "unknown", AcceptanceStatus: "not_reviewed", Validation: a.ExecutionEvidence, EvidenceNote: a.EvidenceNote, Baseline: a.Baseline, DiffSHA256: a.DiffSHA256, DiffTruncated: a.Truncated, FilesTruncated: cut || cut2, ChangedFiles: []string{}, Commands: []HandoffCommand{}, UnparsedCallIDs: a.UnparsedResults, ArtifactTool: "codeagent_get_artifacts", Note: "Current workspace evidence, not an immutable/per-Turn snapshot. Validation covers recorded Turn events only, not external changes or visual acceptance. attempt_id is unknown here; use Task Snapshot for authoritative associations/acceptance. Read referenced evidence on demand."}
+	h.ValidationProvenance = r.ValidationProvenance
 	h.EvidenceSource, h.EvidenceComplete = a.EvidenceSource, a.EvidenceComplete
 	if c.observeOnly {
 		h.DeliveryCommit, h.HeadCommit, h.HeadMoved, h.WorktreeDirty = a.DeliveryCommit, a.HeadCommit, a.HeadMoved, a.WorktreeDirty
@@ -305,6 +311,9 @@ func (c *Client) Handoff(ctx context.Context, id, turn string) (Handoff, error) 
 	}
 	if verified.DiffSHA256 != a.DiffSHA256 || verified.Truncated != a.Truncated {
 		return Handoff{}, errors.New("workspace changed while collecting handoff; stop writers and collect again")
+	}
+	if verified.TurnStatus != a.TurnStatus || !reflect.DeepEqual(verified.ValidationProvenance, a.ValidationProvenance) {
+		return Handoff{}, bridgeError("evidence_incomplete", nil)
 	}
 	return h, nil
 }

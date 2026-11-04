@@ -45,3 +45,7 @@ These are real pitfalls hit while working here — append new ones as they happe
 - `read_file` prefixes every line with `N\t` (a 1-based line number + tab) for
   reference. Those prefixes are NOT part of the file — strip them when building
   an `edit_file` / `apply_patch` `old` string, or the match will fail.
+- When a change only ADDS lines, prefer `insert_file` (path + 1-based `line` +
+  `content`) over `edit_file`. It needs no `old` text to match, so long CJK
+  paragraphs, smart quotes and backticks cannot break it — the exact failure mode
+  `edit_file`/`apply_patch` hit. `edit_file` remains the tool for replace/delete.

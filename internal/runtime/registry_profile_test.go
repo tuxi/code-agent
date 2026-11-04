@@ -64,7 +64,7 @@ func TestRegisterBuiltinToolsOmitsUnconfiguredSearchButKeepsFetch(t *testing.T) 
 // a non-nil BuiltinTools allowlist must register ONLY the named tools and drop the
 // dangerous server-side shell/filesystem tools.
 func TestRegisterBuiltinTools_Allowlist(t *testing.T) {
-	dangerous := []string{"run_command", "read_file", "create_file", "edit_file", "list_files", "grep"}
+	dangerous := []string{"run_command", "read_file", "create_file", "edit_file", "insert_file", "list_files", "grep"}
 
 	// Allow only web_search: every dangerous tool must be absent, web_search present.
 	got := registerWithAllowlist(t, []string{"web_search"})

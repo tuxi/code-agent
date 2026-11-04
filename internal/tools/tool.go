@@ -336,6 +336,15 @@ type ToolResult struct {
 	ModelUsage *ModelUsage `json:"model_usage,omitempty"`
 	// NestedUsages are managed-tool receipts produced by workflow nodes.
 	NestedUsages []*ToolUsage `json:"nested_usages,omitempty"`
+	// Wrote reports the files this call actually put on disk, filled AFTER the
+	// write succeeded. Only the built-in write tools (apply_patch, edit_file,
+	// insert_file, create_file) may set it; the runner refuses the field from any
+	// other name, so a proxied or managed tool cannot forge turn statistics.
+	Wrote []FileWrite `json:"wrote,omitempty"`
+	// NestedWrites are writes performed inside a composite tool (Flux workflow
+	// nodes, subagents): the write-side twin of NestedUsages, aggregated by the
+	// composite tool from its own nested calls.
+	NestedWrites []FileWrite `json:"nested_writes,omitempty"`
 }
 
 type ModelUsage struct {

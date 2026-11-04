@@ -467,6 +467,10 @@ func (e *TurnExecutor) ExecuteWithRequestIDAndAssets(ctx context.Context, sessio
 }
 
 func (e *TurnExecutor) ExecuteWithRequestIDAndAllAssets(ctx context.Context, sessionID, requestID, input, modelName, effort string, assets []model.GatewayAssetRef, localAssets []model.LocalAssetRef) (agent.TurnResult, error) {
+	return e.executeWithRequestIDAndAllAssetsValidation(ctx, sessionID, requestID, input, modelName, effort, assets, localAssets, nil)
+}
+
+func (e *TurnExecutor) executeWithRequestIDAndAllAssetsValidation(ctx context.Context, sessionID, requestID, input, modelName, effort string, assets []model.GatewayAssetRef, localAssets []model.LocalAssetRef, validation *session.ValidationContract) (agent.TurnResult, error) {
 	release, err := e.beginSessionTurn(sessionID)
 	if err != nil {
 		return agent.TurnResult{}, err
@@ -480,7 +484,7 @@ func (e *TurnExecutor) ExecuteWithRequestIDAndAllAssets(ctx context.Context, ses
 	if !sess.ArchivedAt.IsZero() {
 		return agent.TurnResult{}, ErrConversationArchived
 	}
-	return e.executeWithSessionAssets(ctx, sess, requestID, input, modelName, effort, assets, localAssets, nil, nil)
+	return e.executeWithSessionAssetsValidation(ctx, sess, requestID, input, modelName, effort, assets, localAssets, nil, nil, validation)
 }
 
 // AcceptCrossSessionMessage returns after durable acceptance and target-side
@@ -607,7 +611,11 @@ func modelSupportsEffort(mc settings.ModelConfig, effort string) bool {
 }
 
 func (e *TurnExecutor) executeWithSessionAssets(parentCtx context.Context, sess *session.Session, requestID, input, modelName, effort string, assets []model.GatewayAssetRef, localAssets []model.LocalAssetRef, provenance *session.CrossSessionProvenance, admitted func(TurnAdmission, error)) (agent.TurnResult, error) {
-	res, runErr := e.driveTurn(parentCtx, sess, requestID, input, modelName, effort, assets, localAssets, nil, provenance, admitted,
+	return e.executeWithSessionAssetsValidation(parentCtx, sess, requestID, input, modelName, effort, assets, localAssets, provenance, admitted, nil)
+}
+
+func (e *TurnExecutor) executeWithSessionAssetsValidation(parentCtx context.Context, sess *session.Session, requestID, input, modelName, effort string, assets []model.GatewayAssetRef, localAssets []model.LocalAssetRef, provenance *session.CrossSessionProvenance, admitted func(TurnAdmission, error), validation *session.ValidationContract) (agent.TurnResult, error) {
+	res, runErr := e.driveTurn(parentCtx, sess, requestID, input, modelName, effort, assets, localAssets, nil, provenance, validation, admitted,
 		session.TurnStatusRunning,
 		func(ctx context.Context, runner TurnRunner, prepared bool) (agent.TurnResult, error) {
 			if prepared {
@@ -698,7 +706,7 @@ func (e *TurnExecutor) Resume(parentCtx context.Context, sessionID string) (agen
 		requestID, inputText, wireModel, assets = recovered.RequestID, recovered.Text, recovered.WireModel, recovered.Assets
 		localAssets = recovered.LocalAssets
 	}
-	return e.driveTurn(parentCtx, sess, requestID, inputText, wireModel, "", assets, localAssets, recovered, nil, nil, session.TurnStatusResuming,
+	return e.driveTurn(parentCtx, sess, requestID, inputText, wireModel, "", assets, localAssets, recovered, nil, nil, nil, session.TurnStatusResuming,
 		func(ctx context.Context, runner TurnRunner, _ bool) (agent.TurnResult, error) {
 			return runner.ResumeTurn(ctx, sess)
 		},
@@ -722,6 +730,7 @@ func (e *TurnExecutor) driveTurn(
 	localAssets []model.LocalAssetRef,
 	preclaimed *session.TurnInput,
 	provenance *session.CrossSessionProvenance,
+	validation *session.ValidationContract,
 	admitted func(TurnAdmission, error),
 	runningState string,
 	run func(ctx context.Context, runner TurnRunner, prepared bool) (agent.TurnResult, error),
@@ -817,7 +826,7 @@ func (e *TurnExecutor) driveTurn(
 			resolvedModel.Model = claimed.ResolvedModel
 		}
 	} else {
-		claimed, duplicate, claimErr = e.claimRequest(parentCtx, sess.ID, requestID, turnID, inputText, wireModel, resolvedModel.Model, assets, localAssets, provenance, pub)
+		claimed, duplicate, claimErr = e.claimRequest(parentCtx, sess.ID, requestID, turnID, inputText, wireModel, resolvedModel.Model, assets, localAssets, provenance, validation, pub)
 	}
 	if claimErr != nil {
 		return agent.TurnResult{}, claimErr
@@ -1015,7 +1024,7 @@ func (RequestConflictError) SafeMessage() string {
 	return "request_id was already used with a different payload"
 }
 
-func (e *TurnExecutor) claimRequest(ctx context.Context, sessionID, requestID, proposedTurnID, text, wireModel, resolvedModel string, assets []model.GatewayAssetRef, localAssets []model.LocalAssetRef, provenance *session.CrossSessionProvenance, pub *sequencingEmitter) (session.TurnInput, bool, error) {
+func (e *TurnExecutor) claimRequest(ctx context.Context, sessionID, requestID, proposedTurnID, text, wireModel, resolvedModel string, assets []model.GatewayAssetRef, localAssets []model.LocalAssetRef, provenance *session.CrossSessionProvenance, validation *session.ValidationContract, pub *sequencingEmitter) (session.TurnInput, bool, error) {
 	if requestID == "" {
 		pub.Emit(agent.Event{Kind: agent.EventTurnAccepted, SessionID: sessionID, TurnID: proposedTurnID})
 		return session.TurnInput{SessionID: sessionID, TurnID: proposedTurnID}, false, nil
@@ -1033,6 +1042,17 @@ func (e *TurnExecutor) claimRequest(ctx context.Context, sessionID, requestID, p
 			Provenance:  provenance,
 			ManagedTask: managedAdmissionRef(ctx),
 		}
+		if validation != nil {
+			copy, err := validation.CloneValidated()
+			if err != nil {
+				return session.TurnInput{}, false, ValidationContractError{}
+			}
+			input.ValidationContract = copy
+			input.PayloadHash, err = validationPayloadHash(input.PayloadHash, copy)
+			if err != nil {
+				return session.TurnInput{}, false, err
+			}
+		}
 		if input.ManagedTask != nil {
 			encoded, _ := json.Marshal(struct {
 				PayloadHash string
@@ -1043,6 +1063,10 @@ func (e *TurnExecutor) claimRequest(ctx context.Context, sessionID, requestID, p
 		event := agent.Event{
 			Kind: agent.EventTurnAccepted, SessionID: sessionID, TurnID: proposedTurnID,
 			RequestID: requestID, At: input.CreatedAt,
+		}
+		if input.ValidationContract != nil {
+			event.ValidationContract = input.ValidationContract
+			event.ValidationContractHash, _ = input.ValidationContract.Hash()
 		}
 		payload, err := json.Marshal(event)
 		if err != nil {
@@ -1057,6 +1081,16 @@ func (e *TurnExecutor) claimRequest(ctx context.Context, sessionID, requestID, p
 		if stored.PayloadHash != input.PayloadHash {
 			return session.TurnInput{}, false, RequestConflictError{}
 		}
+		if input.ValidationContract != nil {
+			if stored.ValidationContract == nil {
+				return session.TurnInput{}, false, session.ErrInvalidValidationContract
+			}
+			want, _ := input.ValidationContract.Hash()
+			actual, err := stored.ValidationContract.Hash()
+			if err != nil || actual != want {
+				return session.TurnInput{}, false, session.ErrInvalidValidationContract
+			}
+		}
 		if created {
 			event.Seq = seq
 			pub.EmitPersisted(event)
@@ -1064,10 +1098,16 @@ func (e *TurnExecutor) claimRequest(ctx context.Context, sessionID, requestID, p
 			// A client that disconnected before observing accepted retries the
 			// same immutable submission. Re-acknowledge its original identity
 			// live without appending a second accepted event.
-			pub.EmitPersisted(agent.Event{
+			ack := agent.Event{
 				Kind: agent.EventTurnAccepted, SessionID: stored.SessionID,
 				TurnID: stored.TurnID, RequestID: stored.RequestID, At: stored.CreatedAt,
-			})
+			}
+			if stored.ValidationContract != nil {
+				ack.ValidationContract = stored.ValidationContract
+				ack.ValidationContractHash, _ = stored.ValidationContract.Hash()
+				ack.Seq = stored.AcceptedSeq
+			}
+			pub.EmitPersisted(ack)
 		}
 		return stored, !created, nil
 	}
@@ -1274,6 +1314,12 @@ func (e *TurnExecutor) emitLifecycle(pub agent.Emitter, sess *session.Session, r
 	if kind == agent.EventTurnCancelled {
 		event.CancelledReason = "user_requested"
 	}
+	// A paused turn resumes and re-emits turn_finished with the whole turn's
+	// stats. Sending diffstat here would show a half-turn number first and a
+	// different one later for the same turn, so it is deliberately dropped.
+	if kind != agent.EventTurnPaused {
+		event.DiffStat = result.DiffStat
+	}
 	pub.Emit(event)
 }
 
@@ -1473,7 +1519,7 @@ func (e *TurnExecutor) executeRecoveredTurn(ctx context.Context, input session.T
 	if err != nil {
 		return agent.TurnResult{}, err
 	}
-	return e.driveTurn(ctx, sess, input.RequestID, input.Text, input.WireModel, "", input.Assets, input.LocalAssets, &input, input.Provenance, nil,
+	return e.driveTurn(ctx, sess, input.RequestID, input.Text, input.WireModel, "", input.Assets, input.LocalAssets, &input, input.Provenance, input.ValidationContract, nil,
 		session.TurnStatusRunning,
 		func(runCtx context.Context, runner TurnRunner, prepared bool) (agent.TurnResult, error) {
 			if !prepared {
