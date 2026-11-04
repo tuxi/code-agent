@@ -7,8 +7,10 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
+	"code-agent/internal/app"
 	"code-agent/internal/settings"
 )
 
@@ -446,8 +448,25 @@ func TestProviderStoreUpsertBuiltinFillsModelsFromRegistry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got.Models) != 3 || got.Models[0].ID != "deepseek-v4-flash" {
-		t.Fatalf("GET view models = %+v, want 3 registry ids", got.Models)
+	var registry app.BuiltinProviderTemplate
+	for _, template := range app.BuiltinProviderTemplates() {
+		if template.ID == "deepseek" {
+			registry = template
+			break
+		}
+	}
+	if len(registry.Models) == 0 {
+		t.Fatal("deepseek registry must have suggested models")
+	}
+	var gotIDs, wantIDs []string
+	for _, m := range got.Models {
+		gotIDs = append(gotIDs, m.ID)
+	}
+	for _, m := range registry.Models {
+		wantIDs = append(wantIDs, m.ID)
+	}
+	if !slices.Equal(gotIDs, wantIDs) {
+		t.Fatalf("GET view model ids = %v, want registry ids %v", gotIDs, wantIDs)
 	}
 
 	// ollama has no suggested models → explicit list still required.

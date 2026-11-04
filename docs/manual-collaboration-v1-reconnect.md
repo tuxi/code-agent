@@ -1,6 +1,6 @@
 # Manual V1：显式重连修复
 
-日期：2026-11-04。离线候选，尚未加载到当前桌面 MCP。无数据库迁移、无 Daemon 更新、无模型调用；不改变 Agent Loop、模型参数或 Managed 准入。
+日期：2026-11-04。离线验证通过；项目候选已加载，授权替换后同一原生 MCP 连接内显式重连的桌面验收通过。无数据库迁移、无 Daemon 更新、无模型调用；不改变 Agent Loop、模型参数或 Managed 准入。
 
 ## 根因与最小修改
 
@@ -45,6 +45,12 @@ ManualService 的首次有效探测固定授权代次。普通读取拒绝跟随
 
 项目配置迁移需用户明确批准；构建不代表加载。保留现有 command 的二进制和配置私有备份，仅将本项目 command 切换到候选路径，其他设置、required=false、manifest 路径和测试工作区保持不变。不覆盖正在运行的 Bridge，不更新 Talkify/Daemon。
 
-首次升级 schema 需要客户端重载 MCP 一次；若客户端没有单项重载入口，重启 Codex 是加载新版的替代步骤。之后 Talkify 重新授权应在同一 MCP 连接中通过上述参数恢复，无需每次重启 Codex。这个后续桌面场景仍须实际验收，不以离线测试替代。
+本次切换已获用户明确批准并执行。写前核对原配置、候选配置和二进制 SHA256；解析 TOML 确认仅 command 不同后原子替换，写后逐字节核对。私有备份为候选目录 `project-config.approved-before.toml`（0600），状态记录 `candidate.json` 的 project_config_applied=true、desktop_verified=false。未读取授权文件内容。
+
+首次升级 schema 需要客户端重载 MCP 一次；若客户端没有单项重载入口，重启 Codex 是加载新版的替代步骤。本次用户已完成加载；随后当前授权最初返回 daemon_stopped，用户在 Talkify 恢复授权后，同一 MCP 连接内的普通查询核实原 Runtime/Store/workspace，并成功调用显式 reconnect。
+
+之后用户保持 Codex 运行，在 Talkify 撤销并重新授权。当前原生工具调用依次得到：普通 connection_info 返回 isError=true / grant_replaced；使用原 server_id、store_id、workspace_path 的 reconnect 返回 identity_verified=true / reconnected=true / execution_bound=false；紧接着普通 connection_info 成功且身份、工作区和 HEAD 与原记录一致。期间没有重启 Codex、重载 MCP、创建/绑定 Session、派发 Turn 或调用模型。没有读取或展示授权文件内容。
+
+该桌面证据确认授权代次变化可在同一 MCP 连接中显式恢复，不需要每次重启 Codex。它不等同于已验证带执行中 Session 的桌面重绑定、全部 Runtime 故障场景、Daemon 升级或完整 V1 发布；这些仍分别验收。候选记录使用 reconnect_desktop_verified=true 单独标记此场景，整体 desktop_verified 仍为 false。
 
 回滚仅恢复备份的项目 command 并重载 MCP，保持 required=false；不恢复过期凭据、不删除 Store 或任务历史、不重放输入。旧版不支持 reconnect 参数，恢复原来的显式绑定/重载路径。

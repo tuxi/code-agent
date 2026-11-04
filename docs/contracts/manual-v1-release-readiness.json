@@ -1,0 +1,209 @@
+{
+  "schema": "manual-v1-release-readiness/v1",
+  "recorded_on": "2026-11-04",
+  "status": "NO_GO",
+  "release_commit": null,
+  "repositories": {
+    "code-agent": {
+      "path": "/Users/xiaoyuan/Documents/work/git/code-agent",
+      "observed_head": "eae1c4552727fd642962b613c2ad667cd521e92d",
+      "dirty_entry_count": 7,
+      "observed_only": true
+    },
+    "AgentKit": {
+      "path": "/Users/xiaoyuan/Documents/work/git/AgentKit",
+      "observed_head": "1c4601e3fd3d2dee4b0b79f3eb3f559d6f351c7c",
+      "dirty_entry_count": 13,
+      "observed_only": true
+    },
+    "Talkify": {
+      "path": "/Users/xiaoyuan/Documents/work/git/chater",
+      "observed_head": "901cf877ea2f500563f68411e42d877438dca792",
+      "dirty_entry_count": 0,
+      "observed_only": true
+    }
+  },
+  "pending_test_corrections_sha256": {
+    "internal/server/providers_test.go": "60166d300254fc836132d6d1e6001a90d555aeb485db51d9da3e57ab99b626ab",
+    "internal/server/shared_auth_test.go": "67cadb2b37af4b156dfa74c0023f349533375582b9426e32fae294f51a311691",
+    "internal/conversation/executor_cap_test.go": "d6884235a62311ae8edf7b34560aa862dd27321cb614334fe80a5d8631502753",
+    "internal/conversation/executor_test.go": "6fe2e887d6cfe3b075787e35c7f976c520d58431ca59c7ac093cc4f4719e8488"
+  },
+  "protocols": {
+    "manual_mcp_name": "codeagent-manual",
+    "manual_mcp_version": "1.0.0-experimental",
+    "manual_tools": 11,
+    "agent_wire_major": 1,
+    "validation_contract_version": 1,
+    "new_sqlite_migration": false,
+    "manual_connection_reconnect": "optional reconnect object on existing connection_info; Session replacement remains explicit"
+  },
+  "third_party_model_authorized": false,
+  "deployed_by_this_batch": false,
+  "production_store_modified": false,
+  "source_root": "/var/folders/p2/h8cppqy94j5f2q9xq6v8z7300000gp/T/manual-v1-release-rww7lbqt/repo",
+  "observed_running_programs": [
+    {
+      "path": "/Users/xiaoyuan/Library/Developer/Xcode/DerivedData/Talkify-ejqdqokckhrlpiaicasapxituamj/Build/Products/Debug-MacDirect/Talkify.app/Contents/MacOS/Talkify",
+      "sha256": "e9ba36f8866e5afc30e180a7c28eaee864004e7a4b948ff0d1e4d003c6ecab23"
+    },
+    {
+      "path": "/Users/xiaoyuan/Library/Developer/Xcode/DerivedData/Talkify-ejqdqokckhrlpiaicasapxituamj/Build/Products/Debug-MacDirect/Talkify.app/Contents/Resources/codeagentd",
+      "sha256": "e2602c4a1a5b9bcdbe13b477b1a055de1aa7c6cd0e0c4c9eb40cc1df7b2aea77",
+      "go_build_settings": [
+        "build\tGOARCH=arm64",
+        "build\tGOOS=darwin",
+        "build\tvcs.revision=eae1c4552727fd642962b613c2ad667cd521e92d",
+        "build\tvcs.modified=true"
+      ]
+    },
+    {
+      "path": "/Users/xiaoyuan/Documents/work/git/code-agent/build/manual-v1d-reconnect-nf8_odrv/codeagent-mcp",
+      "sha256": "d4762761e5f2782b06d47ecb8b6f7394170a64fd88ad99c915b6e9ddb2d0585b",
+      "go_build_settings": [
+        "build\tGOARCH=arm64",
+        "build\tGOOS=darwin",
+        "build\tvcs.revision=ca92dc9a61cd97541604a54b4fd1c9ed932f1367",
+        "build\tvcs.modified=true"
+      ]
+    }
+  ],
+  "installed_ui_source_matches_observed_heads": "not_established",
+  "final_source_root": "/var/folders/p2/h8cppqy94j5f2q9xq6v8z7300000gp/T/manual-v1-release-final-_ykf7trx/repo",
+  "desktop_empty_session_rebind": {
+    "verified": true,
+    "session_id": "20261104-084452-3e9f2643",
+    "workspace_path": "/Users/xiaoyuan/Documents/work/git/code-agent/build/manual-v1d-zjqqweum/workspace",
+    "baseline_commit": "ca92dc9a61cd97541604a54b4fd1c9ed932f1367",
+    "server_id": "srv_31ff12dc-6485-453d-a565-53da1fe86f03",
+    "store_id": "cstore_16a5c66010fa0840a975cb9ff13173e8",
+    "old_binding_id": "89931bd5-c029-4a08-9c26-94fac65c8d43",
+    "new_binding_id": "b25ac61d-d929-4ff9-bad5-c3b4ac350e61",
+    "sequence": [
+      "old binding grant_replaced",
+      "service reconnect: bindings_require_revalidation=true",
+      "old binding still grant_replaced",
+      "bind exact original Session with replace_binding_id",
+      "new binding identity_verified=true",
+      "old binding binding_not_found"
+    ],
+    "codex_restarted": false,
+    "mcp_reloaded": false,
+    "turns_sent": 0,
+    "model_calls": 0,
+    "scope": "empty Session metadata, not running/pending-approval recovery"
+  },
+  "compatibility_binaries_sha256": {
+    "baseline-bridge": "a1fc5b3d1373124b730e07f601466940214de9f6ad91b0612b8f77ee492f5ed6",
+    "baseline-runtime-fixture": "7fb0111846e812d6dde01f2826dffb66ee0074736be45ec3732607bc2fc9b7cb",
+    "candidate-bridge": "3a89ee6481750c2fa8ff4ef1742250dbc866d13b85b7211b901a48ac71ab0c34",
+    "candidate-runtime-fixture": "92f570f79c0df649850d097d0892c18a8a188ae1dd0c8b09bd4e54f761a82ec4"
+  },
+  "evidence_logs": {
+    "regression.jsonl": {
+      "sha256": "8f79d1d992103583f970a2c45ef098b0505ff0af445f7b2513c753f68d1e9d71"
+    },
+    "final-regression.jsonl": {
+      "sha256": "602853a5e886256123ab51c77e196fd7e2ba234266bea19c94d144fb1f988eb4"
+    },
+    "conversation-final.jsonl": {
+      "sha256": "d63998cc28d4b94438851813f604d4b80b1c46b8293d61a78529c3c5b5775eb5"
+    },
+    "cross-version.jsonl": {
+      "sha256": "f6865d2ddfe56e19026c23073e0201cde5ef27a9ae72f8763462e01c460e9137"
+    },
+    "budget-baseline.jsonl": {
+      "sha256": "636e9b1f2bf77794fbaa6eeecb8efc46762836c8629f2feb2cf73ddc211fff90"
+    },
+    "budget-diagnostic.log": {
+      "sha256": "eed4cd2529aaefe9da6c80edfce42aef29e200b4dfeb32da5a746dcfaca7f530"
+    },
+    "server-before.jsonl": {
+      "sha256": "8bf70253a4d06a9d9a93b530163b9a9e5396f5d3cb2cb2b9406e196e95f7266a"
+    },
+    "server-targeted.jsonl": {
+      "sha256": "84775dd007042f60b5b0c5f0e86649d80ae20928d33989fbdbc5d0165f754206"
+    }
+  },
+  "verification": {
+    "server_full_race": {
+      "passed": 215,
+      "failed": 0
+    },
+    "conversation_full_race_after_fixture_lock": {
+      "unique_top_level_passed": 92,
+      "repetitions": 3,
+      "passed_executions": 276,
+      "failed": 0
+    },
+    "other_packages_race": "session, SQLite, executionevidence, Bridge and CLI passed in preceding snapshot; only Conversation test helper changed afterward",
+    "cross_version_processes": {
+      "top_level_passed": 1,
+      "subcases_passed": 2,
+      "provider_calls": 0,
+      "mcp_restart_persisted_contract": "passed; original hash restored without replay"
+    },
+    "vet": "related packages passed; Conversation rechecked after final fixture lock",
+    "full_repository_suite": "not_run",
+    "prior_failure_logs_preserved": true
+  },
+  "known_failure_disposition": {
+    "server_legacy_three": "corrected test fixtures/assertion with explicit user approval; production unchanged",
+    "tool_stream_budget": "raw head 64KiB and tail 4KiB unchanged; corrected serialized-envelope accounting after user approval",
+    "test_event_store_race": "mutex and replay copy added to fakeEventStore; no production/expectation changes"
+  },
+  "release_gates": {
+    "scoped_source_commit": "included in this user-authorized closeout commit; final installation provenance and release acceptance remain pending",
+    "installed_build_source_provenance": "recorded hashes/build info; modified=true prevents claiming exact clean-source match",
+    "native_service_reconnect": "passed",
+    "native_empty_session_rebind": "passed",
+    "reported_runtime_capabilities": "passed via separately authorized read-only Go API",
+    "delivered_session_observer": "passed via separately authorized Go API; not native cross-workspace binding",
+    "running_or_approval_session_desktop_recovery": "pending",
+    "desktop_runtime_unreachable_and_chat": "passed actual App/embedded Daemon stop, safe tool errors and chat continued; original empty Session recovered after restart without Codex/MCP reload; network timeout not tested",
+    "fresh_contract_native_handoff_after_mcp_restart": "offline independent processes passed; desktop pending",
+    "new_async_real_task": "not_authorized_not_run"
+  },
+  "source_tests_changed_only": true,
+  "production_code_changed": false,
+  "source_dependencies_sha256": {
+    "go.mod": "917488249a5f1c1f3342a1ea966f4a1fa6df0276caa0062737ea7eb495b3b404",
+    "go.sum": "a569643a235f6082a603bdddb634e69337e6bf488cf07e2683ae2c415b16dd45"
+  },
+  "desktop_daemon_stop": {
+    "status": "stopped_and_empty_session_recovery_passed",
+    "user_confirmed_exit": true,
+    "process_check": {
+      "talkify_app_running": false,
+      "talkify_embedded_daemon_running": false,
+      "project_candidate_bridge_running": true
+    },
+    "native_connection_info_error": "grant_invalid",
+    "native_bound_connection_info_error": "grant_invalid",
+    "standard_tool_errors": true,
+    "codex_chat_continued": true,
+    "mcp_reloaded": false,
+    "turns_sent": 0,
+    "model_calls": 0,
+    "network_timeout_tested": false,
+    "recovery": {
+      "user_confirmed_restart_and_authorization": true,
+      "before_explicit_reconnect": "grant_replaced",
+      "reconnected": true,
+      "bindings_require_revalidation": true,
+      "session_id": "20261104-084452-3e9f2643",
+      "previous_binding_id": "b25ac61d-d929-4ff9-bad5-c3b4ac350e61",
+      "new_binding_id": "ce4a677f-0268-49be-93da-99b9b0652aa3",
+      "new_binding_identity_verified": true,
+      "old_binding_error": "binding_not_found",
+      "original_runtime_store_workspace_baseline_unchanged": true,
+      "codex_restarted": false,
+      "mcp_reloaded": false,
+      "sessions_created_during_recovery": 0,
+      "turns_sent": 0,
+      "model_calls": 0
+    }
+  },
+  "closeout_parent_commit": "eae1c4552727fd642962b613c2ad667cd521e92d",
+  "closeout_commit_reference": "the commit containing this manifest and the four test-source hashes; final release_commit remains unset"
+}

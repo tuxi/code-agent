@@ -2,6 +2,7 @@ package conversation
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -32,24 +33,61 @@ func TestSequencingEmitterCapsToolStreamPersistence(t *testing.T) {
 	}
 	se.Emit(agent.Event{Kind: agent.EventToolFinished, SessionID: "s", TurnID: "t", CallID: callID, ToolName: "run_command"})
 
-	// Persisted: bounded. Sum of persisted chunk payloads ≤ budget + one chunk
-	// (the first over-budget chunk is still persisted in the head check) +
-	// marker.
-	persisted := int64(0)
+	// The cap budgets stream bytes, not the serialized Event envelope. Assert
+	// head/tail separately so adding unrelated Event fields cannot change it.
+	headBytes, serializedBytes, envelopeBytes, encodedChunkBytes := 0, 0, 0, 0
+	streamRecords := 0
 	markers := 0
 	for _, r := range events.records {
 		if r.Kind == string(agent.EventToolStdout) {
-			persisted += int64(len(r.Payload))
-		}
-		if strings.Contains(string(r.Payload), "truncated") {
-			markers++
+			var ev agent.Event
+			if err := json.Unmarshal(r.Payload, &ev); err != nil {
+				t.Fatal(err)
+			}
+			if ev.SessionID != "s" || ev.TurnID != "t" || ev.CallID != callID {
+				t.Fatalf("stream record lost its execution identity: %+v", ev)
+			}
+			streamRecords++
+			serializedBytes += len(r.Payload)
+			encoded, err := json.Marshal(ev.Chunk)
+			if err != nil {
+				t.Fatal(err)
+			}
+			encodedChunkBytes += len(encoded) - len(`""`)
+			if strings.Contains(ev.Chunk, "truncated") {
+				markers++
+				parts := strings.SplitN(ev.Chunk, "\n", 3)
+				if len(parts) != 3 || parts[0] != "" || !strings.Contains(parts[1], "[tool output truncated:") {
+					t.Fatalf("invalid truncation marker: %q", ev.Chunk)
+				}
+				if parts[2] != strings.Repeat("x", agent.ToolStreamTailBytes) || len(ev.Chunk)-len(parts[2]) > 1024 {
+					t.Fatal("marker must retain only the bounded overflow tail and summary")
+				}
+			} else {
+				if ev.Chunk != chunk {
+					t.Fatal("persisted head chunk was changed")
+				}
+				headBytes += len(ev.Chunk)
+			}
+			ev.Chunk = ""
+			envelope, err := json.Marshal(ev)
+			if err != nil {
+				t.Fatal(err)
+			}
+			envelopeBytes += len(envelope)
 		}
 	}
-	if persisted > agent.ToolStreamBudget+int64(len(chunk))+4096 {
-		t.Fatalf("persisted %d bytes, budget %d", persisted, agent.ToolStreamBudget)
+	if headBytes != agent.ToolStreamBudget {
+		t.Fatalf("persisted head %d bytes, budget %d", headBytes, agent.ToolStreamBudget)
 	}
 	if markers != 1 {
 		t.Fatalf("expected 1 truncation marker persisted, got %d", markers)
+	}
+	if streamRecords != agent.ToolStreamBudget/len(chunk)+1 {
+		t.Fatalf("unexpected persisted stream record count: %d", streamRecords)
+	}
+	if serializedBytes != envelopeBytes+encodedChunkBytes {
+		t.Fatalf("serialized bytes %d != envelope %d + encoded stream %d", serializedBytes, envelopeBytes, encodedChunkBytes)
 	}
 
 	// Live: received every chunk (nothing truncated live) and the finished

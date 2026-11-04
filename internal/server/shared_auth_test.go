@@ -14,8 +14,9 @@ import (
 )
 
 func TestSharedEnrollmentWaitsForHostAcknowledgement(t *testing.T) {
-	const bootstrap = "bootstrap-secret-0123456789abcdef0123456789"
-	bootstrapHash := sha256.Sum256([]byte(bootstrap))
+	raw := bytes.Repeat([]byte{0x41}, 32)
+	bootstrap := base64.RawURLEncoding.EncodeToString(raw)
+	bootstrapHash := sha256.Sum256(raw)
 	authenticator, err := NewSharedDeviceAuthenticator(
 		nil,
 		hex.EncodeToString(bootstrapHash[:]),
@@ -250,8 +251,9 @@ func TestSharedEnrollmentNewDeviceForDifferentClient(t *testing.T) {
 }
 
 func TestSharedEnrollmentTimeoutRevokesPendingStateAndKeepsBootstrapRetryable(t *testing.T) {
-	const bootstrap = "retryable-bootstrap-secret-0123456789abcdef"
-	bootstrapHash := sha256.Sum256([]byte(bootstrap))
+	raw := bytes.Repeat([]byte{0x42}, 32)
+	bootstrap := base64.RawURLEncoding.EncodeToString(raw)
+	bootstrapHash := sha256.Sum256(raw)
 	authenticator, err := NewSharedDeviceAuthenticator(
 		nil,
 		hex.EncodeToString(bootstrapHash[:]),
@@ -305,6 +307,34 @@ func TestSharedEnrollmentTimeoutRevokesPendingStateAndKeepsBootstrapRetryable(t 
 	}
 	if second.Code != http.StatusConflict {
 		t.Fatalf("rejected enrollment status = %d body=%s", second.Code, second.Body.String())
+	}
+}
+
+func TestSharedEnrollmentRejectsInvalidBootstrapMaterial(t *testing.T) {
+	raw := bytes.Repeat([]byte{0x43}, 32)
+	encoded := base64.RawURLEncoding.EncodeToString(raw)
+	for _, tc := range []struct {
+		name   string
+		secret string
+		hash   [32]byte
+	}{
+		{"malformed encoding", "%not-base64", sha256.Sum256(raw)},
+		{"short decoded secret", base64.RawURLEncoding.EncodeToString(raw[:8]), sha256.Sum256(raw[:8])},
+		{"wrong secret", base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{0x44}, 32)), sha256.Sum256(raw)},
+		{"hash of encoded text", encoded, sha256.Sum256([]byte(encoded))},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			authenticator, err := NewSharedDeviceAuthenticator(nil, hex.EncodeToString(tc.hash[:]), time.Now().Add(time.Minute), time.Second)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := authenticator.beginEnrollment(tc.secret, "test", "iOS", "", "", ""); err == nil {
+				t.Fatal("invalid bootstrap was accepted")
+			}
+			if len(authenticator.PendingEnrollments()) != 0 {
+				t.Fatal("invalid bootstrap created a pending enrollment")
+			}
+		})
 	}
 }
 

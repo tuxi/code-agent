@@ -67,20 +67,27 @@ func (r *fakeRepo) Close() error { return nil }
 
 // fakeEventStore captures events for test assertions.
 type fakeEventStore struct {
+	mu      sync.Mutex
 	records []session.EventRecord
 	seq     int64
 }
 
 func (s *fakeEventStore) Append(ctx context.Context, e session.EventRecord) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.seq++
 	e.Seq = s.seq
 	s.records = append(s.records, e)
 	return s.seq, nil
 }
 func (s *fakeEventStore) Replay(ctx context.Context, sessionID string) ([]session.EventRecord, error) {
-	return s.records, nil
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]session.EventRecord(nil), s.records...), nil
 }
 func (s *fakeEventStore) ReplaySince(ctx context.Context, sessionID string, sinceSeq int64) ([]session.EventRecord, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	var out []session.EventRecord
 	for _, r := range s.records {
 		if r.Seq > sinceSeq {
@@ -816,7 +823,7 @@ func TestTurnExecutor_CancelReleasesSchedulerSlot(t *testing.T) {
 	// B should now acquire immediately (not wait for A's deferred release)
 	// We can't easily test the timing, but we can verify B doesn't get a queued event
 	// after A is cancelled. The key assertion is that B's turn starts.
-	cancel() // cancel B's context to clean up
+	cancel()                  // cancel B's context to clean up
 	_ = assertReady(t, bDone) // B should complete (either run or be cancelled)
 }
 
