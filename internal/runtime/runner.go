@@ -126,6 +126,7 @@ func BuildRunner(cfg settings.Settings, mc settings.ModelConfig, provider model.
 	// loop decides per request.
 	runner.VisionSupported = mc.SupportsVision() &&
 		(mc.Provider == "" || mc.Provider == "openai" || mc.Provider == "responses")
+	applyCodingProfile(runner, cfg)
 	return runner
 }
 

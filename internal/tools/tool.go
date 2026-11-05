@@ -326,6 +326,7 @@ type PathAccessApprover interface {
 
 type ToolResult struct {
 	Content string          `json:"content"`
+	Failure *ToolFailure    `json:"failure,omitempty"`
 	Output  json.RawMessage `json:"output,omitempty"`
 	Assets  []assets.Ref    `json:"assets,omitempty"`
 	// Usage is populated by billable managed tools. Local tools leave it nil.

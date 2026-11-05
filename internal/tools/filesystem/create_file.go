@@ -43,7 +43,7 @@ func (t *CreateFileTool) InputSchema() json.RawMessage {
 			Type:        "string",
 			Description: "The full content to write into the new file.",
 		},
-	}, "path", "content").JSON()
+	}, "path", "content").Closed().JSON()
 }
 
 func (t *CreateFileTool) Execute(ctx context.Context, ec tools.ExecutionContext, input json.RawMessage) (tools.ToolResult, error) {
@@ -79,13 +79,13 @@ func (t *CreateFileTool) Execute(ctx context.Context, ec tools.ExecutionContext,
 	// File must not already exist — use edit_file for modifications.
 	if info, err := os.Stat(targetAbs); err == nil {
 		if info.IsDir() {
-			return tools.ToolResult{Content: fmt.Sprintf("%s is a directory, not a file.", in.Path)}, nil
+			return tools.ToolResult{Failure: &tools.ToolFailure{Kind: "runtime"}, Content: fmt.Sprintf("%s is a directory, not a file.", in.Path)}, nil
 		}
-		return tools.ToolResult{Content: fmt.Sprintf("%s already exists. Use edit_file to modify an existing file.", in.Path)}, nil
+		return tools.ToolResult{Failure: &tools.ToolFailure{Kind: "runtime"}, Content: fmt.Sprintf("%s already exists. Use edit_file to modify an existing file.", in.Path)}, nil
 	}
 
 	if len(in.Content) > int(t.MaxBytes) {
-		return tools.ToolResult{Content: fmt.Sprintf("Content too large: %d bytes (max %d).", len(in.Content), t.MaxBytes)}, nil
+		return tools.ToolResult{Failure: &tools.ToolFailure{Kind: "runtime"}, Content: fmt.Sprintf("Content too large: %d bytes (max %d).", len(in.Content), t.MaxBytes)}, nil
 	}
 
 	// Create intermediate directories if needed.

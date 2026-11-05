@@ -71,6 +71,7 @@ type toolCallResult struct {
 	nestedWrites []tools.FileWrite
 	executed     bool
 	succeeded    bool
+	failure      *tools.ToolFailure
 	stepError    string // non-empty => a genuine tool error (not a cancel)
 	fatalErr     error  // auth/quota: commit this result, then terminate the turn
 	toolStart    time.Time
@@ -164,7 +165,7 @@ func (r *Runner) executeToolBatch(
 		group := plans[g[0]:g[1]]
 		for _, p := range group {
 			executor := p.executor
-			if p.argumentErr != nil || p.referenceErr != nil {
+			if !p.valid || p.argumentErr != nil || p.referenceErr != nil {
 				// executor=client is an execution instruction on Agent Wire. An
 				// invalid call must only produce a server-side error lifecycle.
 				executor = "server"
@@ -273,28 +274,41 @@ func (r *Runner) runToolCall(ctx context.Context, p toolCallPlan) toolCallResult
 	var execErr error
 	switch {
 	case !p.valid:
+		res.failure = &tools.ToolFailure{Kind: "unavailable"}
 		execErr = fmt.Errorf("unknown tool: %s", p.call.Function.Name)
 	case p.referenceErr != nil:
+		res.failure = &tools.ToolFailure{Kind: "invalid_arguments"}
 		execErr = p.referenceErr
 	case p.argumentErr != nil:
+		res.failure = &tools.ToolFailure{Kind: "invalid_arguments"}
 		execErr = p.argumentErr
 		output = p.argumentErr.JSON()
 	case p.webSearchOrdinal > 0 && p.webSearchOrdinal > r.maxWebSearches():
+		res.failure = &tools.ToolFailure{Kind: "blocked"}
 		observation = fmt.Sprintf(
 			"Search budget reached: %d web searches already this turn (limit %d). "+
 				"Stop searching — reformulating the query will not surface new results. "+
 				"Answer with the results you already have, or web_fetch a specific URL.",
 			p.webSearchOrdinal-1, r.maxWebSearches())
 	case blockReason != "":
+		res.failure = &tools.ToolFailure{Kind: "blocked"}
 		observation = "The tool call was blocked. " + blockReason
 	case tools.HasSideEffectsFor(p.tool, p.wireInput) && r.approve(p.call.Function.Name, p.input) != VerdictAllow:
+		res.failure = &tools.ToolFailure{Kind: "blocked"}
 		observation = "The tool call was not approved. No changes were made."
 	case p.executor == "client":
 		res.executed = true
 		result, waitErr := r.ClientWaiter.Wait(ctx, p.call.ID, r.clientToolTimeout())
+		output, assetRefs = result.Output, result.Assets
 		if waitErr != nil {
+			kind := "transport"
+			if errors.Is(waitErr, context.DeadlineExceeded) {
+				kind = "timeout"
+			}
+			res.failure = &tools.ToolFailure{Kind: kind}
 			execErr = waitErr
-		} else if result.IsError {
+		} else if result.IsError || result.Failure != nil {
+			res.failure = result.Failure
 			execErr = fmt.Errorf("%s", result.Content)
 		} else {
 			res.succeeded = true
@@ -307,7 +321,8 @@ func (r *Runner) runToolCall(ctx context.Context, p toolCallPlan) toolCallResult
 		var toolResult tools.ToolResult
 		toolResult, execErr = r.executeTool(ctx, p.tool, p.call.ID, p.wireInput)
 		if execErr == nil {
-			res.succeeded = true
+			res.failure = toolResult.Failure
+			res.succeeded = res.failure == nil
 			observation = toolResult.Content
 			output = toolResult.Output
 			assetRefs = toolResult.Assets
@@ -325,10 +340,17 @@ func (r *Runner) runToolCall(ctx context.Context, p toolCallPlan) toolCallResult
 			}
 			res.nestedWrites = toolResult.NestedWrites
 			// Post-tool hook (8.5): fire-and-forget side effect (format/lint).
-			r.postHook(ctx, p.call.Function.Name, p.wireInput, observation)
+			if res.succeeded {
+				r.postHook(ctx, p.call.Function.Name, p.wireInput, observation)
+			}
 			// Post-tool-result hook: chained transform that CAN modify the
 			// observation before it is committed to history.
-			observation, _, output = r.postToolResultHook(ctx, p.call.Function.Name, p.wireInput, observation, false, output)
+			var hookError bool
+			observation, hookError, output = r.postToolResultHook(ctx, p.call.Function.Name, p.wireInput, observation, !res.succeeded, output)
+			if hookError && res.failure == nil {
+				res.failure = &tools.ToolFailure{Kind: "runtime"}
+			}
+			res.succeeded = res.failure == nil
 			// Mark git cache dirty so the next model call re-reads workspace
 			// state. Only side-effecting tools (bash, file writes) can change
 			// the repo; read-only tools (read_file, grep, list_files) should
@@ -343,8 +365,21 @@ func (r *Runner) runToolCall(ctx context.Context, p toolCallPlan) toolCallResult
 			// Interrupted by a suspend/cancel, not a genuine failure. Record the
 			// neutral marker (no error) so history stays resumable and the client
 			// sees no spurious "context canceled".
+			res.succeeded = false
+			res.failure = &tools.ToolFailure{Kind: "canceled"}
 			observation = toolInterruptedObservation
 		} else {
+			res.succeeded = false
+			if res.failure == nil {
+				kind := "runtime"
+				if errors.Is(execErr, context.DeadlineExceeded) {
+					kind = "timeout"
+				}
+				if errors.Is(execErr, os.ErrNotExist) {
+					kind = "not_found"
+				}
+				res.failure = &tools.ToolFailure{Kind: kind}
+			}
 			res.stepError = execErr.Error()
 			observation = "Tool error: " + execErr.Error()
 			var fatal tools.TurnFatalToolError
@@ -374,6 +409,24 @@ var builtinWriteTools = map[string]bool{
 // skill/todo telemetry, Observation enrichment, the Step, asset normalization,
 // the ToolFinished event, and the tool-result message.
 func (r *Runner) commitToolResult(ctx context.Context, sess *session.Session, turn *TurnResult, turnAssets *[]assets.Ref, p toolCallPlan, res toolCallResult) {
+	// A compliant MCP tool puts descriptors in its original structuredContent.
+	// Register them before observation/compaction so no opaque MCP identifier
+	// reaches the model transcript. Output remains raw for standard hosts and
+	// AgentKit's Timeline.
+	if entries, substitutions := reference.Register(res.output, sess.ReferenceLedger, sess.ID, p.call.ID, time.Now()); substitutions != nil {
+		sess.ReferenceLedger = entries
+		for raw, handle := range substitutions {
+			res.observation = strings.ReplaceAll(res.observation, raw, handle)
+		}
+	}
+	obs := r.toolResultObservation(p.call.Function.Name, res)
+	res.succeeded = res.succeeded && obs.OK
+	if !obs.OK && res.stepError == "" {
+		res.stepError = obs.Summary
+		if res.stepError == "" {
+			res.stepError = string(obs.FailureType)
+		}
+	}
 	if res.executed {
 		turn.ExecutedToolCalls++
 	}
@@ -417,23 +470,13 @@ func (r *Runner) commitToolResult(ctx context.Context, sess *session.Session, tu
 			tools.HasSideEffectsFor(p.tool, p.input),
 		)
 	}
-	// A compliant MCP tool puts descriptors in its original structuredContent.
-	// Register them before observation/compaction so no opaque MCP identifier
-	// reaches the model transcript. Output remains raw for standard hosts and
-	// AgentKit's Timeline.
-	if entries, substitutions := reference.Register(res.output, sess.ReferenceLedger, sess.ID, p.call.ID, time.Now()); substitutions != nil {
-		sess.ReferenceLedger = entries
-		for raw, handle := range substitutions {
-			observation = strings.ReplaceAll(observation, raw, handle)
-		}
-	}
 	step := p.step
 	step.Error = res.stepError
 
 	// Skill/Todo telemetry (P6/8.4): interface-driven, only for a known tool that
 	// executed cleanly. res.stepError == "" mirrors the old execErr == nil gate
 	// (an interrupted call leaves stepError empty and announces nothing loaded).
-	if p.known && res.stepError == "" {
+	if p.known && res.succeeded && res.stepError == "" {
 		if sa, ok := p.tool.(tools.SkillAnnouncer); ok {
 			if name, ver, src, loaded := sa.AnnounceSkill(p.input); loaded {
 				r.emit(Event{Kind: EventSkillLoaded, ToolName: name, Version: ver, SkillSource: src})
@@ -453,7 +496,6 @@ func (r *Runner) commitToolResult(ctx context.Context, sess *session.Session, tu
 	// Enrich into a structured Observation (P4.1): Observe on the full output so
 	// salient lines survive truncation, then truncate with the summary prepended.
 	if r.Observer != nil {
-		obs := r.Observer.Observe(p.call.Function.Name, observation)
 		observation = obs.Render(TruncateObservation(observation, maxObservationBytes))
 		r.emit(Event{
 			Kind:        EventObserved,
@@ -485,6 +527,7 @@ func (r *Runner) commitToolResult(ctx context.Context, sess *session.Session, tu
 		ToolUsage:   res.usage,
 		Elapsed:     time.Since(res.toolStart),
 		Err:         step.Error,
+		Failure:     string(obs.FailureType),
 	})
 
 	sess.Messages = append(sess.Messages, model.Message{

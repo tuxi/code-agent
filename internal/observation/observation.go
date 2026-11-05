@@ -66,8 +66,9 @@ func Observe(tool, raw string) Observation {
 		if res, ok := parseCommandResult(raw); ok {
 			return observeCommand(res)
 		}
-	case "job_status":
+	case "job_status", "job_wait":
 		if obs, ok := observeJobStatus(raw); ok {
+			obs.Tool = tool
 			return obs
 		}
 	case "job_logs":
@@ -215,7 +216,7 @@ func observeGeneric(tool, raw string) Observation {
 	// Filesystem tools return recoverable failures as observations (nil go error)
 	// so the model can adjust and retry. Classify them as failures for the user:
 	// a ✗ in the transcript, and the body shown without requiring expansion.
-	if isFilesystemFailure(raw) {
+	if (tool == "edit_file" || tool == "insert_file" || tool == "create_file" || tool == "apply_patch") && isFilesystemFailure(raw) {
 		return Observation{
 			Tool:        tool,
 			OK:          false,

@@ -56,16 +56,16 @@ func (l *ListFilesTool) Name() string {
 }
 
 func (l *ListFilesTool) Description() string {
-	return "List files and directories under a path in the current workspace."
+	return "List files and directories. External paths require host approval and are denied if approval is unavailable. Existing path restrictions still apply."
 }
 
 func (l *ListFilesTool) InputSchema() json.RawMessage {
 	return tools.Object(map[string]tools.Property{
 		"path": {
 			Type:        "string",
-			Description: `Directory path relative to the workspace root. Use "." for the root.`,
+			Description: `Workspace-relative or absolute directory path. Defaults to ".". External access requires approval. No ~ expansion; do not shell-escape spaces.`,
 		},
-	}).JSON()
+	}).Closed().JSON()
 }
 
 func (l *ListFilesTool) Execute(ctx context.Context, ec tools.ExecutionContext, input json.RawMessage) (tools.ToolResult, error) {

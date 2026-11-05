@@ -2,8 +2,10 @@ package tools
 
 import (
 	"encoding/json"
+	"fmt"
 	"sort"
 	"strconv"
+	"strings"
 
 	"github.com/google/jsonschema-go/jsonschema"
 )
@@ -57,6 +59,31 @@ func ValidateInput(tool Tool, input json.RawMessage) *ArgumentError {
 	if err := resolved.Validate(value); err != nil {
 		if field := missingRequired(&schema, value, ""); field != "" {
 			return fail(field, "required field is missing")
+		}
+		// Diagnose closed root objects without echoing argument values. Complex
+		// schema combinations remain the validator's responsibility.
+		var root struct {
+			AdditionalProperties *bool                      `json:"additionalProperties"`
+			Properties           map[string]json.RawMessage `json:"properties"`
+			PatternProperties    map[string]json.RawMessage `json:"patternProperties"`
+		}
+		if json.Unmarshal(raw, &root) == nil && root.AdditionalProperties != nil && !*root.AdditionalProperties && len(root.PatternProperties) == 0 {
+			if object, ok := value.(map[string]any); ok {
+				var unknown, allowed []string
+				for key := range root.Properties {
+					allowed = append(allowed, key)
+				}
+				for key := range object {
+					if _, ok := root.Properties[key]; !ok {
+						unknown = append(unknown, key)
+					}
+				}
+				if len(unknown) > 0 {
+					sort.Strings(unknown)
+					sort.Strings(allowed)
+					return fail("", fmt.Sprintf("unknown fields: %s; allowed fields: %s", strings.Join(unknown, ", "), strings.Join(allowed, ", ")))
+				}
+			}
 		}
 		// Do not echo validator errors: they can contain entire argument values.
 		return fail("", "arguments do not match the tool input schema (check types, enum values and constraints)")

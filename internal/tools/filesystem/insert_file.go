@@ -92,7 +92,7 @@ func (t *InsertFileTool) Execute(ctx context.Context, ec tools.ExecutionContext,
 		return tools.ToolResult{}, err
 	}
 	if denied {
-		return tools.ToolResult{Content: fmt.Sprintf("Access to external path was denied: %s", in.Path)}, nil
+		return tools.ToolResult{Failure: &tools.ToolFailure{Kind: "blocked"}, Content: fmt.Sprintf("Access to external path was denied: %s", in.Path)}, nil
 	}
 
 	// Plan mode may revise its authoritative markdown plan, but nothing else.
@@ -102,13 +102,13 @@ func (t *InsertFileTool) Execute(ctx context.Context, ec tools.ExecutionContext,
 
 	info, err := os.Stat(targetAbs)
 	if err != nil {
-		return tools.ToolResult{Content: fmt.Sprintf("Could not open %s: %v", in.Path, err)}, nil
+		return tools.ToolResult{Failure: &tools.ToolFailure{Kind: "runtime"}, Content: fmt.Sprintf("Could not open %s: %v", in.Path, err)}, nil
 	}
 	if info.IsDir() {
-		return tools.ToolResult{Content: fmt.Sprintf("%s is a directory, not a file.", in.Path)}, nil
+		return tools.ToolResult{Failure: &tools.ToolFailure{Kind: "runtime"}, Content: fmt.Sprintf("%s is a directory, not a file.", in.Path)}, nil
 	}
 	if info.Size() > t.MaxBytes {
-		return tools.ToolResult{Content: fmt.Sprintf("File too large to edit: %s (size=%d, max=%d).", in.Path, info.Size(), t.MaxBytes)}, nil
+		return tools.ToolResult{Failure: &tools.ToolFailure{Kind: "runtime"}, Content: fmt.Sprintf("File too large to edit: %s (size=%d, max=%d).", in.Path, info.Size(), t.MaxBytes)}, nil
 	}
 
 	data, err := os.ReadFile(targetAbs)
@@ -116,7 +116,7 @@ func (t *InsertFileTool) Execute(ctx context.Context, ec tools.ExecutionContext,
 		return tools.ToolResult{}, err
 	}
 	if !utf8.Valid(data) {
-		return tools.ToolResult{Content: fmt.Sprintf("%s is not a UTF-8 text file.", in.Path)}, nil
+		return tools.ToolResult{Failure: &tools.ToolFailure{Kind: "runtime"}, Content: fmt.Sprintf("%s is not a UTF-8 text file.", in.Path)}, nil
 	}
 
 	// Same normalization edit_file applies: read_file hands the model LF text, so
@@ -132,12 +132,12 @@ func (t *InsertFileTool) Execute(ctx context.Context, ec tools.ExecutionContext,
 	newContent, offset, insertedLines, err := insertWholeLines(content, int(in.Line), insert)
 	if err != nil {
 		total := countLines(content)
-		return tools.ToolResult{Content: fmt.Sprintf(
+		return tools.ToolResult{Failure: &tools.ToolFailure{Kind: "runtime"}, Content: fmt.Sprintf(
 			"%v %s has %d line(s). Line 0 inserts at the top; line N inserts after line N, using the numbers read_file prints. Re-read the file to confirm the line number — nothing was changed.",
 			err, in.Path, total)}, nil
 	}
 	if int64(len(newContent)) > t.MaxBytes {
-		return tools.ToolResult{Content: fmt.Sprintf(
+		return tools.ToolResult{Failure: &tools.ToolFailure{Kind: "runtime"}, Content: fmt.Sprintf(
 			"Refusing the insert: %s would grow to %d bytes (max %d).", in.Path, len(newContent), t.MaxBytes)}, nil
 	}
 

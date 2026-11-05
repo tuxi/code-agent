@@ -757,9 +757,6 @@ func (t *codeAgentFluxTool) invoke(ctx context.Context, nodeName string, input m
 func (t *codeAgentFluxTool) Execute(execCtx context.Context, input map[string]any, _ fluxtool.ToolEmitter) (*fluxtool.Result, error) {
 	meta, _ := fluxtool.ExecutionMetaFromContext(execCtx)
 	result, err := t.invoke(execCtx, meta.NodeName, input)
-	if err != nil {
-		return nil, err
-	}
 	if result.Usage != nil {
 		t.usage.add(result.Usage)
 	}
@@ -768,6 +765,12 @@ func (t *codeAgentFluxTool) Execute(execCtx context.Context, input map[string]an
 	// NestedWrites covers a node that is itself composite.
 	t.writes.add(result.Wrote)
 	t.writes.add(result.NestedWrites)
+	if err != nil {
+		return nil, err
+	}
+	if failure := result.Err(); failure != nil {
+		return nil, failure
+	}
 	return fluxtool.Success(fluxToolResultData(result)), nil
 }
 

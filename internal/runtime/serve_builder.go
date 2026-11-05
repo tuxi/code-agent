@@ -474,6 +474,12 @@ func (b *ServeRunBuilder) Build(ctx conversation.RuntimeContext) conversation.Tu
 	// uses the shared base registry directly. This is what makes the MCP tool set
 	// follow conversation.workspace_path instead of the daemon's launch directory.
 	workspacePath := ctx.Session.WorkspacePath
+	if workspacePath != "" {
+		local := settings.LoadProjectSettings(workspacePath, os.Stderr)
+		if local.Agent.CodingTools != nil {
+			cfg.Agent.CodingTools = local.Agent.CodingTools
+		}
+	}
 	var skillReg *skills.Registry
 	toolReg := b.ToolReg
 	if inst, err := b.WSReg.Get(workspacePath); err == nil {
@@ -514,6 +520,7 @@ func (b *ServeRunBuilder) Build(ctx conversation.RuntimeContext) conversation.Tu
 	// workspace-scoped read-only tools.
 	rebindTurnTask(turnTools, cfg, mc, provider, effectiveCredential, workspacePath, skillReg)
 	if ctx.ManagedTask != nil {
+		cfg.Agent.CodingTools = nil // managed domains retain their explicit tool profile
 		turnTools = managedTurnTools(turnTools)
 		ctx.ClientTools = nil
 		ctx.ClientWaiter = nil
@@ -593,6 +600,7 @@ func (b *ServeRunBuilder) Build(ctx conversation.RuntimeContext) conversation.Tu
 		runner.PathAccessApprover = pa
 	}
 	runner.Checkpointer = ctx.Checkpointer // mid-turn crash-safety (v1.2 §2); nil in headless builds
+	applyCodingProfile(runner, cfg)        // after workspace and client tools have been merged
 	runner.Stream = true                   // emit final-text and reasoning deltas for live client rendering
 	return runner
 }

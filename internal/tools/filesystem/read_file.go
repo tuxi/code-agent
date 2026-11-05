@@ -44,9 +44,10 @@ func (l *lineNumber) UnmarshalJSON(data []byte) error {
 }
 
 type readFileInput struct {
-	Path   string     `json:"path"`
-	Offset lineNumber `json:"offset,omitempty"`
-	Limit  lineNumber `json:"limit,omitempty"`
+	Path        string     `json:"path"`
+	LineNumbers *bool      `json:"line_numbers,omitempty"`
+	Offset      lineNumber `json:"offset,omitempty"`
+	Limit       lineNumber `json:"limit,omitempty"`
 }
 
 type readLine struct {
@@ -74,27 +75,28 @@ func (r *ReadFileTool) Name() string {
 }
 
 func (r *ReadFileTool) Description() string {
-	return "Read a UTF-8 text file from the workspace. Each line is prefixed with its 1-based line " +
+	return "Read a UTF-8 text file. External paths require host approval and are denied if approval is unavailable. Path protections still apply. Each line is prefixed with its 1-based line " +
 		"number and a tab — these are for reference only and are NOT part of the file; do not include " +
 		"them when editing. Use offset (1-based start line) and limit (line count) to read a window — " +
-		"this works even on files too large to read whole, so prefer it for big files."
+		"this works even on files too large to read whole. Set line_numbers=false for LF text without display prefixes, suitable for copying into edit_file."
 }
 
 func (r *ReadFileTool) InputSchema() json.RawMessage {
 	return tools.Object(map[string]tools.Property{
 		"path": {
 			Type:        "string",
-			Description: "File path relative to the workspace root.",
+			Description: "Workspace-relative or absolute file path. External access requires approval. No ~ expansion; do not shell-escape spaces.",
 		},
+		"line_numbers": {Type: "boolean", Description: "Include display line numbers (default true). Set false to copy original text without prefixes."},
 		"offset": {
 			Type:        "integer",
-			Description: "Optional. 1-based line number to start reading from. Default 1. Accepts a string number too.",
+			Description: "Optional. 1-based line number to start reading from. Default 1.",
 		},
 		"limit": {
 			Type:        "integer",
-			Description: "Optional. Maximum number of lines to read from offset. Default reads to end of file. Accepts a string number too.",
+			Description: "Optional. Maximum number of lines to read from offset. Default reads to end of file.",
 		},
-	}, "path").JSON()
+	}, "path").Closed().JSON()
 }
 
 // Inspect implements tools.Inspector. It blocks reads of protected paths
@@ -240,6 +242,18 @@ func (r *ReadFileTool) Execute(ctx context.Context, ec tools.ExecutionContext, i
 	}
 	if len(collected) == 0 {
 		return tools.ToolResult{Content: "", Output: output, Assets: assetRefs}, nil // offset past EOF, or empty file
+	}
+
+	if in.LineNumbers != nil && !*in.LineNumbers {
+		texts := make([]string, len(collected))
+		for i, line := range collected {
+			texts[i] = line.text
+		}
+		out := strings.Join(texts, "\n")
+		if truncated {
+			out += "\n... (output truncated; continue with a higher offset)"
+		}
+		return tools.ToolResult{Content: out, Output: output, Assets: assetRefs}, nil
 	}
 
 	// Right-align the line numbers to the width of the largest one shown.

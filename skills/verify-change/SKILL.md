@@ -10,6 +10,9 @@ description: How to change code safely here — verify before claiming done, fix
 2. **Verify it.** Run the build/tests. If the suite is slow, run it with
    `run_command` `"background": true`, keep investigating other code while it
    runs, and read `job_status` / `job_logs` when it finishes — don't idle.
+   Preserve the command's exit status: prefer the build/test command itself,
+   optionally redirecting logs. Do not append `; echo $?` or `|| true`.
+   If a status message is necessary, use `command; build_rc=$?; echo "$build_rc"; exit "$build_rc"`.
 3. **On failure, fix the source — do not edit the test to go green.** If a test
    genuinely asserts the wrong thing, say so and confirm with the user before
    changing it. Never quietly change an assertion to match buggy output.

@@ -262,7 +262,9 @@ type CredentialConfig struct {
 }
 
 type AgentConfig struct {
-	MaxSteps int `json:"max_steps,omitempty"`
+	// CodingTools selects a stable coding toolset; nil/false preserves the full set.
+	CodingTools *bool `json:"coding_tools,omitempty"`
+	MaxSteps    int   `json:"max_steps,omitempty"`
 
 	// CompactRatio is the fraction of a model's context window at which the
 	// session compacts. Defaults to defaultCompactRatio; values outside (0,1) are
@@ -676,6 +678,9 @@ func MergeSettings(base *Settings, overlay Settings) {
 		for name, cc := range entries {
 			base.Credentials[ns][name] = cc
 		}
+	}
+	if overlay.Agent.CodingTools != nil {
+		base.Agent.CodingTools = overlay.Agent.CodingTools
 	}
 	if overlay.Agent.MaxSteps != 0 {
 		base.Agent.MaxSteps = overlay.Agent.MaxSteps

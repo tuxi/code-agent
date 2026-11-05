@@ -24,7 +24,7 @@ type jobInput struct {
 func jobIDInputSchema(desc string) json.RawMessage {
 	return tools.Object(map[string]tools.Property{
 		"job_id": {Type: "string", Description: desc},
-	}, "job_id").JSON()
+	}, "job_id").Closed().JSON()
 }
 
 func parseJobID(input json.RawMessage) (string, error) {
@@ -45,6 +45,14 @@ func marshal(v any) (tools.ToolResult, error) {
 	return tools.ToolResult{Content: string(data)}, nil
 }
 
+func marshalJobOutcome(value any, snap jobs.Snapshot) (tools.ToolResult, error) {
+	result, err := marshal(value)
+	if err == nil && snap.Status == jobs.Failed {
+		result.Failure = &tools.ToolFailure{Kind: "runtime", Message: "background job failed: " + snap.ID}
+	}
+	return result, err
+}
+
 // JobStatusTool reports a background job's status, or lists all jobs when no
 // job_id is given.
 type JobStatusTool struct{ Jobs *jobs.Registry }
@@ -56,7 +64,7 @@ func (t *JobStatusTool) Description() string {
 func (t *JobStatusTool) InputSchema() json.RawMessage {
 	return tools.Object(map[string]tools.Property{
 		"job_id": {Type: "string", Description: "The job to report on. Omit to list all jobs."},
-	}).JSON()
+	}).Closed().JSON()
 }
 func (t *JobStatusTool) Execute(_ context.Context, _ tools.ExecutionContext, input json.RawMessage) (tools.ToolResult, error) {
 	id, err := parseJobID(input)
@@ -70,7 +78,8 @@ func (t *JobStatusTool) Execute(_ context.Context, _ tools.ExecutionContext, inp
 	if !ok {
 		return tools.ToolResult{}, fmt.Errorf("unknown job: %s", id)
 	}
-	return marshal(job.Snapshot())
+	snap := job.Snapshot()
+	return marshalJobOutcome(snap, snap)
 }
 
 // JobLogsTool returns the captured output (stdout+stderr) of a background job.
@@ -100,7 +109,11 @@ func (t *JobLogsTool) Execute(_ context.Context, _ tools.ExecutionContext, input
 	if strings.TrimSpace(logs) == "" {
 		logs = "(no output yet)"
 	}
-	return tools.ToolResult{Content: fmt.Sprintf("job %s [%s]\n%s", snap.ID, snap.Status, logs)}, nil
+	result := tools.ToolResult{Content: fmt.Sprintf("job %s [%s]\n%s", snap.ID, snap.Status, logs)}
+	if snap.Status == jobs.Failed {
+		result.Failure = &tools.ToolFailure{Kind: "runtime", Message: "background job failed: " + snap.ID}
+	}
+	return result, nil
 }
 
 // JobCancelTool stops a running background job.
@@ -157,7 +170,7 @@ func (t *JobWaitTool) InputSchema() json.RawMessage {
 	return tools.Object(map[string]tools.Property{
 		"job_id":          {Type: "string", Description: "The job to wait for."},
 		"timeout_seconds": {Type: "integer", Description: "Max seconds to wait (default 30, capped at 90)."},
-	}, "job_id").JSON()
+	}, "job_id").Closed().JSON()
 }
 
 func (t *JobWaitTool) Execute(ctx context.Context, _ tools.ExecutionContext, input json.RawMessage) (tools.ToolResult, error) {
@@ -189,7 +202,7 @@ func (t *JobWaitTool) Execute(ctx context.Context, _ tools.ExecutionContext, inp
 	defer timer.Stop()
 	select {
 	case <-job.Done():
-		return marshal(jobWaitResult(job, started, true))
+		return marshalJobOutcome(jobWaitResult(job, started, true), job.Snapshot())
 	case <-timer.C:
 		return marshal(jobWaitResult(job, started, false))
 	case <-ctx.Done():

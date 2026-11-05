@@ -58,10 +58,13 @@ func (t *EditFileTool) InputSchema() json.RawMessage {
 			Type:        "boolean",
 			Description: "Set true only when 'new' is intentionally empty and the matched text should be deleted.",
 		},
-	}, "path", "old").JSON()
+	}, "path", "old", "new").Closed().JSON()
 }
 
 func (t *EditFileTool) Execute(ctx context.Context, ec tools.ExecutionContext, input json.RawMessage) (tools.ToolResult, error) {
+	if err := tools.ValidateInput(t, input); err != nil {
+		return tools.ToolResult{}, err
+	}
 	var in editFileInput
 	if len(input) > 0 {
 		if err := json.Unmarshal(input, &in); err != nil {
@@ -81,10 +84,10 @@ func (t *EditFileTool) Execute(ctx context.Context, ec tools.ExecutionContext, i
 	// Recoverable conditions are returned as observations (nil error) so the
 	// model can adjust its arguments and retry, rather than aborting.
 	if in.Old == "" {
-		return tools.ToolResult{Content: "The 'old' text is empty. Provide the exact text to replace."}, nil
+		return tools.ToolResult{Failure: &tools.ToolFailure{Kind: "invalid_arguments"}, Content: "The 'old' text is empty. Provide the exact text to replace."}, nil
 	}
 	if in.Old == in.New {
-		return tools.ToolResult{Content: "The 'old' and 'new' text are identical; nothing to change."}, nil
+		return tools.ToolResult{Failure: &tools.ToolFailure{Kind: "invalid_arguments"}, Content: "The 'old' and 'new' text are identical; nothing to change."}, nil
 	}
 
 	targetAbs, denied, err := resolveWriteTarget(ec, in.Path)
@@ -92,7 +95,7 @@ func (t *EditFileTool) Execute(ctx context.Context, ec tools.ExecutionContext, i
 		return tools.ToolResult{}, err
 	}
 	if denied {
-		return tools.ToolResult{Content: fmt.Sprintf("Access to external path was denied: %s", in.Path)}, nil
+		return tools.ToolResult{Failure: &tools.ToolFailure{Kind: "blocked"}, Content: fmt.Sprintf("Access to external path was denied: %s", in.Path)}, nil
 	}
 
 	// Plan mode may revise its authoritative markdown plan, but it must not use
@@ -103,13 +106,13 @@ func (t *EditFileTool) Execute(ctx context.Context, ec tools.ExecutionContext, i
 
 	info, err := os.Stat(targetAbs)
 	if err != nil {
-		return tools.ToolResult{Content: fmt.Sprintf("Could not open %s: %v", in.Path, err)}, nil
+		return tools.ToolResult{Failure: &tools.ToolFailure{Kind: "not_found"}, Content: fmt.Sprintf("Could not open %s: %v", in.Path, err)}, nil
 	}
 	if info.IsDir() {
-		return tools.ToolResult{Content: fmt.Sprintf("%s is a directory, not a file.", in.Path)}, nil
+		return tools.ToolResult{Failure: &tools.ToolFailure{Kind: "runtime"}, Content: fmt.Sprintf("%s is a directory, not a file.", in.Path)}, nil
 	}
 	if info.Size() > t.MaxBytes {
-		return tools.ToolResult{Content: fmt.Sprintf("File too large to edit: %s (size=%d, max=%d).", in.Path, info.Size(), t.MaxBytes)}, nil
+		return tools.ToolResult{Failure: &tools.ToolFailure{Kind: "runtime"}, Content: fmt.Sprintf("File too large to edit: %s (size=%d, max=%d).", in.Path, info.Size(), t.MaxBytes)}, nil
 	}
 
 	data, err := os.ReadFile(targetAbs)
@@ -117,28 +120,28 @@ func (t *EditFileTool) Execute(ctx context.Context, ec tools.ExecutionContext, i
 		return tools.ToolResult{}, err
 	}
 	if !utf8.Valid(data) {
-		return tools.ToolResult{Content: fmt.Sprintf("%s is not a UTF-8 text file.", in.Path)}, nil
+		return tools.ToolResult{Failure: &tools.ToolFailure{Kind: "runtime"}, Content: fmt.Sprintf("%s is not a UTF-8 text file.", in.Path)}, nil
 	}
 
-	// Match against LF-normalized content. read_file hands the model
-	// LF-normalized text, so the 'old' string it quotes back is LF; matching
-	// against raw CRLF would fail. The file is rewritten as LF.
-	content := strings.ReplaceAll(string(data), "\r\n", "\n")
+	// Match the read_file LF view, but keep untouched bytes and line endings.
+	content, offsets := editLFView(string(data))
+	in.Old = strings.ReplaceAll(in.Old, "\r\n", "\n")
+	in.New = strings.ReplaceAll(in.New, "\r\n", "\n")
 
 	m := locateEdit(content, in.Old)
 	if m.ambiguous > 0 {
-		return tools.ToolResult{Content: fmt.Sprintf(
+		return tools.ToolResult{Failure: &tools.ToolFailure{Kind: "edit_conflict"}, Content: fmt.Sprintf(
 			"The 'old' text appears %d times in %s, so the edit is ambiguous. Include more surrounding context so it matches exactly once.", m.ambiguous, in.Path)}, nil
 	}
 	if !m.found {
 		msg := fmt.Sprintf(
 			"Could not find the 'old' text in %s. It must match the file exactly, including whitespace and indentation.", in.Path)
-		if nm := nearMissDiagnostic(content, in.Old); nm != "" {
+		if nm := editDiagnostic(ec, input, content, in.Old, in.New); nm != "" {
 			msg += "\n\n" + nm
 		} else {
 			msg += " Re-read the file and copy the text verbatim."
 		}
-		return tools.ToolResult{Content: msg}, nil
+		return tools.ToolResult{Failure: &tools.ToolFailure{Kind: "edit_conflict"}, Content: msg}, nil
 	}
 
 	// An empty 'new' deletes the matched text. That is a legitimate edit, but it
@@ -152,7 +155,7 @@ func (t *EditFileTool) Execute(ctx context.Context, ec tools.ExecutionContext, i
 	deleting := in.New == ""
 	if deleting && strings.TrimSpace(m.matched) != "" && !in.AllowDelete {
 		lineNum := lineAt(content, m.start) + 1
-		return tools.ToolResult{Content: fmt.Sprintf(
+		return tools.ToolResult{Failure: &tools.ToolFailure{Kind: "blocked"}, Content: fmt.Sprintf(
 			"Refused: 'new' is empty, which would delete %d line(s) starting at line %d of %s and put nothing in their place.\n"+
 				"If you meant to delete this text, re-send the same call with \"allow_delete\": true.\n"+
 				"If you meant to replace it, put the replacement in 'new' — an empty 'new' usually means the replacement text was dropped from the tool call. Nothing was changed.",
@@ -160,8 +163,15 @@ func (t *EditFileTool) Execute(ctx context.Context, ec tools.ExecutionContext, i
 	}
 
 	newContent := content[:m.start] + in.New + content[m.end:]
-
-	if err := os.WriteFile(targetAbs, []byte(newContent), info.Mode().Perm()); err != nil {
+	if newContent == content {
+		return tools.FailureResult("invalid_arguments", "The replacement makes no change to the file."), nil
+	}
+	replacement := in.New
+	if strings.Contains(string(data), "\r\n") && !strings.Contains(strings.ReplaceAll(string(data), "\r\n", ""), "\n") {
+		replacement = strings.ReplaceAll(replacement, "\n", "\r\n")
+	}
+	written := string(data[:offsets[m.start]]) + replacement + string(data[offsets[m.end]:])
+	if err := os.WriteFile(targetAbs, []byte(written), info.Mode().Perm()); err != nil {
 		return tools.ToolResult{}, err
 	}
 
@@ -375,7 +385,7 @@ func nearMissDiagnostic(content, old string) string {
 	fileLine := fileLines[best]
 	var b strings.Builder
 	fmt.Fprintf(&b, "The closest line in the file is line %d:\n    %s\nbut your 'old' text has:\n    %s",
-		best+1, fileLine, anchor)
+		best+1, boundedEditLine(fileLine), boundedEditLine(anchor))
 	if col, fr, br, differ := firstRuneDiff(fileLine, anchor); differ {
 		fmt.Fprintf(&b, "\nFirst difference at column %d: file has %s, your text has %s.", col, describeRune(fr), describeRune(br))
 		b.WriteString("\nCopy the text verbatim from read_file — do not substitute smart quotes, dashes, or spaces.")

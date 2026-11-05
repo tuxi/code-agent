@@ -85,14 +85,14 @@ func (g *GrepTool) Name() string {
 }
 
 func (g *GrepTool) Description() string {
-	return "Search text in UTF-8 files under the current workspace."
+	return "Search text in UTF-8 files or directories. External paths require host approval and are denied if approval is unavailable. Existing path restrictions still apply."
 }
 
 func (g *GrepTool) InputSchema() json.RawMessage {
 	return tools.Object(map[string]tools.Property{
 		"query": {Type: "string", Description: "Text or pattern to search for. Interpreted as a case-insensitive RE2 regular expression; falls back to literal text when the pattern is invalid."},
-		"path":  {Type: "string", Description: `Directory to search under, relative to the workspace root. Use "." for the root.`},
-	}, "query").JSON()
+		"path":  {Type: "string", Description: `Workspace-relative or absolute file or directory. Defaults to ".". External access requires approval. No ~ expansion; do not shell-escape spaces.`},
+	}, "query").Closed().JSON()
 }
 
 func (g *GrepTool) Execute(ctx context.Context, ec tools.ExecutionContext, input json.RawMessage) (tools.ToolResult, error) {
@@ -239,7 +239,7 @@ func (g *GrepTool) searchFile(rootAbs, path string, m *queryMatcher) ([]grepMatc
 				AbsolutePath: abs,
 				Line:         lineNo,
 				Column:       idx + 1,
-				Preview:      strings.TrimSpace(line),
+				Preview:      line,
 			})
 		}
 	}

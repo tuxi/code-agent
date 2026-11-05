@@ -24,13 +24,29 @@ func (r *Runner) ExecuteNestedTool(
 	if tool == nil {
 		return tools.ToolResult{}, fmt.Errorf("nested tool is nil")
 	}
+	var domainErr error
+	if active := r.Tools; active != nil {
+		if (r.PlanState == PlanStatusPlanning || r.PlanState == PlanStatusProposing) && r.PlanTools != nil {
+			active = r.PlanTools
+		}
+		allowed := false
+		for _, candidate := range active.Visible() {
+			if candidate.Name() == tool.Name() {
+				tool, allowed = candidate, true
+				break
+			}
+		}
+		if !allowed {
+			domainErr = fmt.Errorf("nested tool is unavailable in this execution domain: %s", tool.Name())
+		}
+	}
 	if nestedCallID == "" {
 		nestedCallID = parentCallID + ":" + tool.Name()
 	}
 	executor := r.executorFor(tool, true)
 	argumentErr := tools.ValidateInput(tool, input)
 	eventExecutor := executor
-	if argumentErr != nil {
+	if argumentErr != nil || domainErr != nil {
 		eventExecutor = "server"
 	}
 	started := time.Now()
@@ -44,8 +60,15 @@ func (r *Runner) ExecuteNestedTool(
 
 	finish := func(result tools.ToolResult, err error) (tools.ToolResult, error) {
 		errText := ""
+		if failure := result.Err(); failure != nil {
+			errText = failure.Error()
+		}
 		if err != nil {
 			errText = err.Error()
+		}
+		failure := ""
+		if result.Failure != nil {
+			failure = result.Failure.Kind
 		}
 		r.emit(Event{
 			Kind:        EventToolFinished,
@@ -57,6 +80,7 @@ func (r *Runner) ExecuteNestedTool(
 			ToolUsage:   result.Usage,
 			Elapsed:     time.Since(started),
 			Err:         errText,
+			Failure:     failure,
 		})
 		return result, err
 	}
@@ -64,18 +88,21 @@ func (r *Runner) ExecuteNestedTool(
 	if argumentErr != nil {
 		return finish(tools.ToolResult{Content: argumentErr.Error(), Output: argumentErr.JSON()}, argumentErr)
 	}
+	if domainErr != nil {
+		return finish(tools.FailureResult("unavailable", domainErr.Error()), domainErr)
+	}
 	if executor != "client" {
 		if block := r.preHookBlock(ctx, tool.Name(), input); block != "" {
-			return finish(tools.ToolResult{Content: "The tool call was blocked. " + block}, nil)
+			return finish(tools.FailureResult("blocked", "The tool call was blocked. "+block), nil)
 		}
 		if inspector, ok := tool.(tools.Inspector); ok {
 			if err := inspector.Inspect(input, r.WorkspaceRoot); err != nil {
-				return finish(tools.ToolResult{Content: "The tool call was blocked. blocked: " + err.Error()}, nil)
+				return finish(tools.FailureResult("blocked", "The tool call was blocked. blocked: "+err.Error()), nil)
 			}
 		}
 	}
 	if tools.HasSideEffectsFor(tool, input) && r.approve(tool.Name(), input) != VerdictAllow {
-		return finish(tools.ToolResult{Content: "The tool call was not approved. No changes were made."}, nil)
+		return finish(tools.FailureResult("blocked", "The tool call was not approved. No changes were made."), nil)
 	}
 
 	if executor == "client" {
@@ -83,8 +110,12 @@ func (r *Runner) ExecuteNestedTool(
 		if err != nil {
 			return finish(tools.ToolResult{}, err)
 		}
-		if result.IsError {
-			return finish(tools.ToolResult{}, fmt.Errorf("%s", result.Content))
+		if result.IsError || result.Failure != nil {
+			failure := result.Failure
+			if failure == nil {
+				failure = &tools.ToolFailure{Kind: "runtime", Message: result.Content}
+			}
+			return finish(tools.ToolResult{Content: result.Content, Output: result.Output, Assets: result.Assets, Failure: failure}, fmt.Errorf("%s", result.Content))
 		}
 		return finish(tools.ToolResult{
 			Content: result.Content,
@@ -94,7 +125,7 @@ func (r *Runner) ExecuteNestedTool(
 	}
 
 	result, err := r.executeTool(ctx, tool, nestedCallID, input)
-	if err == nil {
+	if err == nil && result.Err() == nil {
 		r.postHook(ctx, tool.Name(), input, result.Content)
 	}
 	return finish(result, err)

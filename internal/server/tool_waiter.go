@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"code-agent/internal/agent"
+	"code-agent/internal/tools"
 )
 
 // RemoteToolResultWaiter implements agent.ClientToolWaiter for a single WS
@@ -59,9 +60,9 @@ func (w *RemoteToolResultWaiter) Wait(ctx context.Context, callID string, leaseT
 	case <-ctx.Done():
 		return agent.ToolCallResult{}, ctx.Err()
 	case <-timer.C:
-		return agent.ToolCallResult{Subtype: "result", Content: "tool error: client timeout", IsError: true}, nil
+		return agent.ToolCallResult{Subtype: "result", Content: "tool error: client timeout", IsError: true, Failure: &tools.ToolFailure{Kind: "timeout", Message: "client tool lease expired"}}, nil
 	case <-pc.done:
-		return agent.ToolCallResult{Subtype: "result", Content: "tool error: connection lost", IsError: true}, nil
+		return agent.ToolCallResult{Subtype: "result", Content: "tool error: connection lost", IsError: true, Failure: &tools.ToolFailure{Kind: "transport", Message: "client connection lost"}}, nil
 	case r := <-pc.ch:
 		return r, nil
 	}

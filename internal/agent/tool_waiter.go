@@ -2,6 +2,7 @@ package agent
 
 import (
 	"code-agent/internal/assetref"
+	"code-agent/internal/tools"
 	"context"
 	"encoding/json"
 	"time"
@@ -15,6 +16,8 @@ type ToolCallResult struct {
 	Output  json.RawMessage
 	Assets  []assets.Ref
 	IsError bool
+	// Failure is supplied by the runtime broker for lease/connection failures.
+	Failure *tools.ToolFailure
 }
 
 // ClientToolDef is one client-side tool declaration from a register_tools

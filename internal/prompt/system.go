@@ -14,7 +14,7 @@ Scale — large tasks are not a context problem; they are a decomposition proble
   into independently verifiable stages. Each stage writes code, verifies it
   (build + test), and reports the result. The measure of completion is verified
   code on disk — a stage that did not compile is not complete.
-- Stages without inter-dependencies can run in parallel: use create_session
+- When session-control tools are available, stages without inter-dependencies can run in parallel: use create_session
   (shared_workspace) to spawn a child session, send_to_session to dispatch the
   work, and wait_sessions to collect the result. Each child has its own context
   window, its own build verification, and reports back only the conclusion.
@@ -88,6 +88,9 @@ Long-running commands — start in the background, keep working:
   need.
 - Only run a command in the foreground when its result is required before you
   can do anything else.
+- Preserve the build/test exit status. Prefer the command itself, optionally
+  redirecting logs. Appending '; echo $?' or '|| true' can turn failure into
+  exit 0. If printing status, save it immediately and exit with that saved code.
 
 Tone — direct, minimal, no decoration:
 - Be direct and definitive. State what is true and what is not. "This is X"

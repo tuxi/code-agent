@@ -88,36 +88,33 @@ func (t *RunCommandTool) Name() string {
 }
 
 func (t *RunCommandTool) Description() string {
-	description := "Run a command in the workspace and get structured output (stdout, stderr, exit_code, duration_ms). " +
-		"Read-only and build commands (ls, cat, grep, git status/diff/log, go build/test/vet, cargo check) run directly; " +
-		"commands that mutate the tree or reach the network (rm, mv, curl, git checkout/commit/push) require user confirmation; " +
-		"a few catastrophic commands are blocked. " +
-		"ONE command line — NO backgrounding (&) or command substitution ($(...)). " +
-		"Chain with &&, ;, |, || — e.g. `go build ./... && go test ./... | grep FAIL` or `git add .; git commit -m wip`. " +
-		"Redirect — e.g. `go test > /tmp/out` or `mysql < schema.sql`. " +
-		"Still: (1) the command runs from the workspace ROOT, so pass a path argument rather than `cd`; " +
-		"(2) output is already captured and truncated for you, so DON'T pipe to head/tail/grep — just run the bare command and read the result; " +
-		"(3) to filter, run the tool's own flag (e.g. `go test -run TestName`) rather than piping. "
+	description := "Run one command line from the workspace root; returns stdout, stderr, exit_code and duration_ms. " +
+		"Simple commands execute directly; supported chaining (&&, ;, |, ||), redirects and substitutions use sh with policy checks. " +
+		"Mutating or unrecognized commands require approval; blocked commands do not run. " +
+		"For external filesystem listing, reading or searching, use list_files/read_file/grep with an absolute path to request host approval. Do not bypass path refusals with Python or another command. " +
+		"Use path arguments instead of cd. Output is already captured and bounded; prefer a command's filter flags over output-only pipes. " +
+		"exit_code is the whole command line's status. Run builds/tests directly, optionally redirecting logs; do not mask failures with '; echo $?', '|| true', or a trailing pipeline. " +
+		"Foreground execution has a time limit (normally 120 seconds); a timeout is not a successful exit. "
 	if t.ForegroundOnly {
 		return description + "This managed execution domain supports foreground commands only."
 	}
-	return description + `Set "background": true for a long build/test that would otherwise block — you get a job_id back immediately; then poll job_status / job_logs, or stop it with job_cancel.`
+	return description + `Set "background": true for a long build/test that would otherwise block — you get a job_id back immediately; then use job_wait to wait, job_logs for output, or job_cancel to stop it. A running status means the command has not finished.`
 }
 
 func (t *RunCommandTool) InputSchema() json.RawMessage {
 	if t.ForegroundOnly {
-		return tools.Object(map[string]tools.Property{"command": {Type: "string", Description: "A foreground command executed under this Session's normal permission policy."}}, "command").JSON()
+		return tools.Object(map[string]tools.Property{"command": {Type: "string", Description: "A foreground command executed under this Session's normal permission policy."}}, "command").Closed().JSON()
 	}
 	return tools.Object(map[string]tools.Property{
 		"command": {
 			Type:        "string",
-			Description: `A single command to run, e.g. "go test ./..." or "git diff". No pipes/redirection/chaining.`,
+			Description: `A single command to run, e.g. "go test ./..." or "git diff". Supported shell operators are checked under the same permission policy.`,
 		},
 		"background": {
 			Type:        "boolean",
-			Description: `Run in the background and return a job_id immediately instead of waiting. For long builds/tests. Poll with job_status / job_logs.`,
+			Description: `Run in the background and return a job_id immediately instead of waiting. For long builds/tests. Prefer job_wait over polling; job_logs reads output and job_cancel stops the job.`,
 		},
-	}, "command").JSON()
+	}, "command").Closed().JSON()
 }
 
 // shellOperatorHint returns a rejection note tailored to the shell operator the
@@ -161,6 +158,7 @@ func (t *RunCommandTool) Execute(ctx context.Context, ec tools.ExecutionContext,
 	// error so the model can read the reason and choose a different approach.
 	if class.Decision == sandbox.Block {
 		return t.result(commandResult{
+			Status:   "blocked",
 			Command:  command,
 			ExitCode: -1,
 			Decision: string(class.Decision),
@@ -182,6 +180,7 @@ func (t *RunCommandTool) Execute(ctx context.Context, ec tools.ExecutionContext,
 	// same shape otherwise — the generic "not supported" line isn't enough).
 	if sandbox.ContainsShellOperators(command) {
 		return t.result(commandResult{
+			Status:   "blocked",
 			Command:  command,
 			ExitCode: -1,
 			Decision: string(class.Decision),
@@ -203,6 +202,7 @@ func (t *RunCommandTool) Execute(ctx context.Context, ec tools.ExecutionContext,
 	}
 	if note := outsideWorkspaceRead(args, rootAbs); note != "" {
 		return t.result(commandResult{
+			Status:   "blocked",
 			Command:  command,
 			ExitCode: -1,
 			Decision: string(class.Decision),
@@ -293,7 +293,7 @@ func (t *RunCommandTool) executeShell(ctx context.Context, ec tools.ExecutionCon
 	}
 	if note := compoundWorkspaceRead(command, rootAbs, 0); note != "" {
 		return t.result(commandResult{
-			Command: command, ExitCode: -1, Decision: string(class.Decision), Note: note,
+			Status: "blocked", Command: command, ExitCode: -1, Decision: string(class.Decision), Note: note,
 		})
 	}
 
@@ -302,6 +302,7 @@ func (t *RunCommandTool) executeShell(ctx context.Context, ec tools.ExecutionCon
 	// >/dev/null and 2>&1 are always safe.
 	if note := checkRedirectTargets(command, rootAbs); note != "" {
 		return t.result(commandResult{
+			Status:   "blocked",
 			Command:  command,
 			ExitCode: -1,
 			Decision: string(class.Decision),
@@ -424,7 +425,23 @@ func (t *RunCommandTool) SideEffectsFor(input json.RawMessage) bool {
 func (t *RunCommandTool) SideEffects() bool { return true }
 
 func (t *RunCommandTool) result(res commandResult) (tools.ToolResult, error) {
-	return t.jsonResult(res)
+	result, err := t.jsonResult(res)
+	if err != nil || res.ExitCode == 0 {
+		return result, err
+	}
+	kind := "runtime"
+	switch {
+	case res.Status == "cancelled":
+		kind = "canceled"
+	case res.Status == "timed_out":
+		kind = "timeout"
+	case res.Decision == "block" || res.Status == "blocked":
+		kind = "blocked"
+	case res.ExitCode == -1:
+		kind = "environment"
+	}
+	result.Failure = &tools.ToolFailure{Kind: kind, Message: "Command did not complete successfully: " + res.Command}
+	return result, nil
 }
 
 func (t *RunCommandTool) jsonResult(v any) (tools.ToolResult, error) {
@@ -575,7 +592,11 @@ func outsideWorkspaceRead(args []string, rootAbs string) string {
 	if len(args) == 0 || !isReadPathCommand(args[0]) {
 		return ""
 	}
-	for _, arg := range args[1:] {
+	operands := args[1:]
+	if filepath.Base(args[0]) == "awk" {
+		operands = awkReadOperands(operands)
+	}
+	for _, arg := range operands {
 		if arg == "" || strings.HasPrefix(arg, "-") {
 			continue
 		}

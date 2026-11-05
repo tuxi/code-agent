@@ -11,11 +11,19 @@ import "encoding/json"
 // return a raw json.RawMessage from InputSchema() directly — the interface
 // boundary stays bytes precisely to keep that escape hatch open.
 type Schema struct {
-	Type        string              `json:"type"`
-	Description string              `json:"description,omitempty"`
-	Properties  map[string]Property `json:"properties,omitempty"`
-	Required    []string            `json:"required,omitempty"`
-	Items       *Property           `json:"items,omitempty"` // when Type == "array"
+	Type                 string              `json:"type"`
+	Description          string              `json:"description,omitempty"`
+	Properties           map[string]Property `json:"properties,omitempty"`
+	Required             []string            `json:"required,omitempty"`
+	Items                *Property           `json:"items,omitempty"` // when Type == "array"
+	AdditionalProperties *bool               `json:"additionalProperties,omitempty"`
+}
+
+// Closed rejects misspelled fields without changing schemas from external tools.
+func (s Schema) Closed() Schema {
+	allow := false
+	s.AdditionalProperties = &allow
+	return s
 }
 
 // Property describes a single field of an object schema. Type is one of
