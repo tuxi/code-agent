@@ -15,6 +15,14 @@ func projectConfig(binary, manifest, workspace, attach, reattach, baseline strin
 }
 
 func projectConfigForProfile(binary, manifest, workspace, attach, reattach, baseline, profile string) (string, error) {
+	return projectConfigWithReadWorkspaces(binary, manifest, workspace, attach, reattach, baseline, profile, nil)
+}
+
+func projectConfigWithReadWorkspaces(binary, manifest, workspace, attach, reattach, baseline, profile string, readWorkspaces []string) (string, error) {
+	return projectConfigWithWorkspaceSelection(binary, manifest, workspace, attach, reattach, baseline, profile, readWorkspaces, false)
+}
+
+func projectConfigWithWorkspaceSelection(binary, manifest, workspace, attach, reattach, baseline, profile string, readWorkspaces []string, selection bool) (string, error) {
 	if !filepath.IsAbs(binary) || !filepath.IsAbs(manifest) || !filepath.IsAbs(workspace) {
 		return "", errors.New("config requires absolute binary, connection-manifest and workspace paths")
 	}
@@ -33,6 +41,9 @@ func projectConfigForProfile(binary, manifest, workspace, attach, reattach, base
 	if profile == "manual" && (attach != "" || reattach != "" || baseline != "") {
 		return "", errors.New("manual profile uses explicit tool bindings, not fixed Session startup flags")
 	}
+	if len(readWorkspaces) > 16 || (len(readWorkspaces) > 0 || selection) && profile != "manual" {
+		return "", errors.New("read-workspace requires manual profile and at most 16 additional roots")
+	}
 	root, err := filepath.EvalSymlinks(workspace)
 	if err != nil {
 		return "", fmt.Errorf("resolve actual workspace: %w", err)
@@ -42,6 +53,23 @@ func projectConfigForProfile(binary, manifest, workspace, attach, reattach, base
 		return "", errors.New("workspace must be an existing directory")
 	}
 	args := []string{"--experimental-p0a", "--profile", profile, "--connection-manifest", manifest, "--workspace", root}
+	if selection {
+		args = append(args, "--allow-workspace-selection")
+	}
+	for _, path := range readWorkspaces {
+		if !filepath.IsAbs(path) {
+			return "", errors.New("read-workspace must be absolute")
+		}
+		canonical, err := filepath.EvalSymlinks(path)
+		if err != nil {
+			return "", errors.New("read-workspace must be an existing directory")
+		}
+		info, err := os.Stat(canonical)
+		if err != nil || !info.IsDir() {
+			return "", errors.New("read-workspace must be an existing directory")
+		}
+		args = append(args, "--read-workspace", canonical)
+	}
 	if attach != "" {
 		args = append(args, "--attach-empty-session", attach)
 	}

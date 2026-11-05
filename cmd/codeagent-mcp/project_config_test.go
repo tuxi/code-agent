@@ -69,3 +69,53 @@ func TestProjectConfigNeverRequiresCollaborationForChat(t *testing.T) {
 		})
 	}
 }
+
+func TestProjectConfigExplicitReadWorkspace(t *testing.T) {
+	root, readRoot := t.TempDir(), t.TempDir()
+	config, err := projectConfigWithReadWorkspaces("/local/bridge", "/private/missing-grant.json", root, "", "", "", "manual", []string{readRoot})
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonical, err := filepath.EvalSymlinks(readRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(config, `"--read-workspace",`+mustJSON(canonical)) || !strings.Contains(config, "required = false") {
+		t.Fatal(config)
+	}
+	for _, profile := range []string{"executor", "reviewer", "managed"} {
+		if _, err := projectConfigWithReadWorkspaces("/local/bridge", "/private/missing.json", root, "", "", "", profile, []string{readRoot}); err == nil {
+			t.Fatal("read scope silently accepted by", profile)
+		}
+	}
+	if _, err := projectConfigWithReadWorkspaces("/local/bridge", "/private/missing.json", root, "", "", "", "manual", []string{"../relative"}); err == nil {
+		t.Fatal("relative read workspace accepted")
+	}
+	for _, dir := range []string{root, readRoot} {
+		entries, err := os.ReadDir(dir)
+		if err != nil || len(entries) != 0 {
+			t.Fatal("config generator changed workspace", err)
+		}
+	}
+}
+
+func TestProjectConfigWorkspaceSelectionIsExplicitAndManualOnly(t *testing.T) {
+	root := t.TempDir()
+	config, err := projectConfigWithWorkspaceSelection("/local/bridge", "/private/not-read.json", root, "", "", "", "manual", nil, true)
+	if err != nil || !strings.Contains(config, `"--allow-workspace-selection"`) || !strings.Contains(config, "required = false") {
+		t.Fatal(config, err)
+	}
+	fixed, err := projectConfigWithWorkspaceSelection("/local/bridge", "/private/not-read.json", root, "", "", "", "manual", nil, false)
+	if err != nil || strings.Contains(fixed, "--allow-workspace-selection") {
+		t.Fatal(fixed, err)
+	}
+	for _, profile := range []string{"executor", "reviewer", "managed"} {
+		if _, err := projectConfigWithWorkspaceSelection("/local/bridge", "/private/not-read.json", root, "", "", "", profile, nil, true); err == nil {
+			t.Fatal("selection accepted outside manual", profile)
+		}
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil || len(entries) != 0 {
+		t.Fatal("generator wrote workspace", err)
+	}
+}

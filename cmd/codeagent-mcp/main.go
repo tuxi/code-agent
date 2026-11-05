@@ -39,6 +39,12 @@ func run() error {
 	check := flag.Bool("check-connection", false, "Verify granted instance and print non-secret identity without starting MCP or a turn")
 	printConfig := flag.Bool("print-project-config", false, "Print project-scoped TOML for the actual workspace; no credentials read, files written or network calls")
 	workspace := flag.String("workspace", "", "Absolute isolated Git repository (clean unless explicit existing-session reattach)")
+	selectWorkspaces := flag.Bool("allow-workspace-selection", false, "Allow trusted local MCP caller to explicitly select additional execution repositories at runtime; manual only, existing owner grant, not OS isolation")
+	var readWorkspaces []string
+	flag.Func("read-workspace", "Additional absolute workspace allowed for read-only Session discovery/history; repeatable, manual profile only", func(value string) error {
+		readWorkspaces = append(readWorkspaces, value)
+		return nil
+	})
 	tokenEnv := flag.String("token-env", "CODEAGENT_BRIDGE_TOKEN", "Environment variable containing the daemon access token")
 	experimental := flag.Bool("experimental-p0a", false, "Enable isolated technical experiment; no production recovery guarantees")
 	flag.Parse()
@@ -59,7 +65,7 @@ func run() error {
 		if profileExplicit {
 			configProfile = *profile
 		}
-		config, err := projectConfigForProfile(binary, *manifest, *workspace, *attach, *reattach, *baseline, configProfile)
+		config, err := projectConfigWithWorkspaceSelection(binary, *manifest, *workspace, *attach, *reattach, *baseline, configProfile, readWorkspaces, *selectWorkspaces)
 		if err != nil {
 			return err
 		}
@@ -72,13 +78,20 @@ func run() error {
 	if *profile != "executor" && *profile != "reviewer" && *profile != "manual" && *profile != "managed" {
 		return fmt.Errorf("--profile must be manual, executor, managed or reviewer")
 	}
+	if (len(readWorkspaces) > 0 || *selectWorkspaces) && *profile != "manual" {
+		return fmt.Errorf("read-workspace and allow-workspace-selection are supported only by the manual profile")
+	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	if *profile == "manual" {
 		if *endpoint != "" || tokenExplicit || *attach != "" || *reattach != "" || *observe != "" || *baseline != "" || *delivery != "" || *bundlePath != "" || *exportPath != "" || *exportTurn != "" || *exportTask != "" || *exportArtifact != "" || *exportedBy != "" {
 			return fmt.Errorf("manual requires connection-manifest/workspace and excludes fixed Session, runtime-url/token-env and evidence export/bundle flags")
 		}
-		service, err := mcpbridge.NewManualService(ctx, *manifest, *workspace)
+		constructor := mcpbridge.NewManualServiceWithReadWorkspaces
+		if *selectWorkspaces {
+			constructor = mcpbridge.NewMultiWorkspaceManualService
+		}
+		service, err := constructor(ctx, *manifest, *workspace, readWorkspaces)
 		if err != nil {
 			return err
 		}

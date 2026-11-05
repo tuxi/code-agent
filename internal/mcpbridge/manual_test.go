@@ -223,7 +223,7 @@ func TestManualInitializeWithoutGrantAndStableCatalog(t *testing.T) {
 	}
 	defer client.Close()
 	list, err := client.ListTools(ctx, nil)
-	if err != nil || len(list.Tools) != 11 {
+	if err != nil || len(list.Tools) != 13 {
 		t.Fatalf("catalog: %+v %v", list, err)
 	}
 	f.mu.Lock()
@@ -274,7 +274,7 @@ func TestManualInitializeWithoutGrantAndStableCatalog(t *testing.T) {
 	}
 	saveGrant(t, path, grant)
 	list, err = client.ListTools(ctx, nil)
-	if err != nil || len(list.Tools) != 11 {
+	if err != nil || len(list.Tools) != 13 {
 		t.Fatal("catalog changed after authorization", err)
 	}
 	f.mu.Lock()

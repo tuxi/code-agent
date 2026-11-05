@@ -22,12 +22,20 @@ type ManualService struct {
 	manifest, configuredRoot string
 	boundary                 *Client
 	boundaryErr              error
+	commonInfo               os.FileInfo
+	readScopes               []historyScope
 	opMu                     sync.Mutex
 	mu                       sync.RWMutex
-	anchor                   *connectionBinding
-	bindings                 map[string]*manualBinding
-	sessions                 map[string]string
-	creations                map[string]*manualCreation
+	*manualAuthority
+	router    *workspaceRouter
+	bindings  map[string]*manualBinding
+	sessions  map[string]string
+	creations map[string]*manualCreation
+}
+
+type manualAuthority struct {
+	authorityMu sync.Mutex
+	anchor      *connectionBinding
 }
 
 type manualBinding struct {
@@ -51,10 +59,12 @@ type ManualIdentity struct {
 type ManualCreateInput struct {
 	ManualIdentity
 	RequestID string `json:"request_id"`
+	Workspace string `json:"workspace_path,omitempty"`
 }
 
 type ManualBindInput struct {
 	ManualIdentity
+	Workspace        string `json:"workspace_path,omitempty"`
 	SessionID        string `json:"session_id"`
 	ReplaceBindingID string `json:"replace_binding_id,omitempty"`
 }
@@ -69,23 +79,41 @@ type ManualBindingRef struct {
 
 type ManualConnectionInfo struct {
 	ManualBindingRef
-	IdentityVerified            bool   `json:"identity_verified"`
-	ExecutionBound              bool   `json:"execution_bound"`
-	HeadCommit                  string `json:"head_commit,omitempty"`
-	Reconnected                 bool   `json:"reconnected,omitempty"`
-	BindingsRequireRevalidation bool   `json:"bindings_require_revalidation,omitempty"`
+	IdentityVerified            bool     `json:"identity_verified"`
+	ExecutionBound              bool     `json:"execution_bound"`
+	HeadCommit                  string   `json:"head_commit,omitempty"`
+	Reconnected                 bool     `json:"reconnected,omitempty"`
+	BindingsRequireRevalidation bool     `json:"bindings_require_revalidation,omitempty"`
+	ReadWorkspaces              []string `json:"read_workspaces,omitempty"`
+	WorkspaceSelection          bool     `json:"workspace_selection"`
+	ExecutionWorkspaces         []string `json:"execution_workspaces,omitempty"`
 }
 
 // NewManualService performs local boundary inspection only. A missing grant,
 // offline daemon or unavailable workspace must not break MCP initialization.
 func NewManualService(ctx context.Context, manifest, workspace string) (*ManualService, error) {
+	return NewManualServiceWithReadWorkspaces(ctx, manifest, workspace, nil)
+}
+
+func NewManualServiceWithReadWorkspaces(ctx context.Context, manifest, workspace string, readWorkspaces []string) (*ManualService, error) {
 	if !filepath.IsAbs(manifest) || !filepath.IsAbs(workspace) {
 		return nil, bridgeError("invalid_tool_arguments", nil)
 	}
 	runCtx, cancel := context.WithCancel(ctx)
 	s := &ManualService{ctx: runCtx, cancel: cancel, manifest: manifest, configuredRoot: workspace,
-		bindings: map[string]*manualBinding{}, sessions: map[string]string{}, creations: map[string]*manualCreation{}}
+		manualAuthority: &manualAuthority{}, bindings: map[string]*manualBinding{}, sessions: map[string]string{}, creations: map[string]*manualCreation{}}
 	s.boundary, s.boundaryErr = pinManualBoundary(ctx, workspace)
+	if len(readWorkspaces) > 16 {
+		cancel()
+		return nil, bridgeError("invalid_tool_arguments", nil)
+	}
+	for _, path := range append([]string{workspace}, readWorkspaces...) {
+		if !filepath.IsAbs(path) {
+			cancel()
+			return nil, bridgeError("invalid_tool_arguments", nil)
+		}
+		s.readScopes = append(s.readScopes, pinHistoryScope(path))
+	}
 	return s, nil
 }
 
@@ -132,10 +160,19 @@ func (s *ManualService) checkBoundary(ctx context.Context) error {
 	if current.root != pinned.root || current.gitDir != pinned.gitDir || !os.SameFile(current.rootInfo, pinned.rootInfo) || !os.SameFile(current.gitInfo, pinned.gitInfo) {
 		return bridgeError("workspace_mismatch", nil)
 	}
+	if s.commonInfo != nil {
+		current, err := gitCommonIdentity(ctx, pinned.root)
+		if err != nil || !os.SameFile(s.commonInfo, current) {
+			return bridgeError("workspace_mismatch", err)
+		}
+	}
 	return nil
 }
 
 func (s *ManualService) Close() {
+	if s.router != nil && s.router.primary == s {
+		s.router.close()
+	}
 	s.cancel()
 	s.opMu.Lock()
 	defer s.opMu.Unlock()
@@ -171,6 +208,12 @@ func (s *ManualService) probeIdentity(ctx context.Context, replacement bool, exp
 	if m.StoreID == "" {
 		return nil, bridgeError("identity_mismatch", nil)
 	}
+	s.authorityMu.Lock()
+	anchor := s.anchor
+	s.authorityMu.Unlock()
+	if anchor != nil && (m.ServerID != anchor.verifiedServerID || m.StoreID != anchor.verifiedStoreID) {
+		return nil, bridgeError("identity_mismatch", nil)
+	}
 	if expected != nil && (m.ServerID != expected.ServerID || m.StoreID != expected.StoreID) {
 		return nil, bridgeError("identity_mismatch", nil)
 	}
@@ -191,8 +234,8 @@ func (s *ManualService) probeIdentity(ctx context.Context, replacement bool, exp
 		c.Close()
 		return nil, err
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.authorityMu.Lock()
+	defer s.authorityMu.Unlock()
 	if s.anchor == nil {
 		copy := *c.binding
 		s.anchor = &copy
@@ -219,17 +262,27 @@ func (b *manualBinding) ref() ManualBindingRef {
 		BindingID: b.id, ID: b.c.id, SessionID: b.c.id, Workspace: b.c.root}
 }
 
-func (s *ManualService) publish(c *Client) *manualBinding {
+func (s *ManualService) publish(c *Client) (*manualBinding, error) {
+	s.authorityMu.Lock()
+	defer s.authorityMu.Unlock()
+	if err := c.checkBinding(); err != nil {
+		return nil, err
+	}
 	b := &manualBinding{id: uuid.NewString(), c: c}
 	s.mu.Lock()
 	s.bindings[b.id], s.sessions[c.id] = b, b.id
+	s.mu.Unlock()
 	copy := *c.binding
 	s.anchor = &copy
-	s.mu.Unlock()
-	return b
+	return b, nil
 }
 
 func (s *ManualService) acquire(ctx context.Context, binding, session string) (*manualBinding, func(), error) {
+	if owner, err := s.bindingOwner(binding); err != nil {
+		return nil, nil, err
+	} else if owner != s {
+		return owner.acquire(ctx, binding, session)
+	}
 	s.mu.RLock()
 	b := s.bindings[binding]
 	s.mu.RUnlock()
@@ -260,7 +313,7 @@ func (s *ManualService) ConnectionInfo(ctx context.Context, binding string) (Man
 			return ManualConnectionInfo{}, err
 		}
 		defer release()
-		return ManualConnectionInfo{ManualBindingRef: b.ref(), IdentityVerified: true, ExecutionBound: true}, nil
+		return ManualConnectionInfo{ManualBindingRef: b.ref(), IdentityVerified: true, ExecutionBound: true, WorkspaceSelection: s.router != nil}, nil
 	}
 	c, err := s.probe(ctx, false)
 	if err != nil {
@@ -271,6 +324,16 @@ func (s *ManualService) ConnectionInfo(ctx context.Context, binding string) (Man
 }
 
 func (s *ManualService) Create(ctx context.Context, in ManualCreateInput) (ManualBindingRef, error) {
+	owner, err := s.executionWorkspace(ctx, in.Workspace, false)
+	if err != nil {
+		return ManualBindingRef{}, err
+	}
+	if owner != s {
+		return owner.Create(ctx, in)
+	}
+	if err := s.reserveCreation(in.RequestID); err != nil {
+		return ManualBindingRef{}, err
+	}
 	s.opMu.Lock()
 	defer s.opMu.Unlock()
 	if !validID(in.RequestID) || !validManualIdentity(in.ManualIdentity) {
@@ -334,12 +397,24 @@ func (s *ManualService) Create(ctx context.Context, in ManualCreateInput) (Manua
 		c.Close()
 		return ManualBindingRef{}, admissionError("create_unknown", "", in.RequestID, err)
 	}
-	ref := s.publish(c).ref()
+	published, err := s.publish(c)
+	if err != nil {
+		c.Close()
+		return ManualBindingRef{}, admissionError("create_unknown", "", in.RequestID, err)
+	}
+	ref := published.ref()
 	creation.ref = &ref
 	return ref, nil
 }
 
 func (s *ManualService) Bind(ctx context.Context, in ManualBindInput) (ManualBindingRef, error) {
+	owner, err := s.executionWorkspace(ctx, in.Workspace, false)
+	if err != nil {
+		return ManualBindingRef{}, err
+	}
+	if owner != s {
+		return owner.Bind(ctx, in)
+	}
 	s.opMu.Lock()
 	defer s.opMu.Unlock()
 	if !validID(in.SessionID) || !validManualIdentity(in.ManualIdentity) {
@@ -424,7 +499,12 @@ func (s *ManualService) Bind(ctx context.Context, in ManualBindInput) (ManualBin
 		old.retired = true
 		old.c.Close()
 	}
-	return s.publish(c).ref(), nil
+	published, err := s.publish(c)
+	if err != nil {
+		c.Close()
+		return ManualBindingRef{}, err
+	}
+	return published.ref(), nil
 }
 
 // checkOtherWriters only inspects this service's known Sessions. It is not an

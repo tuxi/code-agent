@@ -44,7 +44,7 @@ func TestManualCLIInitializesOverStdioWithoutRuntime(t *testing.T) {
 	}
 	defer client.Close()
 	list, err := client.ListTools(ctx, nil)
-	if err != nil || len(list.Tools) != 11 {
+	if err != nil || len(list.Tools) != 13 {
 		t.Fatalf("native stdio catalog: %+v %v", list, err)
 	}
 	result, err := client.CallTool(ctx, &mcp.CallToolParams{Name: "codeagent_connection_info", Arguments: map[string]any{}})

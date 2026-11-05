@@ -216,6 +216,12 @@ func (c *Client) Close() {
 }
 
 func (c *Client) request(ctx context.Context, method, path string, body, out any) error {
+	return c.requestWithHeaders(ctx, method, path, body, out, nil)
+}
+
+// Explicit page readers report partial-history headers themselves; evidence
+// readers keep rejecting incomplete replay through request above.
+func (c *Client) requestWithHeaders(ctx context.Context, method, path string, body, out any, headers *http.Header) error {
 	if err := c.checkWorkspaceIdentity(); err != nil {
 		return err
 	}
@@ -246,7 +252,10 @@ func (c *Client) request(ctx context.Context, method, path string, body, out any
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
 		return readRuntimeAPIError(res.StatusCode, res.Body)
 	}
-	if strings.HasSuffix(u.Path, "/events") {
+	if headers != nil {
+		*headers = res.Header.Clone()
+	}
+	if headers == nil && strings.HasSuffix(u.Path, "/events") {
 		for _, header := range []string{"X-Codeagent-Replay-Truncated", "X-Codeagent-Has-More-Older", "X-Codeagent-Turn-Fragment"} {
 			if value := res.Header.Get(header); value != "" && value != "0" && value != "false" {
 				return bridgeError("evidence_incomplete", nil)

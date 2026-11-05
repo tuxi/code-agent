@@ -27,6 +27,12 @@ func (e *BridgeError) Unwrap() error { return e.cause }
 type diagnosticText struct{ message, action string }
 
 var bridgeDiagnostics = map[string]diagnosticText{
+	"workspace_selection_required":    {"An explicit absolute workspace_path is required in multi-workspace mode.", "Use the user-authorized project path; call connection_info with that path before create/bind. There is no current project."},
+	"workspace_not_selected":          {"This execution workspace has not been selected.", "Explicitly select the user-authorized project with connection_info workspace_path; read-only history permission does not grant execution."},
+	"workspace_overlap":               {"Selected projects overlap or share Git metadata; independent writer boundaries cannot be established.", "Use independent repositories. Do not bypass the same-workspace writer guard through nested repositories, linked worktrees, or symlink aliases."},
+	"workspace_limit":                 {"This connection has reached its workspace selection limit.", "Keep existing bindings and uncertain admissions. Do not evict active projects or silently reopen them."},
+	"read_workspace_not_allowed":      {"This workspace is outside the configured read-only history scope.", "Ask the user to configure an explicit --read-workspace for this project. Do not use UI automation, another Session, or an owner token to bypass the scope."},
+	"history_pagination_unsupported":  {"Bounded history discovery is unavailable on this Runtime.", "Use a Runtime supporting conversation-list and event pagination. Do not fetch an unbounded transcript or infer that no sessions exist."},
 	"invalid_validation_contract":     {"The validation contract is invalid.", "Correct the declared checks before submitting; never change an admitted request's payload."},
 	"validation_contract_unsupported": {"Durable validation contracts are unavailable or could not be verified; input was not sent.", "Use a Runtime with durable_validation_contract_v1. Do not silently fall back to process-local expectations."},
 	"binding_not_found":               {"The explicit binding is missing or retired.", "Bind the exact original Session, baseline, Runtime and Store. Never fall back to a current or latest Session."},

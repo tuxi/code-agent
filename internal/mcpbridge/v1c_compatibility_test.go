@@ -254,7 +254,7 @@ func TestV1CCrossVersionProcesses(t *testing.T) {
 		if count.Runs != 0 {
 			t.Fatal("rejection dispatched work")
 		}
-		if tools, err := client.ListTools(ctx, nil); err != nil || len(tools.Tools) != 11 {
+		if tools, err := client.ListTools(ctx, nil); err != nil || len(tools.Tools) != 13 {
 			t.Fatal("tool error broke MCP")
 		}
 		var receipt mcpbridge.Receipt

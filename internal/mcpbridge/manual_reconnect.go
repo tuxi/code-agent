@@ -13,6 +13,7 @@ type ManualReconnectInput struct {
 
 type manualConnectionInput struct {
 	BindingID string                `json:"binding_id,omitempty"`
+	Workspace string                `json:"workspace_path,omitempty"`
 	Reconnect *ManualReconnectInput `json:"reconnect,omitempty"`
 }
 
@@ -20,6 +21,13 @@ type manualConnectionInput struct {
 // and pinned workspace. Session Clients and uncertain admissions stay untouched;
 // their existing explicit Bind replacement path performs separate revalidation.
 func (s *ManualService) Reconnect(ctx context.Context, in ManualReconnectInput) (ManualConnectionInfo, error) {
+	owner, err := s.executionWorkspace(ctx, in.Workspace, false)
+	if err != nil {
+		return ManualConnectionInfo{}, err
+	}
+	if owner != s {
+		return owner.Reconnect(ctx, in)
+	}
 	s.opMu.Lock()
 	defer s.opMu.Unlock()
 	if !validID(in.ServerID) || !validID(in.StoreID) || in.Workspace == "" {
@@ -31,9 +39,9 @@ func (s *ManualService) Reconnect(ctx context.Context, in ManualReconnectInput) 
 	if in.Workspace != s.boundary.root {
 		return ManualConnectionInfo{}, bridgeError("workspace_mismatch", nil)
 	}
-	s.mu.RLock()
+	s.authorityMu.Lock()
 	anchor := s.anchor
-	s.mu.RUnlock()
+	s.authorityMu.Unlock()
 	if anchor == nil || anchor.verifiedServerID != in.ServerID || anchor.verifiedStoreID != in.StoreID {
 		return ManualConnectionInfo{}, bridgeError("identity_mismatch", nil)
 	}
@@ -50,15 +58,33 @@ func (s *ManualService) Reconnect(ctx context.Context, in ManualReconnectInput) 
 	if c.binding.verifiedServerID != in.ServerID || c.binding.verifiedStoreID != in.StoreID {
 		return ManualConnectionInfo{}, bridgeError("identity_mismatch", nil)
 	}
-	s.mu.Lock()
+	s.authorityMu.Lock()
+	if err := c.checkBinding(); err != nil {
+		s.authorityMu.Unlock()
+		return ManualConnectionInfo{}, err
+	}
 	copy := *c.binding
 	s.anchor = &copy
-	for _, b := range s.bindings {
-		if !b.retired && b.c.binding.digest != copy.digest {
-			info.BindingsRequireRevalidation = true
+	s.authorityMu.Unlock()
+	services := []*ManualService{s}
+	if s.router != nil {
+		services = s.router.snapshot()
+	}
+	for _, service := range services {
+		service.mu.RLock()
+		bindings := make([]*manualBinding, 0, len(service.bindings))
+		for _, b := range service.bindings {
+			bindings = append(bindings, b)
+		}
+		service.mu.RUnlock()
+		for _, b := range bindings {
+			b.mu.RLock()
+			if !b.retired && b.c.binding.digest != copy.digest {
+				info.BindingsRequireRevalidation = true
+			}
+			b.mu.RUnlock()
 		}
 	}
-	s.mu.Unlock()
 	info.Reconnected = true
 	return info, nil
 }
@@ -77,5 +103,22 @@ func (s *ManualService) connectionInfo(ctx context.Context, c *Client) (ManualCo
 	if err := ctx.Err(); err != nil {
 		return ManualConnectionInfo{}, err
 	}
-	return ManualConnectionInfo{ManualBindingRef: ManualBindingRef{ManualIdentity: ManualIdentity{ServerID: c.binding.verifiedServerID, StoreID: c.binding.verifiedStoreID}, Workspace: c.root}, IdentityVerified: true, HeadCommit: strings.TrimSpace(head)}, nil
+	info := ManualConnectionInfo{ManualBindingRef: ManualBindingRef{ManualIdentity: ManualIdentity{ServerID: c.binding.verifiedServerID, StoreID: c.binding.verifiedStoreID}, Workspace: c.root}, IdentityVerified: true, WorkspaceSelection: s.router != nil, HeadCommit: strings.TrimSpace(head)}
+	services := []*ManualService{s}
+	if s.router != nil {
+		services = s.router.snapshot()
+	}
+	seen := map[string]bool{}
+	for _, service := range services {
+		if service.boundaryErr == nil {
+			info.ExecutionWorkspaces = append(info.ExecutionWorkspaces, service.boundary.root)
+		}
+		for _, scope := range service.readScopes {
+			if scope.err == nil && !seen[scope.root] {
+				info.ReadWorkspaces = append(info.ReadWorkspaces, scope.root)
+				seen[scope.root] = true
+			}
+		}
+	}
+	return info, nil
 }

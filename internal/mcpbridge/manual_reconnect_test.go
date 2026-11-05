@@ -79,7 +79,7 @@ func TestManualReconnectNativeSameMCPConnection(t *testing.T) {
 	call(manualConnectionInput{}, "")
 	call(manualConnectionInput{Reconnect: reconnect}, "") // same grant is idempotent
 	list, err := client.ListTools(ctx, nil)
-	if err != nil || len(list.Tools) != 11 {
+	if err != nil || len(list.Tools) != 13 {
 		t.Fatal("reconnect changed protocol/catalog", list, err)
 	}
 	f.mu.Lock()
