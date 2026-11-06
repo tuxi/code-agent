@@ -50,9 +50,15 @@ func TestCancel(t *testing.T) {
 	if err := r.Cancel(job.Snapshot().ID); err != nil {
 		t.Fatalf("cancel: %v", err)
 	}
+	if snap := job.Snapshot(); snap.Status != Canceled || snap.ExitCode != -1 {
+		t.Fatalf("cancel snapshot = %+v, want canceled with exit_code -1", snap)
+	}
 	job.Wait()
 	if st := job.Snapshot().Status; st != Canceled {
 		t.Errorf("status = %q, want canceled", st)
+	}
+	if code := job.Snapshot().ExitCode; code != -1 {
+		t.Errorf("exit_code after process cleanup = %d, want -1", code)
 	}
 	// Cancelling a finished job is an error, not a panic.
 	if err := r.Cancel(job.Snapshot().ID); err == nil {
@@ -226,5 +232,8 @@ func TestSinkObservesCancel(t *testing.T) {
 	_, _, finished := sink.state()
 	if len(finished) != 1 || finished[0].Status != Canceled {
 		t.Errorf("finished = %+v, want one canceled snapshot", finished)
+	}
+	if len(finished) == 1 && finished[0].ExitCode != -1 {
+		t.Errorf("finished exit_code = %d, want -1", finished[0].ExitCode)
 	}
 }

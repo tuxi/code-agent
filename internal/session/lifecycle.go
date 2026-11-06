@@ -7,11 +7,12 @@ import "time"
 // 思考中" labels (agent-wire v1.2 §1). An unset status ("") means the session has
 // no interrupted turn — a normal, completed conversation.
 const (
-	TurnStatusRunning  = "running"
-	TurnStatusPaused   = "paused"
-	TurnStatusResuming = "resuming"
-	TurnStatusDone     = "done"
-	TurnStatusFailed   = "failed"
+	TurnStatusRunning           = "running"
+	TurnStatusPaused            = "paused"
+	TurnStatusResuming          = "resuming"
+	TurnStatusDone              = "done"
+	TurnStatusFailed            = "failed"
+	TurnStatusWaitingBackground = "waiting_background"
 )
 
 // Metadata keys for the turn lifecycle (v1.2). Values are JSON-round-trippable

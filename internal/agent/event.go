@@ -112,9 +112,13 @@ const (
 	// duration, ExitCode the process exit code (0 stays zero-valued: absent on
 	// the wire — status alone distinguishes success), and Err an exit-code note
 	// when it failed.
-	EventJobStarted  EventKind = "job_started"
-	EventJobOutput   EventKind = "job_output"
-	EventJobFinished EventKind = "job_finished"
+	EventJobStarted            EventKind = "job_started"
+	EventJobOutput             EventKind = "job_output"
+	EventJobFinished           EventKind = "job_finished"
+	EventRuntimeInputDelivered EventKind = "runtime_input_delivered"
+	EventTurnWaitingBackground EventKind = "turn_waiting_background"
+	EventTurnBackgroundResumed EventKind = "turn_background_resumed"
+	EventTurnBackgroundBlocked EventKind = "turn_background_blocked"
 
 	EventSessionRepaired EventKind = "session_repaired"
 
@@ -235,8 +239,9 @@ func mergeWriteStatus(old, next string) string {
 }
 
 type Event struct {
-	Kind EventKind
-	At   time.Time
+	Background *BackgroundContinuationInfo `json:"Background,omitempty"`
+	Kind       EventKind
+	At         time.Time
 
 	// Correlation IDs: which session and turn produced this event. A single
 	// console reads them as constant, but a multiplexed bus (concurrent runs, a

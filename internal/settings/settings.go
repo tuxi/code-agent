@@ -262,6 +262,8 @@ type CredentialConfig struct {
 }
 
 type AgentConfig struct {
+	// Experimental A-stage delivery only; this does not enable automatic resume.
+	BackgroundJobNotifications *bool `json:"background_job_notifications,omitempty"`
 	// CodingTools selects a stable coding toolset; nil/false preserves the full set.
 	CodingTools *bool `json:"coding_tools,omitempty"`
 	MaxSteps    int   `json:"max_steps,omitempty"`
@@ -681,6 +683,9 @@ func MergeSettings(base *Settings, overlay Settings) {
 	}
 	if overlay.Agent.CodingTools != nil {
 		base.Agent.CodingTools = overlay.Agent.CodingTools
+	}
+	if overlay.Agent.BackgroundJobNotifications != nil {
+		base.Agent.BackgroundJobNotifications = overlay.Agent.BackgroundJobNotifications
 	}
 	if overlay.Agent.MaxSteps != 0 {
 		base.Agent.MaxSteps = overlay.Agent.MaxSteps

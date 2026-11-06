@@ -49,6 +49,8 @@ type AssetRefReleaseService interface {
 // everything a per-turn Runtime needs — session state, event publisher, and
 // approvers — so the factory signature stays stable as more fields are added.
 type RuntimeContext struct {
+	RuntimeInputs    session.RuntimeInputStore
+	ParkContinuation agent.ContinuationParker
 	// ManagedTask is trusted host provenance, never decoded from agent_input.
 	ManagedTask     *collab.ManagedTurnRef
 	Session         *session.Session

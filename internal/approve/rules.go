@@ -1,7 +1,11 @@
 package approve
 
 import (
+	"crypto/sha256"
+	"encoding/json"
+	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 
@@ -58,6 +62,24 @@ type RuleStore struct {
 
 	projectLocalPath string // "" when no workspace root is known
 	userPath         string // "" when the home dir cannot be resolved
+}
+
+// Fingerprint lets a suspended execution detect policy changes without
+// persisting permission rules or granting new authority on automatic resume.
+func (s *RuleStore) Fingerprint() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	allow, deny := make([]string, 0, len(s.allow)), make([]string, 0, len(s.deny))
+	for value := range s.allow {
+		allow = append(allow, value)
+	}
+	for value := range s.deny {
+		deny = append(deny, value)
+	}
+	sort.Strings(allow)
+	sort.Strings(deny)
+	data, _ := json.Marshal([][]string{allow, deny})
+	return fmt.Sprintf("%x", sha256.Sum256(data))
 }
 
 // NewRuleStore seeds a store from the YAML config's allow/deny patterns, then

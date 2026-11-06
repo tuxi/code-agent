@@ -82,6 +82,12 @@ type Message struct {
 	// Gateway history uses session_id for conversation asset references and must
 	// not mistake the current turn for an historical message's origin.
 	OriginTurnID string `json:"-"`
+	// RuntimeInput preserves non-human provenance when a provider-compatible
+	// user role carries runtime facts. Never serialized to the provider.
+	RuntimeInput bool `json:"-"`
+	// Pending receipts survive an outer error/cancel save until an atomic
+	// runtime-input checkpoint can acknowledge the tool's returned facts.
+	RuntimeInputReceipts []string `json:"-"`
 
 	// ToolCalls is set on assistant messages when the model decides to call one
 	// or more tools. It must be echoed back unchanged in the next request.

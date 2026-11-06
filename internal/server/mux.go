@@ -754,11 +754,28 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 					State:     session.TurnStatusPaused,
 					UpdatedAt: meta.UpdatedAt.UTC().Format(time.RFC3339Nano),
 				}
-			case session.TurnStatusPaused:
+			case session.TurnStatusPaused, session.TurnStatusWaitingBackground:
 				activityBySession[meta.ID] = SessionActivity{
 					SessionID: meta.ID,
 					State:     meta.TurnStatus,
 					UpdatedAt: meta.UpdatedAt.UTC().Format(time.RFC3339Nano),
+				}
+			}
+			if activity, exists := activityBySession[meta.ID]; exists {
+				if provider, ok := repo.(session.ContinuationProvider); ok && provider.ContinuationStore() != nil {
+					c, readErr := provider.ContinuationStore().Continuation(r.Context(), meta.ID)
+					if readErr == nil && len(c.Checkpoint) > 0 {
+						switch c.State {
+						case "waiting", "ready":
+							activity.State = session.TurnStatusWaitingBackground
+						case "active", "needs_attention":
+							// The scheduler below is the authority for live execution.
+							activity.State = "background_needs_attention"
+						}
+						activity.TurnID = c.TurnID
+						activity.ActiveTurnID = c.TurnID
+						activityBySession[meta.ID] = activity
+					}
 				}
 			}
 			if record, managed := managedBySession[meta.ID]; managed && record.State != worktree.StateReady && record.State != worktree.StateRemoved {
@@ -1703,7 +1720,7 @@ func ensureConversationIdle(ctx context.Context, repo conversation.ConversationR
 			continue
 		}
 		switch meta.TurnStatus {
-		case session.TurnStatusRunning, session.TurnStatusResuming, session.TurnStatusPaused:
+		case session.TurnStatusRunning, session.TurnStatusResuming, session.TurnStatusPaused, session.TurnStatusWaitingBackground:
 			return &conversation.ConversationInUseError{SessionID: sessionID, State: meta.TurnStatus}
 		}
 		break

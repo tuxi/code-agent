@@ -43,7 +43,8 @@ type SendMessage struct {
 
 // CancelTurn cancels the in-flight turn at the next checkpoint.
 type CancelTurn struct {
-	Type string `json:"type"` // always "cancel_turn"
+	Type   string `json:"type"` // always "cancel_turn"
+	TurnID string `json:"turn_id,omitempty"`
 }
 
 // RegisterTools is sent by the client after the hello handshake to declare

@@ -31,8 +31,13 @@ import (
 // flush when the buffer passes jobFlushBytes or jobFlushDelay elapses, and
 // always on JobFinished — the persisted stream stays faithful but bounded.
 type JobEventSink struct {
-	ctx   context.Context
-	store session.EventStore
+	// Set before starting jobs. A storage failure is observable, never reported
+	// as delivered and never causes a model invocation or command retry.
+	OnCompletionError func(error)
+	// Set before starting jobs; called only after a durable completion commit.
+	OnCompletion func(string)
+	ctx          context.Context
+	store        session.EventStore
 
 	mu      sync.Mutex
 	live    func(sessionID string) agent.Emitter // nil until SetLiveResolver
@@ -127,6 +132,9 @@ func (s *JobEventSink) JobFinished(snap jobs.Snapshot) {
 	}
 	if snap.Status == jobs.Failed {
 		ev.Err = fmt.Sprintf("exit code %d", snap.ExitCode)
+	}
+	if s.notifyCompletion(snap, ev) {
+		return
 	}
 	s.publish(ev, snap.Owner)
 }

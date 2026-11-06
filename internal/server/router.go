@@ -83,12 +83,13 @@ type ToolResultResolver interface {
 // the Router — and deadlock the very approval_response it is waiting for. Unknown
 // message types are ignored (forward-compatibility); a nil target is a no-op.
 type Router struct {
-	Commands    CommandTarget
-	Approvals   ApprovalResolver
-	ToolResults ToolResultResolver // v1.1: delivers client tool results to the blocked waiter
-	Prompts     PromptService      // renders an MCP prompt server-side for invoke_prompt (nil disables)
-	Rejections  InputRejectionSink // v1.5 pre-turn control responses
-	ImageInput  bool               // connection-level hello capability snapshot
+	ClientCapabilities func(context.Context, []string)
+	Commands           CommandTarget
+	Approvals          ApprovalResolver
+	ToolResults        ToolResultResolver // v1.1: delivers client tool results to the blocked waiter
+	Prompts            PromptService      // renders an MCP prompt server-side for invoke_prompt (nil disables)
+	Rejections         InputRejectionSink // v1.5 pre-turn control responses
+	ImageInput         bool               // connection-level hello capability snapshot
 }
 
 // Route dispatches one raw inbound message.
@@ -100,6 +101,13 @@ func (r Router) Route(ctx context.Context, data []byte) {
 		return
 	}
 	switch env.Type {
+	case "client_capabilities":
+		var m struct {
+			Capabilities []string `json:"capabilities"`
+		}
+		if json.Unmarshal(data, &m) == nil && r.ClientCapabilities != nil {
+			r.ClientCapabilities(ctx, m.Capabilities)
+		}
 	case MsgTypeSendMessage:
 		var m SendMessage
 		if json.Unmarshal(data, &m) == nil && r.Commands != nil {
@@ -218,6 +226,23 @@ func (r Router) Route(ctx context.Context, data []byte) {
 		}
 	case MsgTypeCancelTurn:
 		if r.Commands != nil {
+			var m CancelTurn
+			if json.Unmarshal(data, &m) != nil {
+				return
+			}
+			if m.TurnID != "" {
+				if target, ok := r.Commands.(interface {
+					CancelTurn(context.Context, string) error
+				}); ok {
+					_ = target.CancelTurn(ctx, m.TurnID)
+				}
+				return
+			}
+			var fields map[string]json.RawMessage
+			_ = json.Unmarshal(data, &fields)
+			if _, present := fields["turn_id"]; present {
+				return
+			}
 			r.Commands.Cancel()
 		}
 	case MsgTypeApprovalResponse:

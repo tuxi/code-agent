@@ -10,6 +10,9 @@ import (
 // Existing indexes are never dropped/rebuilt on open. Expensive first-time
 // creation has its own progress event, so the host can identify a long migration.
 func ensureSecondaryIndexes(db *sql.DB) error {
+	if err := ensureRuntimeInputSchema(db); err != nil {
+		return fmt.Errorf("migrate runtime inputs: %w", err)
+	}
 	if err := ensureTaskSchema(db); err != nil {
 		return fmt.Errorf("migrate coding tasks: %w", err)
 	}

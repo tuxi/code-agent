@@ -218,7 +218,7 @@ func (t *RunCommandTool) Execute(ctx context.Context, ec tools.ExecutionContext,
 		if t.Jobs == nil {
 			t.Jobs = jobs.NewRegistry()
 		}
-		owner := jobs.Owner{SessionID: ec.SessionID, TurnID: ec.TurnID, CallID: ec.CallID}
+		owner := jobs.Owner{SessionID: ec.SessionID, TurnID: ec.TurnID, CallID: ec.CallID, Notify: ec.RuntimeInputDelivery}
 		snap := t.Jobs.Start(rootAbs, command, args, owner).Snapshot()
 		return t.jsonResult(backgroundResult{
 			Command:  command,
@@ -315,7 +315,7 @@ func (t *RunCommandTool) executeShell(ctx context.Context, ec tools.ExecutionCon
 		if t.Jobs == nil {
 			t.Jobs = jobs.NewRegistry()
 		}
-		owner := jobs.Owner{SessionID: ec.SessionID, TurnID: ec.TurnID, CallID: ec.CallID}
+		owner := jobs.Owner{SessionID: ec.SessionID, TurnID: ec.TurnID, CallID: ec.CallID, Notify: ec.RuntimeInputDelivery}
 		// command = full human-readable line (job card + observation
 		// classification); argv = full argv, program first (jobs.Start
 		// contract).

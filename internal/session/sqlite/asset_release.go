@@ -36,7 +36,10 @@ func (s *Store) DeleteWithAssetRefRelease(ctx context.Context, sessionID string,
 	}
 	for _, query := range []string{
 		`DELETE FROM messages WHERE session_id=?`, `DELETE FROM compactions WHERE session_id=?`,
-		`DELETE FROM session_events WHERE session_id=?`, `DELETE FROM turn_inputs WHERE session_id=?`, `DELETE FROM sessions WHERE id=?`,
+		`DELETE FROM session_events WHERE session_id=?`, `DELETE FROM turn_inputs WHERE session_id=?`,
+		`DELETE FROM runtime_inputs WHERE session_id=?`, `DELETE FROM runtime_input_boundaries WHERE session_id=?`,
+		`DELETE FROM runtime_continuations WHERE session_id=?`,
+		`DELETE FROM sessions WHERE id=?`,
 	} {
 		if _, err := tx.ExecContext(ctx, query, sessionID); err != nil {
 			return err

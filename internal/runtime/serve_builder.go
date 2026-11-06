@@ -20,6 +20,7 @@ import (
 	"code-agent/internal/settings"
 	"code-agent/internal/skills"
 	"code-agent/internal/tools"
+	"code-agent/internal/tools/shell"
 	"code-agent/internal/tools/skill"
 	"code-agent/internal/tools/task"
 	"code-agent/internal/tools/websearch"
@@ -62,6 +63,19 @@ type ServeRunBuilder struct {
 	workflowRunner  tools.WorkflowRunner
 	sessionTrace    tools.SessionTraceFunc
 	executionGuard  collab.ExecutionGuard
+}
+
+func (b *ServeRunBuilder) BackgroundContinuationConfigured(workspace string) bool {
+	b.mu.RLock()
+	cfg := b.Set
+	b.mu.RUnlock()
+	if workspace != "" {
+		local := settings.LoadProjectSettings(workspace, os.Stderr)
+		if local.Agent.BackgroundJobNotifications != nil {
+			cfg.Agent.BackgroundJobNotifications = local.Agent.BackgroundJobNotifications
+		}
+	}
+	return cfg.Agent.BackgroundJobNotifications != nil && *cfg.Agent.BackgroundJobNotifications
 }
 
 func (b *ServeRunBuilder) SetSessionControl(control tools.SessionControl) {
@@ -476,6 +490,9 @@ func (b *ServeRunBuilder) Build(ctx conversation.RuntimeContext) conversation.Tu
 	workspacePath := ctx.Session.WorkspacePath
 	if workspacePath != "" {
 		local := settings.LoadProjectSettings(workspacePath, os.Stderr)
+		if local.Agent.BackgroundJobNotifications != nil {
+			cfg.Agent.BackgroundJobNotifications = local.Agent.BackgroundJobNotifications
+		}
 		if local.Agent.CodingTools != nil {
 			cfg.Agent.CodingTools = local.Agent.CodingTools
 		}
@@ -551,6 +568,7 @@ func (b *ServeRunBuilder) Build(ctx conversation.RuntimeContext) conversation.Tu
 	ctx.PlanApprover = wrapped
 
 	runner := BuildRunner(cfg, mc, provider, turnTools, skillReg, ctx.Approver, ctx.Publisher, wsRules, workspacePath)
+	runner.ContinuationPolicyIdentity = string(mode) + ":" + wsRules.Fingerprint()
 	if ctx.Model != "" {
 		requested := ctx.Model
 		runner.ModelSelection.RequestedModel = &requested
@@ -600,8 +618,21 @@ func (b *ServeRunBuilder) Build(ctx conversation.RuntimeContext) conversation.Tu
 		runner.PathAccessApprover = pa
 	}
 	runner.Checkpointer = ctx.Checkpointer // mid-turn crash-safety (v1.2 §2); nil in headless builds
-	applyCodingProfile(runner, cfg)        // after workspace and client tools have been merged
-	runner.Stream = true                   // emit final-text and reasoning deltas for live client rendering
+	if cfg.Agent.BackgroundJobNotifications != nil && *cfg.Agent.BackgroundJobNotifications && ctx.ManagedTask == nil {
+		runner.RuntimeInputs = ctx.RuntimeInputs
+		runner.ParkContinuation = ctx.ParkContinuation
+		if runner.CanContinueBackground() {
+			if value, ok := runner.Tools.Get("job_wait"); ok {
+				if wait, ok := value.(*shell.JobWaitTool); ok {
+					copy := *wait
+					copy.AllowYield = true
+					runner.Tools.Replace(&copy)
+				}
+			}
+		}
+	}
+	applyCodingProfile(runner, cfg) // after workspace and client tools have been merged
+	runner.Stream = true            // emit final-text and reasoning deltas for live client rendering
 	return runner
 }
 

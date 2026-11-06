@@ -10,6 +10,7 @@ package jobs
 
 import (
 	"code-agent/internal/processexec"
+	"code-agent/internal/truncate"
 	"context"
 	"errors"
 	"fmt"
@@ -42,16 +43,18 @@ type Owner struct {
 	SessionID string
 	TurnID    string
 	CallID    string
+	Notify    bool
 }
 
 // Snapshot is an immutable, concurrency-safe view of a job's state. Owner is
 // runtime routing metadata, not model-facing state — excluded from the JSON the
 // job_* tools return.
 type Snapshot struct {
+	OutputTail string `json:"-"`
 	ID         string `json:"job_id"`
 	Command    string `json:"command"`
 	Status     Status `json:"status"`
-	ExitCode   int    `json:"exit_code"`
+	ExitCode   int    `json:"exit_code"` // -1 when canceled or no normal exit code is available
 	DurationMS int64  `json:"duration_ms"`
 	Owner      Owner  `json:"-"`
 }
@@ -115,6 +118,12 @@ func (j *Job) Snapshot() Snapshot {
 
 // Logs returns the job's captured output so far (stdout and stderr interleaved).
 func (j *Job) Logs() string { return j.output.String() }
+
+func (j *Job) terminalSnapshot() Snapshot {
+	snap := j.Snapshot()
+	snap.OutputTail = truncate.Tail(j.Logs(), 2000)
+	return snap
+}
 
 // Wait blocks until the job finishes. Intended for tests and shutdown.
 func (j *Job) Wait() { <-j.done }
@@ -204,7 +213,7 @@ func (r *Registry) Start(dir, command string, argv []string, owner Owner) *Job {
 		release()
 		job.finish(Failed, -1)
 		if r.Sink != nil {
-			r.Sink.JobFinished(job.Snapshot())
+			r.Sink.JobFinished(job.terminalSnapshot())
 		}
 		return job
 	}
@@ -215,7 +224,7 @@ func (r *Registry) Start(dir, command string, argv []string, owner Owner) *Job {
 		release()
 		job.finish(Failed, -1)
 		if r.Sink != nil {
-			r.Sink.JobFinished(job.Snapshot())
+			r.Sink.JobFinished(job.terminalSnapshot())
 		}
 		return job
 	}
@@ -233,7 +242,7 @@ func (r *Registry) Start(dir, command string, argv []string, owner Owner) *Job {
 		fmt.Fprintf(w, "failed to start: %v\n", err)
 		job.finish(Failed, -1)
 		if r.Sink != nil {
-			r.Sink.JobFinished(job.Snapshot())
+			r.Sink.JobFinished(job.terminalSnapshot())
 		}
 		return job
 	}
@@ -259,7 +268,7 @@ func (r *Registry) Start(dir, command string, argv []string, owner Owner) *Job {
 		// Notify the sink BEFORE closing done: anyone unblocked by Wait/Done must
 		// find the finished event already emitted (Sink pairing contract).
 		if r.Sink != nil {
-			r.Sink.JobFinished(job.Snapshot())
+			r.Sink.JobFinished(job.terminalSnapshot())
 		}
 		release()
 		close(job.done)
@@ -330,7 +339,9 @@ func (r *Registry) Cancel(id string) error {
 		job.mu.Unlock()
 		return fmt.Errorf("job %s is not running (status %s)", id, st)
 	}
-	job.status = Canceled
+	// Cancellation has no normal exit code. Publish this atomically with the
+	// status so tools and completion events cannot report a canceled success.
+	job.status, job.exitCode = Canceled, -1
 	job.mu.Unlock()
 	job.cancel()
 	return nil

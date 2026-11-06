@@ -61,20 +61,22 @@ func (p toolCallPlan) parallelizable() bool {
 // toolCallResult is a worker's pure output: the observation and side-channels,
 // with no shared-state mutation. The main goroutine commits it in order.
 type toolCallResult struct {
-	observation  string
-	output       json.RawMessage
-	assetRefs    []assets.Ref
-	usage        *tools.ToolUsage
-	nestedUsage  []*tools.ToolUsage
-	modelUsage   *tools.ModelUsage
-	wrote        []tools.FileWrite
-	nestedWrites []tools.FileWrite
-	executed     bool
-	succeeded    bool
-	failure      *tools.ToolFailure
-	stepError    string // non-empty => a genuine tool error (not a cancel)
-	fatalErr     error  // auth/quota: commit this result, then terminate the turn
-	toolStart    time.Time
+	runtimeInputReceipts []string
+	runtimeWaitFor       []string
+	observation          string
+	output               json.RawMessage
+	assetRefs            []assets.Ref
+	usage                *tools.ToolUsage
+	nestedUsage          []*tools.ToolUsage
+	modelUsage           *tools.ModelUsage
+	wrote                []tools.FileWrite
+	nestedWrites         []tools.FileWrite
+	executed             bool
+	succeeded            bool
+	failure              *tools.ToolFailure
+	stepError            string // non-empty => a genuine tool error (not a cancel)
+	fatalErr             error  // auth/quota: commit this result, then terminate the turn
+	toolStart            time.Time
 }
 
 // executeToolBatch runs one assistant message's tool calls under the
@@ -319,7 +321,7 @@ func (r *Runner) runToolCall(ctx context.Context, p toolCallPlan) toolCallResult
 	default:
 		res.executed = true
 		var toolResult tools.ToolResult
-		toolResult, execErr = r.executeTool(ctx, p.tool, p.call.ID, p.wireInput)
+		toolResult, execErr = r.executeTool(ctx, p.tool, p.call.ID, p.wireInput, true)
 		if execErr == nil {
 			res.failure = toolResult.Failure
 			res.succeeded = res.failure == nil
@@ -327,6 +329,8 @@ func (r *Runner) runToolCall(ctx context.Context, p toolCallPlan) toolCallResult
 			output = toolResult.Output
 			assetRefs = toolResult.Assets
 			res.usage = toolResult.Usage
+			res.runtimeInputReceipts = toolResult.RuntimeInputReceipts
+			res.runtimeWaitFor = toolResult.RuntimeWaitFor
 			res.nestedUsage = toolResult.NestedUsages
 			res.modelUsage = toolResult.ModelUsage
 			// Diffstat input. Wrote is trusted only from the built-in write tools:
@@ -530,11 +534,17 @@ func (r *Runner) commitToolResult(ctx context.Context, sess *session.Session, tu
 		Failure:     string(obs.FailureType),
 	})
 
+	var receipts []string
+	if r.RuntimeInputs != nil {
+		receipts = append(receipts, res.runtimeInputReceipts...)
+		r.runtimeWaitFor = append(r.runtimeWaitFor, res.runtimeWaitFor...)
+	}
 	sess.Messages = append(sess.Messages, model.Message{
-		Role:        model.RoleTool,
-		ToolCallID:  p.call.ID,
-		Content:     observation,
-		LocalAssets: toolLocalAssets,
+		Role:                 model.RoleTool,
+		ToolCallID:           p.call.ID,
+		Content:              observation,
+		LocalAssets:          toolLocalAssets,
+		RuntimeInputReceipts: receipts,
 	})
 	sess.UpdatedAt = time.Now()
 }

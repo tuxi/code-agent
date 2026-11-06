@@ -115,6 +115,8 @@ CREATE TABLE IF NOT EXISTS messages (
 	assets       TEXT,
 	local_assets TEXT,
 	origin_turn_id TEXT,
+	runtime_input INTEGER NOT NULL DEFAULT 0,
+	runtime_input_receipts TEXT,
 	web_search_calls TEXT,
 	reasoning_content TEXT,
 	PRIMARY KEY (session_id, seq)
@@ -272,6 +274,8 @@ func (s *Store) open() error {
 		`ALTER TABLE messages ADD COLUMN assets TEXT`,
 		`ALTER TABLE messages ADD COLUMN local_assets TEXT`,
 		`ALTER TABLE messages ADD COLUMN origin_turn_id TEXT`,
+		`ALTER TABLE messages ADD COLUMN runtime_input INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE messages ADD COLUMN runtime_input_receipts TEXT`,
 		`ALTER TABLE messages ADD COLUMN web_search_calls TEXT`,
 		`ALTER TABLE messages ADD COLUMN reasoning_content TEXT`,
 		`ALTER TABLE turn_inputs ADD COLUMN local_assets TEXT NOT NULL DEFAULT '[]'`,
@@ -416,10 +420,14 @@ func (s *Store) saveSessionTx(ctx context.Context, tx *sql.Tx, sess *session.Ses
 			}
 			webSearchCalls = string(b)
 		}
+		runtimeReceipts, err := json.Marshal(m.RuntimeInputReceipts)
+		if err != nil {
+			return err
+		}
 		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO messages (session_id, seq, role, content, tool_calls, tool_call_id, assets, local_assets, origin_turn_id, web_search_calls, reasoning_content)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			sess.ID, i, string(m.Role), m.Content, toolCalls, m.ToolCallID, assetRefs, localAssetRefs, m.OriginTurnID, webSearchCalls, m.ReasoningContent); err != nil {
+			INSERT INTO messages (session_id, seq, role, content, tool_calls, tool_call_id, assets, local_assets, origin_turn_id, web_search_calls, reasoning_content, runtime_input, runtime_input_receipts)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			sess.ID, i, string(m.Role), m.Content, toolCalls, m.ToolCallID, assetRefs, localAssetRefs, m.OriginTurnID, webSearchCalls, m.ReasoningContent, m.RuntimeInput, string(runtimeReceipts)); err != nil {
 			return fmt.Errorf("save message %d: %w", i, err)
 		}
 	}
@@ -477,17 +485,24 @@ func (s *Store) Load(ctx context.Context, id string) (*session.Session, error) {
 	}
 
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT role, content, tool_calls, tool_call_id, COALESCE(assets, ''), COALESCE(local_assets, ''), COALESCE(origin_turn_id, ''), COALESCE(web_search_calls, ''), COALESCE(reasoning_content, '') FROM messages WHERE session_id=? ORDER BY seq`, id)
+		SELECT role, content, tool_calls, tool_call_id, COALESCE(assets, ''), COALESCE(local_assets, ''), COALESCE(origin_turn_id, ''), COALESCE(web_search_calls, ''), COALESCE(reasoning_content, ''), runtime_input, COALESCE(runtime_input_receipts,'') FROM messages WHERE session_id=? ORDER BY seq`, id)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var role, content, toolCalls, toolCallID, assetRefs, localAssetRefs, originTurnID, webSearchCalls, reasoningContent string
-		if err := rows.Scan(&role, &content, &toolCalls, &toolCallID, &assetRefs, &localAssetRefs, &originTurnID, &webSearchCalls, &reasoningContent); err != nil {
+		var runtimeInput bool
+		var runtimeReceipts string
+		if err := rows.Scan(&role, &content, &toolCalls, &toolCallID, &assetRefs, &localAssetRefs, &originTurnID, &webSearchCalls, &reasoningContent, &runtimeInput, &runtimeReceipts); err != nil {
 			return nil, err
 		}
-		m := model.Message{Role: model.Role(role), Content: content, ToolCallID: toolCallID, OriginTurnID: originTurnID, ReasoningContent: reasoningContent}
+		m := model.Message{Role: model.Role(role), Content: content, ToolCallID: toolCallID, OriginTurnID: originTurnID, ReasoningContent: reasoningContent, RuntimeInput: runtimeInput}
+		if runtimeReceipts != "" {
+			if err := json.Unmarshal([]byte(runtimeReceipts), &m.RuntimeInputReceipts); err != nil {
+				return nil, fmt.Errorf("unmarshal runtime input receipts: %w", err)
+			}
+		}
 		if toolCalls != "" {
 			if err := json.Unmarshal([]byte(toolCalls), &m.ToolCalls); err != nil {
 				return nil, fmt.Errorf("unmarshal tool_calls: %w", err)
@@ -1200,6 +1215,9 @@ func (s *Store) Delete(ctx context.Context, id string) error {
 		`DELETE FROM compactions WHERE session_id=?`,
 		`DELETE FROM session_events WHERE session_id=?`,
 		`DELETE FROM turn_inputs WHERE session_id=?`,
+		`DELETE FROM runtime_inputs WHERE session_id=?`,
+		`DELETE FROM runtime_input_boundaries WHERE session_id=?`,
+		`DELETE FROM runtime_continuations WHERE session_id=?`,
 		`DELETE FROM sessions WHERE id=?`,
 	} {
 		if _, err := tx.ExecContext(ctx, q, id); err != nil {

@@ -2,6 +2,7 @@ package shell
 
 import (
 	"code-agent/internal/jobs"
+	"code-agent/internal/session"
 	"code-agent/internal/tools"
 	"code-agent/internal/truncate"
 	"context"
@@ -146,7 +147,10 @@ func (t *JobCancelTool) Execute(_ context.Context, _ tools.ExecutionContext, inp
 // waiting consumes ONE step of the turn's budget regardless of how long the
 // job takes, instead of one step per poll — the direct fix for a slow install
 // exhausting MaxSteps on job_status calls.
-type JobWaitTool struct{ Jobs *jobs.Registry }
+type JobWaitTool struct {
+	Jobs       *jobs.Registry
+	AllowYield bool
+}
 
 // The cap keeps one call comfortably under the 2-minute client-tool lease and
 // gives the loop a cancellation checkpoint at least every 90s; the model can
@@ -160,20 +164,28 @@ const (
 type jobWaitInput struct {
 	JobID          string `json:"job_id"`
 	TimeoutSeconds int    `json:"timeout_seconds"`
+	Yield          bool   `json:"yield"`
 }
 
 func (t *JobWaitTool) Name() string { return "job_wait" }
 func (t *JobWaitTool) Description() string {
+	if t.AllowYield {
+		return "Wait for a background job, or set yield=true to release execution until it completes when no independent work remains. Do independent work first. yield and timeout_seconds are mutually exclusive. Without yield, block up to timeout_seconds (default 30, max 90)."
+	}
 	return "Block until a background job finishes, up to timeout_seconds (default 30, max 90). Returns the final status and output tail; on timeout returns status \"running\" — call again or keep working. Prefer this over polling job_status in a loop: one job_wait costs one step no matter how long it waits."
 }
 func (t *JobWaitTool) InputSchema() json.RawMessage {
-	return tools.Object(map[string]tools.Property{
+	properties := map[string]tools.Property{
 		"job_id":          {Type: "string", Description: "The job to wait for."},
 		"timeout_seconds": {Type: "integer", Description: "Max seconds to wait (default 30, capped at 90)."},
-	}, "job_id").Closed().JSON()
+	}
+	if t.AllowYield {
+		properties["yield"] = tools.Property{Type: "boolean", Description: "If no independent work remains, yield execution until this job completes. Do not combine with timeout_seconds."}
+	}
+	return tools.Object(properties, "job_id").Closed().JSON()
 }
 
-func (t *JobWaitTool) Execute(ctx context.Context, _ tools.ExecutionContext, input json.RawMessage) (tools.ToolResult, error) {
+func (t *JobWaitTool) Execute(ctx context.Context, ec tools.ExecutionContext, input json.RawMessage) (tools.ToolResult, error) {
 	var in jobWaitInput
 	if len(input) > 0 {
 		if err := json.Unmarshal(input, &in); err != nil {
@@ -187,6 +199,32 @@ func (t *JobWaitTool) Execute(ctx context.Context, _ tools.ExecutionContext, inp
 	job, ok := t.Jobs.Get(id)
 	if !ok {
 		return tools.ToolResult{}, fmt.Errorf("unknown job: %s", id)
+	}
+	if in.Yield {
+		var fields map[string]json.RawMessage
+		_ = json.Unmarshal(input, &fields)
+		if _, ok := fields["timeout_seconds"]; ok {
+			return tools.ToolResult{}, fmt.Errorf("yield and timeout_seconds are mutually exclusive")
+		}
+		snap := job.Snapshot()
+		if !t.AllowYield || !ec.CanYield || !ec.RuntimeInputDelivery || !snap.Owner.Notify || ec.SessionID == "" || snap.Owner.SessionID != ec.SessionID {
+			return tools.ToolResult{}, fmt.Errorf("background continuation is unavailable for this job")
+		}
+		select {
+		case <-job.Done():
+			snap = job.Snapshot()
+			result, err := marshalJobOutcome(jobWaitResult(job, time.Now(), true), snap)
+			if err == nil {
+				result.RuntimeInputReceipts = []string{session.JobCompletionInputID(snap.ID)}
+			}
+			return result, err
+		default:
+			result, err := marshal(map[string]any{"job_id": id, "status": snap.Status, "disposition": "waiting_background"})
+			if err == nil {
+				result.RuntimeWaitFor = []string{session.JobCompletionInputID(id)}
+			}
+			return result, err
+		}
 	}
 
 	timeout := jobWaitDefaultTimeout
@@ -202,7 +240,12 @@ func (t *JobWaitTool) Execute(ctx context.Context, _ tools.ExecutionContext, inp
 	defer timer.Stop()
 	select {
 	case <-job.Done():
-		return marshalJobOutcome(jobWaitResult(job, started, true), job.Snapshot())
+		snap := job.Snapshot()
+		result, err := marshalJobOutcome(jobWaitResult(job, started, true), snap)
+		if err == nil && ec.RuntimeInputDelivery && snap.Owner.SessionID == ec.SessionID {
+			result.RuntimeInputReceipts = []string{session.JobCompletionInputID(snap.ID)}
+		}
+		return result, err
 	case <-timer.C:
 		return marshal(jobWaitResult(job, started, false))
 	case <-ctx.Done():

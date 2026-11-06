@@ -26,12 +26,17 @@ import (
 // It does NOT own the Runner — the Runtime is built per-turn and discarded.
 // It does NOT build the Runner itself — that is RuntimeFactory's job.
 type TurnExecutor struct {
-	repo         ConversationRepository
-	events       ConversationEventStore
-	active       *ActiveTurnRegistry
-	subs         *SubscriptionManager
-	rb           RunBuilder
-	assetRelease AssetRefReleaseService
+	backgroundMu       sync.Mutex
+	backgroundSupport  map[string]bool
+	backgroundAttempts map[string]*backgroundAttempt
+	backgroundClosed   bool
+	backgroundWorkers  sync.WaitGroup
+	repo               ConversationRepository
+	events             ConversationEventStore
+	active             *ActiveTurnRegistry
+	subs               *SubscriptionManager
+	rb                 RunBuilder
+	assetRelease       AssetRefReleaseService
 
 	// scheduler is the process-wide admission controller. Its default is a
 	// single worker for backward-compatible FIFO behavior; deployments may raise
@@ -688,6 +693,11 @@ func (e *TurnExecutor) Resume(parentCtx context.Context, sessionID string) (agen
 	if sess.TurnStatus() != session.TurnStatusPaused {
 		return agent.TurnResult{}, nil
 	}
+	if store := e.continuationStore(); store != nil {
+		if c, err := store.Continuation(parentCtx, sessionID); err == nil && len(c.Checkpoint) > 0 && c.State != "finished" {
+			return agent.TurnResult{}, nil
+		}
+	}
 	var recovered *session.TurnInput
 	if repo, ok := e.repo.(TurnInputRepository); ok {
 		if inputs, listErr := repo.RecoverableTurnInputs(parentCtx); listErr == nil {
@@ -838,6 +848,9 @@ func (e *TurnExecutor) driveTurn(
 		}
 		return agent.TurnResult{TurnID: existingTurnID, Deduplicated: true}, nil
 	}
+	if preclaimed == nil {
+		e.cancelBackgroundAttempts(sess.ID)
+	}
 	if claimed.TurnID != "" {
 		turnID = claimed.TurnID
 	}
@@ -917,10 +930,28 @@ func (e *TurnExecutor) driveTurn(
 		}
 		prepared = true
 	}
+	if !prepared && preclaimed == nil && e.continuationStore() != nil {
+		latest, loadErr := e.repo.Load(parentCtx, sess.ID)
+		if loadErr != nil {
+			return agent.TurnResult{}, loadErr
+		}
+		*sess = *latest
+	}
+	// The history reload above must not undo the new input's model selection.
+	if resolvedModel.Name != "" {
+		sess.Model = resolvedModel.Name
+		sess.ReasoningEffort = effectiveEffort
+		if resolvedModel.ContextWindow > 0 {
+			sess.ContextWindow = resolvedModel.ContextWindow
+			if resolvedModel.CompactRatio > 0 {
+				sess.CompactThreshold = int(float64(resolvedModel.ContextWindow) * resolvedModel.CompactRatio)
+			}
+		}
+	}
 
 	// 3. Claim the turn (mutual exclusion). This remains the authority for
 	// in-flight cancellation, approvals, and client-tool state.
-	turnCtx, cancel, err := e.active.BeginTurn(sess.ID, parentCtx)
+	turnCtx, cancel, err := e.active.BeginTurnWithID(sess.ID, turnID, parentCtx)
 	if err != nil {
 		// Acceptance already happened in claimRequest, so preserve the turn
 		// identity for transports deciding between turn_failed and a pre-accept
@@ -954,7 +985,27 @@ func (e *TurnExecutor) driveTurn(
 		// still the backstop.
 		Checkpointer: repoCheckpointer{repo: e.repo, onErr: e.OnSaveError},
 	}
+	// Runtime results never create a new submission or elevate an unattended
+	// dispatch into an interactive turn. Alternate repositories opt in explicitly.
+	if provenance == nil && rctx.ManagedTask == nil && rctx.ApprovalMode == "" && rctx.Approver != nil {
+		if provider, ok := e.repo.(session.RuntimeInputProvider); ok {
+			rctx.RuntimeInputs = provider.RuntimeInputStore()
+		}
+	}
+	var binding *backgroundBinding
+	if store := e.continuationStore(); store != nil && rctx.RuntimeInputs != nil && e.backgroundSupported(sess.ID) {
+		scope := e.backgroundScope(parentCtx, sess.ID)
+		if rctx.Credential == nil || scope != "" {
+			binding = &backgroundBinding{Workspace: sess.WorkspacePath, RequestID: requestID, WireModel: wireModel, ResolvedModel: resolvedModel.Model, Effort: effectiveEffort, HadCredential: rctx.Credential != nil, CredentialScope: scope}
+			rctx.ParkContinuation = e.backgroundParker(store, binding, turnID, pub)
+		}
+	}
 	runner := e.rb.Build(rctx)
+	if binding != nil {
+		if capable, ok := runner.(backgroundRunner); ok {
+			binding.Identity = capable.ContinuationIdentity()
+		}
+	}
 
 	// 5. Run, marking running while in flight so a mid-turn crash leaves a
 	//    detectable "interrupted" status (reconciled to paused on next start).
@@ -964,6 +1015,17 @@ func (e *TurnExecutor) driveTurn(
 	// return a legacy/generated id, but it must never split one turn's event
 	// stream into two correlations.
 	res.TurnID = turnID
+	if res.WaitingBackground && runErr == nil {
+		if store := e.continuationStore(); store != nil {
+			c, err := store.Continuation(context.WithoutCancel(parentCtx), sess.ID)
+			if err == nil && c.TurnID == turnID && (c.State == "waiting" || c.State == "ready") {
+				defer e.NotifyBackgroundCompletion(sess.ID)
+				return res, nil
+			}
+		}
+		res.WaitingBackground = false
+		runErr = context.Canceled
+	}
 	// turn_finished is emitted by the loop. If its durable append failed, the
 	// turn cannot be reported as successfully complete; convert the outcome to a
 	// visible executor failure before choosing the terminal session status.
@@ -976,6 +1038,18 @@ func (e *TurnExecutor) driveTurn(
 	recordStatus(sess, runErr)
 	e.emitLifecycle(pub, sess, res, runErr)
 	e.setTurnInputState(parentCtx, claimed, turnInputTerminalState(sess, runErr))
+	if store := e.continuationStore(); store != nil {
+		state := "finished"
+		if e.active.WasSuspended(sess.ID) {
+			state = "needs_attention"
+		}
+		if errors.Is(runErr, context.Canceled) && !e.active.WasSuspended(sess.ID) {
+			state = "stopped"
+		}
+		if _, err := store.EndContinuation(context.WithoutCancel(parentCtx), sess.ID, turnID, state); err != nil && e.OnSaveError != nil {
+			e.OnSaveError(err)
+		}
+	}
 	if persistErr := pub.terminalPersistenceError(); persistErr != nil && !errors.Is(runErr, persistErr) {
 		runErr = errors.Join(runErr, persistErr)
 	}
@@ -1026,6 +1100,11 @@ func (RequestConflictError) SafeMessage() string {
 
 func (e *TurnExecutor) claimRequest(ctx context.Context, sessionID, requestID, proposedTurnID, text, wireModel, resolvedModel string, assets []model.GatewayAssetRef, localAssets []model.LocalAssetRef, provenance *session.CrossSessionProvenance, validation *session.ValidationContract, pub *sequencingEmitter) (session.TurnInput, bool, error) {
 	if requestID == "" {
+		if store := e.continuationStore(); store != nil {
+			if err := store.AdmitContinuationWork(ctx, sessionID, proposedTurnID); err != nil {
+				return session.TurnInput{}, false, err
+			}
+		}
 		pub.Emit(agent.Event{Kind: agent.EventTurnAccepted, SessionID: sessionID, TurnID: proposedTurnID})
 		return session.TurnInput{SessionID: sessionID, TurnID: proposedTurnID}, false, nil
 	}
@@ -1312,6 +1391,11 @@ func (e *TurnExecutor) emitLifecycle(pub agent.Emitter, sess *session.Session, r
 		event.ErrorCode = lifecycleErrorCode(runErr)
 	}
 	if kind == agent.EventTurnCancelled {
+		if e.continuationStore() != nil {
+			if terminal, state := e.durableTurnTerminal(context.Background(), sess.ID, result.TurnID); terminal && state == session.TurnInputCancelled {
+				return
+			}
+		}
 		event.CancelledReason = "user_requested"
 	}
 	// A paused turn resumes and re-emits turn_finished with the whole turn's
@@ -1361,6 +1445,14 @@ func errString(err error) string {
 // unwind (bounded by ctx), returning the suspended session ids. The turns' own
 // unwind records turn_status=paused. Called by the embedded host on background.
 func (e *TurnExecutor) SuspendAll(ctx context.Context) []string {
+	e.backgroundMu.Lock()
+	for sid := range e.backgroundSupport {
+		e.backgroundSupport[sid] = false
+	}
+	for _, a := range e.backgroundAttempts {
+		a.cancel()
+	}
+	e.backgroundMu.Unlock()
 	return e.active.SuspendAll(ctx)
 }
 
@@ -1424,6 +1516,11 @@ func (e *TurnExecutor) recoverTurnInputs(ctx context.Context, sessionID string) 
 	for _, input := range inputs {
 		if sessionID != "" && input.SessionID != sessionID {
 			continue
+		}
+		if store := e.continuationStore(); store != nil {
+			if c, err := store.Continuation(ctx, input.SessionID); err == nil && c.TurnID == input.TurnID && len(c.Checkpoint) > 0 && c.State != "finished" {
+				continue
+			}
 		}
 		claimKey := input.SessionID + "\x00" + input.RequestID
 		if !e.claimRecovery(claimKey) {
@@ -1570,6 +1667,19 @@ func (e *TurnExecutor) durableTurnTerminal(ctx context.Context, sessionID, turnI
 
 // Cancel stops the in-flight turn for a session at the next checkpoint.
 func (e *TurnExecutor) Cancel(sessionID string) {
+	e.backgroundMu.Lock()
+	target := ""
+	for _, a := range e.backgroundAttempts {
+		if a.sessionID == sessionID {
+			target = a.turnID
+			break
+		}
+	}
+	e.backgroundMu.Unlock()
+	if target != "" {
+		_ = e.CancelTurn(context.Background(), sessionID, target)
+		return
+	}
 	if e.scheduler.Cancel(sessionID) {
 		return
 	}
@@ -1662,8 +1772,20 @@ func (e *TurnExecutor) RegisterTools(sessionID string, tools []agent.ClientToolD
 
 // Shutdown cancels all active turns and closes event buses.
 func (e *TurnExecutor) Shutdown() {
+	e.backgroundMu.Lock()
+	e.backgroundClosed = true
+	for _, a := range e.backgroundAttempts {
+		a.cancel()
+	}
+	e.backgroundMu.Unlock()
 	e.scheduler.Shutdown()
 	e.active.Shutdown()
+	done := make(chan struct{})
+	go func() { e.backgroundWorkers.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+	}
 	e.subs.Shutdown()
 }
 
@@ -1672,7 +1794,7 @@ func (e *TurnExecutor) Shutdown() {
 // firstUserMessage returns the content of the first user message in the session.
 func firstUserMessage(sess *session.Session) string {
 	for _, m := range sess.Messages {
-		if m.Role == model.RoleUser {
+		if m.Role == model.RoleUser && !m.RuntimeInput {
 			return m.Content
 		}
 	}
@@ -1700,7 +1822,7 @@ func truncateForTitle(msg string) string {
 func turnCount(sess *session.Session) int {
 	n := 0
 	for _, m := range sess.Messages {
-		if m.Role == model.RoleUser {
+		if m.Role == model.RoleUser && !m.RuntimeInput {
 			n++
 		}
 	}

@@ -220,13 +220,26 @@ func historyPreview(text string, limit int) HistoryPreview {
 	return preview
 }
 
+// HistoryBackground contains public continuation facts, never a runnable checkpoint.
+type HistoryBackground struct {
+	TurnID          string   `json:"turn_id"`
+	State           string   `json:"state"`
+	Revision        int64    `json:"revision"`
+	JobIDs          []string `json:"job_ids,omitempty"`
+	Reason          string   `json:"reason,omitempty"`
+	ReasonTruncated bool     `json:"reason_truncated,omitempty"`
+}
+
 type HistoryEvent struct {
-	Seq      int64                     `json:"seq"`
-	TurnID   string                    `json:"turn_id,omitempty"`
-	Kind     string                    `json:"kind"`
-	CallID   string                    `json:"call_id,omitempty"`
-	ToolName string                    `json:"tool_name,omitempty"`
-	Fields   map[string]HistoryPreview `json:"fields,omitempty"`
+	SessionID       string                    `json:"session_id"`
+	ParentSessionID string                    `json:"parent_session_id,omitempty"`
+	Background      *HistoryBackground        `json:"background,omitempty"`
+	Seq             int64                     `json:"seq"`
+	TurnID          string                    `json:"turn_id,omitempty"`
+	Kind            string                    `json:"kind"`
+	CallID          string                    `json:"call_id,omitempty"`
+	ToolName        string                    `json:"tool_name,omitempty"`
+	Fields          map[string]HistoryPreview `json:"fields,omitempty"`
 }
 type HistoryPage struct {
 	Workspace    string         `json:"workspace_path"`
@@ -315,8 +328,26 @@ func (s *ManualService) ReadHistory(ctx context.Context, in HistoryReadInput) (H
 	for _, row := range rows {
 		var event HistoryEvent
 		var sessionID string
-		if json.Unmarshal(row["seq"], &event.Seq) != nil || event.Seq <= last || in.Before > 0 && event.Seq >= in.Before || json.Unmarshal(row["session_id"], &sessionID) != nil || sessionID != in.SessionID || json.Unmarshal(row["kind"], &event.Kind) != nil {
+		if json.Unmarshal(row["seq"], &event.Seq) != nil || event.Seq <= last || in.Before > 0 && event.Seq >= in.Before || json.Unmarshal(row["session_id"], &sessionID) != nil || !validID(sessionID) || json.Unmarshal(row["kind"], &event.Kind) != nil {
 			return HistoryPage{}, bridgeError("evidence_incomplete", nil)
+		}
+		event.SessionID = sessionID
+		if raw, ok := row["parent_session_id"]; ok && json.Unmarshal(raw, &event.ParentSessionID) != nil {
+			return HistoryPage{}, bridgeError("evidence_incomplete", nil)
+		}
+		if event.ParentSessionID != "" && event.ParentSessionID != in.SessionID {
+			return HistoryPage{}, bridgeError("evidence_incomplete", nil)
+		}
+		if sessionID != in.SessionID {
+			// The exact, authenticated parent partition includes durable child
+			// brackets. Older runtimes omit parent_session_id. Accept only these
+			// four kinds; never expand or fetch the child's transcript here.
+			switch event.Kind {
+			case "job_started", "job_finished", "task_started", "task_finished":
+				event.ParentSessionID = in.SessionID
+			default:
+				return HistoryPage{}, bridgeError("evidence_incomplete", nil)
+			}
 		}
 		last = event.Seq
 		if !validID(event.Kind) {
@@ -329,6 +360,21 @@ func (s *ManualService) ReadHistory(ctx context.Context, in HistoryReadInput) (H
 		}
 		if len(event.TurnID) > 128 || len(event.CallID) > 128 || len(event.ToolName) > 128 {
 			return HistoryPage{}, bridgeError("evidence_incomplete", nil)
+		}
+		if raw, ok := row["background"]; ok && string(raw) != "null" {
+			var background HistoryBackground
+			if json.Unmarshal(raw, &background) != nil || !validID(background.TurnID) || background.TurnID != event.TurnID || !validID(background.State) || background.Revision < 1 || len(background.JobIDs) > 64 {
+				return HistoryPage{}, bridgeError("evidence_incomplete", nil)
+			}
+			for _, id := range background.JobIDs {
+				if !validID(id) {
+					return HistoryPage{}, bridgeError("evidence_incomplete", nil)
+				}
+			}
+			preview := historyPreview(background.Reason, 2048)
+			background.Reason, background.ReasonTruncated = preview.Text, preview.Truncated
+			out.Truncated = out.Truncated || preview.Truncated
+			event.Background = &background
 		}
 		event.Fields = map[string]HistoryPreview{}
 		keys := []string{"text", "err", "error", "reason", "cancelled_reason"}

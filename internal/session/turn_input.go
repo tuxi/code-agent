@@ -11,12 +11,13 @@ import (
 type TurnInputState string
 
 const (
-	TurnInputAccepted  TurnInputState = "accepted"
-	TurnInputQueued    TurnInputState = "queued"
-	TurnInputRunning   TurnInputState = "running"
-	TurnInputCompleted TurnInputState = "completed"
-	TurnInputFailed    TurnInputState = "failed"
-	TurnInputCancelled TurnInputState = "cancelled"
+	TurnInputAccepted          TurnInputState = "accepted"
+	TurnInputQueued            TurnInputState = "queued"
+	TurnInputRunning           TurnInputState = "running"
+	TurnInputCompleted         TurnInputState = "completed"
+	TurnInputFailed            TurnInputState = "failed"
+	TurnInputCancelled         TurnInputState = "cancelled"
+	TurnInputWaitingBackground TurnInputState = "waiting_background"
 )
 
 // CrossSessionProvenance is durable routing metadata for Agent-originated

@@ -271,6 +271,7 @@ func run() error {
 	// §8.4-2) — persisted copies are already handled inside the sink.
 	if jobSink != nil {
 		jobSink.SetLiveResolver(subs.Emitter)
+		jobSink.OnCompletion = executor.NotifyBackgroundCompletion
 	}
 
 	runtimeCapabilities := server.ConfiguredRuntimeCapabilities(maxConcurrentTurns)

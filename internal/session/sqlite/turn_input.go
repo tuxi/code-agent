@@ -106,6 +106,9 @@ func (s *Store) ReserveTurnInput(ctx context.Context, input session.TurnInput, a
 		return session.TurnInput{}, false, 0, err
 	}
 	input.AcceptedSeq = seq
+	if err = admitContinuationWork(ctx, tx, input.SessionID, input.TurnID); err != nil {
+		return session.TurnInput{}, false, 0, err
+	}
 	if err = bindManagedAttempt(ctx, tx, input); err != nil {
 		return session.TurnInput{}, false, 0, err
 	}

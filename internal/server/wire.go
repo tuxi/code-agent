@@ -19,8 +19,9 @@ import (
 // single place transport concerns are expressed; the core struct is left
 // untouched. Field order groups the common header first, then per-kind fields.
 type wireEvent struct {
-	ValidationContract     *session.ValidationContract `json:"validation_contract,omitempty"`
-	ValidationContractHash string                      `json:"validation_contract_hash,omitempty"`
+	Background             *agent.BackgroundContinuationInfo `json:"background,omitempty"`
+	ValidationContract     *session.ValidationContract       `json:"validation_contract,omitempty"`
+	ValidationContractHash string                            `json:"validation_contract_hash,omitempty"`
 	// Common header (§3.1). event_id and parent_session_id are stamped by the
 	// emitter, not by toWire, which keeps toWire pure and golden-testable.
 	EventID         string `json:"event_id,omitempty"`
@@ -140,6 +141,7 @@ const maxWireDiffFiles = 200
 // identity), which keeps this function deterministic for golden tests.
 func toWire(e agent.Event) wireEvent {
 	w := wireEvent{
+		Background:         e.Background,
 		ModelSelection:     e.ModelSelection,
 		ModelSucceeded:     e.ModelSucceeded,
 		Kind:               string(e.Kind),

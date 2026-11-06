@@ -113,7 +113,7 @@ func registerBackgroundJobRoutes(mux *http.ServeMux, repo conversation.Conversat
 			return
 		}
 		snap := job.Snapshot()
-		if snap.Owner != (jobs.Owner{SessionID: r.PathValue("id"), TurnID: in.TurnID, CallID: in.CallID}) {
+		if snap.Owner.SessionID != r.PathValue("id") || snap.Owner.TurnID != in.TurnID || snap.Owner.CallID != in.CallID {
 			ErrorSimple(w, r, http.StatusNotFound, "job not found")
 			return
 		}

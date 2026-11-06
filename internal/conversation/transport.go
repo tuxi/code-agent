@@ -2,9 +2,12 @@ package conversation
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 
 	"code-agent/internal/agent"
 	"code-agent/internal/model"
+	"code-agent/internal/session"
 )
 
 // TransportSession is a thin adapter that satisfies server.Session (Subscriber
@@ -52,6 +55,59 @@ func (s *TransportSession) SendMessageWithRequestIDAndAllAssets(ctx context.Cont
 // Cancel stops the in-flight turn. Satisfies server.CommandTarget.
 func (s *TransportSession) Cancel() {
 	s.ex.Cancel(s.id)
+}
+
+func (s *TransportSession) CancelTurn(ctx context.Context, turnID string) error {
+	return s.ex.CancelTurn(ctx, s.id, turnID)
+}
+
+func (s *TransportSession) BackgroundContinuationEnabled(ctx context.Context) bool {
+	if s.ex.continuationStore() == nil {
+		return false
+	}
+	provider, ok := s.ex.repo.(session.RuntimeInputProvider)
+	if !ok || provider.RuntimeInputStore() == nil {
+		return false
+	}
+	sess, err := s.ex.repo.Load(ctx, s.id)
+	if err != nil || !sess.ArchivedAt.IsZero() {
+		return false
+	}
+	builder, ok := s.ex.rb.(interface{ BackgroundContinuationConfigured(string) bool })
+	return ok && builder.BackgroundContinuationConfigured(sess.WorkspacePath)
+}
+func (s *TransportSession) SetBackgroundContinuationSupport(enabled bool) {
+	s.ex.SetBackgroundContinuationSupport(s.id, enabled)
+}
+func (s *TransportSession) BackgroundContinuationState(ctx context.Context) (string, *agent.BackgroundContinuationInfo, error) {
+	store := s.ex.continuationStore()
+	if store == nil {
+		return "", nil, nil
+	}
+	c, err := store.Continuation(ctx, s.id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil, nil
+	}
+	if err != nil {
+		return "", nil, err
+	}
+	if len(c.Checkpoint) == 0 {
+		return "", nil, nil
+	}
+	info := backgroundInfo(c)
+	if c.State == "active" {
+		s.ex.backgroundMu.Lock()
+		live := false
+		for _, attempt := range s.ex.backgroundAttempts {
+			live = live || attempt.sessionID == s.id && attempt.turnID == c.TurnID
+		}
+		s.ex.backgroundMu.Unlock()
+		if !live {
+			info.State = "needs_attention"
+			info.Reason = "background continuation execution cannot be confirmed"
+		}
+	}
+	return c.TurnID, info, nil
 }
 
 // SetApprover wires the WS connection's remote approver. Satisfies server.Session.

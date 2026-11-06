@@ -13,6 +13,9 @@ import (
 // It is a value type — tools receive it by value and must not mutate it.
 // All fields are immutable for the duration of the Execute call.
 type ExecutionContext struct {
+	// RuntimeInputDelivery is minted by a capable runner, never model input.
+	RuntimeInputDelivery bool
+	CanYield             bool
 	// WorkspaceRoot is the absolute path of the project root directory.
 	// Tools use it to resolve relative paths and enforce workspace boundaries.
 	WorkspaceRoot string
@@ -325,10 +328,14 @@ type PathAccessApprover interface {
 }
 
 type ToolResult struct {
-	Content string          `json:"content"`
-	Failure *ToolFailure    `json:"failure,omitempty"`
-	Output  json.RawMessage `json:"output,omitempty"`
-	Assets  []assets.Ref    `json:"assets,omitempty"`
+	// RuntimeInputReceipts acknowledge result inputs already carried by this
+	// tool result. The runner checkpoints them with the balanced tool history.
+	RuntimeInputReceipts []string        `json:"-"`
+	RuntimeWaitFor       []string        `json:"-"`
+	Content              string          `json:"content"`
+	Failure              *ToolFailure    `json:"failure,omitempty"`
+	Output               json.RawMessage `json:"output,omitempty"`
+	Assets               []assets.Ref    `json:"assets,omitempty"`
 	// Usage is populated by billable managed tools. Local tools leave it nil.
 	// It is an event side-channel and is not included in the model observation.
 	Usage *ToolUsage `json:"usage,omitempty"`

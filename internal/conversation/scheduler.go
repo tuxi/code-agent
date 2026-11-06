@@ -172,10 +172,14 @@ func (s *TurnScheduler) ReserveTurnID() string {
 // Cancel removes a queued turn for this session. A running turn is intentionally
 // not touched here; ActiveTurnRegistry owns its context cancellation.
 func (s *TurnScheduler) Cancel(sessionID string) bool {
+	return s.CancelTurn(sessionID, "")
+}
+
+func (s *TurnScheduler) CancelTurn(sessionID, turnID string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, w := range s.pending {
-		if w.req.SessionID == sessionID {
+		if w.req.SessionID == sessionID && (turnID == "" || w.req.TurnID == turnID) {
 			s.removePendingLocked(w)
 			w.err = context.Canceled
 			close(w.ready)

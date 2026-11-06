@@ -182,12 +182,21 @@ func (h *WSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	background, backgroundCapable := sess.(backgroundContinuationSession)
+	if backgroundCapable && background.BackgroundContinuationEnabled(ctx) && !hasCapability(capabilities, BackgroundContinuationCapability) {
+		capabilities = append(capabilities, BackgroundContinuationCapability)
+	}
+	resetBackground := func() {
+		if backgroundCapable {
+			background.SetBackgroundContinuationSupport(false)
+		}
+	}
 
 	// Get or create the session-scoped RemoteApprover. On a first connection
 	// this creates a new one; on a reconnect after a page switch this returns the
 	// existing approver (still holding pending requests, if any) and re-sends
 	// them over the new sink.
-	approver, waiter, controlRevision := h.claimSessionControl(sessionID, sink)
+	approver, waiter, controlRevision := h.claimSessionControl(sessionID, sink, resetBackground)
 
 	sess.SetApprover(approver)
 	sess.SetPlanApprover(approver)
@@ -204,7 +213,7 @@ func (h *WSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// do NOT close the approver or replace it with deny-all. Pending
 		// approvals stay registered — the agent loop keeps blocking until
 		// the user reconnects and responds, or the timeout fires.
-		h.releaseSessionControl(sessionID, controlRevision, approver)
+		h.releaseSessionControl(sessionID, controlRevision, approver, resetBackground)
 	}()
 
 	// Inbound command/control routing is transport-agnostic (see Router); this read
@@ -216,6 +225,11 @@ func (h *WSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		Prompts:     h.Prompts,
 		Rejections:  frameInputRejectionSink{sink: sink},
 		ImageInput:  hasCapability(capabilities, "image_input"),
+	}
+	if backgroundCapable {
+		router.ClientCapabilities = func(ctx context.Context, values []string) {
+			h.configureBackground(ctx, sessionID, controlRevision, background, sink, values, hasCapability(capabilities, BackgroundContinuationCapability))
+		}
 	}
 	go func() {
 		defer cancel()
@@ -262,7 +276,7 @@ func hasCapability(capabilities []string, want string) bool {
 // claimSessionControl atomically registers a new sink and advances the session's
 // ownership revision. Each connection gets its own sink in the approver's set;
 // approvals are broadcast to ALL active sinks, not just the latest.
-func (h *WSHandler) claimSessionControl(sessionID string, sink FrameSink) (*RemoteApprover, *RemoteToolResultWaiter, uint64) {
+func (h *WSHandler) claimSessionControl(sessionID string, sink FrameSink, onClaim ...func()) (*RemoteApprover, *RemoteToolResultWaiter, uint64) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.approvers == nil {
@@ -280,6 +294,9 @@ func (h *WSHandler) claimSessionControl(sessionID string, sink FrameSink) (*Remo
 		h.approvers[sessionID] = approver
 	}
 	h.controlRevisions[sessionID]++
+	if len(onClaim) > 0 && onClaim[0] != nil {
+		onClaim[0]()
+	}
 	revision := h.controlRevisions[sessionID]
 	approver.AddSink(revision, sink)
 
@@ -297,7 +314,12 @@ func (h *WSHandler) ownsSessionControl(sessionID string, revision uint64) bool {
 	return revision != 0 && h.controlRevisions[sessionID] == revision
 }
 
-func (h *WSHandler) releaseSessionControl(sessionID string, revision uint64, approver *RemoteApprover) {
+func (h *WSHandler) releaseSessionControl(sessionID string, revision uint64, approver *RemoteApprover, onRelease ...func()) {
+	h.mu.Lock()
+	if h.controlRevisions[sessionID] == revision && len(onRelease) > 0 && onRelease[0] != nil {
+		onRelease[0]()
+	}
+	h.mu.Unlock()
 	// Remove this connection's sink regardless of whether it's the latest.
 	// Other connected devices' sinks remain in the set and continue to receive
 	// approval requests.

@@ -23,6 +23,7 @@ type ActiveTurnRegistry struct {
 }
 
 type activeTurn struct {
+	turnID          string
 	cancel          context.CancelFunc     // non-nil while a turn is in flight
 	approver        agent.Approver         // set by WS handler; nil = deny-all
 	planApprover    agent.PlanApprover     // set by WS handler; nil = auto-approve
@@ -76,6 +77,10 @@ func NewActiveTurnRegistry() *ActiveTurnRegistry {
 // context (for cancellation) and its cancel func, or ErrBusy if another turn
 // is already in flight for this session.
 func (r *ActiveTurnRegistry) BeginTurn(sessionID string, parentCtx context.Context) (context.Context, context.CancelFunc, error) {
+	return r.BeginTurnWithID(sessionID, "", parentCtx)
+}
+
+func (r *ActiveTurnRegistry) BeginTurnWithID(sessionID, turnID string, parentCtx context.Context) (context.Context, context.CancelFunc, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.shutdown {
@@ -91,6 +96,7 @@ func (r *ActiveTurnRegistry) BeginTurn(sessionID string, parentCtx context.Conte
 	}
 	ctx, cancel := context.WithCancel(parentCtx)
 	t.cancel = cancel
+	t.turnID = turnID
 	t.suspended = false
 	t.done = make(chan struct{})
 	return ctx, cancel, nil
@@ -106,6 +112,7 @@ func (r *ActiveTurnRegistry) FinishTurn(sessionID string) {
 		return
 	}
 	t.cancel = nil
+	t.turnID = ""
 	t.suspended = false
 	if t.done != nil {
 		close(t.done) // wake any SuspendAll awaiting this turn's unwind
@@ -168,6 +175,19 @@ func (r *ActiveTurnRegistry) Cancel(sessionID string) {
 		return
 	}
 	t.cancel()
+}
+
+// Identity checking and cancellation must share the registry lock. Checking a
+// scheduler snapshot first can race with a new turn replacing the old one.
+func (r *ActiveTurnRegistry) CancelTarget(sessionID, turnID string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	t := r.turns[sessionID]
+	if turnID == "" || t == nil || t.cancel == nil || t.turnID != turnID {
+		return false
+	}
+	t.cancel()
+	return true
 }
 
 // Approver returns the approver currently set for a session (nil = deny-all).

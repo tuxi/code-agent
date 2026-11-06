@@ -124,7 +124,9 @@ func (r *Runner) ExecuteNestedTool(
 		}, nil)
 	}
 
-	result, err := r.executeTool(ctx, tool, nestedCallID, input)
+	// Composite workflows own their nested history and do not yet checkpoint
+	// runtime delivery receipts with the root conversation's tool history.
+	result, err := r.executeTool(ctx, tool, nestedCallID, input, false)
 	if err == nil && result.Err() == nil {
 		r.postHook(ctx, tool.Name(), input, result.Content)
 	}

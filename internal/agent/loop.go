@@ -34,9 +34,16 @@ type cooldownSample struct {
 }
 
 type Runner struct {
-	Model          model.Provider
-	ModelName      string
-	ModelSelection model.Selection
+	// RuntimeInputs enables optional durable result delivery at model boundaries.
+	// Nil preserves the legacy loop; this port never initiates a model request.
+	RuntimeInputs              session.RuntimeInputStore
+	ParkContinuation           ContinuationParker
+	ContinuationPolicyIdentity string
+	continuation               *continuationState
+	runtimeWaitFor             []string
+	Model                      model.Provider
+	ModelName                  string
+	ModelSelection             model.Selection
 	// ProviderName is the display provider brand behind Model (e.g. "deepseek",
 	// "openrouter", "openai") — set by the runner builder from the resolved model
 	// config, distinct from the wire transport type. Carried on model_request
@@ -394,11 +401,12 @@ func (r *Runner) emit(e Event) {
 type TurnResult struct {
 	// TurnID identifies this execution in the event stream. The lifecycle layer
 	// uses it to emit a terminal event after the runner has returned an error.
-	TurnID       string
-	Deduplicated bool // true when request_id resolved to an already accepted turn
-	Final        string
-	Steps        []Step
-	PromptTokens int
+	TurnID            string
+	Deduplicated      bool // true when request_id resolved to an already accepted turn
+	WaitingBackground bool
+	Final             string
+	Steps             []Step
+	PromptTokens      int
 
 	// TokensUsed is the turn's CUMULATIVE token consumption: the sum over every
 	// model call this turn of prompt+completion usage. It differs from
@@ -986,11 +994,37 @@ func (r *Runner) drive(ctx context.Context, sess *session.Session) (TurnResult, 
 	// search-happy model reformulating the same query is cut off past the cap.
 	webSearches := 0
 	var turnAssets []assets.Ref
+	startStep := 0
+	if state := r.continuation; state != nil {
+		r.continuation = nil
+		turn = state.Turn
+		turn.billedToolCallIDs = state.BilledCallIDs
+		startStep = state.NextStep
+		r.MaxSteps = state.MaxSteps
+		r.MaxWebSearches = state.MaxWebSearches
+		webSearches = state.WebSearches
+		turnAssets = state.Assets
+		hypothesized = state.Hypothesized
+		pendingHarness = state.PendingHarness
+		pendingHypothesis = state.PendingHypothesis
+		r.todos = state.Todos
+		r.PlanState = state.PlanState
+		r.activePlan = state.Plan
+		r.planTitle = state.PlanTitle
+		r.lastAssistantText = state.LastAssistantText
+		r.plannedMutation = state.PlannedMutation
+		r.independentReviewPassed = state.IndependentReviewPassed
+		r.mutatedVerifiableCode = state.MutatedVerifiableCode
+		r.changeReviewCount = state.ChangeReviewCount
+	}
 
-	for i := 0; i < r.MaxSteps; i++ {
+	for i := startStep; i < r.MaxSteps; i++ {
 		// A canceled context (Ctrl-C) must stop the turn at the step boundary
 		// without waiting for the next HTTP call to time out.
 		if err := ctx.Err(); err != nil {
+			return turn, err
+		}
+		if _, err := r.runtimeInputBoundary(ctx, sess, true, false); err != nil {
 			return turn, err
 		}
 		// Compact before each model call, not just at the turn boundary: a single
@@ -1180,6 +1214,12 @@ func (r *Runner) drive(ctx context.Context, sess *session.Session) (TurnResult, 
 			}
 			sess.Messages = append(sess.Messages, resp.AssistantMessage())
 			sess.UpdatedAt = time.Now()
+			if delivered, err := r.runtimeInputBoundary(ctx, sess, true, true); err != nil {
+				return turn, err
+			} else if delivered > 0 {
+				r.emit(Event{Kind: EventAssistantText, Text: resp.Content})
+				continue
+			}
 			turn.Final = resp.Content
 			r.emit(Event{
 				Kind:               EventTurnFinished,
@@ -1228,8 +1268,34 @@ func (r *Runner) drive(ctx context.Context, sess *session.Session) (TurnResult, 
 		// MaxParallelTools <= 1 this is exactly the old sequential loop. A non-nil
 		// return means the batch was cut short by cancellation — history is left
 		// balanced (every call has a result) so the session stays resumable.
-		if cancelErr := r.executeToolBatch(ctx, sess, &turn, resp.ToolCalls, activeTools, advertised, &webSearches, &turnAssets); cancelErr != nil {
+		r.runtimeWaitFor = nil
+		cancelErr := r.executeToolBatch(ctx, sess, &turn, resp.ToolCalls, activeTools, advertised, &webSearches, &turnAssets)
+		if r.RuntimeInputs != nil && len(runtimeInputReceipts(sess)) > 0 {
+			// A returned result is acknowledged even if a later call in this batch
+			// was cancelled. Do not deliver new inputs into cancelled execution.
+			persistCtx, stop := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+			_, persistErr := r.runtimeInputBoundary(persistCtx, sess, false, false)
+			stop()
+			if persistErr != nil {
+				return turn, persistErr
+			}
+		}
+		if cancelErr != nil {
 			return turn, cancelErr
+		}
+		if len(r.runtimeWaitFor) > 0 && r.CanContinueBackground() && i+1 < r.MaxSteps {
+			if err := ctx.Err(); err != nil {
+				return turn, err
+			}
+			checkpoint, err := r.captureContinuation(&continuationState{NextStep: i + 1, Turn: turn, WebSearches: webSearches, Assets: turnAssets, Hypothesized: hypothesized, PendingHarness: pendingHarness, PendingHypothesis: pendingHypothesis})
+			if err != nil {
+				return turn, err
+			}
+			if err = r.ParkContinuation(ctx, sess, r.runtimeWaitFor, checkpoint); err != nil {
+				return turn, err
+			}
+			turn.WaitingBackground = true
+			return turn, nil
 		}
 
 		// Checkpoint at this consistent boundary (v1.2 §2): the tool batch is
@@ -1239,6 +1305,15 @@ func (r *Runner) drive(ctx context.Context, sess *session.Session) (TurnResult, 
 		r.checkpoint(ctx, sess)
 	}
 
+	// Budget exhaustion is a terminal boundary too. Collect available inputs
+	// for the existing tool-free summary, then leave later results for a new
+	// user turn instead of replenishing the model step budget.
+	if _, err := r.runtimeInputBoundary(ctx, sess, true, false); err != nil {
+		return turn, err
+	}
+	if _, err := r.runtimeInputBoundary(ctx, sess, false, true); err != nil {
+		return turn, err
+	}
 	// Step limit reached. Don't discard the work: the model has gathered tool
 	// results in the history, so give it one final tool-free call to answer from
 	// what it has — instead of a useless "stopped" message that forces the user to
@@ -1367,7 +1442,7 @@ func (r *Runner) runFinalizeVerify(ctx context.Context, command string) (VerifyS
 	if tools.HasSideEffectsFor(tool, input) {
 		return VerifyPassed, "" // never auto-run a mutating command
 	}
-	result, execErr := r.executeTool(ctx, tool, nextCallID(), input)
+	result, execErr := r.executeTool(ctx, tool, nextCallID(), input, false)
 	if execErr != nil {
 		return VerifyCouldNotRun, "verify command could not run: " + execErr.Error()
 	}
@@ -1798,7 +1873,7 @@ func (r *Runner) workflowPlanApproval(callID string) func(planID, title, content
 	}
 }
 
-func (r *Runner) executeTool(ctx context.Context, tool tools.Tool, callID string, input json.RawMessage) (tools.ToolResult, error) {
+func (r *Runner) executeTool(ctx context.Context, tool tools.Tool, callID string, input json.RawMessage, runtimeInputDelivery bool) (tools.ToolResult, error) {
 	// Capture turn identity before the closure so async workflow events
 	// (emitted after Execute returns) carry the correct correlation IDs.
 	turnID := r.emitTurnID
@@ -1811,20 +1886,22 @@ func (r *Runner) executeTool(ctx context.Context, tool tools.Tool, callID string
 		model = r.ModelName
 	}
 	ec := tools.ExecutionContext{
-		WorkspaceRoot:      r.WorkspaceRoot,
-		SessionID:          sessionID,
-		TurnID:             turnID,
-		CallID:             callID,
-		ExecutionID:        r.emitInvocationID,
-		RequestID:          r.RequestID,
-		PlanMode:           r.PlanState == PlanStatusPlanning || r.PlanState == PlanStatusProposing,
-		PathAccessApprover: r.PathAccessApprover,
-		Model:              model,
-		SessionIndex:       r.SessionIndex,
-		SessionControl:     r.SessionControl,
-		AutomationStore:    r.AutomationStore,
-		WorkflowRunner:     r.WorkflowRunner,
-		SessionTrace:       r.SessionTrace,
+		RuntimeInputDelivery: runtimeInputDelivery && r.RuntimeInputs != nil,
+		CanYield:             runtimeInputDelivery && r.CanContinueBackground(),
+		WorkspaceRoot:        r.WorkspaceRoot,
+		SessionID:            sessionID,
+		TurnID:               turnID,
+		CallID:               callID,
+		ExecutionID:          r.emitInvocationID,
+		RequestID:            r.RequestID,
+		PlanMode:             r.PlanState == PlanStatusPlanning || r.PlanState == PlanStatusProposing,
+		PathAccessApprover:   r.PathAccessApprover,
+		Model:                model,
+		SessionIndex:         r.SessionIndex,
+		SessionControl:       r.SessionControl,
+		AutomationStore:      r.AutomationStore,
+		WorkflowRunner:       r.WorkflowRunner,
+		SessionTrace:         r.SessionTrace,
 		OnStdout: func(chunk string) {
 			r.emit(Event{Kind: EventToolStdout, CallID: callID, Chunk: chunk})
 		},

@@ -57,6 +57,16 @@ type sqliteRepository struct {
 	getSkillsIndex func(workspaceRoot string) string
 }
 
+func (r *sqliteRepository) RuntimeInputStore() session.RuntimeInputStore {
+	store, _ := r.store.(session.RuntimeInputStore)
+	return store
+}
+
+func (r *sqliteRepository) ContinuationStore() session.ContinuationStore {
+	store, _ := r.store.(session.ContinuationStore)
+	return store
+}
+
 // NewSQLiteRepository creates a ConversationRepository backed by the given
 // SessionStore. currentWorkspaceDir is this launch's workspace root, used to
 // relativize on create and re-anchor on load (see docs/ios_workspace_path_spec.md);
