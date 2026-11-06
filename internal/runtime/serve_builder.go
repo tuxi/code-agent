@@ -75,7 +75,7 @@ func (b *ServeRunBuilder) BackgroundContinuationConfigured(workspace string) boo
 			cfg.Agent.BackgroundJobNotifications = local.Agent.BackgroundJobNotifications
 		}
 	}
-	return cfg.Agent.BackgroundJobNotifications != nil && *cfg.Agent.BackgroundJobNotifications
+	return cfg.Agent.BackgroundJobNotificationsEnabled()
 }
 
 func (b *ServeRunBuilder) SetSessionControl(control tools.SessionControl) {
@@ -618,7 +618,7 @@ func (b *ServeRunBuilder) Build(ctx conversation.RuntimeContext) conversation.Tu
 		runner.PathAccessApprover = pa
 	}
 	runner.Checkpointer = ctx.Checkpointer // mid-turn crash-safety (v1.2 §2); nil in headless builds
-	if cfg.Agent.BackgroundJobNotifications != nil && *cfg.Agent.BackgroundJobNotifications && ctx.ManagedTask == nil {
+	if cfg.Agent.BackgroundJobNotificationsEnabled() && ctx.ManagedTask == nil {
 		runner.RuntimeInputs = ctx.RuntimeInputs
 		runner.ParkContinuation = ctx.ParkContinuation
 		if runner.CanContinueBackground() {

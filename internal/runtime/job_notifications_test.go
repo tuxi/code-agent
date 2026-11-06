@@ -138,9 +138,12 @@ func TestServeRunBuilderRuntimeInputGate(t *testing.T) {
 		cfg := settings.Settings{Agent: settings.AgentConfig{BackgroundJobNotifications: value}}
 		builder := NewServeRunBuilder(cfg, settings.ModelConfig{}, nil, nil, tools.NewRegistry(), NewWorkspaceRegistry(""), nil)
 		runner := builder.Build(conversation.RuntimeContext{Session: sess, RuntimeInputs: store}).(*agent.Runner)
-		want := value != nil && *value
+		want := value == nil || *value
 		if (runner.RuntimeInputs != nil) != want {
-			t.Fatalf("experimental gate: %v -> %v", value, runner.RuntimeInputs)
+			t.Fatalf("notification gate: %v -> %v", value, runner.RuntimeInputs)
+		}
+		if builder.BackgroundContinuationConfigured(sess.WorkspacePath) != want {
+			t.Fatal("capability and runner configuration disagree")
 		}
 	}
 	cfg := settings.Settings{Agent: settings.AgentConfig{BackgroundJobNotifications: bptr(true)}}
@@ -162,5 +165,8 @@ func TestServeRunBuilderRuntimeInputGate(t *testing.T) {
 	runner = builder.Build(conversation.RuntimeContext{Session: sess, RuntimeInputs: store}).(*agent.Runner)
 	if runner.RuntimeInputs != nil {
 		t.Fatal("project explicit false ignored")
+	}
+	if builder.BackgroundContinuationConfigured(sess.WorkspacePath) {
+		t.Fatal("project explicit false still advertises capability")
 	}
 }

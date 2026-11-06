@@ -1,6 +1,8 @@
 # 后台任务恢复协议
 
-协议版本仍为 agent-wire v1。此扩展与 `background_job_control_v1` 独立，默认关闭。
+协议版本仍为 agent-wire v1。此扩展与 `background_job_control_v1` 独立，配置默认开启，实际启用仍要求宿主能力与双端协商。
+
+`agent.background_job_notifications` 支持既有用户全局配置及工作区配置。未配置时为 true；用户全局配置可设 false 关闭，工作区显式值可覆盖全局值。无需逐个工作区添加 true。默认值只在配置合并后解析，不把缺省层当作显式 true。
 
 ## 协商
 

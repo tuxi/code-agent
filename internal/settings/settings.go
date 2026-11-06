@@ -262,7 +262,7 @@ type CredentialConfig struct {
 }
 
 type AgentConfig struct {
-	// Experimental A-stage delivery only; this does not enable automatic resume.
+	// Defaults to enabled; continuation still requires host/client capabilities.
 	BackgroundJobNotifications *bool `json:"background_job_notifications,omitempty"`
 	// CodingTools selects a stable coding toolset; nil/false preserves the full set.
 	CodingTools *bool `json:"coding_tools,omitempty"`
@@ -313,6 +313,11 @@ type AgentConfig struct {
 	// tool (dreamai_generate) is registered at runtime over the wire, not as a
 	// built-in. Set `builtin_tools: []` (or `[web_search, web_fetch]`) there.
 	BuiltinTools *[]string `json:"builtin_tools,omitempty"`
+}
+
+// BackgroundJobNotificationsEnabled resolves the default after layered merging.
+func (c AgentConfig) BackgroundJobNotificationsEnabled() bool {
+	return c.BackgroundJobNotifications == nil || *c.BackgroundJobNotifications
 }
 
 // ToolAllowed reports whether a tool may be registered. Nil BuiltinTools means

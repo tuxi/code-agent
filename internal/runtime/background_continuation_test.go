@@ -84,7 +84,7 @@ func TestBackgroundContinuationRealJobThroughServe(t *testing.T) {
 		t.Fatal(err)
 	}
 	provider := &backgroundJobProvider{}
-	cfg := settings.Settings{Agent: settings.AgentConfig{BackgroundJobNotifications: bptr(true), MaxSteps: 5}}
+	cfg := settings.Settings{Agent: settings.AgentConfig{MaxSteps: 5}}
 	builder := NewServeRunBuilder(cfg, settings.ModelConfig{Model: "wire"}, provider, nil, reg, NewWorkspaceRegistry(""), nil)
 	repo := conversation.NewSQLiteRepository(store, 128000, 90000, "wire", "", nil)
 	sess, err := repo.Create(ctx, t.TempDir(), "")
