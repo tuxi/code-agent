@@ -18,6 +18,7 @@ import (
 	"code-agent/internal/conversation"
 	"code-agent/internal/credential"
 	"code-agent/internal/gitworkspace"
+	"code-agent/internal/jobs"
 	"code-agent/internal/managedworktree"
 	"code-agent/internal/mcp"
 	"code-agent/internal/model"
@@ -370,6 +371,8 @@ type MessageView struct {
 
 // MuxOptions configures the HTTP surface.
 type MuxOptions struct {
+	// BackgroundJobs is the live registry used by run_command, not event history.
+	BackgroundJobs *jobs.Registry
 	// Sharing exposes daemon-owned localhost control endpoints. Embedded hosts
 	// leave this nil and continue using their existing lifecycle API.
 	Sharing *DaemonRuntimeSharing
@@ -467,6 +470,7 @@ type MuxOptions struct {
 // multi-session clients. WebSocket hello capabilities remain a backwards-
 // compatible feature list; this endpoint is the source of truth for execution.
 type RuntimeCapabilities struct {
+	BackgroundJobControl       bool `json:"background_job_control_v1"`
 	DurableValidationContract  bool `json:"durable_validation_contract_v1"`
 	TaskLinks                  bool `json:"task_links_v1"`
 	TaskTimeline               bool `json:"task_timeline_v1"`
@@ -609,6 +613,7 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 		attentionSupported = attentionSupported && capability.SupportsAttentionSnapshot()
 	}
 	runtimeCapabilities := opts.RuntimeCapabilities
+	runtimeCapabilities.BackgroundJobControl = opts.BackgroundJobs != nil
 	runtimeCapabilities.DurableValidationContract = executor != nil && executor.SupportsValidationContracts()
 	runtimeCapabilities.TaskLinks = registerTaskRoutes(mux, repo, opts.RuntimeInfo.ServerID)
 	runtimeCapabilities.TaskTimeline = runtimeCapabilities.TaskLinks
@@ -622,6 +627,9 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 	}
 	advertisedCapabilities := make([]string, 0, len(opts.Capabilities)+1)
 	for _, capability := range opts.Capabilities {
+		if capability == backgroundJobControlCapability && opts.BackgroundJobs == nil {
+			continue
+		}
 		if capability == "durable_validation_contract_v1" && !runtimeCapabilities.DurableValidationContract {
 			continue
 		}
@@ -631,6 +639,9 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 	}
 	if runtimeCapabilities.DurableValidationContract && !hasCapability(advertisedCapabilities, "durable_validation_contract_v1") {
 		advertisedCapabilities = append(advertisedCapabilities, "durable_validation_contract_v1")
+	}
+	if opts.BackgroundJobs != nil && !hasCapability(advertisedCapabilities, backgroundJobControlCapability) {
+		advertisedCapabilities = append(advertisedCapabilities, backgroundJobControlCapability)
 	}
 	if runtimeCapabilities.HistoryPagination && !hasCapability(advertisedCapabilities, "history_pagination") {
 		advertisedCapabilities = append(advertisedCapabilities, "history_pagination")
@@ -700,6 +711,7 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 	registerProviderRoutes(mux, opts)
 	registerSecretsRoutes(mux, opts)
 	registerSettingsRoutes(mux, opts)
+	registerBackgroundJobRoutes(mux, repo, opts.BackgroundJobs)
 	registerPermissionRoutes(mux, opts)
 	registerGitBranchRoutes(mux, opts)
 	registerAutomationRoutes(mux, opts)

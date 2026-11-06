@@ -1140,6 +1140,7 @@ func Assemble(ctx context.Context, cfg settings.Settings, mc settings.ModelConfi
 		capabilities = append(capabilities, gitworkspace.Capability)
 	}
 	handler := server.NewMux(repo, eventStore, executor, server.MuxOptions{
+		BackgroundJobs:       runtime.BackgroundJobs(toolReg),
 		ServerName:           buildinfo.ServerName(),
 		RuntimeInfo:          runtimeInfo,
 		RuntimeModels:        runtimeModels,

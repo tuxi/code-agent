@@ -17,9 +17,10 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 	"unicode/utf8"
+
+	"github.com/google/uuid"
 )
 
 // Status is a job's lifecycle state.
@@ -128,7 +129,6 @@ type Registry struct {
 	mu        sync.Mutex
 	jobs      map[string]*Job
 	order     []string
-	seq       atomic.Uint64
 	maxOutput int
 
 	// Sink, when non-nil, observes every job's lifecycle and output. Set it
@@ -157,7 +157,9 @@ func NewRegistry() *Registry {
 // compound background job die with `exec: "-c": executable file not found in
 // $PATH`.
 func (r *Registry) Start(dir, command string, argv []string, owner Owner) *Job {
-	id := fmt.Sprintf("job_%d", r.seq.Add(1))
+	// Event history survives daemon restarts and registries can be rebuilt.
+	// Never reuse an old job identity for a different process.
+	id := "job_" + uuid.NewString()
 	ctx, cancel := context.WithCancel(context.Background())
 	out := &cappedBuffer{max: r.maxOutput}
 

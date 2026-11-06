@@ -384,10 +384,11 @@ func run() error {
 		}
 	}
 	handler := server.NewMux(repo, eventStore, executor, server.MuxOptions{
-		Sharing:       sharing,
-		ServerName:    buildinfo.ServerName(),
-		RuntimeInfo:   runtimeInfo,
-		RuntimeModels: runtimeModels,
+		BackgroundJobs: runtime.BackgroundJobs(toolReg),
+		Sharing:        sharing,
+		ServerName:     buildinfo.ServerName(),
+		RuntimeInfo:    runtimeInfo,
+		RuntimeModels:  runtimeModels,
 		RuntimeModelsBuilder: func() server.RuntimeModelCatalog {
 			// A2: live rebuild with the current injected credentials so a
 			// POST /v1/secrets makes models available without a restart.
