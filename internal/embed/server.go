@@ -1076,6 +1076,12 @@ func Assemble(ctx context.Context, cfg settings.Settings, mc settings.ModelConfi
 	active := conversation.NewActiveTurnRegistry()
 	subs := conversation.NewSubscriptionManager()
 	rb := runtime.NewServeRunBuilder(cfg, mc, provider, cred, toolReg, wsReg, planRef)
+	previewService, previewErr := runtime.OpenPreviewService(workspaceDir)
+	if previewErr != nil {
+		fmt.Fprintf(os.Stderr, "codeagent embedded: preview disabled: %v\n", previewErr)
+	} else {
+		rb.SetPreviewService(previewService)
+	}
 	executor := conversation.NewTurnExecutor(repo, eventStore, active, subs, rb)
 	executor.SetAssetRefReleaseService(rb)
 	maxConcurrentTurns := cfg.RuntimeMaxConcurrentTurns()
@@ -1142,6 +1148,7 @@ func Assemble(ctx context.Context, cfg settings.Settings, mc settings.ModelConfi
 	}
 	handler := server.NewMux(repo, eventStore, executor, server.MuxOptions{
 		BackgroundJobs:       runtime.BackgroundJobs(toolReg),
+		Preview:              previewService,
 		ServerName:           buildinfo.ServerName(),
 		RuntimeInfo:          runtimeInfo,
 		RuntimeModels:        runtimeModels,

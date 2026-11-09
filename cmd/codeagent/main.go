@@ -642,7 +642,14 @@ func runAgent(ctx context.Context, cfg settings.Settings, mc settings.ModelConfi
 	if autoMode {
 		approver.SetMode(approve.ModeAuto)
 	}
-	runner := runtime.BuildRunner(cfg, mc, provider, registry, skillReg, approver, runtime.WithEventStore(buildEmitter(), store, ctx), rules, root)
+	previewService, previewErr := runtime.OpenPreviewService(root)
+	if previewErr != nil {
+		fmt.Fprintln(os.Stderr, "warning: preview disabled:", previewErr)
+	}
+	runner := runtime.BuildRunner(cfg, mc, provider, registry, skillReg, approver, runtime.WithEventStore(buildEmitter(previewService), store, ctx), rules, root)
+	if previewService != nil {
+		runner.PreviewProducer = previewService
+	}
 	planRef.R = runner
 	runner.PlanApprover = approver
 
@@ -709,7 +716,14 @@ func runGoal(ctx context.Context, cfg settings.Settings, mc settings.ModelConfig
 	if autoMode {
 		approver.SetMode(approve.ModeAuto)
 	}
-	runner := runtime.BuildRunner(cfg, mc, provider, registry, skillReg, approver, runtime.WithEventStore(buildEmitter(), store, ctx), rules, root)
+	previewService, previewErr := runtime.OpenPreviewService(root)
+	if previewErr != nil {
+		fmt.Fprintln(os.Stderr, "warning: preview disabled:", previewErr)
+	}
+	runner := runtime.BuildRunner(cfg, mc, provider, registry, skillReg, approver, runtime.WithEventStore(buildEmitter(previewService), store, ctx), rules, root)
+	if previewService != nil {
+		runner.PreviewProducer = previewService
+	}
 	planRef.R = runner
 	runner.PlanApprover = approver
 
@@ -810,7 +824,15 @@ func runTUI(ctx context.Context, cfg settings.Settings, mc settings.ModelConfig,
 	if autoMode {
 		approver.SetMode(approve.ModeAuto)
 	}
+	previewService, previewErr := runtime.OpenPreviewService(root)
+	if previewErr != nil {
+		fmt.Fprintln(os.Stderr, "warning: preview disabled:", previewErr)
+	}
 	runner := runtime.BuildRunner(cfg, mc, provider, registry, skillReg, approver, runtime.WithEventStore(backend.Emitter, store, ctx), rules, root)
+	if previewService != nil {
+		runner.PreviewProducer = previewService
+		backend.SetPreviewResolvers(previewService, previewService)
+	}
 	planRef.R = runner
 	runner.Stream = true // 8.6: stream the model's text live (TUI only)
 	runner.PlanApprover = approver

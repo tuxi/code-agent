@@ -17,9 +17,10 @@ var ErrBusy = errors.New("conversation: a turn is already in flight")
 // in flight or a client is connected (approver set). It is deliberately
 // minimal: no metrics, no durations, no loggers — those are separate concerns.
 type ActiveTurnRegistry struct {
-	mu       sync.Mutex
-	turns    map[string]*activeTurn
-	shutdown bool
+	mu                 sync.Mutex
+	turns              map[string]*activeTurn
+	capabilityContexts map[string]string
+	shutdown           bool
 }
 
 type activeTurn struct {
@@ -70,7 +71,33 @@ func (r *ActiveTurnRegistry) RegisterTools(sessionID string, tools []agent.Clien
 
 // NewActiveTurnRegistry creates an empty registry.
 func NewActiveTurnRegistry() *ActiveTurnRegistry {
-	return &ActiveTurnRegistry{turns: make(map[string]*activeTurn)}
+	return &ActiveTurnRegistry{turns: make(map[string]*activeTurn), capabilityContexts: make(map[string]string)}
+}
+
+// CapabilityContext returns the host-selected active capability for a session.
+// It is runtime-owned metadata and is never decoded from agent_input.
+func (r *ActiveTurnRegistry) CapabilityContext(sessionID string) string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.capabilityContexts[sessionID]
+}
+
+// SetCapabilityContext selects exactly one active capability for future turns.
+// An empty value clears the selection.
+func (r *ActiveTurnRegistry) SetCapabilityContext(sessionID, capability string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.shutdown {
+		return
+	}
+	if capability == "" {
+		delete(r.capabilityContexts, sessionID)
+		return
+	}
+	if r.capabilityContexts == nil {
+		r.capabilityContexts = make(map[string]string)
+	}
+	r.capabilityContexts[sessionID] = capability
 }
 
 // BeginTurn reserves a session for exclusive execution. It returns a derived
@@ -371,4 +398,5 @@ func (r *ActiveTurnRegistry) Shutdown() {
 		}
 	}
 	r.turns = nil
+	r.capabilityContexts = nil
 }

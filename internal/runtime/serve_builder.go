@@ -12,10 +12,12 @@ import (
 	"code-agent/internal/agent"
 	"code-agent/internal/app"
 	"code-agent/internal/approve"
+	"code-agent/internal/capability"
 	"code-agent/internal/collab"
 	"code-agent/internal/conversation"
 	"code-agent/internal/credential"
 	"code-agent/internal/model"
+	"code-agent/internal/preview"
 	"code-agent/internal/session"
 	"code-agent/internal/settings"
 	"code-agent/internal/skills"
@@ -63,6 +65,8 @@ type ServeRunBuilder struct {
 	workflowRunner  tools.WorkflowRunner
 	sessionTrace    tools.SessionTraceFunc
 	executionGuard  collab.ExecutionGuard
+	preview         *preview.Service
+	capabilities    *capability.Registry
 }
 
 func (b *ServeRunBuilder) BackgroundContinuationConfigured(workspace string) bool {
@@ -115,6 +119,24 @@ func (b *ServeRunBuilder) SetTaskExecutionGuard(guard collab.ExecutionGuard) {
 	b.mu.Unlock()
 }
 
+func (b *ServeRunBuilder) SetPreviewService(service *preview.Service) {
+	b.mu.Lock()
+	b.preview = service
+	b.mu.Unlock()
+}
+
+func (b *ServeRunBuilder) PreviewService() *preview.Service {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return b.preview
+}
+
+func (b *ServeRunBuilder) Capabilities() *capability.Registry {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return b.capabilities
+}
+
 // NewServeRunBuilder constructs the builder with the initial model + provider.
 // set is the merged settings view (permissions/verify/hooks + infrastructure),
 // provided by the assembler — desktop loads disk settings.json, embedded parses
@@ -134,6 +156,7 @@ func NewServeRunBuilder(set settings.Settings, mc settings.ModelConfig, provider
 		wsRules: make(map[string]*approve.RuleStore),
 		mc:      mc, provider: provider, credential: cred,
 		executionGuard: guard,
+		capabilities:   capability.NewRegistry(),
 	}
 }
 
@@ -445,6 +468,7 @@ func (b *ServeRunBuilder) ReleaseConversationAssetRefs(ctx context.Context, cred
 func (b *ServeRunBuilder) Build(ctx conversation.RuntimeContext) conversation.TurnRunner {
 	b.mu.RLock()
 	defaultMC, baseProvider, baseCredential, control, executionGuard := b.mc, b.provider, b.credential, b.control, b.executionGuard
+	previewService, capabilityRegistry := b.preview, b.capabilities
 	cfg := b.Set
 	b.mu.RUnlock()
 
@@ -592,13 +616,34 @@ func (b *ServeRunBuilder) Build(ctx conversation.RuntimeContext) conversation.Tu
 	// Merge client-registered tools into a per-turn clone so the shared registry stays unmodified.
 	if len(ctx.ClientTools) > 0 {
 		reg := turnTools
-		for _, def := range ctx.ClientTools {
+		for _, raw := range ctx.ClientTools {
+			def := raw.Normalized()
 			proxy := tools.NewClientProxyTool(def.Name, def.Description, def.InputSchema)
-			if err := reg.Register(proxy); err != nil {
-				continue // name collision with a server tool — skip
+			binding := tools.Binding{
+				Name:            def.Name,
+				ModelVisibility: tools.ModelVisibility(def.ModelVisibility),
+				Executor:        tools.Executor(def.Executor),
+			}
+			if capabilityRegistry != nil {
+				binding = capabilityRegistry.Apply(def.Name, ctx.Capability, binding)
+			}
+			if err := reg.RegisterBound(proxy, binding); err != nil {
+				continue // name collision or invalid binding — fail that tool closed
 			}
 		}
 		runner.Tools = reg
+	}
+	if capabilityRegistry != nil {
+		for _, name := range runner.Tools.Names() {
+			binding, ok := runner.Tools.Binding(name)
+			if !ok {
+				continue
+			}
+			updated := capabilityRegistry.Apply(name, ctx.Capability, binding)
+			if updated.Capability != binding.Capability {
+				_ = runner.Tools.SetBinding(name, updated)
+			}
+		}
 	}
 	// plan_workflow is turn-scoped: bind the selected provider/model after model
 	// override and after client tools have been merged. Its Execute path projects
@@ -610,6 +655,9 @@ func (b *ServeRunBuilder) Build(ctx conversation.RuntimeContext) conversation.Tu
 	runner.PlanApprover = ctx.PlanApprover
 	runner.AskUserApprover = ctx.AskUserApprover
 	runner.ClientWaiter = ctx.ClientWaiter
+	if previewService != nil {
+		runner.PreviewProducer = previewService
+	}
 
 	// If the approver can also gate external path access (as RemoteApprover
 	// does), wire it so read tools can request user approval for paths outside

@@ -3,9 +3,11 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
+	"code-agent/internal/model"
 	"code-agent/internal/tools"
 )
 
@@ -43,7 +45,22 @@ func (r *Runner) ExecuteNestedTool(
 	if nestedCallID == "" {
 		nestedCallID = parentCallID + ":" + tool.Name()
 	}
-	executor := r.executorFor(tool, true)
+	var binding tools.Binding
+	if r.Tools != nil {
+		binding, _ = r.Tools.Binding(tool.Name())
+	}
+	if binding.Name == "" {
+		binding = tools.Binding{Name: tool.Name(), ModelVisibility: tools.VisibilityDirect, Executor: tools.ExecutorServer}
+		if ct, ok := tool.(tools.ClientTool); ok {
+			switch ct.ExecutionMode() {
+			case tools.ExecStrictClient:
+				binding.Executor = tools.ExecutorClient
+			case tools.ExecFlex:
+				binding.Executor = tools.ExecutorFlex
+			}
+		}
+	}
+	executor := r.executorFor(tool, true, binding)
 	argumentErr := tools.ValidateInput(tool, input)
 	eventExecutor := executor
 	if argumentErr != nil || domainErr != nil {
@@ -82,6 +99,10 @@ func (r *Runner) ExecuteNestedTool(
 			Err:         errText,
 			Failure:     failure,
 		})
+		r.emitPreviewArtifacts(ctx, toolCallPlan{
+			call:    model.ToolCall{ID: nestedCallID, Function: model.FunctionCall{Name: tool.Name()}},
+			binding: binding,
+		}, result.Assets, result.Previews, executor == "client")
 		return result, err
 	}
 
@@ -106,6 +127,9 @@ func (r *Runner) ExecuteNestedTool(
 	}
 
 	if executor == "client" {
+		if r.ClientWaiter == nil {
+			return finish(tools.ToolResult{}, errors.New("client executor is unavailable"))
+		}
 		result, err := r.ClientWaiter.Wait(ctx, nestedCallID, r.clientToolTimeout())
 		if err != nil {
 			return finish(tools.ToolResult{}, err)
@@ -115,12 +139,13 @@ func (r *Runner) ExecuteNestedTool(
 			if failure == nil {
 				failure = &tools.ToolFailure{Kind: "runtime", Message: result.Content}
 			}
-			return finish(tools.ToolResult{Content: result.Content, Output: result.Output, Assets: result.Assets, Failure: failure}, fmt.Errorf("%s", result.Content))
+			return finish(tools.ToolResult{Content: result.Content, Output: result.Output, Assets: result.Assets, Previews: result.Previews, Failure: failure}, fmt.Errorf("%s", result.Content))
 		}
 		return finish(tools.ToolResult{
-			Content: result.Content,
-			Output:  result.Output,
-			Assets:  result.Assets,
+			Content:  result.Content,
+			Output:   result.Output,
+			Assets:   result.Assets,
+			Previews: result.Previews,
 		}, nil)
 	}
 

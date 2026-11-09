@@ -7,6 +7,7 @@ import (
 	"code-agent/internal/conversation"
 	"code-agent/internal/credential"
 	"code-agent/internal/model"
+	"code-agent/internal/preview"
 	promptpkg "code-agent/internal/prompt"
 	"code-agent/internal/runtime"
 	"code-agent/internal/session"
@@ -41,11 +42,15 @@ type replRunBuilder struct {
 	emitter  agent.Emitter
 	rules    *approve.RuleStore
 	root     string
+	preview  *preview.Service
 }
 
 func (b *replRunBuilder) Build(ctx conversation.RuntimeContext) conversation.TurnRunner {
 	runner := runtime.BuildRunner(b.set, b.mc, b.provider, b.registry, b.skillReg, b.approver, b.emitter, b.rules, b.root)
 	runner.ClientWaiter = ctx.ClientWaiter
+	if b.preview != nil {
+		runner.PreviewProducer = b.preview
+	}
 	return runner
 }
 
@@ -137,7 +142,14 @@ func repl(ctx context.Context, cfg settings.Settings, mc settings.ModelConfig, p
 	if auto {
 		approver.SetMode(approve.ModeAuto)
 	}
-	runner := runtime.BuildRunner(cfg, mc, provider, registry, skillReg, approver, runtime.WithEventStore(buildEmitter(), store, ctx), rules, root)
+	previewService, previewErr := runtime.OpenPreviewService(root)
+	if previewErr != nil {
+		fmt.Fprintln(os.Stderr, "warning: preview disabled:", previewErr)
+	}
+	runner := runtime.BuildRunner(cfg, mc, provider, registry, skillReg, approver, runtime.WithEventStore(buildEmitter(previewService), store, ctx), rules, root)
+	if previewService != nil {
+		runner.PreviewProducer = previewService
+	}
 	planRef.R = runner // wire plan tools to the runner (late binding)
 	runner.PlanApprover = approver
 	runner.AskUserApprover = &replAskUserApprover{ask: ask}
@@ -175,9 +187,10 @@ func repl(ctx context.Context, cfg settings.Settings, mc settings.ModelConfig, p
 		set: cfg, mc: mc, provider: provider,
 		registry: registry, skillReg: skillReg,
 		approver: approver,
-		emitter:  runtime.WithEventStore(buildEmitter(), store, ctx),
+		emitter:  runtime.WithEventStore(buildEmitter(previewService), store, ctx),
 		rules:    rules,
 		root:     root,
+		preview:  previewService,
 	}
 	executor := conversation.NewTurnExecutor(repo, eventStore, active, subs, rb)
 	executor.OnSaveError = func(err error) {

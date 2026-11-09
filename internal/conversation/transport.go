@@ -134,3 +134,9 @@ func (s *TransportSession) SetClientToolWaiter(w agent.ClientToolWaiter) {
 func (s *TransportSession) RegisterTools(tools []agent.ClientToolDef) {
 	s.ex.RegisterTools(s.id, tools)
 }
+
+// SetCapabilityContext selects the runtime-owned active capability for future
+// turns. Satisfies optional host wiring; it is not an Agent Wire input field.
+func (s *TransportSession) SetCapabilityContext(capability string) {
+	s.ex.SetCapabilityContext(s.id, capability)
+}

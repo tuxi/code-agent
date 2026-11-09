@@ -8,6 +8,7 @@ import (
 
 	"code-agent/cmd/codeagent/tui/components/chat"
 	"code-agent/internal/agent"
+	"code-agent/internal/preview"
 )
 
 // Conversation adapts the agent event stream into chat.Message transcript
@@ -42,6 +43,12 @@ import (
 type Conversation struct {
 	seq int // backs stable message IDs
 
+	// ViewerResolver and AssetResolver are the in-process CLI/TUI preview
+	// transport. They resolve the same authenticated immutable bytes as the
+	// runtime HTTP routes.
+	ViewerResolver preview.ViewerResolver
+	AssetResolver  preview.AssetResolver
+
 	msgs        []chat.Message // the transcript as folded so far
 	assistantID string         // ID of the in-flight streaming assistant message, if any
 	thinkingID  string         // ID of the in-flight streaming thinking block, if any
@@ -52,6 +59,10 @@ type Conversation struct {
 	toolGroupName string
 
 	sysGroupID string // current system-notice group, while it is the transcript tail
+
+	previewMessageIDs  map[string]string // artifact ID -> transcript message ID
+	previewRevisions   map[string]int64
+	previewRevisionSHA map[string]string
 
 	// Turn footer accumulation, reset at each turn boundary.
 	turnTokens  int
@@ -225,6 +236,57 @@ func (c *Conversation) Apply(ev agent.Event) []chat.Message {
 			return []chat.Message{*m}
 		}
 		return nil
+
+	case agent.EventPreviewArtifact:
+		if ev.Artifact == nil {
+			return nil
+		}
+		line := fmt.Sprintf("◈ preview %s · %s · revision %d", ev.Artifact.Title, ev.Artifact.Status, ev.Artifact.Revision)
+		if ev.Artifact.Summary != "" {
+			line += " — " + ev.Artifact.Summary
+		}
+		if c.ViewerResolver != nil && ev.Artifact.Status == preview.StatusReady && ev.Artifact.Kind == preview.KindInteractiveHTML {
+			if _, err := c.ViewerResolver.Resolve(ev.Artifact.SessionID, ev.Artifact.ArtifactID, ev.Artifact.Revision); err != nil {
+				line += " · viewer unavailable"
+			} else {
+				line += " · viewer verified"
+			}
+		}
+		if c.AssetResolver != nil && ev.Artifact.Fallback != nil {
+			if _, err := c.AssetResolver.ResolveContent(ev.Artifact.SessionID, ev.Artifact.ArtifactID, ev.Artifact.Revision, ev.Artifact.Fallback.AssetID); err != nil {
+				line += " · fallback unavailable"
+			}
+		}
+		if c.previewMessageIDs == nil {
+			c.previewMessageIDs = make(map[string]string)
+			c.previewRevisions = make(map[string]int64)
+			c.previewRevisionSHA = make(map[string]string)
+		}
+		currentRevision := c.previewRevisions[ev.Artifact.ArtifactID]
+		if ev.Artifact.Revision < currentRevision {
+			return nil
+		}
+		if ev.Artifact.Revision == currentRevision && currentRevision != 0 && c.previewRevisionSHA[ev.Artifact.ArtifactID] != ev.Artifact.RevisionSHA256 {
+			return nil
+		}
+		if id := c.previewMessageIDs[ev.Artifact.ArtifactID]; id != "" {
+			for i := range c.msgs {
+				if c.msgs[i].ID == id {
+					c.msgs[i].Content = line
+					c.msgs[i].Finished = true
+					c.previewRevisions[ev.Artifact.ArtifactID] = ev.Artifact.Revision
+					c.previewRevisionSHA[ev.Artifact.ArtifactID] = ev.Artifact.RevisionSHA256
+					return []chat.Message{c.msgs[i]}
+				}
+			}
+		}
+		out := c.append(chat.Message{Kind: chat.KindSystem, Content: line, Finished: true})
+		if len(out) == 1 {
+			c.previewMessageIDs[ev.Artifact.ArtifactID] = out[0].ID
+			c.previewRevisions[ev.Artifact.ArtifactID] = ev.Artifact.Revision
+			c.previewRevisionSHA[ev.Artifact.ArtifactID] = ev.Artifact.RevisionSHA256
+		}
+		return out
 
 	case agent.EventSkillLoaded:
 		// A completed tool card: name carries the skill, version rides in the

@@ -66,6 +66,8 @@ func renderEntry(e Item, width int) []string {
 			return entryGroup(e, width)
 		}
 		return entryTool(e, width)
+	case ItemPreview:
+		return entryPreview(e, width)
 	case ItemSkill:
 		return entrySkill(e)
 	case ItemReflection:
@@ -128,6 +130,21 @@ func entryGroup(e Item, width int) []string {
 			label = a
 		}
 		lines = append(lines, "  "+s.body.Render(runewidth.Truncate(label, width-2, "…")))
+	}
+	return lines
+}
+
+func entryPreview(e Item, width int) []string {
+	s := curEntryStyles()
+	status := e.Failure
+	if status == "" {
+		status = "pending"
+	}
+	lines := []string{s.skill.Render("◈ preview " + e.Name + " · " + status)}
+	if strings.TrimSpace(e.Text) != "" {
+		for _, ln := range wrapProse(e.Text, width-2) {
+			lines = append(lines, "  "+s.body.Render(ln))
+		}
 	}
 	return lines
 }

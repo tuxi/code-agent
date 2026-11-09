@@ -7,6 +7,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"code-agent/internal/agent"
+	"code-agent/internal/preview"
 	"code-agent/internal/session"
 )
 
@@ -18,6 +19,9 @@ import (
 //
 // Construct it, hand Emitter/Approver to buildRunner, then pass it to Run.
 type Backend struct {
+	PreviewViewer preview.ViewerResolver
+	PreviewAsset  preview.AssetResolver
+
 	Emitter         agent.Emitter
 	Approver        agent.Approver
 	PlanApprover    agent.PlanApprover
@@ -89,6 +93,11 @@ func NewBackend() *Backend {
 		goalDone:        goalDone,
 		goalCtl:         goalCtl,
 	}
+}
+
+func (b *Backend) SetPreviewResolvers(viewer preview.ViewerResolver, asset preview.AssetResolver) {
+	b.PreviewViewer = viewer
+	b.PreviewAsset = asset
 }
 
 // goalDoneMsg carries a finished /goal pursuit's one-line outcome (and error) to

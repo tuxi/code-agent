@@ -2,15 +2,21 @@ package main
 
 import (
 	"code-agent/internal/agent"
+	"code-agent/internal/preview"
 	"fmt"
 	"os"
+	"strings"
 )
 
 // buildEmitter wires the renderer stack: a console renderer, wrapped in the live
 // "Thinking… Ns" ticker when stdout is a real terminal (the ticker's in-place
 // rewrites would just be noise when piped to a file or pipe).
-func buildEmitter() agent.Emitter {
-	base := agent.Emitter(consoleEmitter{})
+func buildEmitter(previewServices ...*preview.Service) agent.Emitter {
+	var previewService *preview.Service
+	if len(previewServices) > 0 {
+		previewService = previewServices[0]
+	}
+	base := agent.Emitter(consoleEmitter{preview: previewService})
 	if isTTY(os.Stdout) {
 		return newLiveProgress(base, os.Stdout)
 	}
@@ -29,9 +35,9 @@ func isTTY(f *os.File) bool {
 // previous inline output exactly — the difference is that the loop no longer
 // prints; it emits, and this is just one renderer. A live "Thinking… Ns" UI
 // (P3.8) is another renderer fed by the same events (ModelStarted / Elapsed).
-type consoleEmitter struct{}
+type consoleEmitter struct{ preview *preview.Service }
 
-func (consoleEmitter) Emit(e agent.Event) {
+func (c consoleEmitter) Emit(e agent.Event) {
 	switch e.Kind {
 	case agent.EventThinking:
 		fmt.Printf("\n[thinking] %s\n", e.Text)
@@ -57,6 +63,14 @@ func (consoleEmitter) Emit(e agent.Event) {
 		// Tag the result with its step so it correlates to the "[step] tool=…"
 		// start line even when other tools' output is interleaved (P8.8).
 		fmt.Printf("[%d result]\n%s\n", e.Step, e.Observation)
+	case agent.EventPreviewArtifact:
+		if e.Artifact != nil {
+			suffix := c.previewVerification(*e.Artifact)
+			fmt.Printf("\n[preview] %s · %s · revision %d%s\n", e.Artifact.Title, e.Artifact.Status, e.Artifact.Revision, suffix)
+			if e.Artifact.Summary != "" {
+				fmt.Printf("  %s\n", e.Artifact.Summary)
+			}
+		}
 	case agent.EventSkillLoaded:
 		// Show which skill (and version) drove a behavior change, so a transcript
 		// is debuggable ("why did it test-then-fix? — it loaded verify-change").
@@ -110,4 +124,29 @@ func (consoleEmitter) Emit(e agent.Event) {
 	// EventTurnStarted / EventModelStarted / EventModelFinished / EventTurnFinished
 	// are emitted but intentionally not rendered here: the caller prints the final
 	// answer from TurnResult, and model timing is for the P3.8 live renderer.
+}
+
+func (c consoleEmitter) previewVerification(artifact preview.Artifact) string {
+	if c.preview == nil {
+		return ""
+	}
+	var parts []string
+	if artifact.Status == preview.StatusReady && artifact.Kind == preview.KindInteractiveHTML {
+		if _, err := c.preview.Resolve(artifact.SessionID, artifact.ArtifactID, artifact.Revision); err != nil {
+			parts = append(parts, "viewer unavailable")
+		} else {
+			parts = append(parts, "viewer verified")
+		}
+	}
+	if artifact.Fallback != nil {
+		if _, err := c.preview.ResolveContent(artifact.SessionID, artifact.ArtifactID, artifact.Revision, artifact.Fallback.AssetID); err != nil {
+			parts = append(parts, "fallback unavailable")
+		} else {
+			parts = append(parts, "fallback verified")
+		}
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return " · " + strings.Join(parts, " · ")
 }

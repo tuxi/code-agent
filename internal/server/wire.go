@@ -11,6 +11,7 @@ import (
 	"code-agent/internal/agent"
 	"code-agent/internal/assetref"
 	"code-agent/internal/model"
+	"code-agent/internal/preview"
 	"code-agent/internal/session"
 	"code-agent/internal/tools"
 )
@@ -48,6 +49,7 @@ type wireEvent struct {
 	ToolArgs        json.RawMessage         `json:"tool_args,omitempty"`
 	Observation     string                  `json:"observation,omitempty"`
 	Output          json.RawMessage         `json:"output,omitempty"`
+	Artifact        *preview.Artifact       `json:"artifact,omitempty"`
 	Assets          []assets.Ref            `json:"assets,omitempty"`
 	UserAssets      []model.GatewayAssetRef `json:"user_assets,omitempty"`
 	LocalAssets     []model.LocalAssetRef   `json:"local_assets,omitempty"`
@@ -160,6 +162,7 @@ func toWire(e agent.Event) wireEvent {
 		ToolArgs:           toWireArgs(e.ToolArgs),
 		Observation:        e.Observation,
 		Output:             e.Output,
+		Artifact:           e.Artifact,
 		Assets:             e.Assets,
 		UserAssets:         e.UserAssets,
 		LocalAssets:        e.LocalAssets,

@@ -220,6 +220,12 @@ func run() error {
 	active := conversation.NewActiveTurnRegistry()
 	subs := conversation.NewSubscriptionManager()
 	rb := runtime.NewServeRunBuilder(cfg, mc, provider, cfg.CredentialResolver(baseResolver), toolReg, wsReg, planRef)
+	previewService, previewErr := runtime.OpenPreviewService(root)
+	if previewErr != nil {
+		fmt.Fprintf(os.Stderr, "codeagentd: preview disabled: %v\n", previewErr)
+	} else {
+		rb.SetPreviewService(previewService)
+	}
 	taskExecutionGuard, _ := repo.(collab.ExecutionGuard)
 	rb.SetTaskExecutionGuard(taskExecutionGuard)
 	executor := conversation.NewTurnExecutor(repo, eventStore, active, subs, rb)
@@ -386,6 +392,7 @@ func run() error {
 	}
 	handler := server.NewMux(repo, eventStore, executor, server.MuxOptions{
 		BackgroundJobs: runtime.BackgroundJobs(toolReg),
+		Preview:        previewService,
 		Sharing:        sharing,
 		ServerName:     buildinfo.ServerName(),
 		RuntimeInfo:    runtimeInfo,

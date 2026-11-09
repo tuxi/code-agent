@@ -1,0 +1,15 @@
+{
+  "version": "rfc8785-jcs-v1",
+  "vectors": [
+    {
+      "name": "rfc8785-example",
+      "input": "{\"numbers\":[333333333.33333329,1E30,4.50,2e-3,0.000000000000000000000000001],\"string\":\"\\u20ac$\\u000F\\nA'B\\\"\\\\\\\\\\\"/\",\"literals\":[null,true,false]}",
+      "canonical": "{\"literals\":[null,true,false],\"numbers\":[333333333.3333333,1e+30,4.5,0.002,1e-27],\"string\":\"€$\\u000f\\nA'B\\\"\\\\\\\\\\\"/\"}"
+    },
+    {
+      "name": "utf16-key-order",
+      "input": "{\"\\ud83d\\ude00\":1,\"\\ue000\":2,\"a\":3}",
+      "canonical": "{\"a\":3,\"😀\":1,\"\":2}"
+    }
+  ]
+}

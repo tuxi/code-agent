@@ -7,6 +7,7 @@ import (
 
 	"code-agent/internal/agent"
 	"code-agent/internal/buildinfo"
+	"code-agent/internal/preview"
 )
 
 // protocolVersion is the agent-wire major version. Negotiated once at the
@@ -18,6 +19,14 @@ const protocolVersion = buildinfo.AgentWireMajor
 // parentSessionID are stamped here (transport identity) so toWire stays pure and
 // golden-testable. parentSessionID is "" for root-session events.
 func Encode(e agent.Event, eventID, parentSessionID string) ([]byte, error) {
+	if e.Kind == agent.EventPreviewArtifact {
+		if err := preview.ValidateEventEnvelope(preview.Event{
+			Kind: "preview_artifact", EventID: eventID, Seq: e.Seq,
+			SessionID: e.SessionID, TurnID: e.TurnID, CallID: e.CallID, Artifact: e.Artifact,
+		}); err != nil {
+			return nil, err
+		}
+	}
 	w := toWire(e)
 	w.EventID = eventID
 	w.ParentSessionID = parentSessionID

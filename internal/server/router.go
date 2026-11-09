@@ -121,9 +121,17 @@ func (r Router) Route(ctx context.Context, data []byte) {
 		}
 	case MsgTypeRegisterTools:
 		var m RegisterTools
-		if json.Unmarshal(data, &m) == nil && r.Commands != nil {
-			r.Commands.RegisterTools(m.Tools)
+		if json.Unmarshal(data, &m) != nil || r.Commands == nil {
+			return
 		}
+		if err := agent.ValidateClientToolDefs(m.Tools); err != nil {
+			return
+		}
+		normalized := make([]agent.ClientToolDef, len(m.Tools))
+		for i, def := range m.Tools {
+			normalized[i] = def.Normalized()
+		}
+		r.Commands.RegisterTools(normalized)
 	case MsgTypeAgentInput:
 		m, rejected := decodeAndValidateAgentInput(data, r.ImageInput)
 		if rejected != nil {
@@ -192,11 +200,12 @@ func (r Router) Route(ctx context.Context, data []byte) {
 		case "tool_result":
 			if m.ToolResult != nil && r.ToolResults != nil {
 				r.ToolResults.Deliver(m.ToolResult.ToolUseID, agent.ToolCallResult{
-					Subtype: m.ToolResult.Subtype,
-					Content: m.ToolResult.Content,
-					Output:  m.ToolResult.Output,
-					Assets:  m.ToolResult.Assets,
-					IsError: m.ToolResult.IsError,
+					Subtype:  m.ToolResult.Subtype,
+					Content:  m.ToolResult.Content,
+					Output:   m.ToolResult.Output,
+					Assets:   m.ToolResult.Assets,
+					Previews: m.ToolResult.Previews,
+					IsError:  m.ToolResult.IsError,
 				})
 			}
 		case "command":

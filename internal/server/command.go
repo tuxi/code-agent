@@ -1,11 +1,13 @@
 package server
 
 import (
+	"bytes"
 	"encoding/json"
 
 	"code-agent/internal/agent"
 	"code-agent/internal/assetref"
 	"code-agent/internal/model"
+	"code-agent/internal/preview"
 	"code-agent/internal/session"
 )
 
@@ -90,5 +92,18 @@ type ToolResult struct {
 	Content   string          `json:"content,omitempty"`
 	Output    json.RawMessage `json:"output,omitempty"`
 	Assets    []assets.Ref    `json:"assets,omitempty"`
+	Previews  []preview.Draft `json:"previews,omitempty"`
 	IsError   bool            `json:"is_error,omitempty"`
+}
+
+func (t *ToolResult) UnmarshalJSON(data []byte) error {
+	type alias ToolResult
+	var out alias
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&out); err != nil {
+		return err
+	}
+	*t = ToolResult(out)
+	return nil
 }

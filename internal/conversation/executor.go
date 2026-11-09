@@ -972,6 +972,7 @@ func (e *TurnExecutor) driveTurn(
 		ResolvedModel:   resolvedModel.Model,
 		ReasoningEffort: effectiveEffort,
 		RequestID:       requestID,
+		Capability:      e.active.CapabilityContext(sess.ID),
 		Publisher:       pub,
 		Approver:        e.active.Approver(sess.ID),
 		PlanApprover:    e.active.PlanApprover(sess.ID),
@@ -1763,6 +1764,12 @@ func (e *TurnExecutor) SetAskUserApprover(sessionID string, aa agent.AskUserAppr
 // SetClientToolWaiter associates a client tool waiter with a session.
 func (e *TurnExecutor) SetClientToolWaiter(sessionID string, w agent.ClientToolWaiter) {
 	e.active.SetClientToolWaiter(sessionID, w)
+}
+
+// SetCapabilityContext selects one active capability for future turns on a
+// session. It is a host/runtime control, not an agent_input field.
+func (e *TurnExecutor) SetCapabilityContext(sessionID, capability string) {
+	e.active.SetCapabilityContext(sessionID, capability)
 }
 
 // RegisterTools stores client-side tool definitions for a session.

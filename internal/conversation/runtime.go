@@ -69,6 +69,9 @@ type RuntimeContext struct {
 	Model         string
 	ResolvedModel string
 	RequestID     string
+	// Capability selects exactly one active capability context for a producing
+	// invocation. It is runtime/host-owned, never decoded from client messages.
+	Capability string
 
 	// ReasoningEffort is a per-turn override of the resolved model's default
 	// thinking budget ("low"|"medium"|"high"|"x-high"|"max"). When non-empty it

@@ -3,6 +3,7 @@ package tools
 import (
 	"code-agent/internal/assetref"
 	"code-agent/internal/automation"
+	"code-agent/internal/preview"
 	"code-agent/internal/sessionfork"
 	"context"
 	"encoding/json"
@@ -336,6 +337,9 @@ type ToolResult struct {
 	Failure              *ToolFailure    `json:"failure,omitempty"`
 	Output               json.RawMessage `json:"output,omitempty"`
 	Assets               []assets.Ref    `json:"assets,omitempty"`
+	// Previews is the typed producer side-channel. It is never inferred from
+	// Output or the tool name and is not copied into the model observation.
+	Previews []preview.Draft `json:"-"`
 	// Usage is populated by billable managed tools. Local tools leave it nil.
 	// It is an event side-channel and is not included in the model observation.
 	Usage *ToolUsage `json:"usage,omitempty"`

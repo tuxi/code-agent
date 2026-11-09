@@ -13,6 +13,7 @@ import (
 
 	"code-agent/internal/assetref"
 	"code-agent/internal/model"
+	"code-agent/internal/preview"
 	"code-agent/internal/reference"
 	"code-agent/internal/reflection"
 	"code-agent/internal/session"
@@ -43,6 +44,7 @@ type toolCallPlan struct {
 	known            bool
 	valid            bool
 	executor         string
+	binding          tools.Binding
 	webSearchOrdinal int // 1-based web_search ordinal this turn; 0 if not a web_search
 }
 
@@ -66,6 +68,8 @@ type toolCallResult struct {
 	observation          string
 	output               json.RawMessage
 	assetRefs            []assets.Ref
+	previews             []preview.Draft
+	clientPreviewOrigin  bool
 	usage                *tools.ToolUsage
 	nestedUsage          []*tools.ToolUsage
 	modelUsage           *tools.ModelUsage
@@ -105,13 +109,15 @@ func (r *Runner) executeToolBatch(
 	for i, call := range calls {
 		input := json.RawMessage(call.Function.Arguments)
 		tool, known := activeTools.Get(call.Function.Name)
+		binding, _ := activeTools.Binding(call.Function.Name)
 		p := toolCallPlan{
 			call:     call,
 			input:    input,
 			tool:     tool,
 			known:    known,
+			binding:  binding,
 			valid:    advertised[call.Function.Name] && known,
-			executor: r.executorFor(tool, known),
+			executor: r.executorFor(tool, known, binding),
 			step: Step{
 				Index:     base + i + 1,
 				ToolName:  call.Function.Name,
@@ -300,8 +306,16 @@ func (r *Runner) runToolCall(ctx context.Context, p toolCallPlan) toolCallResult
 		observation = "The tool call was not approved. No changes were made."
 	case p.executor == "client":
 		res.executed = true
-		result, waitErr := r.ClientWaiter.Wait(ctx, p.call.ID, r.clientToolTimeout())
+		var result ToolCallResult
+		var waitErr error
+		if r.ClientWaiter == nil {
+			waitErr = errors.New("client executor is unavailable")
+		} else {
+			result, waitErr = r.ClientWaiter.Wait(ctx, p.call.ID, r.clientToolTimeout())
+		}
 		output, assetRefs = result.Output, result.Assets
+		res.previews = result.Previews
+		res.clientPreviewOrigin = true
 		if waitErr != nil {
 			kind := "transport"
 			if errors.Is(waitErr, context.DeadlineExceeded) {
@@ -328,6 +342,7 @@ func (r *Runner) runToolCall(ctx context.Context, p toolCallPlan) toolCallResult
 			observation = toolResult.Content
 			output = toolResult.Output
 			assetRefs = toolResult.Assets
+			res.previews = toolResult.Previews
 			res.usage = toolResult.Usage
 			res.runtimeInputReceipts = toolResult.RuntimeInputReceipts
 			res.runtimeWaitFor = toolResult.RuntimeWaitFor
@@ -533,6 +548,7 @@ func (r *Runner) commitToolResult(ctx context.Context, sess *session.Session, tu
 		Err:         step.Error,
 		Failure:     string(obs.FailureType),
 	})
+	r.emitPreviewArtifacts(ctx, p, assetRefs, res.previews, res.clientPreviewOrigin)
 
 	var receipts []string
 	if r.RuntimeInputs != nil {

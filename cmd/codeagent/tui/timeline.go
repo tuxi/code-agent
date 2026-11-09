@@ -19,6 +19,7 @@ const (
 	ItemSkill
 	ItemReflection
 	ItemCompaction
+	ItemPreview   // a runtime preview artifact snapshot
 	ItemAssistant // the model's final reply (from EventTurnFinished)
 	ItemSystem    // a UI-local notice (command output); never from an agent event
 )
@@ -64,6 +65,13 @@ type Item struct {
 	Status  ToolStatus
 	Failure string // failure label when Status == StatusFail
 	Version string // skill version (ItemSkill)
+
+	// Preview identity (ItemPreview). Higher revisions replace the same artifact
+	// block during live updates and replay merges.
+	ArtifactID       string
+	ArtifactRevision int64
+	ArtifactHash     string
+	ArtifactStatus   string
 
 	// Compaction (ItemCompaction). Pending marks the pre-measurement event (the
 	// reclaimed size is only known at the next model call); Pruned marks a tier-0
@@ -167,6 +175,33 @@ func (t *Timeline) Apply(ev agent.Event) {
 			case it.Status == StatusPending:
 				it.Status = StatusOK
 			}
+		}
+	case agent.EventPreviewArtifact:
+		if ev.Artifact != nil {
+			for i := range t.Items {
+				item := &t.Items[i]
+				if item.Kind == ItemPreview && item.ArtifactID == ev.Artifact.ArtifactID {
+					if ev.Artifact.Revision < item.ArtifactRevision {
+						return
+					}
+					if ev.Artifact.Revision == item.ArtifactRevision && item.ArtifactHash != "" && item.ArtifactHash != ev.Artifact.RevisionSHA256 {
+						return
+					}
+					item.Name = ev.Artifact.Title
+					item.Text = ev.Artifact.Summary
+					item.ArtifactRevision = ev.Artifact.Revision
+					item.ArtifactHash = ev.Artifact.RevisionSHA256
+					item.ArtifactStatus = string(ev.Artifact.Status)
+					item.Failure = string(ev.Artifact.Status)
+					item.EndedAt = ev.At
+					return
+				}
+			}
+			t.add(Item{
+				Kind: ItemPreview, Name: ev.Artifact.Title, Text: ev.Artifact.Summary,
+				ArtifactID: ev.Artifact.ArtifactID, ArtifactRevision: ev.Artifact.Revision,
+				ArtifactHash: ev.Artifact.RevisionSHA256, ArtifactStatus: string(ev.Artifact.Status), Failure: string(ev.Artifact.Status),
+			}, ev.At)
 		}
 	case agent.EventSkillLoaded:
 		t.add(Item{Kind: ItemSkill, Name: ev.ToolName, Version: ev.Version, Status: StatusOK}, ev.At)

@@ -92,6 +92,10 @@ type Runner struct {
 	// Zero uses a 2-minute default.
 	ClientToolTimeout time.Duration
 
+	// PreviewProducer is the typed preview side-channel. Nil disables preview
+	// materialization without affecting any tool result or turn outcome.
+	PreviewProducer PreviewProducer
+
 	// Observer enriches each tool result into a structured Observation (P4.1).
 	// Nil-safe: when unset, raw tool results are appended unchanged.
 	Observer Observer
@@ -1925,17 +1929,26 @@ func (r *Runner) executeTool(ctx context.Context, tool tools.Tool, callID string
 // executorFor determines which side executes a tool call. Empty string (or
 // "server") means server-side execution; "client" means the client must
 // execute it and deliver the result back.
-func (r *Runner) executorFor(tool tools.Tool, known bool) string {
+func (r *Runner) executorFor(tool tools.Tool, known bool, binding tools.Binding) string {
 	if !known {
 		return ""
 	}
-	if ct, ok := tool.(tools.ClientTool); ok && ct.ExecutionMode() == tools.ExecStrictClient {
-		if r.ClientWaiter != nil {
+	switch binding.Executor {
+	case tools.ExecutorClient:
+		return "client"
+	case tools.ExecutorFlex:
+		if ct, ok := tool.(tools.ClientTool); ok && ct.ExecutionMode() == tools.ExecStrictClient {
 			return "client"
 		}
-		// No client connected — fall through to server-side error handling.
+		if _, ok := tool.(*tools.ClientProxyTool); ok {
+			return "client"
+		}
+		return "server"
 	}
-	return ""
+	if ct, ok := tool.(tools.ClientTool); ok && ct.ExecutionMode() == tools.ExecStrictClient {
+		return "client"
+	}
+	return "server"
 }
 
 // clientToolTimeout returns the configured client tool lease timeout, or a

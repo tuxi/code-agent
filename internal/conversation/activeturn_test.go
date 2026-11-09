@@ -199,3 +199,24 @@ func TestActiveTurnRegistry_Concurrent(t *testing.T) {
 type fakeApprover struct{ v agent.Verdict }
 
 func (f *fakeApprover) Approve(string, json.RawMessage) agent.Verdict { return f.v }
+
+func TestActiveTurnRegistryCapabilityContextIsRuntimeOwnedAndPersistent(t *testing.T) {
+	r := NewActiveTurnRegistry()
+	r.SetCapabilityContext("s1", "ui-adaptation")
+	if got := r.CapabilityContext("s1"); got != "ui-adaptation" {
+		t.Fatalf("capability context = %q", got)
+	}
+	_, cancel, err := r.BeginTurn("s1", context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancel()
+	r.FinishTurn("s1")
+	if got := r.CapabilityContext("s1"); got != "ui-adaptation" {
+		t.Fatalf("capability context did not survive turn finish: %q", got)
+	}
+	r.SetCapabilityContext("s1", "")
+	if got := r.CapabilityContext("s1"); got != "" {
+		t.Fatalf("cleared capability context = %q", got)
+	}
+}

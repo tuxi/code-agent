@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -22,6 +23,7 @@ import (
 	"code-agent/internal/managedworktree"
 	"code-agent/internal/mcp"
 	"code-agent/internal/model"
+	"code-agent/internal/preview"
 	"code-agent/internal/repos"
 	runtime "code-agent/internal/runtime"
 	"code-agent/internal/session"
@@ -373,6 +375,10 @@ type MessageView struct {
 type MuxOptions struct {
 	// BackgroundJobs is the live registry used by run_command, not event history.
 	BackgroundJobs *jobs.Registry
+	// Preview is the runtime-owned immutable preview store, viewer materializer,
+	// and revision-addressed resolver. Nil keeps preview endpoints and
+	// capabilities fail-closed.
+	Preview *preview.Service
 	// Sharing exposes daemon-owned localhost control endpoints. Embedded hosts
 	// leave this nil and continue using their existing lifecycle API.
 	Sharing *DaemonRuntimeSharing
@@ -382,9 +388,9 @@ type MuxOptions struct {
 	RuntimeModels RuntimeModelCatalog
 	ServerAuth    ServerAuth
 	// Capabilities is the server capability list declared in the hello handshake.
-	// Nil means no capabilities advertised. The caller (cmd/codeagent) owns the
-	// list; the server layer is a dumb pipe — it never derives capabilities from
-	// runtime state.
+	// Nil means no capabilities advertised. Preview flags are the one derived
+	// exception: they are reconciled from the wired preview service so hello and
+	// /v1/runtime/capabilities cannot drift.
 	Capabilities []string
 	// Accept carries WebSocket origin policy. Nil = same-origin only.
 	Accept *websocket.AcceptOptions
@@ -491,6 +497,10 @@ type RuntimeCapabilities struct {
 	ConversationForkThroughTurn bool `json:"conversation_fork_through_turn_v1"`
 	PublicGitClone              bool `json:"public_git_clone_v1"`
 	WorkspaceGitBranch          bool `json:"workspace_git_branch_v1"`
+	PreviewContractV1           bool `json:"preview_contract_v1"`
+	PreviewInteractiveHTMLV1    bool `json:"preview_interactive_html_v1"`
+	PreviewStaticAssetV1        bool `json:"preview_static_asset_v1"`
+	PreviewReplayV1             bool `json:"preview_replay_v1"`
 	MaxConcurrentTurns          int  `json:"max_concurrent_turns"`
 	MaxConnectedSessions        int  `json:"max_connected_sessions"`
 }
@@ -620,6 +630,14 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 	runtimeCapabilities.PublicGitClone = opts.CloneService != nil
 	runtimeCapabilities.WorkspaceGitBranch = opts.GitBranches != nil
 	runtimeCapabilities.ConversationFork = opts.SessionForks != nil
+	previewFlags := preview.RuntimeFlags{}
+	if opts.Preview != nil && opts.Preview.Available() {
+		previewFlags = preview.FullRuntimeFlags()
+	}
+	runtimeCapabilities.PreviewContractV1 = previewFlags.Contract
+	runtimeCapabilities.PreviewInteractiveHTMLV1 = previewFlags.Interactive
+	runtimeCapabilities.PreviewStaticAssetV1 = previewFlags.Static
+	runtimeCapabilities.PreviewReplayV1 = previewFlags.Replay
 	_, runtimeCapabilities.HistoryPagination = eventStore.(session.EventPageStore)
 	runtimeCapabilities.ConversationListPagination = supportsListPagination(repo)
 	if capability, ok := eventStore.(interface{ SupportsHistoryPagination() bool }); ok {
@@ -648,6 +666,11 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 	}
 	if runtimeCapabilities.ConversationListPagination && !hasCapability(advertisedCapabilities, "conversation_list_pagination_v1") {
 		advertisedCapabilities = append(advertisedCapabilities, "conversation_list_pagination_v1")
+	}
+	var previewMismatch bool
+	advertisedCapabilities, previewMismatch = preview.ReconcileAdvertised(advertisedCapabilities, previewFlags)
+	if previewMismatch {
+		fmt.Fprintln(os.Stderr, "codeagent: preview capability mismatch between hello and REST; using runtime intersection")
 	}
 	runtimeCapabilities.ConversationForkThroughTurn = opts.SessionForks != nil
 	archiveRepo, archiveSupported := repo.(conversation.ArchivableConversationRepository)
@@ -1353,6 +1376,8 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 		writeJSON(w, r, http.StatusOK, map[string]any{"injected": true, "conversation_id": id, "target": target.String()})
 	})
 
+	registerPreviewRoutes(mux, repo, opts.Preview)
+
 	// ---- WebSocket: TransportSession backed by TurnExecutor ----
 	// Declared before the DELETE handler so it can call ws.RemoveApprover.
 
@@ -1369,9 +1394,13 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 		capabilityResolver = func(ctx context.Context) []string {
 			var caps []string
 			for _, cap := range opts.CapabilityResolver(ctx) {
-				if cap != "durable_validation_contract_v1" || runtimeCapabilities.DurableValidationContract {
-					caps = append(caps, cap)
+				if cap == "durable_validation_contract_v1" && !runtimeCapabilities.DurableValidationContract {
+					continue
 				}
+				if preview.IsCapability(cap) && !hasCapability(advertisedCapabilities, cap) {
+					continue
+				}
+				caps = append(caps, cap)
 			}
 			return caps
 		}

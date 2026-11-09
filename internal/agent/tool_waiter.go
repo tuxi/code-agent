@@ -1,10 +1,14 @@
 package agent
 
 import (
+	"bytes"
+
 	"code-agent/internal/assetref"
+	"code-agent/internal/preview"
 	"code-agent/internal/tools"
 	"context"
 	"encoding/json"
+	"fmt"
 	"time"
 )
 
@@ -15,7 +19,9 @@ type ToolCallResult struct {
 	Content string
 	Output  json.RawMessage
 	Assets  []assets.Ref
-	IsError bool
+	// Previews is the typed preview producer side-channel delivered by a client.
+	Previews []preview.Draft
+	IsError  bool
 	// Failure is supplied by the runtime broker for lease/connection failures.
 	Failure *tools.ToolFailure
 }
@@ -25,9 +31,54 @@ type ToolCallResult struct {
 // time. Lives in agent (not server) to avoid the conversation→server import
 // cycle.
 type ClientToolDef struct {
-	Name        string          `json:"name"`
-	Description string          `json:"description"`
-	InputSchema json.RawMessage `json:"input_schema"`
+	Name            string          `json:"name"`
+	Description     string          `json:"description"`
+	InputSchema     json.RawMessage `json:"input_schema"`
+	ModelVisibility string          `json:"model_visibility,omitempty"`
+	Executor        string          `json:"executor,omitempty"`
+}
+
+func (d *ClientToolDef) UnmarshalJSON(data []byte) error {
+	type alias ClientToolDef
+	var out alias
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&out); err != nil {
+		return err
+	}
+	*d = ClientToolDef(out)
+	return nil
+}
+
+func (d ClientToolDef) Normalized() ClientToolDef {
+	if d.ModelVisibility == "" {
+		d.ModelVisibility = string(tools.VisibilityDirect)
+	}
+	if d.Executor == "" {
+		d.Executor = string(tools.ExecutorClient)
+	}
+	return d
+}
+
+func ValidateClientToolDefs(defs []ClientToolDef) error {
+	seen := make(map[string]bool, len(defs))
+	for _, raw := range defs {
+		def := raw.Normalized()
+		if def.Name == "" {
+			return fmt.Errorf("client tool name is required")
+		}
+		if seen[def.Name] {
+			return fmt.Errorf("duplicate client tool name: %s", def.Name)
+		}
+		seen[def.Name] = true
+		if def.ModelVisibility != string(tools.VisibilityDirect) && def.ModelVisibility != string(tools.VisibilityHidden) {
+			return fmt.Errorf("client tool %s has unsupported model_visibility %q", def.Name, def.ModelVisibility)
+		}
+		if def.Executor != string(tools.ExecutorClient) && def.Executor != string(tools.ExecutorFlex) {
+			return fmt.Errorf("client tool %s has unsupported executor %q", def.Name, def.Executor)
+		}
+	}
+	return nil
 }
 
 // ClientToolWaiter manages the lifecycle of a tool call delegated to a client.

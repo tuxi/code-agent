@@ -125,7 +125,7 @@ func newModel(b *Backend, header HeaderInfo, src sessionSource) tea.Model {
 			layout.WithBottomPanel(layout.NewContainer(status)),
 		),
 
-		conversation: &Conversation{},
+		conversation: &Conversation{ViewerResolver: b.PreviewViewer, AssetResolver: b.PreviewAsset},
 
 		permission:   dialog.NewPermissionDialogCmp(src.granter),
 		planApproval: dialog.NewPlanApprovalDialogCmp(),
