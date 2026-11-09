@@ -1,0 +1,7 @@
+{
+  "case": "viewer-digest-mismatch",
+  "expected": {
+    "code": "preview_digest_mismatch",
+    "presentation": "staticFallback"
+  }
+}

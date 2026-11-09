@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; connect-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <title>DreamLog Duo Preview</title>
+  <style>
+    :root { color-scheme: light dark; font: 14px -apple-system, sans-serif; }
+    body { margin: 0; padding: 16px; background: Canvas; color: CanvasText; }
+    button { font: inherit; padding: 8px 12px; border-radius: 999px; }
+  </style>
+</head>
+<body>
+  <button id="pose">Outer screen</button>
+  <script>
+    const poses = ["Outer screen", "Inner portrait", "Inner landscape"];
+    let index = 0;
+    document.getElementById("pose").addEventListener("click", () => {
+      index = (index + 1) % poses.length;
+      document.getElementById("pose").textContent = poses[index];
+    });
+  </script>
+</body>
+</html>

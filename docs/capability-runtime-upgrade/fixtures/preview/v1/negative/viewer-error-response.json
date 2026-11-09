@@ -1,0 +1,13 @@
+{
+  "trace_id": "trace_fixture",
+  "code": 42200,
+  "msg": "preview_digest_mismatch",
+  "data": {
+    "http_status": 422,
+    "error": {
+      "code": "preview_digest_mismatch",
+      "message": "Viewer digest did not match.",
+      "retryable": false
+    }
+  }
+}

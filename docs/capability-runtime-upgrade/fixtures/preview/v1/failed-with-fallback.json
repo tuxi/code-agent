@@ -1,0 +1,57 @@
+{
+  "schema_version": "preview.artifact.v1",
+  "artifact_id": "preview_fixture_interactive",
+  "revision": 2,
+  "status": "failed",
+  "kind": "interactive_html",
+  "title": "DreamLog Duo Home",
+  "summary": "Interactive rendering failed; static evidence remains available.",
+  "capability": "ui-adaptation",
+  "session_id": "session_fixture",
+  "turn_id": "turn_fixture",
+  "call_id": "call_fixture",
+  "created_at": "2026-11-09T12:00:00Z",
+  "updated_at": "2026-11-09T12:00:05Z",
+  "expires_at": null,
+  "presentation": {
+    "placement": "conversation_inline",
+    "preferred_aspect_ratio": 1.78,
+    "min_height": 420,
+    "initial_state": "collapsed"
+  },
+  "assets": [
+    {
+      "asset_id": "asset_fixture_fallback",
+      "role": "fallback",
+      "mime_type": "image/png",
+      "size_bytes": 6213,
+      "sha256": "sha256:5f8f80a22537ae2a13d82094cdcfc8166cffaa01be0b6f1a9586623467070ee0",
+      "content_url": "/v1/conversations/session_fixture/previews/preview_fixture_interactive/revisions/2/assets/asset_fixture_fallback/content",
+      "width": 1200,
+      "height": 800,
+      "alt": "DreamLog Duo preview fallback"
+    }
+  ],
+  "fallback": {
+    "asset_id": "asset_fixture_fallback",
+    "text": "Interactive preview failed. Showing static evidence."
+  },
+  "security": {
+    "profile": "preview.security.v1",
+    "javascript": "isolated_only",
+    "network": "deny",
+    "navigation": "deny",
+    "persistent_data": "deny",
+    "actions": "none"
+  },
+  "error": {
+    "code": "preview_store_unavailable",
+    "message": "The preview revision could not be stored.",
+    "retryable": true
+  },
+  "metadata": {
+    "fixture": "failed-with-fallback"
+  },
+  "producer_id": "ui_preview",
+  "revision_sha256": "sha256:c58fa3ae5f14baf8d42e4a5538f12e0f8d0791f9ad425705339506e5c5d59160"
+}

@@ -1,0 +1,40 @@
+{
+  "schema_version": "preview.artifact.v1",
+  "artifact_id": "preview_fixture_unavailable",
+  "revision": 1,
+  "status": "unavailable",
+  "kind": "interactive_html",
+  "title": "DreamLog Duo Home",
+  "summary": "Preview storage is unavailable.",
+  "capability": "ui-adaptation",
+  "session_id": "session_fixture",
+  "turn_id": "turn_fixture",
+  "call_id": "call_fixture",
+  "created_at": "2026-11-09T12:00:00Z",
+  "updated_at": "2026-11-09T12:00:00Z",
+  "expires_at": null,
+  "presentation": {
+    "placement": "conversation_inline",
+    "initial_state": "collapsed"
+  },
+  "assets": [],
+  "fallback": null,
+  "security": {
+    "profile": "preview.security.v1",
+    "javascript": "isolated_only",
+    "network": "deny",
+    "navigation": "deny",
+    "persistent_data": "deny",
+    "actions": "none"
+  },
+  "error": {
+    "code": "preview_store_unavailable",
+    "message": "Preview storage is unavailable.",
+    "retryable": true
+  },
+  "metadata": {
+    "fixture": "unavailable"
+  },
+  "producer_id": "ui_preview",
+  "revision_sha256": "sha256:2bd12d78e2e4a30c5b23046355457cd29bb01abc5f92bd69b966b64b0017a763"
+}

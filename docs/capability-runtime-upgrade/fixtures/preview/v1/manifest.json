@@ -1,0 +1,310 @@
+{
+  "fixture_version": "preview.fixtures.v1",
+  "contract": "preview_contract_v1",
+  "cases": [
+    {
+      "files": [
+        "ready-interactive.json",
+        "viewer.html",
+        "assets/fallback.png"
+      ],
+      "expected": {
+        "artifact_status": "ready",
+        "kind": "interactive_html",
+        "presentation": "interactiveReady",
+        "fallback_asset_id": "asset_fixture_fallback"
+      },
+      "scenario_id": "ready-interactive",
+      "file_digests": {
+        "ready-interactive.json": "sha256:9b6d324bc374653627ca75a46684d59a2d97cb3dccfc358566d62a78a7bface7",
+        "viewer.html": "sha256:52e183244f37b43eb8f29cd4e8811314ecb50083887bd7ea28804a2f942c9f88",
+        "assets/fallback.png": "sha256:5f8f80a22537ae2a13d82094cdcfc8166cffaa01be0b6f1a9586623467070ee0"
+      }
+    },
+    {
+      "files": [
+        "static-image.json",
+        "assets/fallback.png"
+      ],
+      "expected": {
+        "artifact_status": "ready",
+        "kind": "static_image",
+        "presentation": "staticFallback"
+      },
+      "scenario_id": "static-image",
+      "file_digests": {
+        "static-image.json": "sha256:31bcee88aaef79948dd14ea54b688d28726c8a89d43947f24f2c7afdce5f9f29",
+        "assets/fallback.png": "sha256:5f8f80a22537ae2a13d82094cdcfc8166cffaa01be0b6f1a9586623467070ee0"
+      }
+    },
+    {
+      "files": [
+        "pending.json"
+      ],
+      "expected": {
+        "artifact_status": "pending",
+        "kind": "interactive_html",
+        "presentation": "loading"
+      },
+      "scenario_id": "pending",
+      "file_digests": {
+        "pending.json": "sha256:09db033829ee8c27b207d41685ff58c6681d9f82394d7afb66637b2cc45a1ff0"
+      }
+    },
+    {
+      "files": [
+        "unavailable.json"
+      ],
+      "expected": {
+        "artifact_status": "unavailable",
+        "presentation": "unavailable",
+        "error_code": "preview_store_unavailable"
+      },
+      "scenario_id": "unavailable",
+      "file_digests": {
+        "unavailable.json": "sha256:2b66b5a8263ef3dceb03757237d6cc8ea0f7cb421662677c26d9d19e66ccff66"
+      }
+    },
+    {
+      "files": [
+        "failed-with-fallback.json"
+      ],
+      "expected": {
+        "artifact_status": "failed",
+        "presentation": "staticFallback",
+        "error_code": "preview_store_unavailable",
+        "fallback_asset_id": "asset_fixture_fallback"
+      },
+      "scenario_id": "failed-with-fallback",
+      "file_digests": {
+        "failed-with-fallback.json": "sha256:5931c20da2b146774162a22c009adc490807b1d3a6a93752a39d8a6247c48740"
+      }
+    },
+    {
+      "files": [
+        "expired-replay.json"
+      ],
+      "evaluation_time": "2026-11-09T00:00:00Z",
+      "expected": {
+        "artifact_status": "ready",
+        "presentation": "expired",
+        "evaluation_time": "2026-11-09T00:00:00Z"
+      },
+      "scenario_id": "expiry-derived",
+      "file_digests": {
+        "expired-replay.json": "sha256:6032cf4d5810337573c87e5167fda80e8f8aaf5e384393489f8d718176763fc0"
+      }
+    },
+    {
+      "files": [
+        "event-revision-1.json",
+        "event-revision-2.json",
+        "replay-frames.json"
+      ],
+      "expected": {
+        "final_artifact_id": "preview_fixture_interactive",
+        "final_revision": 2,
+        "final_status": "failed",
+        "block_count": 1
+      },
+      "scenario_id": "revision-replacement",
+      "file_digests": {
+        "event-revision-1.json": "sha256:8b331a514ba6fb1021b3b266156beded4ef4355534d6686142d20970b1a186f4",
+        "event-revision-2.json": "sha256:7f0da9b465089c6a77ea9c9c148e2052ff7b405e8b8c29d3413ea86e02e821da",
+        "replay-frames.json": "sha256:250eb7ac3e098cf192e95df578098cc669494452c4f52b06c2fcdb13458dc413"
+      }
+    },
+    {
+      "files": [
+        "event-revision-1.json",
+        "event-duplicate.json"
+      ],
+      "expected": {
+        "final_artifact_id": "preview_fixture_interactive",
+        "final_revision": 1,
+        "block_count": 1
+      },
+      "scenario_id": "duplicate-revision",
+      "file_digests": {
+        "event-revision-1.json": "sha256:8b331a514ba6fb1021b3b266156beded4ef4355534d6686142d20970b1a186f4",
+        "event-duplicate.json": "sha256:22561dc8fc115daf18cc55cd0ee8bac02693dce13fd3120c1d30ca119050304f"
+      }
+    },
+    {
+      "files": [
+        "event-revision-1.json",
+        "event-revision-conflict.json"
+      ],
+      "expected": {
+        "error_code": "preview_revision_conflict",
+        "preserved_artifact_id": "preview_fixture_interactive",
+        "preserved_revision": 1
+      },
+      "scenario_id": "revision-conflict",
+      "file_digests": {
+        "event-revision-1.json": "sha256:8b331a514ba6fb1021b3b266156beded4ef4355534d6686142d20970b1a186f4",
+        "event-revision-conflict.json": "sha256:0557233145fa57ca2a6351338bec7701446ad4b22d3b934e79292367ee678494"
+      }
+    },
+    {
+      "files": [
+        "capability-matrix.json"
+      ],
+      "expected": {
+        "presentation_variants": [
+          "interactive",
+          "static",
+          "unavailable"
+        ],
+        "invalid_advertisement": "interactive_without_static"
+      },
+      "scenario_id": "capability-matrix",
+      "file_digests": {
+        "capability-matrix.json": "sha256:3087396544af5d273a2f3cb3968fae68d9324d4982e73257468bf6adba548fdd"
+      }
+    },
+    {
+      "files": [
+        "producer-wire.json",
+        "tool-bindings.json",
+        "assets/fallback.png"
+      ],
+      "expected": {
+        "artifact_status": "ready",
+        "kind": "interactive_html",
+        "same_shape": true,
+        "fallback_asset_id": "asset_fixture_fallback"
+      },
+      "scenario_id": "producer-shape",
+      "file_digests": {
+        "producer-wire.json": "sha256:d15552733db48b3e147fd70e37953c0cf0d377b2a4d578213810fba110ccf67d",
+        "tool-bindings.json": "sha256:62f9fdde3f6836be0cbedcf7cc6167349907f7773e7c99af701001d3530f183e",
+        "assets/fallback.png": "sha256:5f8f80a22537ae2a13d82094cdcfc8166cffaa01be0b6f1a9586623467070ee0"
+      }
+    },
+    {
+      "files": [
+        "negative/navigation-attempt.html",
+        "negative/network-attempt.html",
+        "negative/bridge-attempt.html",
+        "negative/asset-path-rejection.json",
+        "negative/digest-mismatch.json",
+        "negative/invalid-utf8.bin",
+        "negative/viewer-error-response.json",
+        "negative/forged-producer-identity.json"
+      ],
+      "expected": {
+        "negative/navigation-attempt.html": {
+          "code": "preview_security_violation",
+          "presentation": "unavailable"
+        },
+        "negative/network-attempt.html": {
+          "code": "preview_security_violation",
+          "presentation": "unavailable"
+        },
+        "negative/bridge-attempt.html": {
+          "code": "preview_security_violation",
+          "presentation": "unavailable"
+        },
+        "negative/asset-path-rejection.json": {
+          "code": "preview_security_violation",
+          "presentation": "unavailable"
+        },
+        "negative/digest-mismatch.json": {
+          "code": "preview_digest_mismatch",
+          "presentation": "staticFallback"
+        },
+        "negative/invalid-utf8.bin": {
+          "code": "preview_invalid_artifact",
+          "presentation": "unavailable"
+        },
+        "negative/viewer-error-response.json": {
+          "code": "preview_digest_mismatch",
+          "presentation": "staticFallback"
+        },
+        "negative/forged-producer-identity.json": {
+          "code": "preview_invalid_artifact",
+          "presentation": "unavailable",
+          "artifact_created": false
+        }
+      },
+      "scenario_id": "negative-security",
+      "file_digests": {
+        "negative/navigation-attempt.html": "sha256:071580ef9252d923e2fad8a2747509321bf0024a0c4c8046a51b118a2266cd73",
+        "negative/network-attempt.html": "sha256:b82491ad60e87e2950f568bbeb9d5e6c0a7b73cdfb12cd9458e344b09b4e1219",
+        "negative/bridge-attempt.html": "sha256:57ebbb31ca40b0e23c3ff7a07d29a70b765a7f0b554bf910a1a8a39084c4b63a",
+        "negative/asset-path-rejection.json": "sha256:71903770c7699efe8f3cb401664b01fce3d3aff362bd6c2d790b45171a0a8da8",
+        "negative/digest-mismatch.json": "sha256:f478faae083138ad4de9edd3fcd5ff5c2e45eed82479ca392ebcc607691d7222",
+        "negative/invalid-utf8.bin": "sha256:bab56b3b42a4b32a8b84f7f87730700058455d170b0549bad98d5368ea309535",
+        "negative/viewer-error-response.json": "sha256:cd9feebed095d8b7b1719f95a01b0a3b4fcfde3975f9911cc58e1db62e825e0f",
+        "negative/forged-producer-identity.json": "sha256:b795987941302eead7a02ade3f2711b80bf7e5a71eae5d13ab36c12280d06838"
+      }
+    },
+    {
+      "files": [
+        "negative/size-cases.json",
+        "negative/viewer-2MiB.html",
+        "negative/viewer-2MiB-plus-1.html"
+      ],
+      "expected": {
+        "accepted_at": 2097152,
+        "rejected_above": 2097152,
+        "accepted_file": "negative/viewer-2MiB.html",
+        "rejected_file": "negative/viewer-2MiB-plus-1.html"
+      },
+      "scenario_id": "viewer-size-boundary",
+      "file_digests": {
+        "negative/size-cases.json": "sha256:842a00568fbb07c2b0e9bb87625573bbeeb002ce5969894566f3322979ffa698",
+        "negative/viewer-2MiB.html": "sha256:b6e0f2fbceef72dd3e39de6016a6d76aeace7d96561c9535857238e72c6a1321",
+        "negative/viewer-2MiB-plus-1.html": "sha256:85794d717586ec183ffd7f2fe124c119895d1c626aa38ff3d0255aa842726274"
+      }
+    },
+    {
+      "scenario_id": "transport-neutral-resolver",
+      "files": [
+        "resolver-contract.json",
+        "viewer.html",
+        "assets/fallback.png"
+      ],
+      "file_digests": {
+        "resolver-contract.json": "sha256:4ea3b03de707e3250897b96eeca2d3c89c2ce53377ef7c35f51f2ef996fab51e",
+        "viewer.html": "sha256:52e183244f37b43eb8f29cd4e8811314ecb50083887bd7ea28804a2f942c9f88",
+        "assets/fallback.png": "sha256:5f8f80a22537ae2a13d82094cdcfc8166cffaa01be0b6f1a9586623467070ee0"
+      },
+      "expected": {
+        "viewer_resolution": "same_bytes_as_http",
+        "asset_resolution": "same_bytes_as_http"
+      }
+    },
+    {
+      "scenario_id": "failed-without-fallback",
+      "files": [
+        "failed-without-fallback.json"
+      ],
+      "file_digests": {
+        "failed-without-fallback.json": "sha256:f3f04ed01566805aadbeafd369896c0627d0afba62d3d5ca694e560ef5168d11"
+      },
+      "expected": {
+        "artifact_status": "failed",
+        "presentation": "unavailable",
+        "error_code": "preview_invalid_artifact"
+      }
+    },
+    {
+      "scenario_id": "unavailable-with-fallback",
+      "files": [
+        "unavailable-with-fallback.json",
+        "assets/fallback.png"
+      ],
+      "file_digests": {
+        "unavailable-with-fallback.json": "sha256:59a8aef0dfe82bb593bc087ada8a68853af8dedd5849370bcf7de1dfe84aba38",
+        "assets/fallback.png": "sha256:5f8f80a22537ae2a13d82094cdcfc8166cffaa01be0b6f1a9586623467070ee0"
+      },
+      "expected": {
+        "artifact_status": "unavailable",
+        "presentation": "staticFallback",
+        "fallback_asset_id": "asset_fixture_fallback"
+      }
+    }
+  ]
+}

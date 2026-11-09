@@ -1,0 +1,36 @@
+{
+  "schema_version": "preview.artifact.v1",
+  "artifact_id": "preview_fixture_pending",
+  "revision": 1,
+  "status": "pending",
+  "kind": "interactive_html",
+  "title": "DreamLog Duo Home",
+  "summary": "Preview generation is pending.",
+  "capability": "ui-adaptation",
+  "session_id": "session_fixture",
+  "turn_id": "turn_fixture",
+  "call_id": "call_fixture",
+  "created_at": "2026-11-09T12:00:00Z",
+  "updated_at": "2026-11-09T12:00:00Z",
+  "expires_at": null,
+  "presentation": {
+    "placement": "conversation_inline",
+    "initial_state": "collapsed"
+  },
+  "assets": [],
+  "fallback": null,
+  "security": {
+    "profile": "preview.security.v1",
+    "javascript": "isolated_only",
+    "network": "deny",
+    "navigation": "deny",
+    "persistent_data": "deny",
+    "actions": "none"
+  },
+  "error": null,
+  "metadata": {
+    "fixture": "pending"
+  },
+  "producer_id": "ui_preview",
+  "revision_sha256": "sha256:6361fff69fbee2bf85343c4ebc689e243fcfef04f6ef087215aeb916c6d28240"
+}

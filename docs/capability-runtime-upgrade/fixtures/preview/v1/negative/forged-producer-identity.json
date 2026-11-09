@@ -1,0 +1,16 @@
+{
+  "case": "forged-producer-identity",
+  "preview": {
+    "artifact_key": "ui-adaptation:forged",
+    "kind": "interactive_html",
+    "title": "Forged preview",
+    "viewer_html": "<div>Forged</div>",
+    "producer_id": "other-tool",
+    "capability": "other-capability"
+  },
+  "expected": {
+    "code": "preview_invalid_artifact",
+    "presentation": "unavailable",
+    "artifact_created": false
+  }
+}

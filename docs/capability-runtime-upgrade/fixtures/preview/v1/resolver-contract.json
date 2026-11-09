@@ -1,0 +1,19 @@
+{
+  "viewer": {
+    "session_id": "session_fixture",
+    "artifact_id": "preview_fixture_interactive",
+    "revision": 1,
+    "expected_mime_type": "text/html; charset=utf-8",
+    "expected_size_bytes": 1034,
+    "expected_sha256": "sha256:52e183244f37b43eb8f29cd4e8811314ecb50083887bd7ea28804a2f942c9f88"
+  },
+  "asset": {
+    "session_id": "session_fixture",
+    "artifact_id": "preview_fixture_interactive",
+    "revision": 1,
+    "asset_id": "asset_fixture_fallback",
+    "expected_mime_type": "image/png",
+    "expected_size_bytes": 6213,
+    "expected_sha256": "sha256:5f8f80a22537ae2a13d82094cdcfc8166cffaa01be0b6f1a9586623467070ee0"
+  }
+}

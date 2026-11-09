@@ -1,0 +1,44 @@
+{
+  "cases": [
+    {
+      "runtime": ["preview_contract_v1", "preview_interactive_html_v1", "preview_static_asset_v1", "preview_replay_v1"],
+      "client": ["preview_contract_v1", "preview_interactive_html_v1", "preview_static_asset_v1", "preview_replay_v1"],
+      "expected": "interactive"
+    },
+    {
+      "runtime": ["preview_contract_v1", "preview_static_asset_v1"],
+      "client": ["preview_contract_v1", "preview_static_asset_v1"],
+      "expected": "static"
+    },
+    {
+      "runtime": ["preview_contract_v1", "preview_interactive_html_v1", "preview_static_asset_v1"],
+      "client": ["preview_contract_v1", "preview_static_asset_v1"],
+      "expected": "static"
+    },
+    {
+      "runtime": [],
+      "client": ["preview_contract_v1", "preview_interactive_html_v1"],
+      "expected": "unavailable"
+    },
+    {
+      "runtime": ["preview_contract_v1", "preview_interactive_html_v1"],
+      "client": ["preview_contract_v1", "preview_static_asset_v1"],
+      "expected": "degraded_invalid_runtime_advertisement_static"
+    },
+    {
+      "runtime": ["preview_contract_v1", "preview_interactive_html_v1", "preview_static_asset_v1", "preview_replay_v1"],
+      "client": ["preview_contract_v1", "preview_interactive_html_v1", "preview_static_asset_v1"],
+      "expected": "live_interactive_history_static"
+    },
+    {
+      "runtime": ["preview_contract_v1", "preview_interactive_html_v1", "preview_static_asset_v1", "preview_replay_v1", "preview_unknown_v1"],
+      "client": ["preview_contract_v1", "preview_interactive_html_v1", "preview_static_asset_v1", "preview_replay_v1", "preview_unknown_v1"],
+      "expected": "interactive_unknown_ignored"
+    },
+    {
+      "runtime": [],
+      "client": [],
+      "expected": "unavailable_contract_absent"
+    }
+  ]
+}

@@ -1,0 +1,21 @@
+{
+  "register_tools": {
+    "type": "register_tools",
+    "tools": [
+      {
+        "name": "ios_preview_capture",
+        "description": "Capture a native preview.",
+        "input_schema": {"type": "object"},
+        "model_visibility": "hidden",
+        "executor": "client"
+      },
+      {
+        "name": "ui_preview",
+        "description": "Produce a preview artifact.",
+        "input_schema": {"type": "object"},
+        "model_visibility": "direct",
+        "executor": "flex"
+      }
+    ]
+  }
+}

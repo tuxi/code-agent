@@ -1,0 +1,11 @@
+{
+  "case": "asset-path-rejection",
+  "input": {
+    "absolute_path": "/Users/example/secret.txt",
+    "materialized_path": "../../outside.png"
+  },
+  "expected": {
+    "code": "preview_security_violation",
+    "presentation": "unavailable"
+  }
+}

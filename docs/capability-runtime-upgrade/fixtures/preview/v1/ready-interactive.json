@@ -1,0 +1,59 @@
+{
+  "schema_version": "preview.artifact.v1",
+  "artifact_id": "preview_fixture_interactive",
+  "revision": 1,
+  "status": "ready",
+  "kind": "interactive_html",
+  "title": "DreamLog Duo Home",
+  "summary": "Outer screen, inner portrait, and inner landscape previews.",
+  "capability": "ui-adaptation",
+  "session_id": "session_fixture",
+  "turn_id": "turn_fixture",
+  "call_id": "call_fixture",
+  "created_at": "2026-11-09T12:00:00Z",
+  "updated_at": "2026-11-09T12:00:00Z",
+  "expires_at": null,
+  "presentation": {
+    "placement": "conversation_inline",
+    "preferred_aspect_ratio": 1.78,
+    "min_height": 420,
+    "initial_state": "collapsed"
+  },
+  "viewer": {
+    "url": "/v1/conversations/session_fixture/previews/preview_fixture_interactive/revisions/1/viewer",
+    "mime_type": "text/html; charset=utf-8",
+    "size_bytes": 1034,
+    "sha256": "sha256:52e183244f37b43eb8f29cd4e8811314ecb50083887bd7ea28804a2f942c9f88"
+  },
+  "assets": [
+    {
+      "asset_id": "asset_fixture_fallback",
+      "role": "fallback",
+      "mime_type": "image/png",
+      "size_bytes": 6213,
+      "sha256": "sha256:5f8f80a22537ae2a13d82094cdcfc8166cffaa01be0b6f1a9586623467070ee0",
+      "content_url": "/v1/conversations/session_fixture/previews/preview_fixture_interactive/revisions/1/assets/asset_fixture_fallback/content",
+      "width": 1200,
+      "height": 800,
+      "alt": "DreamLog Duo preview fallback"
+    }
+  ],
+  "fallback": {
+    "asset_id": "asset_fixture_fallback",
+    "text": "Interactive preview unavailable. Showing static evidence."
+  },
+  "security": {
+    "profile": "preview.security.v1",
+    "javascript": "isolated_only",
+    "network": "deny",
+    "navigation": "deny",
+    "persistent_data": "deny",
+    "actions": "none"
+  },
+  "error": null,
+  "metadata": {
+    "fixture": "ready-interactive"
+  },
+  "producer_id": "ui_preview",
+  "revision_sha256": "sha256:2e46c756788d108f9aded4de7a9fc32594e50ed866a72ac9f3f7b5464ed0a7d4"
+}

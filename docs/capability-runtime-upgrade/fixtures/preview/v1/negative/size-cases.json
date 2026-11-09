@@ -1,0 +1,16 @@
+{
+  "cases": [
+    {
+      "bytes": 2097152,
+      "file": "viewer-2MiB.html",
+      "sha256": "sha256:b6e0f2fbceef72dd3e39de6016a6d76aeace7d96561c9535857238e72c6a1321",
+      "expected": "accepted"
+    },
+    {
+      "bytes": 2097153,
+      "file": "viewer-2MiB-plus-1.html",
+      "sha256": "sha256:85794d717586ec183ffd7f2fe124c119895d1c626aa38ff3d0255aa842726274",
+      "expected": "preview_viewer_too_large"
+    }
+  ]
+}

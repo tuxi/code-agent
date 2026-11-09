@@ -1,0 +1,74 @@
+{
+  "server_tool": {
+    "previews": [
+      {
+        "artifact_key": "ui-adaptation:dreamlog-duo-home",
+        "kind": "interactive_html",
+        "title": "DreamLog Duo Home",
+        "viewer_html": "<div>Preview</div>",
+        "assets": [
+          {
+            "asset_id": "asset_fixture_fallback",
+            "role": "fallback",
+            "mime_type": "image/png",
+            "alt": "DreamLog Duo preview fallback",
+            "width": 1200,
+            "height": 800
+          }
+        ],
+        "fallback": {
+          "asset_id": "asset_fixture_fallback",
+          "text": "Static evidence"
+        }
+      }
+    ]
+  },
+  "hidden_client_tool": {
+    "previews": [
+      {
+        "artifact_key": "ui-adaptation:dreamlog-duo-home",
+        "kind": "interactive_html",
+        "title": "DreamLog Duo Home",
+        "viewer_html": "<div>Preview</div>",
+        "assets": [
+          {
+            "asset_id": "asset_fixture_fallback",
+            "role": "fallback",
+            "mime_type": "image/png",
+            "alt": "DreamLog Duo preview fallback",
+            "width": 1200,
+            "height": 800
+          }
+        ],
+        "fallback": {
+          "asset_id": "asset_fixture_fallback",
+          "text": "Static evidence"
+        }
+      }
+    ]
+  },
+  "direct_client_tool": {
+    "previews": [
+      {
+        "artifact_key": "ui-adaptation:dreamlog-duo-home",
+        "kind": "interactive_html",
+        "title": "DreamLog Duo Home",
+        "viewer_html": "<div>Preview</div>",
+        "assets": [
+          {
+            "asset_id": "asset_fixture_fallback",
+            "role": "fallback",
+            "mime_type": "image/png",
+            "alt": "DreamLog Duo preview fallback",
+            "width": 1200,
+            "height": 800
+          }
+        ],
+        "fallback": {
+          "asset_id": "asset_fixture_fallback",
+          "text": "Static evidence"
+        }
+      }
+    ]
+  }
+}
