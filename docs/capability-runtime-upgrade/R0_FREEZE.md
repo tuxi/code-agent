@@ -40,6 +40,12 @@ Contract version: v1.6
 
 ## Git Baseline
 
-The documentation and fixture baseline is not committed yet. A commit must be
-created before R1/A1 implementation begins; committing requires explicit user
-authorization.
+The documentation and fixture baseline is committed in:
+
+```text
+84d9eac733205cc53686f9c6914216732010574d
+docs: freeze capability runtime R0 baseline
+```
+
+The unrelated existing modification to `internal/app/registry.go` is intentionally
+excluded from this baseline.
