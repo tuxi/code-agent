@@ -455,6 +455,13 @@ type Tool interface {
 	Execute(ctx context.Context, ec ExecutionContext, input json.RawMessage) (ToolResult, error)
 }
 
+// BindingProvider lets a tool declare runtime-owned exposure metadata, including
+// the capability that authoritatively produced it. Registry.Register applies
+// this binding instead of its default direct/server binding.
+type BindingProvider interface {
+	ToolBinding() Binding
+}
+
 // OutputSchemaProvider is an optional interface for tools that expose a
 // structured output schema. Flux tool adapters use it to populate per-tool
 // OutputSchema instead of the generic {content, output, assets} fallback.

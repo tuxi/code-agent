@@ -73,7 +73,10 @@ func NewRegistry() *Registry {
 // direct/server; client proxies keep their strict-client execution contract.
 func (r *Registry) Register(tool Tool) error {
 	binding := Binding{Name: toolName(tool), ModelVisibility: VisibilityDirect, Executor: ExecutorServer}
-	if tool != nil {
+	if provider, ok := tool.(BindingProvider); ok {
+		binding = provider.ToolBinding()
+		binding.Name = toolName(tool)
+	} else if tool != nil {
 		if mode, ok := tool.(ClientTool); ok {
 			switch mode.ExecutionMode() {
 			case ExecStrictClient:
