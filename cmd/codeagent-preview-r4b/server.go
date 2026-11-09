@@ -125,8 +125,26 @@ func Start(ctx context.Context, opts ServerOptions) (*Server, Readiness, error) 
 		}
 		sessionID = "session_r4b_" + suffix
 	}
-	mc := settings.ModelConfig{Name: "r4b-scripted", Provider: "responses", Model: "r4b-scripted", ContextWindow: 128000}
-	cfg := settings.Settings{Agent: settings.AgentConfig{MaxSteps: 4, MaxParallelTools: 1}}
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		_ = store.Close()
+		agentruntime.SetStoreBaseDir(oldState)
+		return nil, Readiness{}, err
+	}
+	baseURL := "http://" + listener.Addr().String()
+	mc := settings.ModelConfig{
+		Name: "r4b-scripted", Provider: "responses", Model: "r4b-scripted",
+		BaseURL: baseURL + "/v1", ContextWindow: 128000,
+		Catalog: settings.ModelCatalogMetadata{
+			ConnectionID: "r4b-scripted", ProviderID: "r4b-scripted",
+			ConnectionDisplayName: "r4b-scripted", DisplayName: "r4b-scripted",
+		},
+	}
+	cfg := settings.Settings{
+		DefaultModel: "r4b-scripted",
+		Models:       map[string]settings.ModelConfig{"r4b-scripted": mc},
+		Agent:        settings.AgentConfig{MaxSteps: 4, MaxParallelTools: 1},
+	}
 	repo := conversation.NewSQLiteRepository(store, mc.ContextWindow, cfg.CompactThreshold(mc), mc.Model, "", func(string) string { return "" })
 	type idCreator interface {
 		CreateWithID(context.Context, string, string, string) (*session.Session, error)
@@ -138,11 +156,13 @@ func Start(ctx context.Context, opts ServerOptions) (*Server, Readiness, error) 
 		sess, err = repo.Create(ctx, workspace, "")
 	}
 	if err != nil {
+		_ = listener.Close()
 		_ = store.Close()
 		agentruntime.SetStoreBaseDir(oldState)
 		return nil, Readiness{}, err
 	}
 	if sess.ID != sessionID {
+		_ = listener.Close()
 		_ = store.Close()
 		agentruntime.SetStoreBaseDir(oldState)
 		return nil, Readiness{}, fmt.Errorf("session ID creation mismatch: got %q want %q", sess.ID, sessionID)
@@ -153,11 +173,13 @@ func Start(ctx context.Context, opts ServerOptions) (*Server, Readiness, error) 
 	eventStore := &conversation.StoreEventAdapter{Store: store}
 	preTrigger, err := eventStore.Replay(ctx, sessionID)
 	if err != nil {
+		_ = listener.Close()
 		_ = store.Close()
 		agentruntime.SetStoreBaseDir(oldState)
 		return nil, Readiness{}, err
 	}
 	if len(preTrigger) != 0 {
+		_ = listener.Close()
 		_ = store.Close()
 		agentruntime.SetStoreBaseDir(oldState)
 		return nil, Readiness{}, fmt.Errorf("pre-created session already has %d events", len(preTrigger))
@@ -171,17 +193,7 @@ func Start(ctx context.Context, opts ServerOptions) (*Server, Readiness, error) 
 	executor := conversation.NewTurnExecutor(repo, eventStore, active, subs, builder)
 	executor.SetTurnScheduler(conversation.NewTurnScheduler(1))
 
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		executor.Shutdown()
-		_ = store.Close()
-		agentruntime.SetStoreBaseDir(oldState)
-		return nil, Readiness{}, err
-	}
-	baseURL := "http://" + listener.Addr().String()
-	models := server.BuildRuntimeModelCatalog(settings.Settings{}, nil)
-	models.DefaultModel = "r4b-scripted"
-	models.DefaultRuntimeAlias = "r4b-scripted"
+	models := server.BuildRuntimeModelCatalog(cfg, nil)
 	runtimeInfo := server.RuntimeInfo{
 		Schema: "runtime-info/v1", ServerID: "runtime_r4b_" + strings.TrimPrefix(sessionID, "session_r4b_"),
 		DisplayName: "CodeAgent R4b Live Preview Runtime", Product: buildinfo.Product,
@@ -193,7 +205,7 @@ func Start(ctx context.Context, opts ServerOptions) (*Server, Readiness, error) 
 		ServerName:    buildinfo.ServerName(),
 		RuntimeInfo:   runtimeInfo,
 		RuntimeModels: models,
-		ServerAuth:    server.ServerAuth{Enabled: true, Token: token},
+		ServerAuth:    server.ServerAuth{Enabled: true, Token: token, PublicHealthz: true},
 		Capabilities: []string{
 			"streaming", "thinking", "reasoning_streaming", "tool_streaming",
 			"session_resume", "client_tool_execution",

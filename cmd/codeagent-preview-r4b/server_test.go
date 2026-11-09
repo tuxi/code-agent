@@ -182,3 +182,62 @@ func getAuthorized(t *testing.T, url, token string, headers http.Header) ([]byte
 	}
 	return body, resp
 }
+
+func TestR4BPublicHealthAndModelCatalog(t *testing.T) {
+	srv, ready, err := Start(context.Background(), ServerOptions{
+		Workspace: t.TempDir(), StateDir: t.TempDir(), TurnPrompt: DefaultTurnPrompt,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer srv.Close()
+
+	health, healthResp := getAuthorized(t, ready.BaseURL+"/healthz", "", nil)
+	if healthResp.StatusCode != http.StatusOK || string(health) != "ok" {
+		t.Fatalf("health = %d %q", healthResp.StatusCode, health)
+	}
+
+	body, modelsResp := getAuthorized(t, ready.BaseURL+"/v1/runtime/models", ready.BearerToken, nil)
+	if modelsResp.StatusCode != http.StatusOK {
+		t.Fatalf("models status = %d %s", modelsResp.StatusCode, body)
+	}
+	var envelope struct {
+		Data struct {
+			DefaultModel        string `json:"default_model"`
+			DefaultRuntimeAlias string `json:"default_runtime_alias"`
+			Connections         []struct {
+				ID          string `json:"id"`
+				ProviderID  string `json:"provider_id"`
+				DisplayName string `json:"display_name"`
+				Models      []struct {
+					ID           string `json:"id"`
+					RuntimeAlias string `json:"runtime_alias"`
+					Available    bool   `json:"available"`
+				} `json:"models"`
+			} `json:"connections"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if len(envelope.Data.Connections) == 0 {
+		t.Fatal("runtime models returned no connections")
+	}
+	if envelope.Data.DefaultRuntimeAlias != "r4b-scripted" || envelope.Data.DefaultModel != "r4b-scripted/r4b-scripted" {
+		t.Fatalf("default model = %q alias = %q", envelope.Data.DefaultModel, envelope.Data.DefaultRuntimeAlias)
+	}
+	found := false
+	for _, connection := range envelope.Data.Connections {
+		if connection.ID != "r4b-scripted" || connection.ProviderID != "r4b-scripted" || connection.DisplayName != "r4b-scripted" {
+			continue
+		}
+		for _, model := range connection.Models {
+			if model.RuntimeAlias == "r4b-scripted" && model.ID == "r4b-scripted/r4b-scripted" && model.Available {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("r4b-scripted available model not found: %s", body)
+	}
+}

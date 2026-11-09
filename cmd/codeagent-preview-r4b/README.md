@@ -47,6 +47,14 @@ Every HTTP and WebSocket request requires:
 Authorization: Bearer <bearer_token>
 ```
 
+The sole exception is `GET /healthz`, which is public for
+`RuntimeHTTPClient.healthCheck()` and returns exactly `ok`.
+
+`GET /v1/runtime/models` is authenticated and reports a complete
+`r4b-scripted` connection/model with `available=true`, valid loopback BaseURL,
+`default_model=r4b-scripted/r4b-scripted`, and
+`default_runtime_alias=r4b-scripted`.
+
 ## Trigger sequence
 
 1. Read the first stdout line as readiness JSON.
@@ -90,6 +98,6 @@ server to inject an event.
 go test ./cmd/codeagent-preview-r4b -count=1
 ```
 
-The integration test exercises the production HTTP/WebSocket server with bearer
-auth, a normal turn, live `preview_artifact`, replay, viewer, asset, digest, and
-PNG decoding.
+The integration tests exercise the production HTTP/WebSocket server with
+bearer auth, public health, the complete model catalog, a normal turn, live
+`preview_artifact`, replay, viewer, asset, digest, and PNG decoding.
