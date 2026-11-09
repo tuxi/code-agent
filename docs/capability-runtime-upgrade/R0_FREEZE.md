@@ -45,7 +45,14 @@ The documentation and fixture baseline is committed in:
 ```text
 84d9eac733205cc53686f9c6914216732010574d
 docs: freeze capability runtime R0 baseline
+
+d5b14109c6d0df8238603a4187bff30aac332da5
+docs: record capability runtime R0 baseline
+
+7731fc7
+fix: include frozen preview fallback fixture
 ```
 
-The unrelated existing modification to `internal/app/registry.go` is intentionally
-excluded from this baseline.
+The final repair adds the previously ignored `assets/fallback.png` without
+changing the contract or manifest digests. The unrelated existing modification
+to `internal/app/registry.go` is intentionally excluded from this baseline.
