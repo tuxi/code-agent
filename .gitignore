@@ -73,3 +73,7 @@ internal/tools/project_graph/indexstore-helper/.swiftpm/
 /.workbuddy
 /.build
 /.codex
+
+# Frozen capability-runtime preview fixtures are versioned test assets.
+!docs/capability-runtime-upgrade/fixtures/preview/v1/assets/
+!docs/capability-runtime-upgrade/fixtures/preview/v1/assets/**
