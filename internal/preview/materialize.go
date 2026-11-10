@@ -3,6 +3,7 @@ package preview
 import (
 	"fmt"
 	"html"
+	"regexp"
 	"strings"
 	"unicode/utf8"
 )
@@ -60,13 +61,34 @@ func ValidateViewerBytes(data []byte, wantSize int64, wantDigest string) *Error 
 	return nil
 }
 
+var windowOpenPattern = regexp.MustCompile(`(?:window|top|parent)\s*\.\s*open\s*\(`)
+
+func containsHTMLTag(fragment, tag string) bool {
+	needle := "<" + tag
+	for offset := 0; ; {
+		index := strings.Index(fragment[offset:], needle)
+		if index < 0 {
+			return false
+		}
+		start := offset + index
+		end := start + len(needle)
+		if end >= len(fragment) {
+			return true
+		}
+		switch fragment[end] {
+		case ' ', '\t', '\r', '\n', '>', '/':
+			return true
+		}
+		offset = end
+	}
+}
+
 func rejectUnsafeViewerFragment(fragment string) *Error {
 	lower := strings.ToLower(fragment)
 	blocked := []string{
-		"<!doctype", "<html", "<head", "<body", "<iframe", "<object", "<embed", "<form", "<base",
-		"href=", "http://", "https://", "file://", "ftp://", "ws://", "wss://",
+		"http://", "https://", "file://", "ftp://", "ws://", "wss://",
 		"window.location", "document.location", "location.href", "location.assign", "location.replace",
-		"window.open", "top.location", "parent.location", "window.parent", "window.top",
+		"top.location", "parent.location", "window.parent", "window.top",
 		"fetch(", "xmlhttprequest", "websocket(", "eventsource(", "sendbeacon",
 		"window.webkit", "messagehandlers", "postmessage",
 	}
@@ -75,17 +97,27 @@ func rejectUnsafeViewerFragment(fragment string) *Error {
 			return NewError(CodeSecurityViolation, "Preview viewer contains a forbidden navigation, network, or bridge primitive.", false)
 		}
 	}
-	for offset := 0; ; {
-		index := strings.Index(lower[offset:], "src=")
-		if index < 0 {
-			break
+	for _, tag := range []string{"html", "head", "body", "iframe", "object", "embed", "form", "base"} {
+		if containsHTMLTag(lower, tag) {
+			return NewError(CodeSecurityViolation, "Preview viewer contains a forbidden document or embedded document tag.", false)
 		}
-		start := offset + index + len("src=")
-		rest := strings.TrimSpace(lower[start:])
-		if !strings.HasPrefix(rest, `"data:`) && !strings.HasPrefix(rest, `'data:`) && !strings.HasPrefix(rest, "data:") {
-			return NewError(CodeSecurityViolation, "Preview viewer may only load self-contained data resources.", false)
+	}
+	if windowOpenPattern.MatchString(lower) {
+		return NewError(CodeSecurityViolation, "Preview viewer contains a forbidden navigation, network, or bridge primitive.", false)
+	}
+	for _, attribute := range []string{"src", "href"} {
+		for offset := 0; ; {
+			index := strings.Index(lower[offset:], attribute+"=")
+			if index < 0 {
+				break
+			}
+			start := offset + index + len(attribute) + 1
+			rest := strings.TrimSpace(lower[start:])
+			if !strings.HasPrefix(rest, `"data:`) && !strings.HasPrefix(rest, `'data:`) && !strings.HasPrefix(rest, "data:") {
+				return NewError(CodeSecurityViolation, "Preview viewer may only load self-contained data resources.", false)
+			}
+			offset = start
 		}
-		offset = start
 	}
 	return nil
 }

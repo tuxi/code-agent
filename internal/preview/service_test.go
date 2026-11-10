@@ -289,11 +289,14 @@ func TestDuplicateArtifactKeysFailThatToolResult(t *testing.T) {
 }
 
 func TestMaterializedViewerAllowsDataImagesAndRejectsNetworkSources(t *testing.T) {
-	if _, err := MaterializeViewer("ok", `<img src="data:image/png;base64,iVBORw0KGgo=">`); err != nil {
-		t.Fatalf("data image rejected: %+v", err)
+	if _, err := MaterializeViewer("ok", `<img src="data:image/png;base64,iVBORw0KGgo="><link rel="icon" href="data:image/svg+xml;base64,PHN2Zz4=">`); err != nil {
+		t.Fatalf("self-contained data resources rejected: %+v", err)
 	}
 	if _, err := MaterializeViewer("bad", `<img src="https://example.com/a.png">`); err == nil || err.Code != CodeSecurityViolation {
 		t.Fatalf("network image error = %+v", err)
+	}
+	if _, err := MaterializeViewer("bad", `<a href="https://example.com">go</a>`); err == nil || err.Code != CodeSecurityViolation {
+		t.Fatalf("network href error = %+v", err)
 	}
 }
 
@@ -347,5 +350,15 @@ func TestConcurrentReadySnapshotsAllocateDistinctRevisions(t *testing.T) {
 	}
 	if !revisions[1] || !revisions[2] {
 		t.Fatalf("concurrent revisions = %v", revisions)
+	}
+}
+
+func TestMaterializedViewerAllowsHeaderAndOpenAIWidgetStateAPI(t *testing.T) {
+	fragment := `<header><strong>DreamLog</strong></header><script>const saved=window.openai?.widgetState?.modelContent;</script>`
+	if _, err := MaterializeViewer("ok", fragment); err != nil {
+		t.Fatalf("safe header/openai fragment rejected: %+v", err)
+	}
+	if _, err := MaterializeViewer("bad", `<script>window.open("https://example.com")</script>`); err == nil || err.Code != CodeSecurityViolation {
+		t.Fatalf("window.open navigation error = %+v", err)
 	}
 }
