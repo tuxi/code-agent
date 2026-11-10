@@ -5,10 +5,14 @@ import (
 	"context"
 	"encoding/json"
 	"image"
+	"image/color"
 	_ "image/jpeg"
+	"image/png"
 	_ "image/png"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -240,4 +244,112 @@ func TestR4BPublicHealthAndModelCatalog(t *testing.T) {
 	if !found {
 		t.Fatalf("r4b-scripted available model not found: %s", body)
 	}
+}
+
+func TestR4BCustomFileBackedPreviewWithNormalTurn(t *testing.T) {
+	customHTML := []byte(`<main id="r4b-custom">Custom R4b HTML from file.</main>`)
+	htmlPath := filepath.Join(t.TempDir(), "viewer.html")
+	if err := os.WriteFile(htmlPath, customHTML, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	customFallback := r4bTestPNG(t, 140)
+	fallbackPath := filepath.Join(t.TempDir(), "fallback.png")
+	if err := os.WriteFile(fallbackPath, customFallback, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	srv, ready, err := Start(context.Background(), ServerOptions{
+		Workspace: t.TempDir(), StateDir: t.TempDir(), TurnPrompt: DefaultTurnPrompt,
+		ViewerHTMLFile: htmlPath, FallbackFile: fallbackPath,
+		Title: "Custom R4b Title", Summary: "Custom R4b Summary", ArtifactKey: "ui-adaptation:r4b-custom",
+		PreferredAspectRatio: 1.78, MinHeight: 420,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer srv.Close()
+	live := triggerR4BPreview(t, ready)
+	if live.Artifact.Title != "Custom R4b Title" || live.Artifact.Summary != "Custom R4b Summary" || live.Artifact.Presentation.PreferredAspectRatio != 1.78 || live.Artifact.Presentation.MinHeight != 420 {
+		t.Fatalf("custom artifact metadata = %+v", live.Artifact)
+	}
+	viewerURL := ready.BaseURL + preview.ViewerURL(ready.SessionID, live.Artifact.ArtifactID, live.Artifact.Revision)
+	assetURL := ready.BaseURL + preview.AssetURL(ready.SessionID, live.Artifact.ArtifactID, live.Artifact.Revision, live.Artifact.Fallback.AssetID)
+	viewer, viewerResp := getAuthorized(t, viewerURL, ready.BearerToken, nil)
+	if viewerResp.StatusCode != http.StatusOK || !bytes.Contains(viewer, customHTML) {
+		t.Fatalf("custom viewer response = %d %d bytes", viewerResp.StatusCode, len(viewer))
+	}
+	asset, assetResp := getAuthorized(t, assetURL, ready.BearerToken, nil)
+	if assetResp.StatusCode != http.StatusOK || !bytes.Equal(asset, customFallback) {
+		t.Fatalf("custom fallback response = %d %d bytes", assetResp.StatusCode, len(asset))
+	}
+}
+
+func TestR4BRejectsEmptyAndOversizeViewerFiles(t *testing.T) {
+	empty := filepath.Join(t.TempDir(), "empty.html")
+	if err := os.WriteFile(empty, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := Start(context.Background(), ServerOptions{Workspace: t.TempDir(), StateDir: t.TempDir(), ViewerHTMLFile: empty}); err == nil {
+		t.Fatal("empty viewer file was accepted")
+	}
+	oversize := filepath.Join(t.TempDir(), "oversize.html")
+	if err := os.WriteFile(oversize, bytes.Repeat([]byte("x"), preview.MaxViewerBytes+1), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := Start(context.Background(), ServerOptions{Workspace: t.TempDir(), StateDir: t.TempDir(), ViewerHTMLFile: oversize}); err == nil {
+		t.Fatal("oversize viewer file was accepted")
+	}
+}
+
+func triggerR4BPreview(t *testing.T, ready Readiness) preview.Event {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	wsURL := strings.Replace(ready.BaseURL, "http://", "ws://", 1) + "/v1/conversations/" + ready.SessionID + "/stream?since=0"
+	conn, _, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{HTTPHeader: http.Header{"Authorization": []string{"Bearer " + ready.BearerToken}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close(websocket.StatusNormalClosure, "")
+	if _, _, err := conn.Read(ctx); err != nil {
+		t.Fatal(err)
+	}
+	input, _ := json.Marshal(map[string]any{"type": "agent_input", "kind": "text", "request_id": "r4b-custom-trigger", "text": ready.TurnPrompt})
+	if err := conn.Write(ctx, websocket.MessageText, input); err != nil {
+		t.Fatal(err)
+	}
+	for {
+		_, data, err := conn.Read(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var frame struct {
+			Kind string `json:"kind"`
+		}
+		if json.Unmarshal(data, &frame) != nil || frame.Kind != "preview_artifact" {
+			continue
+		}
+		event, err := preview.DecodeEvent(data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if event.Artifact == nil || event.Artifact.SessionID != ready.SessionID {
+			t.Fatalf("invalid preview event = %+v", event)
+		}
+		return event
+	}
+}
+
+func r4bTestPNG(t *testing.T, shade uint8) []byte {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, 48, 32))
+	for y := 0; y < 32; y++ {
+		for x := 0; x < 48; x++ {
+			img.Set(x, y, color.RGBA{R: shade, G: uint8(x * 4), B: uint8(y * 7), A: 255})
+		}
+	}
+	var out bytes.Buffer
+	if err := png.Encode(&out, img); err != nil {
+		t.Fatal(err)
+	}
+	return out.Bytes()
 }

@@ -8,12 +8,14 @@ import (
 	"sync"
 
 	"code-agent/internal/model"
+	"code-agent/internal/preview/r4input"
 )
 
 type previewTriggerProvider struct {
-	prompt string
-	mu     sync.Mutex
-	calls  int
+	prompt  string
+	preview r4input.Prepared
+	mu      sync.Mutex
+	calls   int
 }
 
 func (p *previewTriggerProvider) Complete(ctx context.Context, request model.Request) (model.Response, error) {
@@ -39,15 +41,15 @@ func (p *previewTriggerProvider) Complete(ctx context.Context, request model.Req
 		}, nil
 	}
 	args, err := json.Marshal(map[string]any{
-		"artifact_key":           "ui-adaptation:r4b-live-turn",
-		"title":                  "R4b Live Backend Preview",
-		"summary":                "A live preview artifact produced by ui_preview through a normal Runtime turn.",
-		"viewer_html":            r4bViewerHTML,
-		"fallback_path":          "assets/fallback.png",
-		"fallback_text":          "Interactive preview unavailable. Showing generated static evidence.",
-		"alt":                    "R4b generated fallback",
-		"preferred_aspect_ratio": 1.5,
-		"min_height":             360,
+		"artifact_key":           p.preview.ArtifactKey,
+		"title":                  p.preview.Title,
+		"summary":                p.preview.Summary,
+		"viewer_html":            p.preview.ViewerHTML,
+		"fallback_path":          p.preview.FallbackPath,
+		"fallback_text":          p.preview.FallbackText,
+		"alt":                    p.preview.Alt,
+		"preferred_aspect_ratio": p.preview.PreferredAspectRatio,
+		"min_height":             p.preview.MinHeight,
 	})
 	if err != nil {
 		return model.Response{}, err

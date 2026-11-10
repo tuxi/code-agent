@@ -19,6 +19,7 @@ import (
 	"code-agent/internal/conversation"
 	"code-agent/internal/model"
 	"code-agent/internal/preview"
+	"code-agent/internal/preview/r4input"
 	agentruntime "code-agent/internal/runtime"
 	"code-agent/internal/settings"
 	"code-agent/internal/tools"
@@ -26,11 +27,20 @@ import (
 )
 
 type AcceptanceOptions struct {
-	Workspace string
-	StateDir  string
-	ViewerDir string
-	Open      bool
-	Output    io.Writer
+	Workspace            string
+	StateDir             string
+	ViewerDir            string
+	ViewerHTMLFile       string
+	FallbackFile         string
+	Title                string
+	Summary              string
+	ArtifactKey          string
+	PreferredAspectRatio float64
+	MinHeight            int
+	TurnPrompt           string
+	FinalAnswer          string
+	Open                 bool
+	Output               io.Writer
 }
 
 type AcceptanceSummary struct {
@@ -45,11 +55,17 @@ type AcceptanceSummary struct {
 	RevisionSHA256  string `json:"revision_sha256"`
 	EventSeq        int64  `json:"event_seq"`
 	Status          string `json:"status"`
+	Title           string `json:"title"`
+	Summary         string `json:"summary"`
 	ViewerURL       string `json:"viewer_url"`
 	AssetURL        string `json:"asset_url"`
 	ViewerPath      string `json:"viewer_path"`
+	ViewerSizeBytes int64  `json:"viewer_size_bytes"`
 	ViewerSHA256    string `json:"viewer_sha256"`
+	AssetSizeBytes  int64  `json:"asset_size_bytes"`
+	AssetSHA256     string `json:"asset_sha256"`
 	FallbackAssetID string `json:"fallback_asset_id"`
+	TurnPrompt      string `json:"turn_prompt"`
 	FinalAnswer     string `json:"final_answer"`
 }
 
@@ -80,6 +96,12 @@ func runAcceptance(ctx context.Context, opts AcceptanceOptions) (AcceptanceSumma
 	if opts.Output == nil {
 		opts.Output = io.Discard
 	}
+	if strings.TrimSpace(opts.TurnPrompt) == "" {
+		opts.TurnPrompt = "Generate and persist the R4a interactive preview through ui_preview."
+	}
+	if strings.TrimSpace(opts.FinalAnswer) == "" {
+		opts.FinalAnswer = "R4a backend turn completed. The preview artifact was persisted and verified through the in-process viewer resolver."
+	}
 	workspace, cleanupWorkspace, err := tempDirIfEmpty(opts.Workspace, "codeagent-r4a-workspace-")
 	if err != nil {
 		return AcceptanceSummary{}, err
@@ -97,8 +119,25 @@ func runAcceptance(ctx context.Context, opts AcceptanceOptions) (AcceptanceSumma
 	defer cleanupViewer()
 	agentruntime.SetStoreBaseDir(stateDir)
 
-	if err := writeFallbackPNG(filepath.Join(workspace, "assets", "fallback.png")); err != nil {
-		return AcceptanceSummary{}, fmt.Errorf("write fallback: %w", err)
+	if strings.TrimSpace(opts.FallbackFile) == "" {
+		if err := writeFallbackPNG(filepath.Join(workspace, "assets", "fallback.png")); err != nil {
+			return AcceptanceSummary{}, fmt.Errorf("write fallback: %w", err)
+		}
+	}
+	prepared, err := r4input.Prepare(r4input.Options{
+		ViewerHTMLFile: opts.ViewerHTMLFile, FallbackFile: opts.FallbackFile,
+		Title: opts.Title, Summary: opts.Summary, ArtifactKey: opts.ArtifactKey,
+		PreferredAspectRatio: opts.PreferredAspectRatio, MinHeight: opts.MinHeight,
+	}, r4input.Defaults{
+		ViewerHTML: r4aViewerHTML, FallbackPath: "assets/fallback.png",
+		Title:        "R4a Backend Preview",
+		Summary:      "A real preview artifact produced by ui_preview inside a durable agent turn.",
+		ArtifactKey:  "ui-adaptation:r4a-backend-turn",
+		FallbackText: "Interactive preview unavailable. Showing generated static evidence.",
+		Alt:          "R4a generated fallback", PreferredAspectRatio: 1.5, MinHeight: 360,
+	}, workspace)
+	if err != nil {
+		return AcceptanceSummary{}, err
 	}
 	store, err := agentruntime.OpenStore(workspace)
 	if err != nil {
@@ -114,17 +153,17 @@ func runAcceptance(ctx context.Context, opts AcceptanceOptions) (AcceptanceSumma
 	cfg := settings.Settings{Agent: settings.AgentConfig{MaxSteps: 4, MaxParallelTools: 1}}
 	provider := &agent.FauxProvider{Steps: []agent.FauxStep{
 		agent.FauxTool("ui_preview", map[string]any{
-			"artifact_key":           "ui-adaptation:r4a-backend-turn",
-			"title":                  "R4a Backend Preview",
-			"summary":                "A real preview artifact produced by ui_preview inside a durable agent turn.",
-			"viewer_html":            r4aViewerHTML,
-			"fallback_path":          "assets/fallback.png",
-			"fallback_text":          "Interactive preview unavailable. Showing generated static evidence.",
-			"alt":                    "R4a generated fallback",
-			"preferred_aspect_ratio": 1.5,
-			"min_height":             360,
+			"artifact_key":           prepared.ArtifactKey,
+			"title":                  prepared.Title,
+			"summary":                prepared.Summary,
+			"viewer_html":            prepared.ViewerHTML,
+			"fallback_path":          prepared.FallbackPath,
+			"fallback_text":          prepared.FallbackText,
+			"alt":                    prepared.Alt,
+			"preferred_aspect_ratio": prepared.PreferredAspectRatio,
+			"min_height":             prepared.MinHeight,
 		}),
-		agent.FauxText("R4a backend turn completed. The preview artifact was persisted and verified through the in-process viewer resolver."),
+		agent.FauxText(opts.FinalAnswer),
 	}}
 	repo := conversation.NewSQLiteRepository(store, mc.ContextWindow, cfg.CompactThreshold(mc), mc.Model, "", func(string) string { return "" })
 	eventStore := &conversation.StoreEventAdapter{Store: store}
@@ -145,7 +184,7 @@ func runAcceptance(ctx context.Context, opts AcceptanceOptions) (AcceptanceSumma
 	events, unsubscribe := subs.Subscribe(sess.ID)
 	defer unsubscribe()
 	fmt.Fprintf(opts.Output, "workspace=%s\nstate_dir=%s\nsession_id=%s\n", workspace, stateDir, sess.ID)
-	res, err := executor.ExecuteWithSession(ctx, sess, "Generate and persist the R4a interactive preview through ui_preview.", "")
+	res, err := executor.ExecuteWithSession(ctx, sess, opts.TurnPrompt, "")
 	if err != nil {
 		return AcceptanceSummary{}, err
 	}
@@ -212,9 +251,10 @@ func runAcceptance(ctx context.Context, opts AcceptanceOptions) (AcceptanceSumma
 		Workspace: workspace, StateDir: stateDir, SessionID: sess.ID, TurnID: res.TurnID,
 		Capability: artifact.Capability, ProducerID: artifact.ProducerID,
 		ArtifactID: artifact.ArtifactID, Revision: artifact.Revision, RevisionSHA256: artifact.RevisionSHA256,
-		EventSeq: replayedSeq, Status: string(artifact.Status), ViewerURL: preview.ViewerURL(sess.ID, artifact.ArtifactID, artifact.Revision),
-		AssetURL: assetURL, ViewerPath: viewerPath, ViewerSHA256: viewer.SHA256,
-		FallbackAssetID: artifact.Fallback.AssetID, FinalAnswer: res.Final,
+		EventSeq: replayedSeq, Status: string(artifact.Status), Title: artifact.Title, Summary: artifact.Summary, ViewerURL: preview.ViewerURL(sess.ID, artifact.ArtifactID, artifact.Revision),
+		AssetURL: assetURL, ViewerPath: viewerPath, ViewerSizeBytes: viewer.SizeBytes, ViewerSHA256: viewer.SHA256,
+		AssetSizeBytes: asset.SizeBytes, AssetSHA256: asset.SHA256,
+		FallbackAssetID: artifact.Fallback.AssetID, TurnPrompt: opts.TurnPrompt, FinalAnswer: res.Final,
 	}, nil
 }
 

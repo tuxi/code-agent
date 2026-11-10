@@ -32,11 +32,30 @@ system browser.
 Useful flags:
 
 ```text
--workspace   workspace root
--state-dir   SQLite/runtime state directory
--viewer-dir  private materialized viewer directory
--open=true   open the verified viewer (default true)
+-workspace              workspace root
+-state-dir              SQLite/runtime state directory
+-viewer-dir             private materialized viewer directory
+-viewer-html-file       viewer HTML fragment file
+-fallback-file          PNG/JPEG/WebP fallback file
+-title                  preview title
+-summary                preview summary
+-artifact-key           runtime namespace key
+-preferred-aspect-ratio preferred aspect ratio
+-min-height             preferred minimum height
+-turn-prompt            dedicated acceptance turn prompt
+-final-answer           dedicated completion text
+-open=true              open the verified viewer
 ```
+
+File-backed example:
+
+```sh
+go run ./cmd/codeagent-preview-r4a -open=false   -viewer-html-file /path/to/preview.html   -fallback-file /path/to/fallback.png   -title "DreamLog Duo Home"   -summary "File-backed preview"   -artifact-key ui-adaptation:dreamlog-duo
+```
+
+Viewer HTML is read and size/UTF-8 validated before execution. External fallback
+images are copied byte-for-byte into a controlled workspace assets directory
+before the real `ui_preview` tool runs.
 
 For non-GUI CI:
 

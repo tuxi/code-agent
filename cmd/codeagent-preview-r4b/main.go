@@ -27,6 +27,13 @@ func run() error {
 	flag.StringVar(&opts.StateDir, "state-dir", "", "CodeAgent state directory; empty creates a temporary directory")
 	flag.StringVar(&opts.SessionID, "session-id", "", "pre-created session ID; empty generates one")
 	flag.StringVar(&opts.TurnPrompt, "turn-prompt", DefaultTurnPrompt, "deterministic prompt that invokes ui_preview")
+	flag.StringVar(&opts.ViewerHTMLFile, "viewer-html-file", "", "viewer HTML fragment file; empty uses the acceptance default")
+	flag.StringVar(&opts.FallbackFile, "fallback-file", "", "fallback PNG/JPEG/WebP file; empty uses the generated default")
+	flag.StringVar(&opts.Title, "title", "", "preview title; empty uses the acceptance default")
+	flag.StringVar(&opts.Summary, "summary", "", "preview summary; empty uses the acceptance default")
+	flag.StringVar(&opts.ArtifactKey, "artifact-key", "", "preview artifact key; empty uses the acceptance default")
+	flag.Float64Var(&opts.PreferredAspectRatio, "preferred-aspect-ratio", 1.5, "preferred viewer aspect ratio")
+	flag.IntVar(&opts.MinHeight, "min-height", 360, "preferred minimum viewer height")
 	flag.Parse()
 	if flag.NArg() != 0 {
 		return fmt.Errorf("unexpected arguments: %v", flag.Args())

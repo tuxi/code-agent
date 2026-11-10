@@ -30,6 +30,28 @@ go run ./cmd/codeagent-preview-r4b \
 
 The process remains alive until `SIGINT` or `SIGTERM`.
 
+File-backed preview options:
+
+```text
+-viewer-html-file       viewer HTML fragment file
+-fallback-file          PNG/JPEG/WebP fallback file
+-title                  preview title
+-summary                preview summary
+-artifact-key           runtime namespace key
+-preferred-aspect-ratio preferred aspect ratio
+-min-height             preferred minimum height
+```
+
+Example:
+
+```sh
+go run ./cmd/codeagent-preview-r4b   -viewer-html-file /path/to/preview.html   -fallback-file /path/to/fallback.png   -title "DreamLog Duo Home"   -summary "File-backed live preview"   -artifact-key ui-adaptation:dreamlog-duo-live
+```
+
+Viewer HTML is not copied into readiness JSON. External fallback files are
+copied byte-for-byte into the workspace-controlled assets directory before the
+normal-turn provider can call `ui_preview`.
+
 Readiness example:
 
 ```json

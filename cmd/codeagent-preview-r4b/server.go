@@ -22,6 +22,7 @@ import (
 	"code-agent/internal/conversation"
 	"code-agent/internal/model"
 	"code-agent/internal/preview"
+	"code-agent/internal/preview/r4input"
 	agentruntime "code-agent/internal/runtime"
 	"code-agent/internal/server"
 	"code-agent/internal/session"
@@ -33,10 +34,17 @@ import (
 const DefaultTurnPrompt = "R4B_TRIGGER_PREVIEW_v1: use ui_preview to render the Backend R4b live readiness preview."
 
 type ServerOptions struct {
-	Workspace  string
-	StateDir   string
-	SessionID  string
-	TurnPrompt string
+	Workspace            string
+	StateDir             string
+	SessionID            string
+	TurnPrompt           string
+	ViewerHTMLFile       string
+	FallbackFile         string
+	Title                string
+	Summary              string
+	ArtifactKey          string
+	PreferredAspectRatio float64
+	MinHeight            int
 }
 
 type Readiness struct {
@@ -93,8 +101,25 @@ func Start(ctx context.Context, opts ServerOptions) (*Server, Readiness, error) 
 	if err != nil {
 		return nil, Readiness{}, err
 	}
-	if err := writeFallbackPNG(filepath.Join(workspace, "assets", "fallback.png")); err != nil {
-		return nil, Readiness{}, fmt.Errorf("write R4b fallback: %w", err)
+	if strings.TrimSpace(opts.FallbackFile) == "" {
+		if err := writeFallbackPNG(filepath.Join(workspace, "assets", "fallback.png")); err != nil {
+			return nil, Readiness{}, fmt.Errorf("write R4b fallback: %w", err)
+		}
+	}
+	prepared, err := r4input.Prepare(r4input.Options{
+		ViewerHTMLFile: opts.ViewerHTMLFile, FallbackFile: opts.FallbackFile,
+		Title: opts.Title, Summary: opts.Summary, ArtifactKey: opts.ArtifactKey,
+		PreferredAspectRatio: opts.PreferredAspectRatio, MinHeight: opts.MinHeight,
+	}, r4input.Defaults{
+		ViewerHTML: r4bViewerHTML, FallbackPath: "assets/fallback.png",
+		Title:        "R4b Live Backend Preview",
+		Summary:      "A live preview artifact produced by ui_preview through a normal Runtime turn.",
+		ArtifactKey:  "ui-adaptation:r4b-live-turn",
+		FallbackText: "Interactive preview unavailable. Showing generated static evidence.",
+		Alt:          "R4b generated fallback", PreferredAspectRatio: 1.5, MinHeight: 360,
+	}, workspace)
+	if err != nil {
+		return nil, Readiness{}, err
 	}
 	oldState := agentruntime.StoreBaseDir()
 	agentruntime.SetStoreBaseDir(stateDir)
@@ -188,7 +213,7 @@ func Start(ctx context.Context, opts ServerOptions) (*Server, Readiness, error) 
 	subs := conversation.NewSubscriptionManager()
 	builder := &previewRunBuilder{
 		workspace: workspace, cfg: cfg, mc: mc,
-		provider: &previewTriggerProvider{prompt: opts.TurnPrompt}, service: service,
+		provider: &previewTriggerProvider{prompt: opts.TurnPrompt, preview: prepared}, service: service,
 	}
 	executor := conversation.NewTurnExecutor(repo, eventStore, active, subs, builder)
 	executor.SetTurnScheduler(conversation.NewTurnScheduler(1))
