@@ -61,7 +61,7 @@ func TestVisionToolResultStagesLocalAsset(t *testing.T) {
 		t.Fatal(err)
 	}
 	provider := &scriptedProvider{}
-	runner := &Runner{Model: provider, Tools: tools.NewRegistry(), MaxSteps: 2, WorkspaceRoot: root, VisionSupported: true}
+	runner := &Runner{Model: provider, Tools: tools.NewRegistry(), MaxSteps: 2, WorkspaceRoot: root, VisionSupported: true, ToolImageInputSupported: true}
 	if err := runner.Tools.Register(imageTool{path: imgPath, mime: "image/png"}); err != nil {
 		t.Fatal(err)
 	}
@@ -99,7 +99,7 @@ func TestVisionToolResultStagesOutOfWorkspaceCapture(t *testing.T) {
 		t.Fatal(err)
 	}
 	provider := &scriptedProvider{}
-	runner := &Runner{Model: provider, Tools: tools.NewRegistry(), MaxSteps: 2, WorkspaceRoot: root, VisionSupported: true}
+	runner := &Runner{Model: provider, Tools: tools.NewRegistry(), MaxSteps: 2, WorkspaceRoot: root, VisionSupported: true, ToolImageInputSupported: true}
 	if err := runner.Tools.Register(imageTool{path: outside, mime: "image/png"}); err != nil {
 		t.Fatal(err)
 	}
@@ -133,7 +133,7 @@ func TestVisionWireTransformerInlinesToolImages(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "shot.png"), png, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	runner := &Runner{WorkspaceRoot: root, VisionSupported: true}
+	runner := &Runner{WorkspaceRoot: root, VisionSupported: true, ToolImageInputSupported: true}
 	msgs := []model.Message{
 		{Role: model.RoleSystem, Content: "sys"},
 		{Role: model.RoleUser, Content: "go"},
@@ -155,9 +155,9 @@ func TestVisionWireTransformerInlinesToolImages(t *testing.T) {
 	}
 }
 
-// TestTextModeStripsToolLocalAssetsSilently verifies a non-vision runner strips
-// tool-message LocalAssets without adding manifest text — behavior unchanged.
-func TestTextModeStripsToolLocalAssetsSilently(t *testing.T) {
+// TestTextModeMarksToolLocalAssetsOmitted verifies a non-vision runner strips
+// tool-message LocalAssets but states that they were not visible.
+func TestTextModeMarksToolLocalAssetsOmitted(t *testing.T) {
 	msgs := []model.Message{
 		{Role: model.RoleUser, Content: "go"},
 		{Role: model.RoleAssistant, ToolCalls: []model.ToolCall{{ID: "c1", Type: "function", Function: model.FunctionCall{Name: "snap"}}}},
@@ -170,11 +170,35 @@ func TestTextModeStripsToolLocalAssetsSilently(t *testing.T) {
 	if len(tool.ContentParts) != 0 || len(tool.LocalAssets) != 0 {
 		t.Fatalf("tool message not stripped: %+v", tool)
 	}
-	if strings.Contains(tool.Content, "manifest") || strings.Contains(tool.Content, "NOT visible") {
-		t.Errorf("manifest text leaked into tool observation: %q", tool.Content)
+	if !strings.Contains(tool.Content, "cannot process image input") || !strings.Contains(tool.Content, "omitted") {
+		t.Errorf("content = %q, want explicit omission", tool.Content)
 	}
-	if tool.Content != "captured" {
-		t.Errorf("content = %q, want unchanged observation", tool.Content)
+}
+
+func TestToolImageInputUnsupportedOmitsToolImages(t *testing.T) {
+	root := t.TempDir()
+	png := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 0, 0, 0, 0}
+	if err := os.WriteFile(filepath.Join(root, "shot.png"), png, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runner := &Runner{WorkspaceRoot: root, VisionSupported: true, ToolImageInputSupported: false}
+	msgs := []model.Message{
+		{Role: model.RoleUser, Content: "go"},
+		{Role: model.RoleAssistant, ToolCalls: []model.ToolCall{{ID: "c1", Type: "function", Function: model.FunctionCall{Name: "view_image"}}}},
+		{Role: model.RoleTool, ToolCallID: "c1", Content: "captured", LocalAssets: []model.LocalAssetRef{{
+			ID: "a1", RelativePath: "shot.png", Filename: "shot.png", MIMEType: "image/png", Kind: "image", SizeBytes: int64(len(png)),
+		}}},
+	}
+	out := runner.withLocalAssetManifests(msgs)
+	tool := out[2]
+	if len(tool.ContentParts) != 0 {
+		t.Fatalf("tool ContentParts = %+v, want none", tool.ContentParts)
+	}
+	if !strings.Contains(tool.Content, "tool results") || !strings.Contains(tool.Content, "omitted") {
+		t.Fatalf("tool content = %q, want explicit omission", tool.Content)
+	}
+	if len(tool.LocalAssets) != 0 {
+		t.Fatalf("tool LocalAssets = %+v, want stripped", tool.LocalAssets)
 	}
 }
 
@@ -192,7 +216,7 @@ func TestSharedBudgetAcrossUserAndToolImages(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "tool.png"), small, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	runner := &Runner{WorkspaceRoot: root, VisionSupported: true}
+	runner := &Runner{WorkspaceRoot: root, VisionSupported: true, ToolImageInputSupported: true}
 	msgs := []model.Message{
 		{Role: model.RoleUser, Content: "go", LocalAssets: []model.LocalAssetRef{{
 			ID: "u1", RelativePath: "user.jpg", Filename: "user.jpg", MIMEType: "image/jpeg", Kind: "image", SizeBytes: int64(len(big)),

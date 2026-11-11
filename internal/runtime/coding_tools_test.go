@@ -34,6 +34,9 @@ func TestCodingProfileKeepsCoreAndIsolatesExtensions(t *testing.T) {
 	if _, ok := r.Tools.Get("job_wait"); !ok {
 		t.Fatal("background control unavailable")
 	}
+	if _, ok := r.Tools.Get("view_image"); !ok {
+		t.Fatal("visual input unavailable")
+	}
 	if _, ok := r.PlanTools.Get("run_command"); ok {
 		t.Fatal("plan mode gained command execution")
 	}

@@ -15,6 +15,7 @@ import (
 	"code-agent/internal/tools/automation"
 	"code-agent/internal/tools/filesystem"
 	"code-agent/internal/tools/git"
+	"code-agent/internal/tools/imageview"
 	"code-agent/internal/tools/preview"
 	"code-agent/internal/tools/projectcfg"
 	"code-agent/internal/tools/search"
@@ -63,6 +64,7 @@ func RegisterBuiltinTools(registry *tools.Registry, cfg settings.Settings, cred 
 		filesystem.NewInsertFileTool(),
 		search.NewGrepTool(),
 		skill.NewLoadSkillTool(skillReg, cfg.GlobalSkillsDir, filepath.Join(root, "skills")),
+		imageview.NewTool(),
 		previewtool.NewTool(),
 	}
 	// LSP tools — best-effort.

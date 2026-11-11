@@ -126,6 +126,11 @@ func BuildRunner(cfg settings.Settings, mc settings.ModelConfig, provider model.
 	// loop decides per request.
 	runner.VisionSupported = mc.SupportsVision() &&
 		(mc.Provider == "" || mc.Provider == "openai" || mc.Provider == "responses")
+	runner.ToolImageInputSupported = runner.VisionSupported && mc.SupportsToolImageInput()
+	runner.ImageDetailOriginalSupported = runner.VisionSupported && mc.SupportsOriginalImageDetail()
+	// No implicit vision bridge exists in P0. A host may set this explicitly on
+	// the returned Runner; tools must still require a separate bridge capability.
+	runner.VisionBridgeAvailable = false
 	applyCodingProfile(runner, cfg)
 	return runner
 }

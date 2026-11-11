@@ -572,7 +572,7 @@ func (r *Runner) commitToolResult(ctx context.Context, sess *session.Session, tu
 // captures are staged into .codeagent/assets/client/ first — the same staging
 // the Gateway upload path uses, so files it already moved resolve directly.
 func (r *Runner) visionToolLocalAssets(refs []assets.Ref) []model.LocalAssetRef {
-	if !r.VisionSupported || len(refs) == 0 {
+	if !r.VisionSupported || !r.ToolImageInputSupported || len(refs) == 0 {
 		return nil
 	}
 	var out []model.LocalAssetRef

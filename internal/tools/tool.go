@@ -42,6 +42,11 @@ type ExecutionContext struct {
 	// restricting writes to .codeagent/plans/) check this field.
 	PlanMode bool
 
+	// ImageCapabilities reports the selected model/provider's visual-input
+	// capabilities. Zero value is fail-closed. Tools that expose images use this
+	// contract instead of inspecting model names or provider URLs.
+	ImageCapabilities ImageCapabilities
+
 	// PathAccessApprover gates read-only access to paths outside the workspace.
 	// When non-nil, read tools (read_file, list_files, grep) request approval for
 	// external paths instead of hard-rejecting them. When nil (headless mode,
@@ -110,6 +115,15 @@ type ExecutionContext struct {
 	// conversation into a tool_sequence template. Injected by daemon hosts;
 	// nil means extract degrades with a clear error.
 	SessionTrace SessionTraceFunc
+}
+
+// ImageCapabilities separates ordinary user-image input, tool-result image
+// input, original-detail support, and an explicitly configured vision bridge.
+type ImageCapabilities struct {
+	Input          bool
+	ToolInput      bool
+	OriginalDetail bool
+	VisionBridge   bool
 }
 
 // TraceStep is one truncated tool call in a session's recent history, as the

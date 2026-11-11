@@ -51,7 +51,7 @@ func (r *Runner) CanContinueBackground() bool {
 }
 
 func (r *Runner) ContinuationIdentity() string {
-	encoded, _ := json.Marshal([]any{r.ModelSelection.ConfigurationID, r.ModelName, r.WireModel, r.ProviderName, r.BaseURL, r.WorkspaceRoot, r.ReasoningEffort, r.Temperature, r.VerifyCommand, r.RemindHypothesis, r.UserAssetsSupported, r.VisionSupported, r.ContinuationPolicyIdentity})
+	encoded, _ := json.Marshal([]any{r.ModelSelection.ConfigurationID, r.ModelName, r.WireModel, r.ProviderName, r.BaseURL, r.WorkspaceRoot, r.ReasoningEffort, r.Temperature, r.VerifyCommand, r.RemindHypothesis, r.UserAssetsSupported, r.VisionSupported, r.ToolImageInputSupported, r.ImageDetailOriginalSupported, r.VisionBridgeAvailable, r.ContinuationPolicyIdentity})
 	return fmt.Sprintf("%x", sha256.Sum256(encoded))
 }
 

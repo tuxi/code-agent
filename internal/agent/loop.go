@@ -265,6 +265,19 @@ type Runner struct {
 	// construction; the loop never inspects model names.
 	VisionSupported bool
 
+	// ToolImageInputSupported is independent from VisionSupported: it says the
+	// provider wire can carry images in tool-result messages. Tool-produced image
+	// assets are injected only when this is true.
+	ToolImageInputSupported bool
+
+	// ImageDetailOriginalSupported reports whether original-resolution image
+	// detail is preserved rather than normalized/downscaled.
+	ImageDetailOriginalSupported bool
+
+	// VisionBridgeAvailable reports an explicitly configured auxiliary vision
+	// path. Image tools never use it implicitly.
+	VisionBridgeAvailable bool
+
 	// Correlation IDs stamped onto every emitted event. Set per RunTurn (which is
 	// sequential on a Runner), so an event always carries which session and turn
 	// produced it.
@@ -776,6 +789,14 @@ func (r *Runner) withVisionContentParts(messages []model.Message) []model.Messag
 		if out == nil {
 			out = append([]model.Message(nil), messages...)
 		}
+		if msg.Role == model.RoleTool && !r.ToolImageInputSupported {
+			if len(msg.LocalAssets) > 0 {
+				out[i].LocalAssets = nil
+				out[i].ContentParts = nil
+				out[i].Content += "\n\n[Tool-result images were omitted because the selected provider does not support image input inside tool results.]"
+			}
+			continue
+		}
 		var notes strings.Builder
 		var parts []model.ContentPart
 		for _, asset := range msg.LocalAssets {
@@ -868,15 +889,19 @@ func withTextAssetManifests(messages []model.Message) []model.Message {
 			out = append([]model.Message(nil), messages...)
 		}
 		var manifest strings.Builder
-		// 本地资产清单。tool 消息的 LocalAssets（vision 提交的工具图片引用）静默
-		// 剥离、不加清单：观察文本本身已描述工具输出，非 vision 模型行为保持不变。
-		if len(msg.LocalAssets) > 0 && msg.Role != model.RoleTool {
-			manifest.WriteString("\n\n[Local attachment manifest]\n")
-			manifest.WriteString("The following files are stored in the workspace. Their contents are currently NOT visible to you. ")
-			manifest.WriteString("Do not guess their contents. Use an appropriate client-side local tool such as analyze_local_image, read_pdf, or render_pdf_pages to inspect them.\n")
-			for _, asset := range messages[i].LocalAssets {
-				fmt.Fprintf(&manifest, "- path=%q; filename=%q; kind=%q; mime_type=%q; size_bytes=%d\n",
-					asset.RelativePath, asset.Filename, asset.Kind, asset.MIMEType, asset.SizeBytes)
+		// Local attachment manifests. Tool-result images are never claimed as
+		// visible to a text-only model; state the omission explicitly.
+		if len(msg.LocalAssets) > 0 {
+			if msg.Role == model.RoleTool {
+				manifest.WriteString("\n\n[Tool-result images were omitted because the selected model cannot process image input.]")
+			} else {
+				manifest.WriteString("\n\n[Local attachment manifest]\n")
+				manifest.WriteString("The following files are stored in the workspace. Their contents are currently NOT visible to you. ")
+				manifest.WriteString("Do not guess their contents. Use an appropriate client-side local tool such as analyze_local_image, read_pdf, or render_pdf_pages to inspect them.\n")
+				for _, asset := range messages[i].LocalAssets {
+					fmt.Fprintf(&manifest, "- path=%q; filename=%q; kind=%q; mime_type=%q; size_bytes=%d\n",
+						asset.RelativePath, asset.Filename, asset.Kind, asset.MIMEType, asset.SizeBytes)
+				}
 			}
 		}
 		if len(msg.LocalAssets) > 0 {
@@ -1899,13 +1924,19 @@ func (r *Runner) executeTool(ctx context.Context, tool tools.Tool, callID string
 		ExecutionID:          r.emitInvocationID,
 		RequestID:            r.RequestID,
 		PlanMode:             r.PlanState == PlanStatusPlanning || r.PlanState == PlanStatusProposing,
-		PathAccessApprover:   r.PathAccessApprover,
-		Model:                model,
-		SessionIndex:         r.SessionIndex,
-		SessionControl:       r.SessionControl,
-		AutomationStore:      r.AutomationStore,
-		WorkflowRunner:       r.WorkflowRunner,
-		SessionTrace:         r.SessionTrace,
+		ImageCapabilities: tools.ImageCapabilities{
+			Input:          r.VisionSupported,
+			ToolInput:      r.ToolImageInputSupported,
+			OriginalDetail: r.ImageDetailOriginalSupported,
+			VisionBridge:   r.VisionBridgeAvailable,
+		},
+		PathAccessApprover: r.PathAccessApprover,
+		Model:              model,
+		SessionIndex:       r.SessionIndex,
+		SessionControl:     r.SessionControl,
+		AutomationStore:    r.AutomationStore,
+		WorkflowRunner:     r.WorkflowRunner,
+		SessionTrace:       r.SessionTrace,
 		OnStdout: func(chunk string) {
 			r.emit(Event{Kind: EventToolStdout, CallID: callID, Chunk: chunk})
 		},
