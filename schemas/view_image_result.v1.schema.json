@@ -1,0 +1,130 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://code-agent.local/schemas/view_image_result.v1.schema.json",
+  "$comment": "Frozen for P0.1 on 2026-11-11.",
+  "title": "View Image Result v1",
+  "description": "Structured metadata for a view_image tool result. The source image is primary; an optional crop is its child.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "kind",
+    "source_asset_id",
+    "crop_asset_id",
+    "assets",
+    "detail_requested",
+    "detail_effective",
+    "source_region"
+  ],
+  "properties": {
+    "schema": {"const": "view_image_result.v1"},
+    "kind": {"const": "image_view"},
+    "source_asset_id": {"$ref": "#/$defs/asset_id"},
+    "crop_asset_id": {
+      "type": ["string", "null"],
+      "pattern": "^asset_[A-Za-z0-9._:-]{1,180}$"
+    },
+    "assets": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 2,
+      "items": {
+        "oneOf": [
+          {"$ref": "#/$defs/source_asset"},
+          {"$ref": "#/$defs/crop_asset"}
+        ]
+      }
+    },
+    "detail_requested": {"type": "string", "enum": ["high", "original"]},
+    "detail_effective": {"type": "string", "enum": ["high", "original"]},
+    "source_region": {
+      "anyOf": [
+        {"$ref": "#/$defs/bbox"},
+        {"type": "null"}
+      ]
+    }
+  },
+  "$defs": {
+    "asset_id": {
+      "type": "string",
+      "pattern": "^asset_[A-Za-z0-9._:-]{1,180}$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "bbox": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["x", "y", "width", "height"],
+      "properties": {
+        "x": {"type": "number", "minimum": 0, "maximum": 1},
+        "y": {"type": "number", "minimum": 0, "maximum": 1},
+        "width": {"type": "number", "minimum": 0, "maximum": 1},
+        "height": {"type": "number", "minimum": 0, "maximum": 1}
+      }
+    },
+    "common_asset": {
+      "type": "object",
+      "required": ["asset_id", "role", "relative_path", "filename", "mime_type", "width", "height", "sha256"],
+      "properties": {
+        "asset_id": {"$ref": "#/$defs/asset_id"},
+        "role": {"type": "string"},
+        "relative_path": {"type": "string", "minLength": 1, "maxLength": 4096},
+        "filename": {"type": "string", "minLength": 1, "maxLength": 512},
+        "mime_type": {"type": "string", "enum": ["image/png", "image/jpeg", "image/webp"]},
+        "width": {"type": "integer", "minimum": 1},
+        "height": {"type": "integer", "minimum": 1},
+        "sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "source_asset": {
+      "allOf": [
+        {"$ref": "#/$defs/common_asset"},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "asset_id": {"$ref": "#/$defs/asset_id"},
+            "role": {"const": "source"},
+            "relative_path": {"type": "string", "minLength": 1, "maxLength": 4096},
+            "filename": {"type": "string", "minLength": 1, "maxLength": 512},
+            "mime_type": {"type": "string", "enum": ["image/png", "image/jpeg", "image/webp"]},
+            "width": {"type": "integer", "minimum": 1},
+            "height": {"type": "integer", "minimum": 1},
+            "sha256": {"$ref": "#/$defs/sha256"},
+            "asset_role": {"const": "source"}
+          },
+          "required": ["asset_role"]
+        }
+      ]
+    },
+    "crop_asset": {
+      "allOf": [
+        {"$ref": "#/$defs/common_asset"},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "asset_id": {"$ref": "#/$defs/asset_id"},
+            "role": {"const": "crop"},
+            "relative_path": {"type": "string", "minLength": 1, "maxLength": 4096},
+            "filename": {"type": "string", "minLength": 1, "maxLength": 512},
+            "mime_type": {"type": "string", "enum": ["image/png", "image/jpeg", "image/webp"]},
+            "width": {"type": "integer", "minimum": 1},
+            "height": {"type": "integer", "minimum": 1},
+            "sha256": {"$ref": "#/$defs/sha256"},
+            "asset_role": {"const": "crop"},
+            "source_asset_id": {"$ref": "#/$defs/asset_id"},
+            "source_bbox": {"$ref": "#/$defs/bbox"},
+            "purpose": {
+              "type": "string",
+              "enum": ["navigation", "content", "controls", "repeated_group", "detail", "unknown"]
+            }
+          },
+          "required": ["asset_role", "source_asset_id", "source_bbox", "purpose"]
+        }
+      ]
+    }
+  }
+}

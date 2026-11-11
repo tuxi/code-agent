@@ -1,0 +1,74 @@
+{
+  "schema": "ui_layout.v1",
+  "source": {
+    "asset_id": "asset_fixture_source",
+    "source_asset_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "evidence_schema": "ui_evidence.v1",
+    "evidence_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "canvas": {"width": 1290, "height": 2796}
+  },
+  "screen": {
+    "type": "commerce_product_detail",
+    "primary_action": "购买",
+    "content_priority": ["商品信息", "价格", "购买按钮"],
+    "states": ["default"]
+  },
+  "root": {
+    "id": "n_root",
+    "role": "screen",
+    "bbox": {"x": 0.0, "y": 0.0, "width": 1.0, "height": 1.0},
+    "layout": {"mode": "vertical_stack", "gap": 0.02},
+    "children": [
+      {
+        "id": "n_title",
+        "role": "heading",
+        "bbox": {"x": 0.08, "y": 0.1, "width": 0.5, "height": 0.04},
+        "content": {"text": "商品详情"},
+        "layout": {"mode": "absolute"},
+        "evidence_ids": ["el_title"],
+        "confidence": 0.98,
+        "evidence": "observed"
+      },
+      {
+        "id": "n_buy",
+        "role": "button",
+        "bbox": {"x": 0.08, "y": 0.9, "width": 0.84, "height": 0.06},
+        "content": {"control_label": "购买"},
+        "layout": {"mode": "absolute"},
+        "behavior": {"sticky": true, "action": "purchase"},
+        "evidence_ids": ["el_button"],
+        "confidence": 0.91,
+        "evidence": "inferred"
+      }
+    ],
+    "confidence": 0.95,
+    "evidence": "inferred"
+  },
+  "responsive": {
+    "invariants": [
+      {
+        "id": "inv_primary_action",
+        "statement": "The primary purchase action remains discoverable without scrolling past the product summary."
+      }
+    ],
+    "targets": {
+      "duo_folded": {"columns": 1, "navigation": "bottom_tabs"},
+      "duo_unfolded": {"layout": "split_view", "columns": 2},
+      "iphone_portrait": {"columns": 1, "navigation": "bottom_tabs"},
+      "ipad_landscape": {"columns": 2, "navigation": "sidebar"}
+    },
+    "node_policies": [
+      {"node_id": "n_root", "policy": "reflow"},
+      {"node_id": "n_buy", "policy": "preserve"}
+    ]
+  },
+  "assumptions": [
+    {
+      "statement": "The bottom action remains sticky while the product body scrolls.",
+      "confidence": 0.74,
+      "evidence": "inferred",
+      "evidence_ids": ["el_button"]
+    }
+  ],
+  "confidence": 0.9
+}

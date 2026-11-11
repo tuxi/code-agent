@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://code-agent.local/schemas/ui_preview_lineage.v1.schema.json",
+  "$comment": "Frozen for P0.1 on 2026-11-11.",
+  "title": "UI Preview Lineage v1",
+  "description": "Traceability record linking a UI preview artifact to the reviewed layout revision and source asset.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "layout_artifact_id", "layout_revision", "layout_revision_sha256", "source_asset_id", "source_asset_sha256", "approval", "target_matrix"],
+  "properties": {
+    "schema": {"const": "ui_preview_lineage.v1"},
+    "layout_artifact_id": {
+      "type": "string",
+      "pattern": "^layout_[A-Za-z0-9._:-]{1,180}$"
+    },
+    "layout_revision": {"type": "integer", "minimum": 1},
+    "layout_revision_sha256": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "source_asset_id": {
+      "type": "string",
+      "pattern": "^asset_[A-Za-z0-9._:-]{1,180}$"
+    },
+    "source_asset_sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "approval": {"$ref": "#/$defs/approval"},
+    "target_matrix": {"$ref": "#/$defs/target_matrix"}
+  },
+  "$defs": {
+    "approval": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state"],
+      "properties": {
+        "state": {"type": "string", "enum": ["user_confirmed", "not_required", "unconfirmed"]},
+        "evidence_ref": {"type": "string", "minLength": 1, "maxLength": 256}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"state": {"const": "user_confirmed"}}},
+          "then": {"required": ["evidence_ref"]}
+        }
+      ]
+    },
+    "target_matrix": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "targets"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^matrix_[A-Za-z0-9._:-]{1,180}$"
+        },
+        "targets": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "enum": ["duo_folded", "duo_unfolded", "iphone_portrait", "iphone_landscape", "ipad_portrait", "ipad_landscape"]
+          }
+        }
+      }
+    }
+  }
+}

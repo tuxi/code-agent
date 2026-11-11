@@ -1,0 +1,73 @@
+{
+  "schema": "ui_evidence.v1",
+  "source": {
+    "asset_id": "asset_fixture_app",
+    "source_kind": "app_screenshot",
+    "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "mime_type": "image/jpeg",
+    "width": 1179,
+    "height": 2556
+  },
+  "coordinate_space": "normalized_top_left",
+  "producer": {
+    "name": "Talkify.inspect_accessibility_image",
+    "version": "1"
+  },
+  "elements": [
+    {
+      "id": "el_nav",
+      "kind": "container",
+      "role": "navigation",
+      "bbox": {"x": 0.0, "y": 0.0, "width": 1.0, "height": 0.12},
+      "confidence": 1.0,
+      "evidence": "observed",
+      "parent_id": null,
+      "interactive": false
+    },
+    {
+      "id": "el_back",
+      "kind": "control",
+      "role": "button",
+      "bbox": {"x": 0.04, "y": 0.05, "width": 0.08, "height": 0.04},
+      "text": "返回",
+      "confidence": 1.0,
+      "evidence": "observed",
+      "parent_id": "el_nav",
+      "interactive": true
+    }
+  ],
+  "repeated_groups": [],
+  "source_tree": {
+    "kind": "accessibility",
+    "nodes": [
+      {
+        "id": "ax_root",
+        "parent_id": null,
+        "role": "window",
+        "label": "商品详情",
+        "bbox": {"x": 0.0, "y": 0.0, "width": 1.0, "height": 1.0},
+        "interactive": false,
+        "visible": true,
+        "enabled": true
+      },
+      {
+        "id": "ax_back",
+        "parent_id": "ax_root",
+        "role": "button",
+        "label": "返回",
+        "bbox": {"x": 0.04, "y": 0.05, "width": 0.08, "height": 0.04},
+        "interactive": true,
+        "visible": true,
+        "enabled": true
+      }
+    ],
+    "truncated": false
+  },
+  "crops": [],
+  "uncertainties": [],
+  "limits": {
+    "element_count": 2,
+    "elements_truncated": false,
+    "tree_nodes_truncated": false
+  }
+}

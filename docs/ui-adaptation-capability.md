@@ -1,7 +1,17 @@
 # UI Adaptation Capability Design
 
-Status: proposal
+Status: proposal — downstream capability overview
 Date: 2026-11-09
+Related: [Visual Layout Understanding Design](./visual-layout-understanding.md)
+Normative tool boundary: [Primary Perception Ownership and Tool Prompt Separation](./primary-perception-ownership-contract.md)
+
+This document is the end-to-end overview for UI adaptation. The upstream
+contracts for `view_image`, `ui_evidence.v1`, and `ui_layout.v1` live in
+[Visual Layout Understanding Design](./visual-layout-understanding.md); preview
+artifact transport and replay remain governed by
+[Preview Contract v1.6](./capability-runtime-upgrade/PREVIEW_CONTRACT_V1_6.md).
+The main model is the primary visual perceiver; OCR and UI evidence tools do not
+substitute for `view_image` or choose the design.
 
 ## 1. Summary
 
@@ -96,8 +106,9 @@ Capability: ui-adaptation
 
 ## 5. Skill
 
-Add `skills/ui-adaptation/SKILL.md`. The skill should be short, with deeper
-references loaded only when needed.
+The skill lives at `skills/ui-adaptation/SKILL.md`. It stays short and directs
+the model to the visual layout understanding contract when schema details are
+needed.
 
 ### Required workflow
 

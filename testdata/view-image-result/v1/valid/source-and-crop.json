@@ -1,0 +1,36 @@
+{
+  "schema": "view_image_result.v1",
+  "kind": "image_view",
+  "source_asset_id": "asset_turn_1_view_0_source",
+  "crop_asset_id": "asset_turn_1_view_0_crop",
+  "assets": [
+    {
+      "asset_id": "asset_turn_1_view_0_source",
+      "asset_role": "source",
+      "role": "source",
+      "relative_path": "screenshots/product-detail.png",
+      "filename": "product-detail.png",
+      "mime_type": "image/png",
+      "width": 1290,
+      "height": 2796,
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "asset_id": "asset_turn_1_view_0_crop",
+      "asset_role": "crop",
+      "role": "crop",
+      "relative_path": ".codeagent/assets/view-image/session_1/turn_1/navigation.png",
+      "filename": "navigation.png",
+      "mime_type": "image/png",
+      "width": 1290,
+      "height": 559,
+      "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "source_asset_id": "asset_turn_1_view_0_source",
+      "source_bbox": {"x": 0.0, "y": 0.0, "width": 1.0, "height": 0.2},
+      "purpose": "navigation"
+    }
+  ],
+  "detail_requested": "original",
+  "detail_effective": "original",
+  "source_region": {"x": 0.0, "y": 0.0, "width": 1.0, "height": 0.2}
+}

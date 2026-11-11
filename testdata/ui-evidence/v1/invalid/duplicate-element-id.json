@@ -1,0 +1,34 @@
+{
+  "schema": "ui_evidence.v1",
+  "source": {
+    "asset_id": "asset_fixture_source",
+    "source_kind": "static_image",
+    "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "mime_type": "image/png",
+    "width": 1290,
+    "height": 2796
+  },
+  "coordinate_space": "normalized_top_left",
+  "producer": {"name": "fixture", "version": "1"},
+  "elements": [
+    {
+      "id": "el_duplicate",
+      "kind": "text",
+      "bbox": {"x": 0.1, "y": 0.1, "width": 0.2, "height": 0.04},
+      "confidence": 0.9,
+      "evidence": "observed"
+    },
+    {
+      "id": "el_duplicate",
+      "kind": "text",
+      "bbox": {"x": 0.1, "y": 0.2, "width": 0.2, "height": 0.04},
+      "confidence": 0.9,
+      "evidence": "observed"
+    }
+  ],
+  "repeated_groups": [],
+  "source_tree": {"kind": "none", "nodes": [], "truncated": false},
+  "crops": [],
+  "uncertainties": [],
+  "limits": {"element_count": 2, "elements_truncated": false, "tree_nodes_truncated": false}
+}

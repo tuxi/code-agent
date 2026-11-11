@@ -1,0 +1,51 @@
+{
+  "schema": "ui_evidence.v1",
+  "source": {
+    "asset_id": "asset_fixture_source",
+    "source_kind": "static_image",
+    "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "mime_type": "image/png",
+    "width": 1290,
+    "height": 2796
+  },
+  "coordinate_space": "normalized_top_left",
+  "producer": {
+    "name": "ClientToolsKit.inspect_ui_image",
+    "version": "1"
+  },
+  "elements": [
+    {
+      "id": "el_title",
+      "kind": "text",
+      "role": "heading",
+      "bbox": {"x": 0.08, "y": 0.1, "width": 0.5, "height": 0.04},
+      "text": "商品详情",
+      "confidence": 0.98,
+      "evidence": "observed",
+      "interactive": false
+    },
+    {
+      "id": "el_button",
+      "kind": "control",
+      "role": "button",
+      "bbox": {"x": 0.08, "y": 0.9, "width": 0.84, "height": 0.06},
+      "text": "购买",
+      "confidence": 0.91,
+      "evidence": "inferred",
+      "interactive": true
+    }
+  ],
+  "repeated_groups": [],
+  "source_tree": {
+    "kind": "none",
+    "nodes": [],
+    "truncated": false
+  },
+  "crops": [],
+  "uncertainties": [],
+  "limits": {
+    "element_count": 2,
+    "elements_truncated": false,
+    "tree_nodes_truncated": false
+  }
+}
