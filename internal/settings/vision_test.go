@@ -32,7 +32,7 @@ func TestModelConfigSupportsToolImageInput(t *testing.T) {
 		want bool
 	}{
 		{"text only", ModelConfig{Catalog: ModelCatalogMetadata{InputModalities: []string{"text"}}}, false},
-		{"image default", ModelConfig{Catalog: ModelCatalogMetadata{InputModalities: []string{"image"}}}, true},
+		{"image unknown", ModelConfig{Catalog: ModelCatalogMetadata{InputModalities: []string{"image"}}}, false},
 		{"image explicit true", ModelConfig{Catalog: ModelCatalogMetadata{InputModalities: []string{"image"}, ToolImageInput: &trueValue}}, true},
 		{"image explicit false", ModelConfig{Catalog: ModelCatalogMetadata{InputModalities: []string{"image"}, ToolImageInput: &falseValue}}, false},
 	}

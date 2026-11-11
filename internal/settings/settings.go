@@ -176,18 +176,14 @@ func (mc ModelConfig) SupportsVision() bool {
 }
 
 // SupportsToolImageInput reports whether the selected model may receive image
-// content inside a tool-result message. The wire transport still has to support
-// content parts; callers combine this declaration with that transport check.
-// An unset declaration defaults to the ordinary image-input capability for
-// OpenAI-compatible/Responses transports, while an explicit false always denies.
+// content inside a tool-result message. This capability is strict opt-in:
+// unset/unknown and explicit false both fail closed. The wire transport still has
+// to support content parts; callers combine this declaration with that check.
 func (mc ModelConfig) SupportsToolImageInput() bool {
-	if !mc.SupportsVision() {
+	if !mc.SupportsVision() || mc.Catalog.ToolImageInput == nil {
 		return false
 	}
-	if mc.Catalog.ToolImageInput != nil {
-		return *mc.Catalog.ToolImageInput
-	}
-	return true
+	return *mc.Catalog.ToolImageInput
 }
 
 // SupportsOriginalImageDetail reports whether the model/provider explicitly
@@ -474,8 +470,8 @@ type ModelCatalogMetadata struct {
 	// (false = reasoner-only model; nil/true = the off position is allowed).
 	CanDisableReasoning *bool    `json:"can_disable_reasoning,omitempty"`
 	InputModalities     []string `json:"input_modalities,omitempty"`
-	// ToolImageInput is independent from ordinary image input. Nil defaults to
-	// the transport's declared tool-image support; false always fails closed.
+	// ToolImageInput is independent from ordinary image input. Nil/unknown and
+	// false both fail closed; only explicit true permits tool-result images.
 	ToolImageInput *bool `json:"tool_image_input,omitempty"`
 	// ImageDetailOriginal declares support for preserving original resolution.
 	// Nil/false means the model must request high detail.

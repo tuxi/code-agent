@@ -24,12 +24,13 @@ func TestBuildRunnerDerivesImageCapabilities(t *testing.T) {
 		wantOriginalImage bool
 	}{
 		{"text only", settings.ModelConfig{Model: "m", Catalog: settings.ModelCatalogMetadata{InputModalities: []string{"text"}}}, false, false, false},
-		{"vision openai", settings.ModelConfig{Model: "m", Provider: "openai", Catalog: settings.ModelCatalogMetadata{InputModalities: []string{"text", "image"}}}, true, true, false},
-		{"vision default provider", settings.ModelConfig{Model: "m", Catalog: settings.ModelCatalogMetadata{InputModalities: []string{"text", "image"}}}, true, true, false},
+		{"vision openai", settings.ModelConfig{Model: "m", Provider: "openai", Catalog: settings.ModelCatalogMetadata{InputModalities: []string{"text", "image"}}}, true, false, false},
+		{"vision default provider", settings.ModelConfig{Model: "m", Catalog: settings.ModelCatalogMetadata{InputModalities: []string{"text", "image"}}}, true, false, false},
 		{"vision ollama transport", settings.ModelConfig{Model: "m", Provider: "ollama", Catalog: settings.ModelCatalogMetadata{InputModalities: []string{"text", "image"}}}, false, false, false},
-		{"vision responses transport", settings.ModelConfig{Model: "m", Provider: "responses", Catalog: settings.ModelCatalogMetadata{InputModalities: []string{"text", "image"}}}, true, true, false},
+		{"vision responses transport", settings.ModelConfig{Model: "m", Provider: "responses", Catalog: settings.ModelCatalogMetadata{InputModalities: []string{"text", "image"}}}, true, false, false},
+		{"tool image explicit true", settings.ModelConfig{Model: "m", Provider: "openai", Catalog: settings.ModelCatalogMetadata{InputModalities: []string{"text", "image"}, ToolImageInput: boolPtr(true)}}, true, true, false},
 		{"tool image denied", settings.ModelConfig{Model: "m", Provider: "openai", Catalog: settings.ModelCatalogMetadata{InputModalities: []string{"text", "image"}, ToolImageInput: boolPtr(false)}}, true, false, false},
-		{"original detail", settings.ModelConfig{Model: "m", Provider: "openai", Catalog: settings.ModelCatalogMetadata{InputModalities: []string{"text", "image"}, ImageDetailOriginal: boolPtr(true)}}, true, true, true},
+		{"original detail", settings.ModelConfig{Model: "m", Provider: "openai", Catalog: settings.ModelCatalogMetadata{InputModalities: []string{"text", "image"}, ToolImageInput: boolPtr(true), ImageDetailOriginal: boolPtr(true)}}, true, true, true},
 		{"no modalities", settings.ModelConfig{Model: "m"}, false, false, false},
 	}
 	for _, tc := range cases {
