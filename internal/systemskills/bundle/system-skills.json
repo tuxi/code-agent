@@ -1,6 +1,6 @@
 {
   "schema": "codeagent.system-skills.v1",
-  "bundle_version": "2026.11.12.1",
+  "bundle_version": "2026.11.12.2",
   "skills": [
     {
       "name": "review-change",
@@ -38,9 +38,9 @@
       "name": "ui-adaptation",
       "source": "skills/ui-adaptation",
       "destination": "ui-adaptation",
-      "sha256": "ced31742121a03afb4a9481216698829ac3b16ba59c1ee0e167d51a8f2b1b4f1",
+      "sha256": "edbd2b8ea7a7b6658372e9dc386347a501ca32ffb5a1155475e3659a05ddcf4f",
       "scope": "system",
-      "version": "2",
+      "version": "3",
       "dependencies": [
         "review-change",
         "verify-change"
@@ -56,7 +56,7 @@
       "files": [
         {
           "path": "SKILL.md",
-          "sha256": "bf1b97433f97661646830ead42db8a325c276dedf2a6c38b8c1d3080bcb26d3c"
+          "sha256": "6853bac8d44539070b01ac1fd14bd48043888d512074d36cc53caad621f179e7"
         }
       ]
     },

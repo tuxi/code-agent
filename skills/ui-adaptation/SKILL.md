@@ -2,7 +2,7 @@
 name: ui-adaptation
 description: Understand an app, web, or design-mockup image's layout and adapt it across iPhone Duo, iPhone, and iPad. Use when the user provides a screenshot or design image and asks to analyze its layout, preserve or adapt it across devices, generate responsive previews, or verify that an implementation visually matches the source. Do not use for generic image captioning or for UI implementation that has no visual reference.
 metadata:
-  version: "2"
+  version: "3"
 ---
 
 # UI Adaptation
@@ -40,9 +40,21 @@ If the image is a workspace file, call `view_image`. If it is already attached,
 confirm which attached asset is the source. Do not rely on a path mention or an
 OCR summary as evidence that the image was seen.
 
-Use original detail for layout inspection when supported. Inspect one overview
-first, then request region crops for navigation, controls, small text, and
-ambiguous groups.
+Treat “原图”, “source image”, “原始图片”, “full-resolution source”, or
+“查看原图” as names for the source asset, not as an instruction to request
+`detail=original`. Start with `view_image(detail="high")`.
+
+Request `detail="original"` only when the current Runtime/Model capability
+snapshot explicitly declares `image_detail_original=true`. If the capability is
+false or unknown, keep `detail="high"`; do not infer support from the user's
+wording, image dimensions, file type, or a previous device session.
+
+Inspect one high-detail overview first, then request region crops for navigation,
+controls, small text, and ambiguous groups. Prefer `high` plus a region crop over
+`original` for close inspection. If `view_image` returns
+`image_detail_original_unsupported`, preserve the fail-closed behavior: do not
+silently downgrade or claim original detail. Retry only with an explicit
+`detail="high"` request after reporting the unsupported capability.
 
 Image-view results always retain the source asset. A crop is an additional child
 asset linked to that source, never a replacement.
@@ -154,6 +166,8 @@ Source viewed: <image>
 Layout summary: <brief hierarchy>
 Observed: <facts>
 Inferred: <assumptions>
+Uncertainties: <unknowns or unresolved evidence>
+Evidence: <views, crops, OCR, accessibility, or DOM facts>
 Questions that affect adaptation: <only material questions>
 Next step: <confirm interpretation or generate previews>
 ```
@@ -174,8 +188,10 @@ available through the asset/Inspector surface and summarize what matters.
 - A static mockup does not reveal disabled states, focus, gestures, navigation, or
   content overflow behavior.
 - A wide screen may require sidebar navigation, split view, or multiple panes.
-- Image resizing can destroy one-pixel separators and small labels; use original
-  detail or semantic crops for close inspection.
+- Image resizing can destroy one-pixel separators and small labels; use
+  `detail="high"` plus a semantic or region crop for close inspection.
+- “原图” denotes the source asset. It is not a request for `detail="original"`;
+  original detail remains capability-gated by `image_detail_original=true`.
 - A preview interaction is not production proof and is not an approval signal.
 - A preview derived from a reviewed layout must carry `ui_preview_lineage.v1` so
   its layout revision and source image remain traceable.
