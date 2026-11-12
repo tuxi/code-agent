@@ -470,6 +470,9 @@ type MuxOptions struct {
 	// AutomationStore serves the /v1/automations control-plane endpoints. Nil
 	// disables them (404), matching the Providers/Granter pattern.
 	AutomationStore automation.Store
+	// SkillPlugins exposes the typed skill/plugin inventory and local plugin
+	// lifecycle API. Nil leaves the routes and capability unavailable.
+	SkillPlugins SkillPluginService
 }
 
 // RuntimeCapabilities is the explicit concurrency handshake consumed by
@@ -501,6 +504,7 @@ type RuntimeCapabilities struct {
 	PreviewInteractiveHTMLV1    bool `json:"preview_interactive_html_v1"`
 	PreviewStaticAssetV1        bool `json:"preview_static_asset_v1"`
 	PreviewReplayV1             bool `json:"preview_replay_v1"`
+	SkillPluginManagement       bool `json:"skill_plugin_management_v1"`
 	MaxConcurrentTurns          int  `json:"max_concurrent_turns"`
 	MaxConnectedSessions        int  `json:"max_connected_sessions"`
 }
@@ -630,6 +634,7 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 	runtimeCapabilities.PublicGitClone = opts.CloneService != nil
 	runtimeCapabilities.WorkspaceGitBranch = opts.GitBranches != nil
 	runtimeCapabilities.ConversationFork = opts.SessionForks != nil
+	runtimeCapabilities.SkillPluginManagement = opts.SkillPlugins != nil
 	previewFlags := preview.RuntimeFlags{}
 	if opts.Preview != nil && opts.Preview.Available() {
 		previewFlags = preview.FullRuntimeFlags()
@@ -666,6 +671,9 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 	}
 	if runtimeCapabilities.ConversationListPagination && !hasCapability(advertisedCapabilities, "conversation_list_pagination_v1") {
 		advertisedCapabilities = append(advertisedCapabilities, "conversation_list_pagination_v1")
+	}
+	if runtimeCapabilities.SkillPluginManagement && !hasCapability(advertisedCapabilities, "skill_plugin_management_v1") {
+		advertisedCapabilities = append(advertisedCapabilities, "skill_plugin_management_v1")
 	}
 	var previewMismatch bool
 	advertisedCapabilities, previewMismatch = preview.ReconcileAdvertised(advertisedCapabilities, previewFlags)
@@ -739,6 +747,7 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 	registerGitBranchRoutes(mux, opts)
 	registerAutomationRoutes(mux, opts)
 	registerWorkflowRoutes(mux, opts)
+	registerSkillPluginRoutes(mux, repo, opts)
 
 	mux.HandleFunc("GET /v1/activity", func(w http.ResponseWriter, r *http.Request) {
 		generatedAt := time.Now().UTC()

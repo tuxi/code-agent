@@ -1,0 +1,28 @@
+{
+  "schema": "runtime-skill-inventory/v1",
+  "scope": {
+    "session_id": "sess_fixture",
+    "workspace_id": "ws_fixture",
+    "display_name": "fixture",
+    "resolved": true
+  },
+  "items": [
+    {
+      "name": "verify-change",
+      "scope": "system",
+      "source": "system",
+      "path": "skills/.system/verify-change/SKILL.md",
+      "version": "1",
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "enabled": true,
+      "status": "active",
+      "resources": {
+        "count": 1,
+        "names": ["references/checklist.md"]
+      },
+      "warnings": [],
+      "parse_errors": []
+    }
+  ],
+  "reload_required": false
+}

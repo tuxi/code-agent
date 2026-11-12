@@ -4,6 +4,11 @@ Status: implemented foundation. This document defines the CodeAgent distribution
 boundary shared by `codeagent`, `codeagentd`, AgentKit/Talkify's embedded runtime,
 and future skill management surfaces.
 
+The P1-A backend management contract is defined in
+[skill-plugin-management-api.md](skill-plugin-management-api.md). It covers
+skill/plugin inventory, local plugin lifecycle, bearer-auth requirements,
+workspace-scoped project skills, integrity failures, and reload semantics.
+
 ## Scopes and paths
 
 | Scope | Path | Conflict behavior |

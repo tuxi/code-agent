@@ -1,0 +1,30 @@
+{
+  "schema": "runtime-plugin-inventory/v1",
+  "items": [
+    {
+      "name": "docs",
+      "version": "1.0.0",
+      "description": "Docs plugin",
+      "enabled": true,
+      "source": "local",
+      "source_kind": "local_directory",
+      "cache_id": "plg_fixture",
+      "cache_path": "plugins/cache/docs/1.0.0",
+      "manifest_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "bundle_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "installed_skills": [
+        {
+          "name": "docs:search",
+          "path": "plugins/cache/docs/1.0.0/skills/search/SKILL.md",
+          "valid": true
+        }
+      ],
+      "mcp_servers": ["docs__lookup"],
+      "has_apps": true,
+      "has_hooks": true,
+      "integrity_status": "verified",
+      "reload_required": false
+    }
+  ],
+  "reload_required": false
+}

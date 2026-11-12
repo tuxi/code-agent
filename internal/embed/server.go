@@ -1167,6 +1167,7 @@ func Assemble(ctx context.Context, cfg settings.Settings, mc settings.ModelConfi
 		Permissions:          server.NewPermissionStore(homeDir()),
 		WorkspaceReloader:    wsReg.ReloadWorkspace,
 		Prompts:              wsReg, // default workspace's MCP prompts; per-workspace needs a wire change
+		SkillPlugins:         runtime.NewSkillPluginManager(cfg.GlobalSkillsDir),
 		CapabilityResolver: func(ctx context.Context) []string {
 			persistence, ok := repo.(conversation.UserAssetsPersistenceCapability)
 			if ok && persistence.SupportsUserAssetsPersistence() && rb.ImageInputCapability(ctx, cred) {

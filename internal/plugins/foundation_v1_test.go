@@ -180,3 +180,30 @@ func TestInstallLocalRejectsZipTraversalAndSymlink(t *testing.T) {
 		})
 	}
 }
+
+func TestUninstallLocalRejectsCacheSymlinkEscape(t *testing.T) {
+	skillsDir := filepath.Join(t.TempDir(), "skills")
+	source := filepath.Join(t.TempDir(), "docs-plugin")
+	writeTestPlugin(t, source)
+	entry, err := InstallLocal(skillsDir, source, InstallOptions{Confirmed: true, Source: source})
+	if err != nil {
+		t.Fatal(err)
+	}
+	outside := t.TempDir()
+	if err := os.RemoveAll(entry.Path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, entry.Path); err != nil {
+		t.Fatal(err)
+	}
+	if err := UninstallLocal(skillsDir, "docs"); err == nil {
+		t.Fatal("uninstall followed a cache symlink outside the plugin cache")
+	}
+	if _, err := os.Stat(outside); err != nil {
+		t.Fatalf("outside directory was removed: %v", err)
+	}
+	registry, err := LoadInstalledRegistryForSkillsDir(skillsDir)
+	if err != nil || len(registry.Plugins) != 1 {
+		t.Fatalf("registry after refused uninstall = %#v, %v", registry, err)
+	}
+}

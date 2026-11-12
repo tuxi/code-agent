@@ -1,0 +1,24 @@
+{
+  "schema": "runtime-plugin-mutation/v1",
+  "action": "disabled",
+  "plugin": {
+    "name": "docs",
+    "version": "1.0.0",
+    "description": "Docs plugin",
+    "enabled": false,
+    "source": "local",
+    "source_kind": "local_directory",
+    "cache_id": "plg_fixture",
+    "cache_path": "plugins/cache/docs/1.0.0",
+    "manifest_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "bundle_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "installed_skills": [],
+    "mcp_servers": ["docs__lookup"],
+    "has_apps": true,
+    "has_hooks": true,
+    "integrity_status": "verified",
+    "reload_required": true
+  },
+  "reload_required": true,
+  "reload_hint": "Restart the CodeAgent runtime to apply plugin changes."
+}

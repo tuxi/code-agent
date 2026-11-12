@@ -122,81 +122,21 @@ func loadRoots(roots []Root) (*Registry, error) {
 // directory is silent (no-op); other errors propagate. Higher-precedence scopes
 // override lower-precedence ones by name.
 func loadDir(r *Registry, root Root) error {
-	entries, err := os.ReadDir(root.Dir)
+	discovered, err := discoverRoot(root)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
 		return err
 	}
 
-	for _, e := range entries {
-		if e.Name() == ".system" && root.Scope == ScopeUser {
-			continue // system skills are loaded from their own root
-		}
-		var content []byte
-		var label string    // key for Skipped map and duplicate detection
-		var skillDir string // absolute path for directory-style skills; empty for bare files
-		var srcPath string  // path to the SKILL.md file; empty for bare files
-		var mt time.Time    // mtime of the source file
-
-		if e.IsDir() {
-			p := filepath.Join(root.Dir, e.Name(), "SKILL.md")
-			info, err := os.Stat(p)
-			if err != nil {
-				continue
-			}
-			b, err := os.ReadFile(p)
-			if err != nil {
-				continue
-			}
-			content = b
-			label = e.Name()
-			skillDir = filepath.Join(root.Dir, e.Name())
-			srcPath = p
-			mt = info.ModTime()
-		} else if strings.HasSuffix(e.Name(), ".md") {
-			p := filepath.Join(root.Dir, e.Name())
-			info, err := os.Stat(p)
-			if err != nil {
-				continue
-			}
-			b, err := os.ReadFile(p)
-			if err != nil {
-				continue
-			}
-			content = b
-			label = strings.TrimSuffix(e.Name(), ".md")
-			srcPath = p
-			mt = info.ModTime()
-		} else {
-			continue
-		}
-
-		skill, err := parseSkill(string(content))
-		if err != nil {
-			r.Skipped[label] = err.Error()
+	for _, item := range discovered {
+		label := item.label
+		skill := item.skill
+		if item.parseErr != "" {
+			r.Skipped[label] = item.parseErr
 			r.Errors = append(r.Errors, LoadError{
 				Label: label, Scope: root.Scope, Source: root.Source,
-				Path: srcPath, Err: err.Error(),
+				Path: skill.Path, Err: item.parseErr,
 			})
 			continue
-		}
-		if root.PluginName != "" {
-			skill.namespace = root.PluginName
-			skill.Meta.Name = root.PluginName + ":" + skill.Meta.Name
-		}
-		skill.Dir = skillDir
-		skill.Scope = root.Scope
-		skill.Source = root.Source
-		skill.Path = srcPath
-		sum := sha256.Sum256(content)
-		skill.ContentHash = hex.EncodeToString(sum[:])
-		skill.Enabled = true
-		skill.sourcePath = srcPath
-		skill.modTime = mt
-		if skillDir != "" {
-			skill.Resources = scanResources(skillDir)
 		}
 		if existing, dup := r.skills[skill.Name]; dup {
 			if root.Scope == ScopePlugin && existing.Scope != ScopePlugin {
@@ -204,7 +144,7 @@ func loadDir(r *Registry, root Root) error {
 				r.Skipped[label] = reason
 				r.Errors = append(r.Errors, LoadError{
 					Label: label, Scope: root.Scope, Source: root.Source,
-					Path: srcPath, Err: reason,
+					Path: skill.Path, Err: reason,
 				})
 				continue
 			}
@@ -213,7 +153,7 @@ func loadDir(r *Registry, root Root) error {
 				r.Skipped[label] = reason
 				r.Errors = append(r.Errors, LoadError{
 					Label: label, Scope: root.Scope, Source: root.Source,
-					Path: srcPath, Err: reason,
+					Path: skill.Path, Err: reason,
 				})
 				continue
 			}
@@ -221,7 +161,7 @@ func loadDir(r *Registry, root Root) error {
 				fmt.Fprintf(os.Stderr, "skills: %s skill %q overrides %s skill\n", root.Scope, skill.Name, existing.Scope)
 				r.Errors = append(r.Errors, LoadError{
 					Label: label, Scope: root.Scope, Source: root.Source,
-					Path: srcPath,
+					Path: skill.Path,
 					Err:  fmt.Sprintf("%s skill %q shadows %s skill", root.Scope, skill.Name, existing.Scope),
 				})
 			} else if existing.Path != skill.Path {

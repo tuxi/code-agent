@@ -78,36 +78,57 @@ func MCPConfigForSkillsDir(skillsDir string) (mcp.Config, error) {
 		if err != nil {
 			return mcp.Config{}, err
 		}
-		if len(manifest.MCPServers) == 0 {
-			continue
-		}
-		var path string
-		var cfg mcp.Config
-		if err := json.Unmarshal(manifest.MCPServers, &path); err == nil {
-			resolved, err := ResolvePluginPath(entry.Path, path)
-			if err != nil {
-				return mcp.Config{}, err
-			}
-			cfg, err = mcp.LoadFile(resolved)
-			if err != nil {
-				return mcp.Config{}, fmt.Errorf("plugin %q mcpServers: %w", entry.Name, err)
-			}
-		} else {
-			wrapped, err := json.Marshal(struct {
-				MCPServers json.RawMessage `json:"mcpServers"`
-			}{MCPServers: manifest.MCPServers})
-			if err != nil {
-				return mcp.Config{}, err
-			}
-			cfg, err = mcp.ParseJSON(wrapped)
-			if err != nil {
-				return mcp.Config{}, fmt.Errorf("plugin %q mcpServers: %w", entry.Name, err)
-			}
+		cfg, err := MCPConfigForManifest(entry.Path, entry.Name, manifest)
+		if err != nil {
+			return mcp.Config{}, err
 		}
 		for i := range cfg.Servers {
-			cfg.Servers[i].Name = entry.Name + "__" + cfg.Servers[i].Name
+			cfg.Servers[i].Name = mcpServerName(entry.Name, cfg.Servers[i].Name)
 		}
 		layers = append(layers, cfg)
 	}
 	return mcp.Merge(layers...), nil
+}
+
+// MCPConfigForManifest parses a plugin's MCP declaration without connecting it.
+// The returned server names are un-namespaced; callers exposing them on the wire
+// should use NamespacedMCPServerName.
+func MCPConfigForManifest(pluginRoot, pluginName string, manifest *Manifest) (mcp.Config, error) {
+	if manifest == nil || len(manifest.MCPServers) == 0 {
+		return mcp.Config{}, nil
+	}
+	var path string
+	var cfg mcp.Config
+	if err := json.Unmarshal(manifest.MCPServers, &path); err == nil {
+		resolved, err := ResolvePluginPath(pluginRoot, path)
+		if err != nil {
+			return mcp.Config{}, err
+		}
+		cfg, err = mcp.LoadFile(resolved)
+		if err != nil {
+			return mcp.Config{}, fmt.Errorf("plugin %q mcpServers: %w", pluginName, err)
+		}
+		return cfg, nil
+	}
+	wrapped, err := json.Marshal(struct {
+		MCPServers json.RawMessage `json:"mcpServers"`
+	}{MCPServers: manifest.MCPServers})
+	if err != nil {
+		return mcp.Config{}, err
+	}
+	cfg, err = mcp.ParseJSON(wrapped)
+	if err != nil {
+		return mcp.Config{}, fmt.Errorf("plugin %q mcpServers: %w", pluginName, err)
+	}
+	return cfg, nil
+}
+
+// NamespacedMCPServerName returns the active inventory/runtime identity of a
+// plugin MCP server. It intentionally does not carry connection details.
+func NamespacedMCPServerName(pluginName, serverName string) string {
+	return pluginName + "__" + serverName
+}
+
+func mcpServerName(pluginName, serverName string) string {
+	return NamespacedMCPServerName(pluginName, serverName)
 }

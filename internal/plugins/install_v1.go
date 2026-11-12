@@ -15,7 +15,11 @@ import (
 	"time"
 )
 
-var ErrConfirmationRequired = errors.New("plugin installation requires explicit user confirmation")
+var (
+	ErrConfirmationRequired = errors.New("plugin installation requires explicit user confirmation")
+	ErrManifestInvalid      = errors.New("plugin manifest is invalid")
+	ErrPluginNotFound       = errors.New("plugin is not installed")
+)
 
 type InstallOptions struct {
 	Confirmed bool
@@ -121,10 +125,19 @@ func InstallLocal(skillsDir, source string, opts InstallOptions) (*InstalledPlug
 		return nil, fmt.Errorf("plugin source: %w", err)
 	}
 	cacheRoot := filepath.Join(PluginsRootForSkillsDir(skillsDir), "cache")
+	if info, statErr := os.Lstat(cacheRoot); statErr == nil {
+		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			return nil, fmt.Errorf("plugin cache root must be a real directory")
+		}
+	}
 	stageRoot, err := os.MkdirTemp(cacheRoot, ".staging-")
 	if err != nil {
 		if err := os.MkdirAll(cacheRoot, 0o755); err != nil {
 			return nil, err
+		}
+		info, statErr := os.Lstat(cacheRoot)
+		if statErr != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			return nil, fmt.Errorf("plugin cache root must be a real directory")
 		}
 		stageRoot, err = os.MkdirTemp(cacheRoot, ".staging-")
 		if err != nil {
@@ -151,7 +164,7 @@ func InstallLocal(skillsDir, source string, opts InstallOptions) (*InstalledPlug
 
 	manifest, manifestPath, err := LoadManifest(stage)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: %v", ErrManifestInvalid, err)
 	}
 	manifestData, err := os.ReadFile(manifestPath)
 	if err != nil {
@@ -248,7 +261,7 @@ func SetPluginEnabled(skillsDir, name string, enabled bool) error {
 			return SaveInstalledRegistryForSkillsDir(skillsDir, registry)
 		}
 	}
-	return fmt.Errorf("plugin %q is not installed", name)
+	return fmt.Errorf("%w: %q", ErrPluginNotFound, name)
 }
 
 func UninstallLocal(skillsDir, name string) error {
@@ -266,14 +279,29 @@ func UninstallLocal(skillsDir, name string) error {
 		remaining = append(remaining, registry.Plugins[i])
 	}
 	if removed == nil {
-		return fmt.Errorf("plugin %q is not installed", name)
+		return fmt.Errorf("%w: %q", ErrPluginNotFound, name)
 	}
 	cacheRoot := filepath.Join(PluginsRootForSkillsDir(skillsDir), "cache")
-	rel, err := filepath.Rel(cacheRoot, removed.Path)
+	cacheInfo, err := os.Lstat(cacheRoot)
+	if err != nil {
+		return fmt.Errorf("inspect plugin cache root: %w", err)
+	}
+	if !cacheInfo.IsDir() || cacheInfo.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("refuse to use a non-directory or symlinked plugin cache root")
+	}
+	cacheRoot, err = filepath.EvalSymlinks(cacheRoot)
+	if err != nil {
+		return fmt.Errorf("resolve plugin cache root: %w", err)
+	}
+	removedPath, err := filepath.EvalSymlinks(removed.Path)
+	if err != nil {
+		return fmt.Errorf("resolve plugin cache entry: %w", err)
+	}
+	rel, err := filepath.Rel(cacheRoot, removedPath)
 	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return fmt.Errorf("refuse to remove plugin outside cache: %s", removed.Path)
 	}
-	if err := os.RemoveAll(removed.Path); err != nil {
+	if err := os.RemoveAll(removedPath); err != nil {
 		return fmt.Errorf("remove plugin cache: %w", err)
 	}
 	registry.Plugins = remaining
