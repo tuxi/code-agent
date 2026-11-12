@@ -2,6 +2,25 @@
   "schema": "runtime-plugin-inventory/v1",
   "items": [
     {
+      "name": "broken",
+      "version": "1.0.0",
+      "description": "Broken plugin",
+      "enabled": true,
+      "source": "local",
+      "source_kind": "local_directory",
+      "cache_id": "plg_broken",
+      "cache_path": "plugins/cache/broken/1.0.0",
+      "manifest_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "bundle_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "installed_skills": [],
+      "mcp_servers": [],
+      "has_apps": false,
+      "has_hooks": false,
+      "integrity_status": "failed",
+      "error_code": "plugin_integrity_error",
+      "reload_required": false
+    },
+    {
       "name": "docs",
       "version": "1.0.0",
       "description": "Docs plugin",
@@ -19,11 +38,23 @@
           "valid": true
         }
       ],
-      "mcp_servers": ["docs__lookup"],
+      "mcp_servers": [
+        "docs__lookup"
+      ],
       "has_apps": true,
       "has_hooks": true,
       "integrity_status": "verified",
-      "reload_required": false
+      "reload_required": false,
+      "display_name": "Docs Center",
+      "category": "documentation",
+      "capabilities": [
+        "search",
+        "summarize"
+      ],
+      "icon": "https://cdn.example.com/icon.svg",
+      "logo": "assets/logo.png",
+      "brand_color": "#112233",
+      "website_url": "https://example.com/docs"
     }
   ],
   "reload_required": false

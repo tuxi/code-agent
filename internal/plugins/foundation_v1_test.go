@@ -207,3 +207,29 @@ func TestUninstallLocalRejectsCacheSymlinkEscape(t *testing.T) {
 		t.Fatalf("registry after refused uninstall = %#v, %v", registry, err)
 	}
 }
+
+func TestParseInterfaceMetadataAllowlistsSchemaFields(t *testing.T) {
+	raw := []byte(`{
+		"displayName":"Docs Center",
+		"category":"documentation",
+		"capabilities":["search","summarize"],
+		"composerIcon":"https://cdn.example.com/icon.svg",
+		"logo":"assets/logo.png",
+		"brandColor":"#112233",
+		"websiteURL":"https://example.com/docs",
+		"command":"must-not-leak",
+		"env":{"TOKEN":"must-not-leak"}
+	}`)
+	meta, ok := ParseInterfaceMetadata(raw)
+	if !ok {
+		t.Fatal("interface metadata was not parsed")
+	}
+	if meta.DisplayName != "Docs Center" || meta.Category != "documentation" ||
+		meta.Icon != "https://cdn.example.com/icon.svg" || meta.Logo != "assets/logo.png" ||
+		meta.BrandColor != "#112233" || meta.WebsiteURL != "https://example.com/docs" {
+		t.Fatalf("metadata = %#v", meta)
+	}
+	if len(meta.Capabilities) != 2 || meta.Capabilities[0] != "search" || meta.Capabilities[1] != "summarize" {
+		t.Fatalf("capabilities = %#v", meta.Capabilities)
+	}
+}

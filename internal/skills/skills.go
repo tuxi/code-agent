@@ -25,9 +25,17 @@ import (
 // Meta is the L1 view that lives in the prompt index — tiny, always in context.
 type Meta struct {
 	Name        string
+	DisplayName string
 	Description string
 	Version     string // e.g. "1"; carried from day one for skill_loaded telemetry
 	License     string // e.g. "Proprietary" or "Apache-2.0"; empty when unspecified
+}
+
+// Interface is optional management-surface metadata parsed from SKILL.md. It is
+// not included in the prompt index.
+type Interface struct {
+	DisplayName string
+	Icon        string
 }
 
 // Resource is an L3 file bundled with a skill — a reference document, a script,
@@ -50,6 +58,7 @@ type Skill struct {
 	Path        string     // absolute path to SKILL.md or the bare .md file
 	ContentHash string     // SHA-256 of the source bytes
 	Enabled     bool       // false entries are not returned by the loader
+	Interface   Interface  // optional UI metadata from frontmatter
 	sourcePath  string     // path to the SKILL.md file; empty for bare-file skills
 	modTime     time.Time  // mtime of SKILL.md when last loaded
 	namespace   string     // plugin namespace, already included in Meta.Name
@@ -388,13 +397,22 @@ func (r *Registry) PromptIndex() string {
 
 // frontmatter is the YAML header of a SKILL.md.
 type frontmatter struct {
-	Name        string `yaml:"name"`
-	Description string `yaml:"description"`
-	Version     string `yaml:"version"`
-	License     string `yaml:"license"`
+	Name        string               `yaml:"name"`
+	DisplayName string               `yaml:"display_name"`
+	Description string               `yaml:"description"`
+	Version     string               `yaml:"version"`
+	License     string               `yaml:"license"`
+	Interface   interfaceFrontmatter `yaml:"interface"`
 	Metadata    struct {
-		Version string `yaml:"version"`
+		Version     string               `yaml:"version"`
+		DisplayName string               `yaml:"display_name"`
+		Interface   interfaceFrontmatter `yaml:"interface"`
 	} `yaml:"metadata"`
+}
+
+type interfaceFrontmatter struct {
+	DisplayName string `yaml:"display_name"`
+	Icon        string `yaml:"icon"`
 }
 
 // parseSkill splits a SKILL.md into its YAML frontmatter and markdown body. The
@@ -435,13 +453,32 @@ func parseSkill(content string) (Skill, error) {
 	if version == "" {
 		version = strings.TrimSpace(fm.Metadata.Version)
 	}
+	displayName := firstNonEmpty(
+		fm.Interface.DisplayName,
+		fm.Metadata.Interface.DisplayName,
+		fm.DisplayName,
+		fm.Metadata.DisplayName,
+		strings.TrimSpace(fm.Name),
+	)
+	icon := firstNonEmpty(fm.Interface.Icon, fm.Metadata.Interface.Icon)
 	return Skill{
 		Meta: Meta{
 			Name:        strings.TrimSpace(fm.Name),
+			DisplayName: displayName,
 			Description: strings.TrimSpace(fm.Description),
 			Version:     version,
 			License:     strings.TrimSpace(fm.License),
 		},
-		Body: strings.TrimSpace(strings.Join(lines[end+1:], "\n")),
+		Body:      strings.TrimSpace(strings.Join(lines[end+1:], "\n")),
+		Interface: Interface{DisplayName: displayName, Icon: icon},
 	}, nil
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
 }

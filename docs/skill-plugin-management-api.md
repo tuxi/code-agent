@@ -43,14 +43,20 @@ Response schema: `runtime-skill-inventory/v1`.
   "items": [
     {
       "name": "verify-change",
+      "display_name": "Verify Change",
+      "description": "Verify a change before delivery.",
       "scope": "system",
       "source": "system",
+      "source_group": "system",
       "path": "skills/.system/verify-change/SKILL.md",
       "version": "1",
       "sha256": "64 lowercase hex characters",
       "enabled": true,
       "status": "active",
       "plugin_name": "docs",
+      "interface": {
+        "icon": "shield-check"
+      },
       "resources": {
         "count": 1,
         "names": ["references/checklist.md"]
@@ -73,6 +79,7 @@ Response schema: `runtime-skill-inventory/v1`.
       ]
     }
   ],
+  "warnings": [],
   "reload_required": false
 }
 ```
@@ -82,13 +89,21 @@ effective active candidate. Invalid entries retain parse diagnostics; shadowed
 entries retain `shadowed_by`, while active winners list all lower-precedence
 candidates in `shadows`.
 
+`description` and `display_name` are parsed from `SKILL.md`, so management
+clients do not need to read skill files. `display_name` falls back to the skill
+name. `source_group` is one of `system`, `user`, `project`, or `plugin`; the exact
+plugin identity remains in `plugin_name`. `interface.icon` is optional and is
+omitted when absent or unsafe.
+
 Paths are workspace-relative for project skills and data-root-relative for
 system/user/plugin content. Absolute internal paths, file bodies, command lines,
 environment values, and credentials are never returned. If a safe relative path
 cannot be derived, the API returns an opaque path identifier.
 
 Disabled plugins are absent from active skill inventory. Plugin skills use the
-stable `<plugin>:<skill>` namespace.
+stable `<plugin>:<skill>` namespace. A tampered plugin is skipped independently:
+healthy roots remain visible and top-level `warnings` reports
+`plugin_integrity_error`. Only an unreadable registry fails the whole request.
 
 ## Plugin inventory
 
@@ -104,6 +119,13 @@ Response schema: `runtime-plugin-inventory/v1`.
       "name": "docs",
       "version": "1.0.0",
       "description": "Docs plugin",
+      "display_name": "Docs Center",
+      "category": "documentation",
+      "capabilities": ["search", "summarize"],
+      "icon": "https://cdn.example.com/icon.svg",
+      "logo": "assets/logo.png",
+      "brand_color": "#112233",
+      "website_url": "https://example.com/docs",
       "enabled": true,
       "source": "local",
       "source_kind": "local_directory",
@@ -123,16 +145,43 @@ Response schema: `runtime-plugin-inventory/v1`.
       "has_hooks": false,
       "integrity_status": "verified",
       "reload_required": false
+    },
+    {
+      "name": "broken",
+      "version": "1.0.0",
+      "description": "Broken plugin",
+      "enabled": true,
+      "source": "local",
+      "source_kind": "local_directory",
+      "cache_id": "plg_broken",
+      "cache_path": "plugins/cache/broken/1.0.0",
+      "manifest_sha256": "64 lowercase hex characters",
+      "bundle_sha256": "64 lowercase hex characters",
+      "installed_skills": [],
+      "mcp_servers": [],
+      "has_apps": false,
+      "has_hooks": false,
+      "integrity_status": "failed",
+      "error_code": "plugin_integrity_error",
+      "reload_required": false
     }
   ],
   "reload_required": false
 }
 ```
 
-The manifest and bundle digests are both verified before this response is
-returned. A digest mismatch, malformed installed manifest, unsafe bundle, or
-invalid nested skill returns `plugin_integrity_error`. `mcp_servers` contains
-names only; server configuration and environment values are never serialized.
+Plugin interface metadata is projected from the manifest's allowlisted
+`interface` fields. Unknown fields are discarded, and unsafe URL schemes,
+absolute asset paths, path traversal, non-http(s) website URLs, and invalid
+color values are omitted. Items are sorted by plugin name.
+
+The manifest and bundle digests are verified per plugin. One tampered plugin does
+not fail the inventory: it is returned with `integrity_status: "failed"` and a
+stable `error_code`, while healthy plugins remain listed. Only an unreadable or
+malformed installed-plugin registry fails the whole request.
+
+`mcp_servers` contains names only; server configuration, commands, environment
+values, and credentials are never serialized.
 
 ## Plugin lifecycle
 
@@ -178,7 +227,8 @@ Success is HTTP 201 with `runtime-plugin-mutation/v1`:
 - `POST /v1/runtime/plugins/{name}/disable`
 
 The response contains the updated plugin item and reload semantics. Disabled
-plugins contribute neither namespaced skills nor MCP servers.
+plugins contribute neither namespaced skills nor MCP servers. Mutation endpoints
+remain fail-closed: enable/disable/install/uninstall reject a tampered plugin.
 
 ### Uninstall
 
@@ -213,7 +263,7 @@ Errors remain in the unified envelope. `data.code` is the stable machine code:
 | 404 | `conversation_not_found` | Session workspace cannot be resolved. |
 | 404 | `plugin_not_found` | Plugin is not installed. |
 | 409 | `workspace_scope_unresolved` | Session exists but requires workspace rebind. |
-| 409 | `plugin_integrity_error` | Manifest/bundle digest or cache integrity failed. |
+| 409 | `plugin_integrity_error` | A mutation was rejected because manifest/bundle or cache integrity failed. |
 | 422 | `plugin_manifest_invalid` | Local plugin manifest is malformed or invalid. |
 | 428 | `plugin_confirmation_required` | `confirmed: true` was not supplied. |
 | 500 | `skill_inventory_failed` | Skill roots could not be read. |

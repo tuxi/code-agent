@@ -109,3 +109,20 @@ func TestInspectScopedPluginNamespaceAndMalformed(t *testing.T) {
 		t.Fatalf("invalid entry = %#v", invalid)
 	}
 }
+
+func TestInspectScopedSkillDisplayMetadata(t *testing.T) {
+	root := t.TempDir()
+	writeSkill(t, root, "display", "---\nname: display\ndisplay_name: Display Skill\ndescription: Display description\nversion: 2\ninterface:\n  icon: sparkles\n---\nbody")
+	entries, err := InspectScoped(LoadOptions{UserDir: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("entries = %#v", entries)
+	}
+	entry := entries[0]
+	if entry.DisplayName != "Display Skill" || entry.Description != "Display description" ||
+		entry.Interface.Icon != "sparkles" || entry.Version != "2" {
+		t.Fatalf("display metadata = %#v", entry)
+	}
+}

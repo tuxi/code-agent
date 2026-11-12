@@ -167,6 +167,18 @@ func TestSkillPluginManagementPluginRoutesAndErrors(t *testing.T) {
 	if !reflect.DeepEqual(jsonValue(t, envelopeData(t, rec)), jsonValue(t, mustReadFile(t, "testdata/plugin_inventory_response.json"))) {
 		t.Fatal("plugin inventory response did not match fixture")
 	}
+	var listed runtimepkg.PluginInventory
+	if err := json.Unmarshal(envelopeData(t, rec), &listed); err != nil {
+		t.Fatal(err)
+	}
+	if len(listed.Items) != 2 {
+		t.Fatalf("tampered plugin item was not surfaced in 200 inventory: %#v", listed.Items)
+	}
+	for _, item := range listed.Items {
+		if item.Name == "broken" && (item.IntegrityStatus != "failed" || item.ErrorCode != runtimepkg.CodePluginIntegrityError) {
+			t.Fatalf("tampered plugin item = %#v", item)
+		}
+	}
 
 	rec = serveManagementRequest(mux, http.MethodPost, "/v1/runtime/plugins/install-local", strings.NewReader(`{"source":"/tmp/plugin"}`), auth)
 	assertManagementError(t, rec, http.StatusPreconditionRequired, runtimepkg.CodePluginConfirmationRequired)
@@ -202,11 +214,17 @@ func TestSkillPluginManagementPluginRoutesAndErrors(t *testing.T) {
 		Code: runtimepkg.CodePluginIntegrityError, Message: "installed plugin failed integrity verification",
 		Cause: errors.New("/Users/private/.codeagent/plugins/cache/docs: digest mismatch"),
 	}
-	rec = serveManagementRequest(mux, http.MethodGet, "/v1/runtime/plugins", nil, auth)
+	rec = serveManagementRequest(mux, http.MethodDelete, "/v1/runtime/plugins/docs", nil, auth)
 	assertManagementError(t, rec, http.StatusConflict, runtimepkg.CodePluginIntegrityError)
 	if strings.Contains(rec.Body.String(), "/Users/private") || strings.Contains(rec.Body.String(), "digest mismatch") {
 		t.Fatalf("management error leaked internal cause: %s", rec.Body.String())
 	}
+	service.pluginErr = &runtimepkg.ManagementError{
+		Code: runtimepkg.CodePluginRegistryInvalid, Message: "plugin registry could not be read",
+		Cause: errors.New("/Users/private/.codeagent/plugins/installed-plugins.json: permission denied"),
+	}
+	rec = serveManagementRequest(mux, http.MethodGet, "/v1/runtime/plugins", nil, auth)
+	assertManagementError(t, rec, http.StatusInternalServerError, runtimepkg.CodePluginRegistryInvalid)
 	wantError := jsonValue(t, mustReadFile(t, "testdata/management_error_response.json"))
 	if !reflect.DeepEqual(jsonValue(t, envelopeData(t, rec)), wantError) {
 		t.Fatalf("management error fixture mismatch: %s", rec.Body.String())

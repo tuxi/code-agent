@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -39,6 +40,13 @@ func TestSkillPluginManagerInventoryScopesAndWorkspaceIsolation(t *testing.T) {
 	}
 	if byName["system-skill"].Scope != "system" || byName["user-skill"].Scope != "user" || byName["project-a"].Scope != "project" {
 		t.Fatalf("scope classification = %#v", byName)
+	}
+	if byName["user-skill"].DisplayName != "user skill" || byName["user-skill"].Description != "user-skill description" ||
+		byName["user-skill"].SourceGroup != "user" || byName["user-skill"].Interface == nil || byName["user-skill"].Interface.Icon != "icon-user-skill" {
+		t.Fatalf("skill display metadata = %#v", byName["user-skill"])
+	}
+	if inventory.Warnings == nil || len(inventory.Warnings) != 0 {
+		t.Fatalf("skill inventory warnings = %#v", inventory.Warnings)
 	}
 	if _, ok := byName["project-b"]; ok {
 		t.Fatal("workspace B project skill leaked into workspace A inventory")
@@ -101,6 +109,14 @@ func TestSkillPluginManagerPluginLifecycleAndActiveInventory(t *testing.T) {
 	workspace := t.TempDir()
 	source := writeManagementPlugin(t, "docs", "1.0.0", "Search docs", map[string]any{
 		"lookup": map[string]any{"command": "docs-mcp", "env": map[string]any{"TOKEN": "super-secret-token"}},
+	}, map[string]any{
+		"interface": map[string]any{
+			"displayName": "Docs Center", "category": "documentation",
+			"capabilities": []string{"search", "summarize"},
+			"composerIcon": "https://cdn.example.com/icon.svg",
+			"logo":         "assets/logo.png", "brandColor": "#112233", "websiteURL": "https://example.com/docs",
+			"command": "raw-command-must-not-leak", "env": map[string]any{"SECRET": "interface-secret"},
+		},
 	})
 	manager := NewSkillPluginManager(skillsDir)
 	ctx := context.Background()
@@ -126,6 +142,12 @@ func TestSkillPluginManagerPluginLifecycleAndActiveInventory(t *testing.T) {
 	if installed.Plugin.Name != "docs" || installed.Plugin.IntegrityStatus != "verified" || len(installed.Plugin.InstalledSkills) != 1 || !installed.Plugin.InstalledSkills[0].Valid {
 		t.Fatalf("plugin item = %#v", installed.Plugin)
 	}
+	if installed.Plugin.DisplayName != "Docs Center" || installed.Plugin.Category != "documentation" ||
+		installed.Plugin.Icon != "https://cdn.example.com/icon.svg" || installed.Plugin.Logo != "assets/logo.png" ||
+		installed.Plugin.BrandColor != "#112233" || installed.Plugin.WebsiteURL != "https://example.com/docs" ||
+		!reflect.DeepEqual(installed.Plugin.Capabilities, []string{"search", "summarize"}) {
+		t.Fatalf("plugin interface metadata = %#v", installed.Plugin)
+	}
 	if len(installed.Plugin.MCPServers) != 1 || installed.Plugin.MCPServers[0] != "docs__lookup" || !installed.Plugin.HasApps || !installed.Plugin.HasHooks {
 		t.Fatalf("plugin capabilities = %#v", installed.Plugin)
 	}
@@ -141,7 +163,9 @@ func TestSkillPluginManagerPluginLifecycleAndActiveInventory(t *testing.T) {
 	for _, item := range inventory.Items {
 		if item.Name == "docs:search" {
 			pluginSkillFound = true
-			if item.Scope != "plugin" || item.PluginName != "docs" || !item.Enabled {
+			if item.Scope != "plugin" || item.SourceGroup != "plugin" || item.PluginName != "docs" || !item.Enabled ||
+				item.Description != "Search docs" || item.DisplayName != "Search Docs" ||
+				item.Interface == nil || item.Interface.Icon != "search" {
 				t.Fatalf("plugin skill item = %#v", item)
 			}
 		}
@@ -175,25 +199,14 @@ func TestSkillPluginManagerPluginLifecycleAndActiveInventory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, forbidden := range []string{"super-secret-token", source, dataRoot} {
-		if strings.Contains(string(raw), forbidden) {
-			t.Fatalf("plugin mutation leaked %q: %s", forbidden, raw)
-		}
-	}
-
-	registry, err := plugins.LoadInstalledRegistryForSkillsDir(skillsDir)
-	if err != nil || len(registry.Plugins) != 1 {
-		t.Fatalf("registry = %#v, %v", registry, err)
-	}
-	tamperPath := filepath.Join(registry.Plugins[0].Path, "skills", "search", "SKILL.md")
-	if err := os.WriteFile(tamperPath, []byte("tampered"), 0o644); err != nil {
+	inventoryRaw, err := json.Marshal(inventory)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := manager.PluginInventory(ctx); managementCode(err) != CodePluginIntegrityError {
-		t.Fatalf("tampered plugin inventory error = %v", err)
-	}
-	if _, err := manager.SkillInventory(ctx, "sess", workspace); managementCode(err) != CodePluginIntegrityError {
-		t.Fatalf("tampered skill inventory error = %v", err)
+	for _, forbidden := range []string{"super-secret-token", "docs-mcp", "raw-command-must-not-leak", "interface-secret", source, dataRoot} {
+		if strings.Contains(string(raw), forbidden) || strings.Contains(string(inventoryRaw), forbidden) {
+			t.Fatalf("plugin response leaked %q: mutation=%s inventory=%s", forbidden, raw, inventoryRaw)
+		}
 	}
 
 	removed, err := manager.UninstallPlugin(ctx, "docs")
@@ -203,12 +216,99 @@ func TestSkillPluginManagerPluginLifecycleAndActiveInventory(t *testing.T) {
 	if removed.Name != "docs" || removed.ReloadRequired {
 		t.Fatalf("uninstall response = %#v", removed)
 	}
-	if _, err := os.Stat(registry.Plugins[0].Path); !os.IsNotExist(err) {
-		t.Fatalf("plugin cache still exists after uninstall: %v", err)
-	}
-	registry, err = plugins.LoadInstalledRegistryForSkillsDir(skillsDir)
+	registry, err := plugins.LoadInstalledRegistryForSkillsDir(skillsDir)
 	if err != nil || len(registry.Plugins) != 0 {
 		t.Fatalf("registry after uninstall = %#v, %v", registry, err)
+	}
+}
+
+func TestSkillPluginManagerReadOnlyInventoryToleratesTamperedPlugins(t *testing.T) {
+	dataRoot := t.TempDir()
+	skillsDir := filepath.Join(dataRoot, "skills")
+	workspace := t.TempDir()
+	healthy := writeManagementPlugin(t, "healthy", "1.0.0", "Healthy plugin", map[string]any{
+		"lookup": map[string]any{"command": "healthy-mcp", "env": map[string]any{"TOKEN": "healthy-secret"}},
+	})
+	broken := writeManagementPlugin(t, "broken", "1.0.0", "Broken plugin", map[string]any{
+		"lookup": map[string]any{"command": "broken-mcp", "env": map[string]any{"TOKEN": "broken-secret"}},
+	})
+	manager := NewSkillPluginManager(skillsDir)
+	ctx := context.Background()
+	for _, source := range []string{healthy, broken} {
+		if _, err := manager.InstallLocalPlugin(ctx, InstallLocalPluginRequest{Source: source, Confirmed: true}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	registry, err := plugins.LoadInstalledRegistryForSkillsDir(skillsDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var brokenEntry plugins.InstalledPluginV1
+	for _, entry := range registry.Plugins {
+		if entry.Name == "broken" {
+			brokenEntry = entry
+		}
+	}
+	manifestPath := filepath.Join(brokenEntry.Path, ".codeagent-plugin", "plugin.json")
+	if err := os.WriteFile(manifestPath, []byte(`{"schema":"tampered"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	pluginsInventory, err := manager.PluginInventory(ctx)
+	if err != nil {
+		t.Fatalf("plugin inventory must tolerate one tampered plugin: %v", err)
+	}
+	if len(pluginsInventory.Items) != 2 {
+		t.Fatalf("plugin inventory items = %#v", pluginsInventory.Items)
+	}
+	byName := make(map[string]PluginInventoryItem)
+	for _, item := range pluginsInventory.Items {
+		byName[item.Name] = item
+	}
+	if byName["broken"].IntegrityStatus != "failed" || byName["broken"].ErrorCode != CodePluginIntegrityError {
+		t.Fatalf("tampered plugin item = %#v", byName["broken"])
+	}
+	if byName["healthy"].IntegrityStatus != "verified" || byName["healthy"].ErrorCode != "" {
+		t.Fatalf("healthy plugin item = %#v", byName["healthy"])
+	}
+
+	skillsInventory, err := manager.SkillInventory(ctx, "sess", workspace)
+	if err != nil {
+		t.Fatalf("skill inventory must tolerate one tampered plugin: %v", err)
+	}
+	skillNames := make(map[string]bool)
+	for _, item := range skillsInventory.Items {
+		skillNames[item.Name] = true
+	}
+	if !skillNames["healthy:search"] || skillNames["broken:search"] {
+		t.Fatalf("skill inventory items = %#v", skillsInventory.Items)
+	}
+	if len(skillsInventory.Warnings) != 1 || skillsInventory.Warnings[0].Code != CodePluginIntegrityError ||
+		!strings.Contains(skillsInventory.Warnings[0].Message, "broken") {
+		t.Fatalf("skill inventory warnings = %#v", skillsInventory.Warnings)
+	}
+
+	if _, err := manager.SetPluginEnabled(ctx, "broken", false); managementCode(err) != CodePluginIntegrityError {
+		t.Fatalf("enable/disable must fail closed for tampered plugin: %v", err)
+	}
+	if _, err := manager.UninstallPlugin(ctx, "broken"); managementCode(err) != CodePluginIntegrityError {
+		t.Fatalf("uninstall must fail closed for tampered plugin: %v", err)
+	}
+	if _, err := os.Stat(brokenEntry.Path); err != nil {
+		t.Fatalf("failed mutation removed tampered plugin cache: %v", err)
+	}
+
+	raw, err := json.Marshal(struct {
+		Plugins PluginInventory `json:"plugins"`
+		Skills  SkillInventory  `json:"skills"`
+	}{Plugins: pluginsInventory, Skills: skillsInventory})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{dataRoot, healthy, broken, "healthy-mcp", "broken-mcp", "healthy-secret", "broken-secret"} {
+		if strings.Contains(string(raw), forbidden) {
+			t.Fatalf("inventory leaked %q: %s", forbidden, raw)
+		}
 	}
 }
 
@@ -242,7 +342,7 @@ func TestSkillPluginManagerReloadRequiredAndMalformedManifest(t *testing.T) {
 	}
 }
 
-func TestSkillPluginManagerManifestDigestMismatchIsIntegrityError(t *testing.T) {
+func TestSkillPluginManagerManifestDigestMismatchMarksItemFailed(t *testing.T) {
 	skillsDir := filepath.Join(t.TempDir(), "skills")
 	source := writeManagementPlugin(t, "manifest-tamper", "1.0.0", "Original", nil)
 	entry, err := plugins.InstallLocal(skillsDir, source, plugins.InstallOptions{Confirmed: true, Source: "local_directory"})
@@ -267,8 +367,12 @@ func TestSkillPluginManagerManifestDigestMismatchIsIntegrityError(t *testing.T) 
 		t.Fatal(err)
 	}
 	manager := NewSkillPluginManager(skillsDir)
-	if _, err := manager.PluginInventory(context.Background()); managementCode(err) != CodePluginIntegrityError {
-		t.Fatalf("manifest digest mismatch error = %v", err)
+	inventory, err := manager.PluginInventory(context.Background())
+	if err != nil {
+		t.Fatalf("manifest digest mismatch must be item-local: %v", err)
+	}
+	if len(inventory.Items) != 1 || inventory.Items[0].IntegrityStatus != "failed" || inventory.Items[0].ErrorCode != CodePluginIntegrityError {
+		t.Fatalf("manifest digest mismatch item = %#v", inventory.Items)
 	}
 }
 
@@ -278,20 +382,21 @@ func writeManagementSkill(t *testing.T, root, name string) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	body := "---\nname: " + name + "\ndescription: " + name + "\nversion: 1\n---\nbody"
+	displayName := strings.ReplaceAll(name, "-", " ")
+	body := "---\nname: " + name + "\ndisplay_name: " + displayName + "\ndescription: " + name + " description\nversion: 1\ninterface:\n  icon: icon-" + name + "\n---\nbody"
 	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
 }
 
-func writeManagementPlugin(t *testing.T, name, version, description string, mcpServers any) string {
+func writeManagementPlugin(t *testing.T, name, version, description string, mcpServers any, extras ...map[string]any) string {
 	t.Helper()
 	root := filepath.Join(t.TempDir(), name+"-plugin")
-	writeManagementPluginAt(t, root, name, version, description, mcpServers)
+	writeManagementPluginAt(t, root, name, version, description, mcpServers, extras...)
 	return root
 }
 
-func writeManagementPluginAt(t *testing.T, root, name, version, description string, mcpServers any) {
+func writeManagementPluginAt(t *testing.T, root, name, version, description string, mcpServers any, extras ...map[string]any) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Join(root, ".codeagent-plugin"), 0o755); err != nil {
 		t.Fatal(err)
@@ -307,6 +412,11 @@ func writeManagementPluginAt(t *testing.T, root, name, version, description stri
 	if mcpServers != nil {
 		manifest["mcpServers"] = mcpServers
 	}
+	for _, extra := range extras {
+		for key, value := range extra {
+			manifest[key] = value
+		}
+	}
 	data, err := json.Marshal(manifest)
 	if err != nil {
 		t.Fatal(err)
@@ -314,7 +424,7 @@ func writeManagementPluginAt(t *testing.T, root, name, version, description stri
 	if err := os.WriteFile(filepath.Join(root, ".codeagent-plugin", "plugin.json"), data, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	skill := "---\nname: search\ndescription: Search docs\n---\nbody"
+	skill := "---\nname: search\ndisplay_name: Search Docs\ndescription: Search docs\ninterface:\n  icon: search\n---\nbody"
 	if err := os.WriteFile(filepath.Join(root, "skills", "search", "SKILL.md"), []byte(skill), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -326,4 +436,26 @@ func managementCode(err error) string {
 		return management.Code
 	}
 	return ""
+}
+
+func TestPluginInterfaceProjectionDropsUnsafeValues(t *testing.T) {
+	item := PluginInventoryItem{}
+	applyPluginInterfaceMetadata(&item, json.RawMessage(`{
+		"displayName":" Safe Name ",
+		"category":"docs",
+		"capabilities":["search","search"," summarize "],
+		"composerIcon":"lucide:search",
+		"logo":"/Users/private/logo.png",
+		"brandColor":"red; background:url(secret)",
+		"websiteURL":"file:///Users/private/plugin.html"
+	}`))
+	if item.DisplayName != "Safe Name" || item.Category != "docs" || item.Icon != "lucide:search" {
+		t.Fatalf("safe projection = %#v", item)
+	}
+	if !reflect.DeepEqual(item.Capabilities, []string{"search", "summarize"}) {
+		t.Fatalf("capabilities = %#v", item.Capabilities)
+	}
+	if item.Logo != "" || item.BrandColor != "" || item.WebsiteURL != "" {
+		t.Fatalf("unsafe interface values survived projection: %#v", item)
+	}
 }

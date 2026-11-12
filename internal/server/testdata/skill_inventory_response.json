@@ -18,11 +18,20 @@
       "status": "active",
       "resources": {
         "count": 1,
-        "names": ["references/checklist.md"]
+        "names": [
+          "references/checklist.md"
+        ]
       },
       "warnings": [],
-      "parse_errors": []
+      "parse_errors": [],
+      "display_name": "Verify Change",
+      "description": "Verify a change before delivery.",
+      "source_group": "system",
+      "interface": {
+        "icon": "shield-check"
+      }
     }
   ],
-  "reload_required": false
+  "reload_required": false,
+  "warnings": []
 }

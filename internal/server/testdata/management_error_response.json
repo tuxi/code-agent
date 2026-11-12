@@ -1,4 +1,4 @@
 {
-  "code": "plugin_integrity_error",
-  "message": "installed plugin failed integrity verification"
+  "code": "plugin_registry_invalid",
+  "message": "plugin registry could not be read"
 }

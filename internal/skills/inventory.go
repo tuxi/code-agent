@@ -38,9 +38,11 @@ type InventoryEntry struct {
 	PluginName  string
 	Path        string
 	Dir         string
+	DisplayName string
 	Version     string
 	Description string
 	License     string
+	Interface   Interface
 	ContentHash string
 	Enabled     bool
 	Status      string
@@ -72,9 +74,11 @@ func InspectScoped(opts LoadOptions) ([]InventoryEntry, error) {
 				PluginName:  root.PluginName,
 				Path:        item.skill.Path,
 				Dir:         item.skill.Dir,
+				DisplayName: item.skill.Meta.DisplayName,
 				Version:     item.skill.Meta.Version,
 				Description: item.skill.Meta.Description,
 				License:     item.skill.Meta.License,
+				Interface:   item.skill.Interface,
 				ContentHash: item.skill.ContentHash,
 				Resources:   append([]Resource(nil), item.skill.Resources...),
 			}

@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -64,20 +65,28 @@ type SkillResourceInventory struct {
 }
 
 type SkillInventoryItem struct {
-	Name        string                 `json:"name"`
-	Scope       string                 `json:"scope"`
-	Source      string                 `json:"source"`
-	Path        string                 `json:"path"`
-	Version     string                 `json:"version"`
-	SHA256      string                 `json:"sha256"`
-	Enabled     bool                   `json:"enabled"`
-	Status      string                 `json:"status"`
-	PluginName  string                 `json:"plugin_name,omitempty"`
-	Resources   SkillResourceInventory `json:"resources"`
-	Warnings    []ManagementWarning    `json:"warnings"`
-	ParseErrors []string               `json:"parse_errors"`
-	ShadowedBy  *SkillOriginInventory  `json:"shadowed_by,omitempty"`
-	Shadows     []SkillOriginInventory `json:"shadows,omitempty"`
+	Name        string                   `json:"name"`
+	DisplayName string                   `json:"display_name"`
+	Description string                   `json:"description"`
+	Scope       string                   `json:"scope"`
+	Source      string                   `json:"source"`
+	SourceGroup string                   `json:"source_group"`
+	Path        string                   `json:"path"`
+	Version     string                   `json:"version"`
+	SHA256      string                   `json:"sha256"`
+	Enabled     bool                     `json:"enabled"`
+	Status      string                   `json:"status"`
+	PluginName  string                   `json:"plugin_name,omitempty"`
+	Interface   *SkillInterfaceInventory `json:"interface,omitempty"`
+	Resources   SkillResourceInventory   `json:"resources"`
+	Warnings    []ManagementWarning      `json:"warnings"`
+	ParseErrors []string                 `json:"parse_errors"`
+	ShadowedBy  *SkillOriginInventory    `json:"shadowed_by,omitempty"`
+	Shadows     []SkillOriginInventory   `json:"shadows,omitempty"`
+}
+
+type SkillInterfaceInventory struct {
+	Icon string `json:"icon,omitempty"`
 }
 
 type SkillOriginInventory struct {
@@ -96,6 +105,7 @@ type SkillInventory struct {
 	Schema         string               `json:"schema"`
 	Scope          SkillInventoryScope  `json:"scope"`
 	Items          []SkillInventoryItem `json:"items"`
+	Warnings       []ManagementWarning  `json:"warnings"`
 	ReloadRequired bool                 `json:"reload_required"`
 	ReloadHint     string               `json:"reload_hint,omitempty"`
 }
@@ -111,6 +121,13 @@ type PluginInventoryItem struct {
 	Name            string                 `json:"name"`
 	Version         string                 `json:"version"`
 	Description     string                 `json:"description"`
+	DisplayName     string                 `json:"display_name,omitempty"`
+	Category        string                 `json:"category,omitempty"`
+	Capabilities    []string               `json:"capabilities,omitempty"`
+	Icon            string                 `json:"icon,omitempty"`
+	Logo            string                 `json:"logo,omitempty"`
+	BrandColor      string                 `json:"brand_color,omitempty"`
+	WebsiteURL      string                 `json:"website_url,omitempty"`
 	Enabled         bool                   `json:"enabled"`
 	Source          string                 `json:"source"`
 	SourceKind      string                 `json:"source_kind"`
@@ -123,6 +140,7 @@ type PluginInventoryItem struct {
 	HasApps         bool                   `json:"has_apps"`
 	HasHooks        bool                   `json:"has_hooks"`
 	IntegrityStatus string                 `json:"integrity_status"`
+	ErrorCode       string                 `json:"error_code,omitempty"`
 	ReloadRequired  bool                   `json:"reload_required"`
 }
 
@@ -174,21 +192,14 @@ func (m *SkillPluginManager) SkillInventory(ctx context.Context, sessionID, work
 		return SkillInventory{}, err
 	}
 	opts := skills.WorkspaceLoadOptions(m.skillsDir, workspacePath)
+	inventoryWarnings := []ManagementWarning{}
 	if m.skillsDir != "" {
-		registry, err := plugins.LoadInstalledRegistryForSkillsDir(m.skillsDir)
+		roots, warnings, err := m.activePluginSkillRoots()
 		if err != nil {
-			return SkillInventory{}, managementError(CodePluginRegistryInvalid, "plugin registry could not be read", err)
-		}
-		for _, entry := range registry.Plugins {
-			if _, err := plugins.VerifyInstalled(entry); err != nil {
-				return SkillInventory{}, managementError(CodePluginIntegrityError, "installed plugin failed integrity verification", err)
-			}
-		}
-		roots, err := plugins.SkillRootsForSkillsDir(m.skillsDir)
-		if err != nil {
-			return SkillInventory{}, managementError(CodePluginIntegrityError, "installed plugin failed integrity verification", err)
+			return SkillInventory{}, err
 		}
 		opts.Plugins = roots
+		inventoryWarnings = append(inventoryWarnings, warnings...)
 	}
 	entries, err := skills.InspectScoped(opts)
 	if err != nil {
@@ -197,16 +208,24 @@ func (m *SkillPluginManager) SkillInventory(ctx context.Context, sessionID, work
 
 	items := make([]SkillInventoryItem, 0, len(entries))
 	for _, entry := range entries {
+		displayName := strings.TrimSpace(entry.DisplayName)
+		if displayName == "" {
+			displayName = entry.Name
+		}
 		item := SkillInventoryItem{
 			Name:        entry.Name,
+			DisplayName: displayName,
+			Description: entry.Description,
 			Scope:       string(entry.Scope),
 			Source:      entry.Source,
+			SourceGroup: skillSourceGroup(entry.Scope, entry.Source),
 			Path:        m.displayPath(workspacePath, entry.Path, entry.Scope),
 			Version:     entry.Version,
 			SHA256:      entry.ContentHash,
 			Enabled:     entry.Enabled,
 			Status:      entry.Status,
 			PluginName:  entry.PluginName,
+			Interface:   skillInterfaceInventory(entry.Interface),
 			Resources:   m.resourceInventory(entry),
 			Warnings:    inventoryWarningDTOs(entry),
 			ParseErrors: append([]string{}, entry.ParseErrors...),
@@ -229,7 +248,7 @@ func (m *SkillPluginManager) SkillInventory(ctx context.Context, sessionID, work
 			SessionID: sessionID, WorkspaceID: opaqueID("ws", workspacePath),
 			DisplayName: workspaceDisplayName(workspacePath), Resolved: workspacePath != "",
 		},
-		Items: items, ReloadRequired: reloadRequired,
+		Items: items, Warnings: inventoryWarnings, ReloadRequired: reloadRequired,
 	}
 	if reloadRequired {
 		result.ReloadHint = PluginReloadHint
@@ -410,6 +429,9 @@ func (m *SkillPluginManager) UninstallPlugin(ctx context.Context, name string) (
 	if !ok {
 		return UninstallPluginMutation{}, managementError(CodePluginNotFound, "plugin is not installed", plugins.ErrPluginNotFound)
 	}
+	if _, err := plugins.VerifyInstalled(entry); err != nil {
+		return UninstallPluginMutation{}, managementError(CodePluginIntegrityError, "installed plugin failed integrity verification", err)
+	}
 	if err := plugins.UninstallLocal(m.skillsDir, name); err != nil {
 		return UninstallPluginMutation{}, managementError(CodePluginOperationFailed, "plugin could not be uninstalled", err)
 	}
@@ -428,20 +450,37 @@ func (m *SkillPluginManager) UninstallPlugin(ctx context.Context, name string) (
 }
 
 func (m *SkillPluginManager) pluginInventoryItem(entry plugins.InstalledPluginV1) (PluginInventoryItem, error) {
+	item, err := m.basePluginInventoryItem(entry)
+	if err != nil {
+		return PluginInventoryItem{}, err
+	}
 	manifest, err := plugins.VerifyInstalled(entry)
 	if err != nil {
-		return PluginInventoryItem{}, managementError(CodePluginIntegrityError, "installed plugin failed integrity verification", err)
+		item.IntegrityStatus = "failed"
+		item.ErrorCode = CodePluginIntegrityError
+		return item, nil
 	}
-	installedSkills := m.pluginInstalledSkills(entry, manifest)
+	item.IntegrityStatus = "verified"
+	item.InstalledSkills = m.pluginInstalledSkills(entry, manifest)
+	item.HasApps = jsonFieldPresent(manifest.Apps)
+	item.HasHooks = jsonFieldPresent(manifest.Hooks)
+	applyPluginInterfaceMetadata(&item, manifest.Interface)
 	mcpNames, err := plugins.MCPConfigForManifest(entry.Path, entry.Name, manifest)
 	if err != nil {
-		return PluginInventoryItem{}, managementError(CodePluginIntegrityError, "installed plugin MCP declaration could not be verified", err)
+		item.IntegrityStatus = "failed"
+		item.ErrorCode = "plugin_mcp_config_invalid"
+		return item, nil
 	}
 	servers := make([]string, 0, len(mcpNames.Servers))
 	for _, server := range mcpNames.Servers {
 		servers = append(servers, plugins.NamespacedMCPServerName(entry.Name, server.Name))
 	}
 	sort.Strings(servers)
+	item.MCPServers = servers
+	return item, nil
+}
+
+func (m *SkillPluginManager) basePluginInventoryItem(entry plugins.InstalledPluginV1) (PluginInventoryItem, error) {
 	reloadRequired, err := m.pluginReloadRequired(entry.Name)
 	if err != nil {
 		return PluginInventoryItem{}, err
@@ -455,8 +494,7 @@ func (m *SkillPluginManager) pluginInventoryItem(entry plugins.InstalledPluginV1
 		Enabled: entry.Enabled, Source: "local", SourceKind: pluginSourceKind(entry.Source),
 		CacheID:   opaqueID("plg", entry.Name+"@"+entry.Version+":"+entry.ManifestSHA256+":"+entry.BundleSHA256),
 		CachePath: cachePath, ManifestSHA256: entry.ManifestSHA256, BundleSHA256: entry.BundleSHA256,
-		InstalledSkills: installedSkills, MCPServers: servers,
-		HasApps: jsonFieldPresent(manifest.Apps), HasHooks: jsonFieldPresent(manifest.Hooks),
+		InstalledSkills: []PluginInstalledSkill{}, MCPServers: []string{},
 		IntegrityStatus: "verified", ReloadRequired: reloadRequired,
 	}, nil
 }
@@ -489,6 +527,162 @@ func (m *SkillPluginManager) pluginInstalledSkills(entry plugins.InstalledPlugin
 	}
 	sort.Slice(skillsOut, func(i, j int) bool { return skillsOut[i].Name < skillsOut[j].Name })
 	return skillsOut
+}
+
+// activePluginSkillRoots verifies plugins independently so one corrupt cache
+// cannot hide skills from healthy plugins. Disabled plugins are not roots.
+func (m *SkillPluginManager) activePluginSkillRoots() ([]skills.Root, []ManagementWarning, error) {
+	registry, err := plugins.LoadInstalledRegistryForSkillsDir(m.skillsDir)
+	if err != nil {
+		return nil, nil, managementError(CodePluginRegistryInvalid, "plugin registry could not be read", err)
+	}
+	roots := make([]skills.Root, 0)
+	warnings := make([]ManagementWarning, 0)
+	for _, entry := range registry.Plugins {
+		if !entry.Enabled {
+			continue
+		}
+		manifest, err := plugins.VerifyInstalled(entry)
+		if err != nil {
+			warnings = append(warnings, ManagementWarning{
+				Code:    CodePluginIntegrityError,
+				Message: fmt.Sprintf("plugin %q was skipped because its integrity check failed", entry.Name),
+			})
+			continue
+		}
+		for _, declared := range manifest.Skills {
+			root, err := plugins.ResolvePluginPath(entry.Path, declared)
+			if err != nil {
+				warnings = append(warnings, ManagementWarning{
+					Code:    "plugin_skill_invalid",
+					Message: fmt.Sprintf("plugin %q declared an invalid skill root and it was skipped", entry.Name),
+				})
+				continue
+			}
+			roots = append(roots, skills.Root{Dir: root, Scope: skills.ScopePlugin, PluginName: entry.Name})
+		}
+	}
+	return roots, warnings, nil
+}
+
+func skillSourceGroup(scope skills.Scope, source string) string {
+	if scope == skills.ScopePlugin || strings.HasPrefix(source, "plugin:") {
+		return "plugin"
+	}
+	return string(scope)
+}
+
+func skillInterfaceInventory(metadata skills.Interface) *SkillInterfaceInventory {
+	icon := safeInterfaceAsset(metadata.Icon)
+	if icon == "" {
+		return nil
+	}
+	return &SkillInterfaceInventory{Icon: icon}
+}
+
+func applyPluginInterfaceMetadata(item *PluginInventoryItem, raw json.RawMessage) {
+	metadata, ok := plugins.ParseInterfaceMetadata(raw)
+	if !ok {
+		return
+	}
+	item.DisplayName = safeDisplayText(metadata.DisplayName, 80)
+	item.Category = safeDisplayText(metadata.Category, 80)
+	item.Capabilities = safeCapabilities(metadata.Capabilities)
+	item.Icon = safeInterfaceAsset(metadata.Icon)
+	item.Logo = safeInterfaceAsset(metadata.Logo)
+	item.BrandColor = safeBrandColor(metadata.BrandColor)
+	item.WebsiteURL = safeHTTPURL(metadata.WebsiteURL)
+}
+
+func safeDisplayText(value string, max int) string {
+	value = strings.Join(strings.Fields(strings.TrimSpace(value)), " ")
+	runes := []rune(value)
+	if len(runes) > max {
+		return string(runes[:max])
+	}
+	return value
+}
+
+func safeCapabilities(values []string) []string {
+	out := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		value = safeDisplayText(value, 64)
+		if value == "" {
+			continue
+		}
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+		if len(out) == 32 {
+			break
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func safeInterfaceAsset(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" || len(value) > 2048 || strings.Contains(value, "\\") || strings.ContainsAny(value, " \t\n\r") {
+		return ""
+	}
+	if parsed, err := url.Parse(value); err == nil && parsed.Scheme != "" {
+		if (parsed.Scheme == "https" || parsed.Scheme == "http") && parsed.Host != "" && parsed.User == nil {
+			return value
+		}
+		if !strings.ContainsAny(value, `/\\`) && safeInterfaceToken(value) {
+			return value
+		}
+		return ""
+	}
+	if filepath.IsAbs(value) || strings.Contains(value, "..") {
+		return ""
+	}
+	return value
+}
+
+func safeInterfaceToken(value string) bool {
+	for _, r := range value {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') ||
+			r == '.' || r == '_' || r == '-' || r == ':' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func safeHTTPURL(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	parsed, err := url.Parse(value)
+	if err != nil || (parsed.Scheme != "https" && parsed.Scheme != "http") || parsed.Host == "" || parsed.User != nil {
+		return ""
+	}
+	return value
+}
+
+func safeBrandColor(value string) string {
+	value = strings.TrimSpace(value)
+	if len(value) != 4 && len(value) != 5 && len(value) != 7 && len(value) != 9 {
+		return ""
+	}
+	if value[0] != '#' {
+		return ""
+	}
+	for _, r := range value[1:] {
+		if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F')) {
+			return ""
+		}
+	}
+	return value
 }
 
 func (m *SkillPluginManager) resourceInventory(entry skills.InventoryEntry) SkillResourceInventory {
