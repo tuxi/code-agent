@@ -341,7 +341,7 @@ func TestProviderStoreRoundTripsReasoningFields(t *testing.T) {
 	store := NewProviderStore(path, nil)
 	handler := testProviderMux(t, store)
 
-	body := `{"base_url":"https://api.custom.example/v1","api":"openai","models":[{"id":"reasoner-x","reasoning_effort":"high","supported_reasoning_efforts":["low","medium","high","x-high","max"],"can_disable_reasoning":false},{"id":"thinker-y","supports_reasoning":true}]}`
+	body := `{"base_url":"https://api.custom.example/v1","api":"openai","models":[{"id":"reasoner-x","tool_image_input":true,"reasoning_effort":"high","supported_reasoning_efforts":["low","medium","high","x-high","max"],"can_disable_reasoning":false},{"id":"thinker-y","supports_reasoning":true}]}`
 	req := httptest.NewRequest(http.MethodPut, "/v1/providers/custom-svc", bytes.NewBufferString(body))
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -366,6 +366,9 @@ func TestProviderStoreRoundTripsReasoningFields(t *testing.T) {
 	if m.CanDisableReasoning == nil || *m.CanDisableReasoning {
 		t.Errorf("can_disable_reasoning = %v, want false", m.CanDisableReasoning)
 	}
+	if m.ToolImageInput == nil || !*m.ToolImageInput {
+		t.Errorf("tool_image_input = %v, want explicit true", m.ToolImageInput)
+	}
 	if got.Models[1].SupportsReasoning == nil || !*got.Models[1].SupportsReasoning {
 		t.Errorf("supports_reasoning = %v, want true", got.Models[1].SupportsReasoning)
 	}
@@ -377,6 +380,9 @@ func TestProviderStoreRoundTripsReasoningFields(t *testing.T) {
 	pm := f.Providers["custom-svc"].Models[0]
 	if pm.ReasoningEffort != "high" || len(pm.SupportedReasoningEfforts) != 5 {
 		t.Errorf("persisted model = %+v, want reasoning fields intact", pm)
+	}
+	if pm.ToolImageInput == nil || !*pm.ToolImageInput {
+		t.Errorf("persisted tool_image_input = %v, want explicit true", pm.ToolImageInput)
 	}
 }
 
@@ -413,6 +419,28 @@ func TestProviderTemplatesExposeReasoningCapability(t *testing.T) {
 	}
 	if len(qwen.Models[0].SupportedReasoningEfforts) != 0 {
 		t.Errorf("qwen supported_reasoning_efforts = %v, want empty (toggle only)", qwen.Models[0].SupportedReasoningEfforts)
+	}
+}
+
+func TestProviderTemplatesExposeToolImageInput(t *testing.T) {
+	templates := buildProviderTemplates()
+	var vision *ProviderTemplateModelDTO
+	for i := range templates {
+		if templates[i].ID != "opencode-go" {
+			continue
+		}
+		for j := range templates[i].Models {
+			if templates[i].Models[j].ID == "deepseek-v4.1-flash" {
+				vision = &templates[i].Models[j]
+				break
+			}
+		}
+	}
+	if vision == nil {
+		t.Fatal("deepseek-v4.1-flash template missing")
+	}
+	if vision.ToolImageInput == nil || !*vision.ToolImageInput {
+		t.Errorf("tool_image_input = %v, want explicit true", vision.ToolImageInput)
 	}
 }
 

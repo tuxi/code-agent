@@ -82,6 +82,7 @@ type RuntimeModelDescriptor struct {
 	SupportsTools     bool       `json:"supports_tools"`
 	SupportsReasoning bool       `json:"supports_reasoning"`
 	InputModalities   []string   `json:"input_modalities"`
+	ToolImageInput    bool       `json:"tool_image_input"`
 	Available         bool       `json:"available"`
 	// UnavailableReason explains why Available is false (wire v2). Omitted when
 	// the model is available.
@@ -227,8 +228,10 @@ func buildRuntimeModelCatalog(cfg settings.Settings, injected credential.Resolve
 			ID: settings.ModelID(alias, mc), Configured: true, ConfigurationID: settings.ModelConfigurationID(mc),
 			RuntimeAlias: alias, WireModelID: mc.Model, DisplayName: displayName,
 			ContextWindow: mc.ContextWindow, SupportsTools: supportsTools,
-			SupportsReasoning: mc.Catalog.SupportsReasoning != nil && *mc.Catalog.SupportsReasoning,
-			InputModalities:   modalities, Available: available,
+			SupportsReasoning:         mc.Catalog.SupportsReasoning != nil && *mc.Catalog.SupportsReasoning,
+			InputModalities:           modalities,
+			ToolImageInput:            mc.Catalog.ToolImageInput != nil && *mc.Catalog.ToolImageInput,
+			Available:                 available,
 			UnavailableReason:         reason,
 			ReasoningEffort:           mc.ReasoningEffort,
 			SupportedReasoningEfforts: mc.Catalog.SupportedReasoningEfforts,

@@ -63,6 +63,7 @@ type builtinModelTemplate struct {
 	SupportsTools     bool     // tool calling
 	SupportsReasoning bool     // reasoning/thinking
 	InputModalities   []string // "text", "image", "audio"
+	ToolImageInput    *bool    // explicit tool-result image support; nil/unknown stays false
 	WebSearch         bool     // supports web search tool
 	InputPricePerM    float64  // USD per million input tokens
 	OutputPricePerM   float64  // USD per million output tokens
@@ -120,8 +121,8 @@ var builtinConnections = map[string]builtinConnection{
 		WireModel: "deepseek-flash", ProviderType: "openai",
 		DisplayName: "DeepSeek", Summary: "使用 DeepSeek API 密钥连接", Kind: "api_key",
 		Models: []builtinModelTemplate{
-			{ID: "deepseek-flash", RuntimeAlias: "deepseek", ContextWindow: 1_000_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text"}, WebSearch: true, InputPricePerM: 0.16, OutputPricePerM: 0.32, SupportedReasoningEfforts: []string{"low", "medium", "high"}, CanDisableReasoning: boolPtr(true), ReasoningEffort: "low"},
-			{ID: "deepseek-v4-pro", RuntimeAlias: "deepseek-pro", ContextWindow: 1_000_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text"}, InputPricePerM: 0.45, OutputPricePerM: 0.90, SupportedReasoningEfforts: []string{"low", "medium", "high"}, CanDisableReasoning: boolPtr(true), ReasoningEffort: "low"},
+			{ID: "deepseek-flash", RuntimeAlias: "deepseek", ContextWindow: 1_000_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text", "image"}, WebSearch: true, InputPricePerM: 0.16, OutputPricePerM: 0.32, SupportedReasoningEfforts: []string{"low", "medium", "high"}, CanDisableReasoning: boolPtr(true), ReasoningEffort: "low"},
+			{ID: "deepseek-v4-pro", RuntimeAlias: "deepseek-pro", ContextWindow: 1_000_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text", "image"}, InputPricePerM: 0.45, OutputPricePerM: 0.90, SupportedReasoningEfforts: []string{"low", "medium", "high"}, CanDisableReasoning: boolPtr(true), ReasoningEffort: "low"},
 		},
 	},
 	"qwen": {
@@ -152,20 +153,8 @@ var builtinConnections = map[string]builtinConnection{
 			// error model api error: status=400 type= message=Reasoning is mandatory for this endpoint and cannot be disabled.
 			{ID: "openrouter/auto", RuntimeAlias: "openrouter", ContextWindow: 200_000, SupportsTools: true, InputModalities: []string{"text"}, CanDisableReasoning: boolPtr(false), SupportsReasoning: true, SupportedReasoningEfforts: []string{"low", "high"}, ReasoningEffort: "low"},
 			{ID: "openrouter/free", RuntimeAlias: "openrouter", ContextWindow: 200_000, SupportsTools: true, InputModalities: []string{"text"}, CanDisableReasoning: boolPtr(false), SupportsReasoning: true, SupportedReasoningEfforts: []string{"low", "high"}, ReasoningEffort: "low"},
-			{ID: "nvidia/nemotron-3-ultra-550b-a55b:free", RuntimeAlias: "openrouter", ContextWindow: 1_000_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text"}, SupportedReasoningEfforts: []string{"low", "high", "max"}, CanDisableReasoning: boolPtr(false), ReasoningEffort: "high"},
-		},
-	},
-	"bai": {
-		BaseURL: "https://api.b.ai/v1/", Env: "BAI_API_KEY",
-		ProviderType: "openai",
-		DisplayName:  "B.ai", Summary: "通过一个 API 密钥使用多个模型", Kind: "api_key",
-		Models: []builtinModelTemplate{
-			{ID: "deepseek-flash", RuntimeAlias: "deepseek", ContextWindow: 1_000_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text"}, WebSearch: true, InputPricePerM: 0.16, OutputPricePerM: 0.32, SupportedReasoningEfforts: []string{"low", "medium", "high"}, CanDisableReasoning: boolPtr(true), ReasoningEffort: "low"},
-			{ID: "deepseek-v4-pro", RuntimeAlias: "deepseek-pro", ContextWindow: 1_000_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text"}, InputPricePerM: 0.45, OutputPricePerM: 0.90, SupportedReasoningEfforts: []string{"low", "medium", "high"}, CanDisableReasoning: boolPtr(true), ReasoningEffort: "low"},
-			{ID: "glm-5.3-flash", RuntimeAlias: "glm-flash", ContextWindow: 1_000_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text", "image"}, InputPricePerM: 0.16, OutputPricePerM: 0.32, SupportedReasoningEfforts: []string{"low", "high", "max"}, CanDisableReasoning: boolPtr(false), ReasoningEffort: "high"},
-			{ID: "mimo-v2.5", RuntimeAlias: "mino-v2.5", ContextWindow: 1_000_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text"}, InputPricePerM: 0.16, OutputPricePerM: 0.32, SupportedReasoningEfforts: []string{"low", "medium", "high"}, CanDisableReasoning: boolPtr(true), ReasoningEffort: "medium"},
-			{ID: "hy3", RuntimeAlias: "hy3", ContextWindow: 256_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text"}, InputPricePerM: 0.16, OutputPricePerM: 0.32, SupportedReasoningEfforts: []string{"low", "medium", "high"}, CanDisableReasoning: boolPtr(true), ReasoningEffort: "low"},
-			{ID: "qwen3.8-flash", RuntimeAlias: "qwen3.8-flash", ContextWindow: 1_000_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text"}, InputPricePerM: 0.16, OutputPricePerM: 0.32, SupportedReasoningEfforts: []string{"low", "medium", "high"}, CanDisableReasoning: boolPtr(true), ReasoningEffort: "medium"},
+			{ID: "stealth/crouton-alpha", RuntimeAlias: "openrouter", ContextWindow: 1_000_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text"}, SupportedReasoningEfforts: []string{"low", "medium", "high", "max"}, CanDisableReasoning: boolPtr(false), ReasoningEffort: "high"},
+			{ID: "nvidia/nemotron-3-ultra-550b-a55b:free", RuntimeAlias: "openrouter", ContextWindow: 1_000_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text", "image"}, SupportedReasoningEfforts: []string{"low", "high", "max"}, CanDisableReasoning: boolPtr(false), ReasoningEffort: "high"},
 		},
 	},
 	"ollama": {
@@ -182,16 +171,16 @@ var builtinConnections = map[string]builtinConnection{
 		ProviderType: "openai",
 		DisplayName:  "OpenCode Go", Summary: "低订阅费开源编程模型（首月 $5，之后 $10/月）", Kind: "api_key",
 		Models: []builtinModelTemplate{
-			{ID: "gpt-5.6-luna", RuntimeAlias: "opencode", API: "responses", ContextWindow: 1_000_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text"}, InputPricePerM: 0.22, OutputPricePerM: 0.66, SupportedReasoningEfforts: []string{"low", "medium", "high", "xhigh", "max"}, CanDisableReasoning: boolPtr(true), ReasoningEffort: "medium"},
-			{ID: "deepseek-v4.1-flash", RuntimeAlias: "opencode", ContextWindow: 1_000_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text"}, InputPricePerM: 0.22, OutputPricePerM: 0.66, SupportedReasoningEfforts: []string{"low", "medium", "high"}, CanDisableReasoning: boolPtr(true), ReasoningEffort: "low"},
+			{ID: "gpt-5.6-luna", RuntimeAlias: "opencode", API: "responses", ContextWindow: 1_000_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text", "image"}, InputPricePerM: 0.22, OutputPricePerM: 0.66, SupportedReasoningEfforts: []string{"low", "medium", "high", "xhigh", "max"}, CanDisableReasoning: boolPtr(true), ReasoningEffort: "medium"},
+			{ID: "deepseek-v4.1-flash", RuntimeAlias: "opencode", ContextWindow: 1_000_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text", "image"}, ToolImageInput: boolPtr(true), InputPricePerM: 0.22, OutputPricePerM: 0.66, SupportedReasoningEfforts: []string{"low", "medium", "high"}, CanDisableReasoning: boolPtr(true), ReasoningEffort: "low"},
 			{ID: "deepseek-v4-flash-vision-exp", RuntimeAlias: "opencode", ContextWindow: 1_000_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text", "image"}, InputPricePerM: 0.22, OutputPricePerM: 0.66, SupportedReasoningEfforts: []string{"low", "medium", "high"}, CanDisableReasoning: boolPtr(true), ReasoningEffort: "low"},
-			{ID: "deepseek-v4-pro", RuntimeAlias: "opencode", ContextWindow: 1_000_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text"}, InputPricePerM: 0.66, OutputPricePerM: 1.98, SupportedReasoningEfforts: []string{"low", "medium", "high"}, CanDisableReasoning: boolPtr(true), ReasoningEffort: "low"},
+			{ID: "deepseek-v4-pro", RuntimeAlias: "opencode", ContextWindow: 1_000_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text", "image"}, InputPricePerM: 0.66, OutputPricePerM: 1.98, SupportedReasoningEfforts: []string{"low", "medium", "high"}, CanDisableReasoning: boolPtr(true), ReasoningEffort: "low"},
 			{ID: "glm-5.3-flash-free", RuntimeAlias: "opencode", ContextWindow: 1_000_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text"}, InputPricePerM: 0.22, OutputPricePerM: 0.66, SupportedReasoningEfforts: []string{"low", "medium", "high"}, CanDisableReasoning: boolPtr(true), ReasoningEffort: "low"},
 			{ID: "deepseek-v4.1-flash-free", RuntimeAlias: "opencode", ContextWindow: 1_000_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text"}, InputPricePerM: 0.22, OutputPricePerM: 0.66, SupportedReasoningEfforts: []string{"low", "medium", "high"}, CanDisableReasoning: boolPtr(true), ReasoningEffort: "low"},
 			{ID: "kimi-k3", RuntimeAlias: "opencode", ContextWindow: 1_000_000, SupportsTools: true, InputModalities: []string{"text"}, InputPricePerM: 3.00, OutputPricePerM: 15.00, Temperature: 1.0},
 			{ID: "kimi-k2.7-code", RuntimeAlias: "opencode", ContextWindow: 256_000, SupportsTools: true, InputModalities: []string{"text"}, InputPricePerM: 1.2, OutputPricePerM: 5.6, Temperature: 1.0},
 			{ID: "glm-5.3", RuntimeAlias: "opencode", ContextWindow: 128_000, SupportsTools: true, InputModalities: []string{"text"}, InputPricePerM: 1.40, OutputPricePerM: 4.40, Temperature: 0.2},
-			{ID: "qwen3.8-flash", RuntimeAlias: "qwen3.8-flash", ContextWindow: 1_000_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text"}, InputPricePerM: 0.16, OutputPricePerM: 0.32, SupportedReasoningEfforts: []string{"low", "medium", "high"}, CanDisableReasoning: boolPtr(true), ReasoningEffort: "medium"},
+			{ID: "qwen3.8-flash", RuntimeAlias: "qwen3.8-flash", ContextWindow: 1_000_000, SupportsTools: true, SupportsReasoning: true, InputModalities: []string{"text", "image"}, InputPricePerM: 0.16, OutputPricePerM: 0.32, SupportedReasoningEfforts: []string{"low", "medium", "high"}, CanDisableReasoning: boolPtr(true), ReasoningEffort: "medium"},
 		},
 	},
 }
@@ -251,6 +240,9 @@ func applyRegistryDefaults(mc *settings.ModelConfig) {
 			if mc.OutputPricePerM == 0 && m.OutputPricePerM > 0 {
 				mc.OutputPricePerM = m.OutputPricePerM
 			}
+			if len(mc.Catalog.InputModalities) == 0 && len(m.InputModalities) > 0 {
+				mc.Catalog.InputModalities = append([]string(nil), m.InputModalities...)
+			}
 			// Web search is a plain bool (no unset state): fill it on when the
 			// registry declares it, never force it off.
 			if !mc.WebSearch && m.WebSearch {
@@ -267,6 +259,9 @@ func applyRegistryDefaults(mc *settings.ModelConfig) {
 			}
 			if mc.Catalog.SupportsReasoning == nil && m.SupportsReasoning {
 				mc.Catalog.SupportsReasoning = boolPtr(true)
+			}
+			if mc.Catalog.ToolImageInput == nil && m.ToolImageInput != nil {
+				mc.Catalog.ToolImageInput = m.ToolImageInput
 			}
 			break
 		}
@@ -342,6 +337,7 @@ type BuiltinProviderTemplateModel struct {
 	SupportsTools     bool
 	SupportsReasoning bool
 	InputModalities   []string
+	ToolImageInput    *bool
 	WebSearch         bool
 	InputPricePerM    float64
 	OutputPricePerM   float64
@@ -400,6 +396,7 @@ func BuiltinProviderTemplates() []BuiltinProviderTemplate {
 				SupportsTools:             m.SupportsTools,
 				SupportsReasoning:         m.SupportsReasoning,
 				InputModalities:           m.InputModalities,
+				ToolImageInput:            m.ToolImageInput,
 				WebSearch:                 m.WebSearch,
 				InputPricePerM:            m.InputPricePerM,
 				OutputPricePerM:           m.OutputPricePerM,
