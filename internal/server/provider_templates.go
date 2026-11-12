@@ -28,6 +28,7 @@ type ProviderTemplateModelDTO struct {
 	SupportsTools     bool     `json:"supports_tools,omitempty"`
 	SupportsReasoning bool     `json:"supports_reasoning,omitempty"`
 	InputModalities   []string `json:"input_modalities,omitempty"`
+	ToolImageInput    *bool    `json:"tool_image_input,omitempty"`
 	WebSearch         bool     `json:"web_search,omitempty"`
 	InputPricePerM    float64  `json:"input_price_per_million,omitempty"`
 	OutputPricePerM   float64  `json:"output_price_per_million,omitempty"`
@@ -66,6 +67,7 @@ func buildProviderTemplates() []ProviderTemplateDTO {
 				SupportsTools:             m.SupportsTools,
 				SupportsReasoning:         m.SupportsReasoning,
 				InputModalities:           m.InputModalities,
+				ToolImageInput:            m.ToolImageInput,
 				WebSearch:                 m.WebSearch,
 				InputPricePerM:            m.InputPricePerM,
 				OutputPricePerM:           m.OutputPricePerM,

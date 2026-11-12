@@ -61,6 +61,7 @@ type ProviderModelDTO struct {
 	SupportsTools       *bool    `json:"supports_tools,omitempty"`
 	SupportsReasoning   *bool    `json:"supports_reasoning,omitempty"`
 	InputModalities     []string `json:"input_modalities,omitempty"`
+	ToolImageInput      *bool    `json:"tool_image_input,omitempty"`
 	WebSearch           bool     `json:"web_search,omitempty"`
 
 	// ReasoningEffort is the model's default thinking budget

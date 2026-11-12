@@ -19,7 +19,7 @@ func TestFromSettingsProvidersExpand(t *testing.T) {
       "credential": {"namespace": "llm", "name": "qwen"},
       "models": [
         {"id": "qwen3-coder-plus"},
-        {"id": "qwen3.7-max", "context_window": 256000}
+        {"id": "qwen3.7-max", "context_window": 256000, "tool_image_input": true}
       ]
     }
   }
@@ -54,6 +54,9 @@ func TestFromSettingsProvidersExpand(t *testing.T) {
 	max := cfg.Models[maxKey]
 	if max.ContextWindow != 256000 {
 		t.Errorf("qwen3.7-max context_window = %d, want 256000 (override)", max.ContextWindow)
+	}
+	if max.Catalog.ToolImageInput == nil || !*max.Catalog.ToolImageInput {
+		t.Errorf("qwen3.7-max tool_image_input = %v, want explicit true", max.Catalog.ToolImageInput)
 	}
 }
 
@@ -285,6 +288,40 @@ func TestFromSettingsRegistryFillsReasoningCapability(t *testing.T) {
 	unknown := cfg.Models[aliasKey("deepseek", "deepseek-chat")]
 	if unknown.Catalog.SupportsReasoning != nil || len(unknown.Catalog.SupportedReasoningEfforts) != 0 {
 		t.Errorf("unknown model capability = %+v, want unset", unknown.Catalog)
+	}
+}
+
+// Built-in image-input models may also declare tool-result image support. The
+// registry fills that capability only when the config leaves it unset, and an
+// explicit config value remains authoritative.
+func TestFromSettingsRegistryFillsToolImageInput(t *testing.T) {
+	sf, err := settings.ParseJSON([]byte(`{
+  "providers": {
+    "opencode-go": {
+      "models": [
+        {"id": "deepseek-v4.1-flash"},
+        {"id": "deepseek-v4.1-flash-free"}
+      ]
+    }
+  }
+}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := FromSettings(settings.Settings{Providers: sf.Providers})
+	if err != nil {
+		t.Fatal(err)
+	}
+	supported := cfg.Models[aliasKey("opencode-go", "deepseek-v4.1-flash")]
+	if got := supported.Catalog.InputModalities; len(got) != 2 || got[0] != "text" || got[1] != "image" {
+		t.Errorf("deepseek-v4.1-flash input_modalities = %v, want registry [text image]", got)
+	}
+	if supported.Catalog.ToolImageInput == nil || !*supported.Catalog.ToolImageInput {
+		t.Errorf("deepseek-v4.1-flash tool_image_input = %v, want registry true", supported.Catalog.ToolImageInput)
+	}
+	unknown := cfg.Models[aliasKey("opencode-go", "deepseek-v4.1-flash-free")]
+	if unknown.Catalog.ToolImageInput != nil {
+		t.Errorf("deepseek-v4.1-flash-free tool_image_input = %v, want unset", unknown.Catalog.ToolImageInput)
 	}
 }
 

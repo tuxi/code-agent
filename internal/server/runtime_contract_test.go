@@ -37,6 +37,7 @@ func TestRuntimeContractPersistsIdentityAndCatalogRevisionWithoutSecrets(t *test
 					SupportedReasoningEfforts: []string{"low", "medium", "high", "x-high", "max"},
 					CanDisableReasoning:       boolPointer(false),
 					InputModalities:           []string{"image", "text"},
+					ToolImageInput:            boolPointer(true),
 				},
 			},
 		},
@@ -72,6 +73,9 @@ func TestRuntimeContractPersistsIdentityAndCatalogRevisionWithoutSecrets(t *test
 	// the reasoning toggle and effort picker.
 	if !model.SupportsReasoning {
 		t.Errorf("supports_reasoning = false, want true")
+	}
+	if !model.ToolImageInput {
+		t.Errorf("tool_image_input = false, want true")
 	}
 	if model.ReasoningEffort != "high" {
 		t.Errorf("reasoning_effort = %q, want high (configured default)", model.ReasoningEffort)

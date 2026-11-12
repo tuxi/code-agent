@@ -127,6 +127,7 @@ func FromSettings(set settings.Settings) (settings.Settings, error) {
 					SupportedReasoningEfforts: pm.SupportedReasoningEfforts,
 					CanDisableReasoning:       pm.CanDisableReasoning,
 					InputModalities:           pm.InputModalities,
+					ToolImageInput:            pm.ToolImageInput,
 				},
 			}
 
