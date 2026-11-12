@@ -424,6 +424,7 @@ func run() error {
 		Permissions:       server.NewPermissionStore(home),
 		WorkspaceReloader: wsReg.ReloadWorkspace,
 		Prompts:           wsReg,
+		SkillPlugins:      runtime.NewSkillPluginManager(cfg.GlobalSkillsDir),
 		CapabilityResolver: func(ctx context.Context) []string {
 			cfgMu.RLock()
 			current := cfg

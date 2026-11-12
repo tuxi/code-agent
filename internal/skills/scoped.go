@@ -64,6 +64,10 @@ func WorkspaceLoadOptions(globalSkillsDir, workspaceRoot string) LoadOptions {
 // LoadScoped loads all configured scopes into one registry. Plugin skills never
 // replace ordinary skills: their public names are namespaced by plugin name.
 func LoadScoped(opts LoadOptions) (*Registry, error) {
+	return loadRoots(scopedRoots(opts))
+}
+
+func scopedRoots(opts LoadOptions) []Root {
 	roots := make([]Root, 0, 3+len(opts.ProjectDirs)+len(opts.Plugins))
 	if opts.SystemDir != "" {
 		roots = append(roots, Root{Dir: opts.SystemDir, Scope: ScopeSystem, Source: "system"})
@@ -85,5 +89,5 @@ func LoadScoped(opts LoadOptions) (*Registry, error) {
 		plugin.Source = "plugin:" + plugin.PluginName
 		roots = append(roots, plugin)
 	}
-	return loadRoots(roots)
+	return roots
 }

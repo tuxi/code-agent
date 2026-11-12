@@ -1,0 +1,36 @@
+{
+  "schema": "runtime-plugin-mutation/v1",
+  "action": "disabled",
+  "plugin": {
+    "name": "docs",
+    "version": "1.0.0",
+    "description": "Docs plugin",
+    "enabled": false,
+    "source": "local",
+    "source_kind": "local_directory",
+    "cache_id": "plg_fixture",
+    "cache_path": "plugins/cache/docs/1.0.0",
+    "manifest_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "bundle_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "installed_skills": [],
+    "mcp_servers": [
+      "docs__lookup"
+    ],
+    "has_apps": true,
+    "has_hooks": true,
+    "integrity_status": "verified",
+    "reload_required": true,
+    "display_name": "Docs Center",
+    "category": "documentation",
+    "capabilities": [
+      "search",
+      "summarize"
+    ],
+    "icon": "https://cdn.example.com/icon.svg",
+    "logo": "assets/logo.png",
+    "brand_color": "#112233",
+    "website_url": "https://example.com/docs"
+  },
+  "reload_required": true,
+  "reload_hint": "Restart the CodeAgent runtime to apply plugin changes."
+}

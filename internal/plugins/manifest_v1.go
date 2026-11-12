@@ -29,6 +29,66 @@ type Manifest struct {
 	Interface   json.RawMessage `json:"interface,omitempty"`
 }
 
+// InterfaceMetadata is the allowlisted display subset of manifest.interface.
+// Unknown manifest fields are intentionally discarded.
+type InterfaceMetadata struct {
+	DisplayName  string
+	Category     string
+	Capabilities []string
+	Icon         string
+	Logo         string
+	BrandColor   string
+	WebsiteURL   string
+}
+
+// ParseInterfaceMetadata parses both the schema's camelCase names and the
+// snake_case aliases used by some plugin producers.
+func ParseInterfaceMetadata(raw json.RawMessage) (InterfaceMetadata, bool) {
+	if len(bytes.TrimSpace(raw)) == 0 || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return InterfaceMetadata{}, false
+	}
+	var wire struct {
+		DisplayName       string   `json:"displayName"`
+		DisplayNameSnake  string   `json:"display_name"`
+		Category          string   `json:"category"`
+		Capabilities      []string `json:"capabilities"`
+		Icon              string   `json:"icon"`
+		ComposerIcon      string   `json:"composerIcon"`
+		ComposerIconSnake string   `json:"composer_icon"`
+		Logo              string   `json:"logo"`
+		BrandColor        string   `json:"brandColor"`
+		BrandColorSnake   string   `json:"brand_color"`
+		WebsiteURL        string   `json:"websiteURL"`
+		WebsiteURLSnake   string   `json:"website_url"`
+	}
+	if err := json.Unmarshal(raw, &wire); err != nil {
+		return InterfaceMetadata{}, false
+	}
+	meta := InterfaceMetadata{
+		DisplayName:  firstPluginString(wire.DisplayName, wire.DisplayNameSnake),
+		Category:     wire.Category,
+		Capabilities: append([]string(nil), wire.Capabilities...),
+		Icon:         firstPluginString(wire.Icon, wire.ComposerIcon, wire.ComposerIconSnake),
+		Logo:         firstPluginString(wire.Logo),
+		BrandColor:   firstPluginString(wire.BrandColor, wire.BrandColorSnake),
+		WebsiteURL:   firstPluginString(wire.WebsiteURL, wire.WebsiteURLSnake),
+	}
+	if meta.DisplayName == "" && meta.Category == "" && len(meta.Capabilities) == 0 &&
+		meta.Icon == "" && meta.Logo == "" && meta.BrandColor == "" && meta.WebsiteURL == "" {
+		return InterfaceMetadata{}, false
+	}
+	return meta, true
+}
+
+func firstPluginString(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
+}
+
 // ManifestSkills accepts both Codex's single path and CodeAgent's explicit list.
 type ManifestSkills []string
 

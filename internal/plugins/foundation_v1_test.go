@@ -3,6 +3,7 @@ package plugins
 import (
 	"archive/zip"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -178,5 +179,144 @@ func TestInstallLocalRejectsZipTraversalAndSymlink(t *testing.T) {
 				t.Fatal("unsafe zip was accepted")
 			}
 		})
+	}
+}
+
+func TestUninstallLocalRejectsCacheSymlinkEscape(t *testing.T) {
+	skillsDir := filepath.Join(t.TempDir(), "skills")
+	source := filepath.Join(t.TempDir(), "docs-plugin")
+	writeTestPlugin(t, source)
+	entry, err := InstallLocal(skillsDir, source, InstallOptions{Confirmed: true, Source: source})
+	if err != nil {
+		t.Fatal(err)
+	}
+	outside := t.TempDir()
+	if err := os.RemoveAll(entry.Path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, entry.Path); err != nil {
+		t.Fatal(err)
+	}
+	if err := UninstallLocal(skillsDir, "docs"); !errors.Is(err, ErrUnsafePluginCachePath) {
+		t.Fatalf("uninstall symlink escape error = %v", err)
+	}
+	if _, err := os.Stat(outside); err != nil {
+		t.Fatalf("outside directory was removed: %v", err)
+	}
+	registry, err := LoadInstalledRegistryForSkillsDir(skillsDir)
+	if err != nil || len(registry.Plugins) != 1 {
+		t.Fatalf("registry after refused uninstall = %#v, %v", registry, err)
+	}
+}
+
+func TestUninstallLocalRejectsOutsideCachePath(t *testing.T) {
+	skillsDir := filepath.Join(t.TempDir(), "skills")
+	source := filepath.Join(t.TempDir(), "docs-plugin")
+	writeTestPlugin(t, source)
+	if _, err := InstallLocal(skillsDir, source, InstallOptions{Confirmed: true, Source: source}); err != nil {
+		t.Fatal(err)
+	}
+	outside := t.TempDir()
+	sentinel := filepath.Join(outside, "keep.txt")
+	if err := os.WriteFile(sentinel, []byte("keep"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	registry, err := LoadInstalledRegistryForSkillsDir(skillsDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry.Plugins[0].Path = outside
+	if err := SaveInstalledRegistryForSkillsDir(skillsDir, registry); err != nil {
+		t.Fatal(err)
+	}
+	if err := UninstallLocal(skillsDir, "docs"); !errors.Is(err, ErrUnsafePluginCachePath) {
+		t.Fatalf("outside-cache uninstall error = %v", err)
+	}
+	if _, err := os.Stat(sentinel); err != nil {
+		t.Fatalf("outside-cache content was removed: %v", err)
+	}
+	registry, err = LoadInstalledRegistryForSkillsDir(skillsDir)
+	if err != nil || len(registry.Plugins) != 1 {
+		t.Fatalf("registry after refused uninstall = %#v, %v", registry, err)
+	}
+}
+
+func TestUninstallLocalRejectsCachePathIdentityMismatch(t *testing.T) {
+	skillsDir := filepath.Join(t.TempDir(), "skills")
+	source := filepath.Join(t.TempDir(), "docs-plugin")
+	writeTestPlugin(t, source)
+	if _, err := InstallLocal(skillsDir, source, InstallOptions{Confirmed: true, Source: source}); err != nil {
+		t.Fatal(err)
+	}
+	otherCache := filepath.Join(PluginsRootForSkillsDir(skillsDir), "cache", "other", "1.0.0")
+	if err := os.MkdirAll(otherCache, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sentinel := filepath.Join(otherCache, "keep.txt")
+	if err := os.WriteFile(sentinel, []byte("keep"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	registry, err := LoadInstalledRegistryForSkillsDir(skillsDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry.Plugins[0].Path = otherCache
+	if err := SaveInstalledRegistryForSkillsDir(skillsDir, registry); err != nil {
+		t.Fatal(err)
+	}
+	if err := UninstallLocal(skillsDir, "docs"); !errors.Is(err, ErrUnsafePluginCachePath) {
+		t.Fatalf("identity-mismatch uninstall error = %v", err)
+	}
+	if _, err := os.Stat(sentinel); err != nil {
+		t.Fatalf("other plugin cache content was removed: %v", err)
+	}
+}
+
+func TestUninstallLocalHealthyPluginAndMissingPlugin(t *testing.T) {
+	skillsDir := filepath.Join(t.TempDir(), "skills")
+	source := filepath.Join(t.TempDir(), "docs-plugin")
+	writeTestPlugin(t, source)
+	entry, err := InstallLocal(skillsDir, source, InstallOptions{Confirmed: true, Source: source})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := UninstallLocal(skillsDir, "docs"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(entry.Path); !os.IsNotExist(err) {
+		t.Fatalf("plugin cache still exists after uninstall: %v", err)
+	}
+	registry, err := LoadInstalledRegistryForSkillsDir(skillsDir)
+	if err != nil || len(registry.Plugins) != 0 {
+		t.Fatalf("registry after uninstall = %#v, %v", registry, err)
+	}
+	if err := UninstallLocal(skillsDir, "docs"); !errors.Is(err, ErrPluginNotFound) {
+		t.Fatalf("missing plugin uninstall error = %v", err)
+	}
+}
+
+func TestParseInterfaceMetadataAllowlistsSchemaFields(t *testing.T) {
+	raw := []byte(`{
+		"displayName":"Docs Center",
+		"category":"documentation",
+		"capabilities":["search","summarize"],
+		"composerIcon":"https://cdn.example.com/icon.svg",
+		"logo":"assets/logo.png",
+		"brandColor":"#112233",
+		"websiteURL":"https://example.com/docs",
+		"command":"must-not-leak",
+		"env":{"TOKEN":"must-not-leak"}
+	}`)
+	meta, ok := ParseInterfaceMetadata(raw)
+	if !ok {
+		t.Fatal("interface metadata was not parsed")
+	}
+	if meta.DisplayName != "Docs Center" || meta.Category != "documentation" ||
+		meta.Icon != "https://cdn.example.com/icon.svg" || meta.Logo != "assets/logo.png" ||
+		meta.BrandColor != "#112233" || meta.WebsiteURL != "https://example.com/docs" {
+		t.Fatalf("metadata = %#v", meta)
+	}
+	if len(meta.Capabilities) != 2 || meta.Capabilities[0] != "search" || meta.Capabilities[1] != "summarize" {
+		t.Fatalf("capabilities = %#v", meta.Capabilities)
 	}
 }

@@ -25,9 +25,17 @@ import (
 // Meta is the L1 view that lives in the prompt index — tiny, always in context.
 type Meta struct {
 	Name        string
+	DisplayName string
 	Description string
 	Version     string // e.g. "1"; carried from day one for skill_loaded telemetry
 	License     string // e.g. "Proprietary" or "Apache-2.0"; empty when unspecified
+}
+
+// Interface is optional management-surface metadata parsed from SKILL.md. It is
+// not included in the prompt index.
+type Interface struct {
+	DisplayName string
+	Icon        string
 }
 
 // Resource is an L3 file bundled with a skill — a reference document, a script,
@@ -50,6 +58,7 @@ type Skill struct {
 	Path        string     // absolute path to SKILL.md or the bare .md file
 	ContentHash string     // SHA-256 of the source bytes
 	Enabled     bool       // false entries are not returned by the loader
+	Interface   Interface  // optional UI metadata from frontmatter
 	sourcePath  string     // path to the SKILL.md file; empty for bare-file skills
 	modTime     time.Time  // mtime of SKILL.md when last loaded
 	namespace   string     // plugin namespace, already included in Meta.Name
@@ -122,81 +131,21 @@ func loadRoots(roots []Root) (*Registry, error) {
 // directory is silent (no-op); other errors propagate. Higher-precedence scopes
 // override lower-precedence ones by name.
 func loadDir(r *Registry, root Root) error {
-	entries, err := os.ReadDir(root.Dir)
+	discovered, err := discoverRoot(root)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
 		return err
 	}
 
-	for _, e := range entries {
-		if e.Name() == ".system" && root.Scope == ScopeUser {
-			continue // system skills are loaded from their own root
-		}
-		var content []byte
-		var label string    // key for Skipped map and duplicate detection
-		var skillDir string // absolute path for directory-style skills; empty for bare files
-		var srcPath string  // path to the SKILL.md file; empty for bare files
-		var mt time.Time    // mtime of the source file
-
-		if e.IsDir() {
-			p := filepath.Join(root.Dir, e.Name(), "SKILL.md")
-			info, err := os.Stat(p)
-			if err != nil {
-				continue
-			}
-			b, err := os.ReadFile(p)
-			if err != nil {
-				continue
-			}
-			content = b
-			label = e.Name()
-			skillDir = filepath.Join(root.Dir, e.Name())
-			srcPath = p
-			mt = info.ModTime()
-		} else if strings.HasSuffix(e.Name(), ".md") {
-			p := filepath.Join(root.Dir, e.Name())
-			info, err := os.Stat(p)
-			if err != nil {
-				continue
-			}
-			b, err := os.ReadFile(p)
-			if err != nil {
-				continue
-			}
-			content = b
-			label = strings.TrimSuffix(e.Name(), ".md")
-			srcPath = p
-			mt = info.ModTime()
-		} else {
-			continue
-		}
-
-		skill, err := parseSkill(string(content))
-		if err != nil {
-			r.Skipped[label] = err.Error()
+	for _, item := range discovered {
+		label := item.label
+		skill := item.skill
+		if item.parseErr != "" {
+			r.Skipped[label] = item.parseErr
 			r.Errors = append(r.Errors, LoadError{
 				Label: label, Scope: root.Scope, Source: root.Source,
-				Path: srcPath, Err: err.Error(),
+				Path: skill.Path, Err: item.parseErr,
 			})
 			continue
-		}
-		if root.PluginName != "" {
-			skill.namespace = root.PluginName
-			skill.Meta.Name = root.PluginName + ":" + skill.Meta.Name
-		}
-		skill.Dir = skillDir
-		skill.Scope = root.Scope
-		skill.Source = root.Source
-		skill.Path = srcPath
-		sum := sha256.Sum256(content)
-		skill.ContentHash = hex.EncodeToString(sum[:])
-		skill.Enabled = true
-		skill.sourcePath = srcPath
-		skill.modTime = mt
-		if skillDir != "" {
-			skill.Resources = scanResources(skillDir)
 		}
 		if existing, dup := r.skills[skill.Name]; dup {
 			if root.Scope == ScopePlugin && existing.Scope != ScopePlugin {
@@ -204,7 +153,7 @@ func loadDir(r *Registry, root Root) error {
 				r.Skipped[label] = reason
 				r.Errors = append(r.Errors, LoadError{
 					Label: label, Scope: root.Scope, Source: root.Source,
-					Path: srcPath, Err: reason,
+					Path: skill.Path, Err: reason,
 				})
 				continue
 			}
@@ -213,7 +162,7 @@ func loadDir(r *Registry, root Root) error {
 				r.Skipped[label] = reason
 				r.Errors = append(r.Errors, LoadError{
 					Label: label, Scope: root.Scope, Source: root.Source,
-					Path: srcPath, Err: reason,
+					Path: skill.Path, Err: reason,
 				})
 				continue
 			}
@@ -221,7 +170,7 @@ func loadDir(r *Registry, root Root) error {
 				fmt.Fprintf(os.Stderr, "skills: %s skill %q overrides %s skill\n", root.Scope, skill.Name, existing.Scope)
 				r.Errors = append(r.Errors, LoadError{
 					Label: label, Scope: root.Scope, Source: root.Source,
-					Path: srcPath,
+					Path: skill.Path,
 					Err:  fmt.Sprintf("%s skill %q shadows %s skill", root.Scope, skill.Name, existing.Scope),
 				})
 			} else if existing.Path != skill.Path {
@@ -448,13 +397,22 @@ func (r *Registry) PromptIndex() string {
 
 // frontmatter is the YAML header of a SKILL.md.
 type frontmatter struct {
-	Name        string `yaml:"name"`
-	Description string `yaml:"description"`
-	Version     string `yaml:"version"`
-	License     string `yaml:"license"`
+	Name        string               `yaml:"name"`
+	DisplayName string               `yaml:"display_name"`
+	Description string               `yaml:"description"`
+	Version     string               `yaml:"version"`
+	License     string               `yaml:"license"`
+	Interface   interfaceFrontmatter `yaml:"interface"`
 	Metadata    struct {
-		Version string `yaml:"version"`
+		Version     string               `yaml:"version"`
+		DisplayName string               `yaml:"display_name"`
+		Interface   interfaceFrontmatter `yaml:"interface"`
 	} `yaml:"metadata"`
+}
+
+type interfaceFrontmatter struct {
+	DisplayName string `yaml:"display_name"`
+	Icon        string `yaml:"icon"`
 }
 
 // parseSkill splits a SKILL.md into its YAML frontmatter and markdown body. The
@@ -495,13 +453,32 @@ func parseSkill(content string) (Skill, error) {
 	if version == "" {
 		version = strings.TrimSpace(fm.Metadata.Version)
 	}
+	displayName := firstNonEmpty(
+		fm.Interface.DisplayName,
+		fm.Metadata.Interface.DisplayName,
+		fm.DisplayName,
+		fm.Metadata.DisplayName,
+		strings.TrimSpace(fm.Name),
+	)
+	icon := firstNonEmpty(fm.Interface.Icon, fm.Metadata.Interface.Icon)
 	return Skill{
 		Meta: Meta{
 			Name:        strings.TrimSpace(fm.Name),
+			DisplayName: displayName,
 			Description: strings.TrimSpace(fm.Description),
 			Version:     version,
 			License:     strings.TrimSpace(fm.License),
 		},
-		Body: strings.TrimSpace(strings.Join(lines[end+1:], "\n")),
+		Body:      strings.TrimSpace(strings.Join(lines[end+1:], "\n")),
+		Interface: Interface{DisplayName: displayName, Icon: icon},
 	}, nil
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
 }
