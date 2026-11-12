@@ -130,4 +130,5 @@ skills directory.
 - Executing plugin `hooks` or `apps`; they are preserved and digested but not run.
 - Plugin MCP UI/approval redesign. Plugin MCP uses the existing manager and policy
   path rather than a privileged side channel.
-- Migration of already-flattened legacy skills into `.system`.
+- Already-flattened legacy system skill migration is supported for registered
+  bundle variants.
