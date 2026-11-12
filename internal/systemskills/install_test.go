@@ -49,6 +49,23 @@ func testBundle(t *testing.T, version, body string, extraFiles ...FileEntry) fst
 		t.Fatal(err)
 	}
 	bundle[ManifestFilename].Data = append(data, '\n')
+	legacyFileHash := sha256.Sum256([]byte("legacy"))
+	legacyFiles := []FileEntry{{Path: "SKILL.md", SHA256: hex.EncodeToString(legacyFileHash[:])}}
+	legacy := LegacySkillManifest{
+		Schema:        LegacySchemaV1,
+		BundleVersion: "test-legacy",
+		Skills: []LegacySkillEntry{{
+			Name: "review-change",
+			Variants: []LegacyVariant{{
+				ID: "test", SHA256: DigestFiles(legacyFiles), Files: legacyFiles,
+			}},
+		}},
+	}
+	legacyData, err := json.MarshalIndent(legacy, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bundle[LegacyManifestFilename] = &fstest.MapFile{Data: append(legacyData, '\n'), Mode: 0o644}
 	return bundle
 }
 

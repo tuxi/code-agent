@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://codeagent.dev/schemas/legacy_system_skills.v1.schema.json",
+  "title": "CodeAgent legacy flattened system skill bundle manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "bundle_version", "skills"],
+  "properties": {
+    "schema": { "const": "codeagent.legacy-system-skills.v1" },
+    "bundle_version": { "type": "string", "minLength": 1 },
+    "skills": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "variants"],
+        "properties": {
+          "name": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$" },
+          "variants": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["id", "sha256", "files"],
+              "properties": {
+                "id": { "type": "string", "minLength": 1 },
+                "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+                "files": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["path", "sha256"],
+                    "properties": {
+                      "path": { "type": "string", "minLength": 1 },
+                      "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

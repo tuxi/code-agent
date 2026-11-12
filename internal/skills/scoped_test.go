@@ -21,6 +21,16 @@ func TestLoadScopedPrecedence(t *testing.T) {
 	if !ok || got.Scope != ScopeSystem || !got.Enabled || got.Path == "" || got.ContentHash == "" {
 		t.Fatalf("system-only = %#v", got)
 	}
+	foundShadowWarning := false
+	for _, entry := range r.Errors {
+		if entry.Scope == ScopeUser && entry.Label == "same" && entry.Err != "" {
+			foundShadowWarning = true
+			break
+		}
+	}
+	if !foundShadowWarning {
+		t.Fatalf("missing user-over-system shadow warning: %#v", r.Errors)
+	}
 }
 
 func TestLoadScopedPluginNamespaceAndProjectIsolation(t *testing.T) {

@@ -36,6 +36,24 @@ The initial system set is intentionally cross-runtime: `review-change`,
 `verify-change`, `skill-creator`, and `ui-adaptation`. Repository-specific seed
 skills remain project skills rather than being installed globally.
 
+### Legacy flattened bundle migration
+
+`skills/legacy-system-skills.json` records the exact historical flattened
+bundle variants for `review-change`, `verify-change`, and `skill-creator`.
+Both the AgentKit initial bundle and code-agent `build-ios.sh` bundle variants
+are represented.
+
+At startup, after `.system` is current, the installer checks those three names
+directly under the user skill root:
+
+- exact file set + hashes match a known legacy variant: remove the flattened
+  bundle-owned copy;
+- any extra/missing file, changed hash, symlink, or non-regular file: preserve it
+  and report a shadow warning because the user copy outranks `.system`;
+- missing legacy directory: no action.
+
+The legacy manifest itself is digest-protected by the installer marker.
+
 Generate the deterministic embedded bundle and sync AgentKit resources:
 
 ```bash

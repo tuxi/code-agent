@@ -219,6 +219,11 @@ func loadDir(r *Registry, root Root) error {
 			}
 			if scopeRank(root.Scope) > scopeRank(existing.Scope) {
 				fmt.Fprintf(os.Stderr, "skills: %s skill %q overrides %s skill\n", root.Scope, skill.Name, existing.Scope)
+				r.Errors = append(r.Errors, LoadError{
+					Label: label, Scope: root.Scope, Source: root.Source,
+					Path: srcPath,
+					Err:  fmt.Sprintf("%s skill %q shadows %s skill", root.Scope, skill.Name, existing.Scope),
+				})
 			} else if existing.Path != skill.Path {
 				fmt.Fprintf(os.Stderr, "skills: %s skill %q at %s overrides %s\n", root.Scope, skill.Name, skill.Path, existing.Path)
 			}

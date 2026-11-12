@@ -1,0 +1,65 @@
+{
+  "schema": "codeagent.legacy-system-skills.v1",
+  "bundle_version": "legacy-flat-v1",
+  "skills": [
+    {
+      "name": "review-change",
+      "variants": [
+        {
+          "id": "agentkit-initial",
+          "sha256": "553b5ceede32213787f8618e1fc13ea98c2db8d13479fad060f8b7a7296bd58a",
+          "files": [
+            {
+              "path": "SKILL.md",
+              "sha256": "8e264bc3b94e07e86fac9cbdd25b49c03dd7ef60e00541e4e597863fba16db39"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "verify-change",
+      "variants": [
+        {
+          "id": "agentkit-initial",
+          "sha256": "3852a0518f049fd90ba78c9da69b944525c58e66fbb4c8e15b016d98b96ed231",
+          "files": [
+            {
+              "path": "SKILL.md",
+              "sha256": "8fb3e7aa06ba253a3960a762076de8e9c454cbb2ac02a84f23f5e6509cabf4f7"
+            }
+          ]
+        },
+        {
+          "id": "codeagent-build-ios",
+          "sha256": "2b87e8f6213e84a08d0abf25a8358328bfb573b2b7aaf5e441b0673acb9b1263",
+          "files": [
+            {
+              "path": "SKILL.md",
+              "sha256": "9daf144a222f174b96ab95b68f20fbaef791b8890c4c0b3f3b8da98d55cc502a"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "skill-creator",
+      "variants": [
+        {
+          "id": "agentkit-initial",
+          "sha256": "0cc6f3a89200698ff8b8b30420d2ee3b591382a44fed4b29b020e8d948d6760c",
+          "files": [
+            {
+              "path": "LICENSE.txt",
+              "sha256": "58d1e17ffe5109a7ae296caafcadfdbe6a7d176f0bc4ab01e12a689b0499d8bd"
+            },
+            {
+              "path": "SKILL.md",
+              "sha256": "21222e2d716364c92ca3f1c04aa8f75f25728a32cc42b74273b4f63e716c3e85"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

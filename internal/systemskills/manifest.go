@@ -169,6 +169,9 @@ func ValidateBundle(fsys fs.FS, manifest *BundleManifest) error {
 	if err := ValidateManifest(manifest); err != nil {
 		return err
 	}
+	if _, _, err := ReadLegacyManifestFS(fsys); err != nil {
+		return err
+	}
 	declared := make(map[string]map[string]struct{}, len(manifest.Skills))
 	for _, entry := range manifest.Skills {
 		files := make(map[string]struct{}, len(entry.Files))
@@ -194,7 +197,7 @@ func ValidateBundle(fsys fs.FS, manifest *BundleManifest) error {
 		if walkErr != nil {
 			return walkErr
 		}
-		if name == "." || name == ManifestFilename || name == MarkerFilename {
+		if name == "." || name == ManifestFilename || name == LegacyManifestFilename || name == MarkerFilename {
 			return nil
 		}
 		if entry.Type()&fs.ModeSymlink != 0 {
@@ -309,6 +312,14 @@ func WriteBundle(repoRoot, manifestPath, outputDir string) error {
 	if err := UpdateManifestHashes(repoRoot, &manifest); err != nil {
 		return err
 	}
+	legacyManifestPath := filepath.Join(repoRoot, "skills", LegacyManifestFilename)
+	legacyManifestData, err := os.ReadFile(legacyManifestPath)
+	if err != nil {
+		return fmt.Errorf("read legacy system skills manifest: %w", err)
+	}
+	if _, err := LoadLegacyManifest(legacyManifestData); err != nil {
+		return err
+	}
 	manifestData, err := json.MarshalIndent(&manifest, "", "  ")
 	if err != nil {
 		return err
@@ -335,6 +346,9 @@ func WriteBundle(repoRoot, manifestPath, outputDir string) error {
 		}
 	}
 	if err := os.WriteFile(filepath.Join(stage, ManifestFilename), manifestData, 0o644); err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(stage, LegacyManifestFilename), legacyManifestData, 0o644); err != nil {
 		return err
 	}
 	if err := ValidateBundle(os.DirFS(stage), &manifest); err != nil {
@@ -364,6 +378,17 @@ func CheckBundle(repoRoot, manifestPath, bundleDir string) error {
 	}
 	if string(bundleData) != string(manifestData) {
 		return fmt.Errorf("generated system manifest differs from %s; run go run ./cmd/system-skills --write", manifestPath)
+	}
+	legacySource, err := os.ReadFile(filepath.Join(repoRoot, "skills", LegacyManifestFilename))
+	if err != nil {
+		return err
+	}
+	legacyBundle, err := fs.ReadFile(os.DirFS(bundleDir), LegacyManifestFilename)
+	if err != nil {
+		return err
+	}
+	if string(legacyBundle) != string(legacySource) {
+		return fmt.Errorf("generated legacy system manifest differs from canonical lock; run go run ./cmd/system-skills --write")
 	}
 	return nil
 }
