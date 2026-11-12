@@ -522,9 +522,11 @@ func (b *ServeRunBuilder) Build(ctx conversation.RuntimeContext) conversation.Tu
 		}
 	}
 	var skillReg *skills.Registry
+	var skillOptions skills.LoadOptions
 	toolReg := b.ToolReg
 	if inst, err := b.WSReg.Get(workspacePath); err == nil {
 		skillReg = inst.SkillReg
+		skillOptions = inst.SkillOptions
 		// Hot-reload .mcp.json changes before every turn (Phase 2b).
 		if inst.CheckReloadMCP() {
 			inst.ReloadMCP()
@@ -550,11 +552,7 @@ func (b *ServeRunBuilder) Build(ctx conversation.RuntimeContext) conversation.Tu
 	// skill registry, so hot-reload (triggered on cache miss) only affects this
 	// workspace — never leaking skills across workspaces (§6).
 	if skillReg != nil {
-		turnTools.Replace(skill.NewLoadSkillTool(
-			skillReg,
-			cfg.GlobalSkillsDir,
-			filepath.Join(workspacePath, "skills"),
-		))
+		turnTools.Replace(skill.NewLoadSkillToolWithOptions(skillReg, skillOptions))
 	}
 	// task is also provider-backed. Rebind it after the workspace load_skill
 	// replacement so the subagent inherits this turn's model, resolver, and

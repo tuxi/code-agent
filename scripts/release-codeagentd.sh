@@ -42,6 +42,7 @@ gh auth status >/dev/null 2>&1 || { echo "error: gh not authenticated (run: gh a
 # and Intel Macs. The non-native slice is cross-compiled with CGO_ENABLED=1
 # and "clang -arch <target>" (Go disables cgo by default when cross-compiling).
 echo "==> building codeagentd for macOS universal (arm64 + x86_64)..."
+go run ./cmd/system-skills --check
 CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 CC="clang -arch arm64" go build \
     -ldflags="-s -w -X code-agent/internal/buildinfo.Version=${VERSION}" \
     -o "build/${BINARY_NAME}.arm64" \

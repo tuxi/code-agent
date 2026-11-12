@@ -8,6 +8,7 @@ import (
 	"code-agent/internal/lsp"
 	"code-agent/internal/mcp"
 	"code-agent/internal/model"
+	"code-agent/internal/plugins"
 	"code-agent/internal/session"
 	"code-agent/internal/settings"
 	"code-agent/internal/skills"
@@ -54,6 +55,10 @@ func WirePlanTools(registry *tools.Registry, plansDir string) *agent.RunnerRef {
 // A) — pass NewJobEventSink(...) to persist job events under the job's own id
 // partition, or nil for jobs invisible to the event stream (tests).
 func RegisterBuiltinTools(registry *tools.Registry, cfg settings.Settings, cred credential.Resolver, skillReg *skills.Registry, root string, jobSink jobs.Sink) error {
+	skillOptions, _, err := loadWorkspaceSkills(cfg.GlobalSkillsDir, root)
+	if err != nil {
+		return err
+	}
 	// Pure-Go tools that work inside an OS sandbox (no subprocess, container-local
 	// filesystem and network only). Registered under every profile.
 	toolList := []tools.Tool{
@@ -63,7 +68,7 @@ func RegisterBuiltinTools(registry *tools.Registry, cfg settings.Settings, cred 
 		filesystem.NewEditFileTool(),
 		filesystem.NewInsertFileTool(),
 		search.NewGrepTool(),
-		skill.NewLoadSkillTool(skillReg, cfg.GlobalSkillsDir, filepath.Join(root, "skills")),
+		skill.NewLoadSkillToolWithOptions(skillReg, skillOptions),
 		imageview.NewTool(),
 		previewtool.NewTool(),
 	}
@@ -148,13 +153,13 @@ func RegisterBuiltinTools(registry *tools.Registry, cfg settings.Settings, cred 
 func BuildBaseRegistry(ctx context.Context, cfg settings.Settings, mc settings.ModelConfig, provider model.Provider, cred credential.Resolver, store session.Store, root string, progress agent.Emitter) (*tools.Registry, *skills.Registry, *agent.RunnerRef, *JobEventSink, error) {
 	registry := tools.NewRegistry()
 
-	skillReg, err := skills.Load(cfg.GlobalSkillsDir, filepath.Join(root, "skills"))
+	_, skillReg, err := loadWorkspaceSkills(cfg.GlobalSkillsDir, root)
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
 	fmt.Fprintf(os.Stderr, "[registry] skills: %d loaded, %d skipped\n", skillReg.Len(), len(skillReg.Skipped))
 	for label, reason := range skillReg.Skipped {
 		fmt.Fprintf(os.Stderr, "[registry]   skipped %q: %s\n", label, reason)
-	}
-	if err != nil {
-		return nil, nil, nil, nil, err
 	}
 
 	// Background jobs get their own event partition (P8.7 Phase A): each job's
@@ -295,8 +300,16 @@ func BuildRegistry(ctx context.Context, cfg settings.Settings, mc settings.Model
 	// OS forbids fork/exec) we drop those and connect only http/sse servers, which
 	// need no local process — that is the only MCP available on iOS. On a full
 	// desktop host all servers connect.
+	pluginMCP := mcp.Config{}
+	if cfg.GlobalSkillsDir != "" {
+		var err error
+		pluginMCP, err = plugins.MCPConfigForSkillsDir(cfg.GlobalSkillsDir)
+		if err != nil {
+			return nil, nil, nil, nil, nil, err
+		}
+	}
 	mgr := mcp.NewManager(McpTraceWriter())
-	servers := cfg.MCP.Servers
+	servers := mcp.Merge(pluginMCP, cfg.MCP).Servers
 	if !cfg.Profile.AllowsSubprocess() {
 		servers = mcp.RemoteServers(servers)
 	}

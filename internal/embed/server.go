@@ -36,6 +36,7 @@ import (
 	"code-agent/internal/runtime"
 	"code-agent/internal/server"
 	"code-agent/internal/settings"
+	"code-agent/internal/systemskills"
 	"os"
 )
 
@@ -744,6 +745,9 @@ func StartServer(ctx context.Context, opt Options) (*Handle, error) {
 			return nil, fmt.Errorf("resolve embedded Runtime data directory: %w", err)
 		}
 		dataDir = filepath.Clean(resolvedDataDir)
+		if err := systemskills.InstallForDataDir(dataDir, systemskills.Embedded(), "embedded:codeagent-runtime"); err != nil {
+			return nil, fmt.Errorf("install system skills: %w", err)
+		}
 	}
 	if err := reserveEmbeddedDataDir(dataDir); err != nil {
 		return nil, err

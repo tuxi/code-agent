@@ -9,6 +9,8 @@
 package skills
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -40,12 +42,17 @@ type Resource struct {
 // resources. Loaded on demand, not held in the base prompt.
 type Skill struct {
 	Meta
-	Body       string
-	Dir        string     // absolute path to the skill directory; empty for bare-file skills
-	Resources  []Resource // L3 files (references, scripts, assets); nil if none
-	Source     string     // "global" or "project" — which dir it came from
-	sourcePath string     // path to the SKILL.md file; empty for bare-file skills
-	modTime    time.Time  // mtime of SKILL.md when last loaded
+	Body        string
+	Dir         string     // absolute path to the skill directory; empty for bare-file skills
+	Resources   []Resource // L3 files (references, scripts, assets); nil if none
+	Scope       Scope      // system, user, project, or plugin
+	Source      string     // human-readable source: system/user/project/plugin:<name>/legacy global
+	Path        string     // absolute path to SKILL.md or the bare .md file
+	ContentHash string     // SHA-256 of the source bytes
+	Enabled     bool       // false entries are not returned by the loader
+	sourcePath  string     // path to the SKILL.md file; empty for bare-file skills
+	modTime     time.Time  // mtime of SKILL.md when last loaded
+	namespace   string     // plugin namespace, already included in Meta.Name
 }
 
 // Registry holds the skills loaded from a directory. Skills are reloaded
@@ -62,6 +69,10 @@ type Registry struct {
 	// skill is skipped, never fatal — one malformed file must not blind the agent
 	// to every other skill.
 	Skipped map[string]string
+
+	// Errors keeps the same parse/duplicate failures as Skipped, with the scope
+	// and source attached for diagnostics and future management UIs.
+	Errors []LoadError
 }
 
 // Load reads skills from projectDir (and, when set, from globalDir first).
@@ -80,32 +91,38 @@ type Registry struct {
 // directory is not an error (an empty step); a malformed skill is skipped and
 // recorded in Skipped.
 func Load(globalDir, projectDir string) (*Registry, error) {
+	return loadRoots([]Root{
+		{Dir: globalDir, Scope: ScopeUser, Source: "global"},
+		{Dir: projectDir, Scope: ScopeProject, Source: "project"},
+	})
+}
+
+// loadRoots loads roots in array order. Callers should order ordinary roots from
+// lowest to highest precedence; equal-scope roots loaded later win.
+func loadRoots(roots []Root) (*Registry, error) {
 	r := &Registry{
 		skills:     make(map[string]Skill),
 		Skipped:    make(map[string]string),
 		loadCounts: make(map[string]int),
 	}
 
-	// Load global (user-level) skills first, then project skills. Project wins on
-	// name conflict because later loads override earlier entries.
-	if globalDir != "" {
-		if err := loadDir(r, globalDir, "global"); err != nil {
+	for _, root := range roots {
+		if root.Dir == "" {
+			continue
+		}
+		if err := loadDir(r, root); err != nil {
 			return nil, err
 		}
-	}
-	if err := loadDir(r, projectDir, "project"); err != nil {
-		return nil, err
 	}
 	sort.Strings(r.order)
 	return r, nil
 }
 
-// loadDir appends skills from a single directory into r. A missing directory is
-// silent (no-op); other errors propagate. Project skills override global ones by
-// name because they are loaded second. source is "global" or "project" and is
-// recorded on each skill for telemetry.
-func loadDir(r *Registry, dir, source string) error {
-	entries, err := os.ReadDir(dir)
+// loadDir appends skills from a single scoped directory into r. A missing
+// directory is silent (no-op); other errors propagate. Higher-precedence scopes
+// override lower-precedence ones by name.
+func loadDir(r *Registry, root Root) error {
+	entries, err := os.ReadDir(root.Dir)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil
@@ -114,6 +131,9 @@ func loadDir(r *Registry, dir, source string) error {
 	}
 
 	for _, e := range entries {
+		if e.Name() == ".system" && root.Scope == ScopeUser {
+			continue // system skills are loaded from their own root
+		}
 		var content []byte
 		var label string    // key for Skipped map and duplicate detection
 		var skillDir string // absolute path for directory-style skills; empty for bare files
@@ -121,7 +141,7 @@ func loadDir(r *Registry, dir, source string) error {
 		var mt time.Time    // mtime of the source file
 
 		if e.IsDir() {
-			p := filepath.Join(dir, e.Name(), "SKILL.md")
+			p := filepath.Join(root.Dir, e.Name(), "SKILL.md")
 			info, err := os.Stat(p)
 			if err != nil {
 				continue
@@ -132,11 +152,11 @@ func loadDir(r *Registry, dir, source string) error {
 			}
 			content = b
 			label = e.Name()
-			skillDir = filepath.Join(dir, e.Name())
+			skillDir = filepath.Join(root.Dir, e.Name())
 			srcPath = p
 			mt = info.ModTime()
 		} else if strings.HasSuffix(e.Name(), ".md") {
-			p := filepath.Join(dir, e.Name())
+			p := filepath.Join(root.Dir, e.Name())
 			info, err := os.Stat(p)
 			if err != nil {
 				continue
@@ -156,24 +176,54 @@ func loadDir(r *Registry, dir, source string) error {
 		skill, err := parseSkill(string(content))
 		if err != nil {
 			r.Skipped[label] = err.Error()
+			r.Errors = append(r.Errors, LoadError{
+				Label: label, Scope: root.Scope, Source: root.Source,
+				Path: srcPath, Err: err.Error(),
+			})
 			continue
 		}
+		if root.PluginName != "" {
+			skill.namespace = root.PluginName
+			skill.Meta.Name = root.PluginName + ":" + skill.Meta.Name
+		}
 		skill.Dir = skillDir
-		skill.Source = source
+		skill.Scope = root.Scope
+		skill.Source = root.Source
+		skill.Path = srcPath
+		sum := sha256.Sum256(content)
+		skill.ContentHash = hex.EncodeToString(sum[:])
+		skill.Enabled = true
 		skill.sourcePath = srcPath
 		skill.modTime = mt
 		if skillDir != "" {
 			skill.Resources = scanResources(skillDir)
 		}
-		// Project path (loaded second) deliberately overwrites global entries.
 		if existing, dup := r.skills[skill.Name]; dup {
-			if label != skill.Name {
-				r.Skipped[label] = fmt.Sprintf("duplicate skill name %q (project overrides global)", skill.Name)
+			if root.Scope == ScopePlugin && existing.Scope != ScopePlugin {
+				reason := fmt.Sprintf("plugin skill %q cannot override existing %s skill", skill.Name, existing.Scope)
+				r.Skipped[label] = reason
+				r.Errors = append(r.Errors, LoadError{
+					Label: label, Scope: root.Scope, Source: root.Source,
+					Path: srcPath, Err: reason,
+				})
+				continue
 			}
-			// Warn when a project skill shadows a global skill — this is the most
-			// common source of "why is my skill different from what I expected?".
-			if existing.Source == "global" && source == "project" {
-				fmt.Fprintf(os.Stderr, "skills: project skill %q overrides global skill %q\n", skill.Name, existing.Source)
+			if scopeRank(root.Scope) < scopeRank(existing.Scope) {
+				reason := fmt.Sprintf("lower-precedence %s skill %q ignored; %s wins", root.Scope, skill.Name, existing.Scope)
+				r.Skipped[label] = reason
+				r.Errors = append(r.Errors, LoadError{
+					Label: label, Scope: root.Scope, Source: root.Source,
+					Path: srcPath, Err: reason,
+				})
+				continue
+			}
+			if scopeRank(root.Scope) > scopeRank(existing.Scope) {
+				fmt.Fprintf(os.Stderr, "skills: %s skill %q overrides %s skill\n", root.Scope, skill.Name, existing.Scope)
+			} else if existing.Path != skill.Path {
+				fmt.Fprintf(os.Stderr, "skills: %s skill %q at %s overrides %s\n", root.Scope, skill.Name, skill.Path, existing.Path)
+			}
+			if label != skill.Name {
+				r.Skipped[label] = fmt.Sprintf("duplicate skill name %q (%s overrides %s)", skill.Name, root.Scope, existing.Scope)
 			}
 		}
 		r.skills[skill.Name] = skill
@@ -193,6 +243,21 @@ func contains(slice []string, s string) bool {
 	return false
 }
 
+func scopeRank(scope Scope) int {
+	switch scope {
+	case ScopeSystem:
+		return 0
+	case ScopeUser:
+		return 1
+	case ScopeProject:
+		return 2
+	case ScopePlugin:
+		return 3
+	default:
+		return 0
+	}
+}
+
 // scanResources walks the references/, scripts/, and assets/ subdirectories of
 // skillDir (if they exist) and returns a sorted list of absolute paths tagged by
 // kind. It is non-recursive — only direct children of each dir are listed — to
@@ -206,6 +271,9 @@ func scanResources(skillDir string) []Resource {
 		}
 		for _, e := range entries {
 			if e.IsDir() {
+				continue
+			}
+			if e.Type()&os.ModeSymlink != 0 {
 				continue
 			}
 			out = append(out, Resource{
@@ -268,9 +336,18 @@ func (r *Registry) Get(name string) (Skill, bool) {
 		return s, true // keep the cached version on parse failure
 	}
 	reloaded.Dir = s.Dir
+	reloaded.Scope = s.Scope
 	reloaded.Source = s.Source
+	reloaded.Path = s.Path
+	reloaded.Enabled = s.Enabled
+	reloaded.namespace = s.namespace
 	reloaded.sourcePath = s.sourcePath
 	reloaded.modTime = info.ModTime()
+	sum := sha256.Sum256(data)
+	reloaded.ContentHash = hex.EncodeToString(sum[:])
+	if reloaded.namespace != "" {
+		reloaded.Meta.Name = reloaded.namespace + ":" + reloaded.Meta.Name
+	}
 	if reloaded.Dir != "" {
 		reloaded.Resources = scanResources(reloaded.Dir)
 	}

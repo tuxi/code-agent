@@ -17,13 +17,20 @@ import (
 )
 
 type LoadSkillTool struct {
-	Skills     *skills.Registry
-	globalDir  string // re-scan fallback: user-level skills directory
-	projectDir string // re-scan fallback: project-local skills directory
+	Skills      *skills.Registry
+	loadOptions skills.LoadOptions
 }
 
 func NewLoadSkillTool(reg *skills.Registry, globalDir, projectDir string) *LoadSkillTool {
-	return &LoadSkillTool{Skills: reg, globalDir: globalDir, projectDir: projectDir}
+	opts := skills.WorkspaceLoadOptions(globalDir, "")
+	if projectDir != "" {
+		opts.ProjectDirs = []string{projectDir}
+	}
+	return &LoadSkillTool{Skills: reg, loadOptions: opts}
+}
+
+func NewLoadSkillToolWithOptions(reg *skills.Registry, opts skills.LoadOptions) *LoadSkillTool {
+	return &LoadSkillTool{Skills: reg, loadOptions: opts}
 }
 
 type loadSkillInput struct {
@@ -37,8 +44,8 @@ func (t *LoadSkillTool) Description() string {
 	return "Load a skill by name. With only a name, returns the full SKILL.md body. " +
 		"Call with an empty name to list all available skills. " +
 		"With resource set to a relative path (e.g. \"references/api.md\"), returns that file's content directly. " +
-		"Skills are plain Markdown files in the workspace's skills/ directory; you can CREATE a new skill " +
-		"yourself by writing a .md file there with create_file. The required format is a YAML frontmatter " +
+		"Skills are plain Markdown files loaded from system, user, project, and namespaced plugin scopes. " +
+		"You can CREATE a project skill by writing skills/<name>/SKILL.md with create_file. The required format is a YAML frontmatter " +
 		"block (---) containing at minimum `name:` and `description:` fields, followed by the markdown body. " +
 		"Once written, call load_skill(name) and the new skill is immediately available — no restart needed."
 }
@@ -66,12 +73,16 @@ func (t *LoadSkillTool) Execute(_ context.Context, exeContext tools.ExecutionCon
 		// no restart required. This matches the UX of "create SKILL.md then call
 		// load_skill" that Claude Code users expect (though CC achieves it by
 		// short-lived processes, not hot-reload).
-		projectDir := t.projectDir
-		if !filepath.IsAbs(t.projectDir) && exeContext.WorkspaceRoot != "" {
-			projectDir = filepath.Join(exeContext.WorkspaceRoot, t.projectDir)
+		opts := t.loadOptions
+		if exeContext.WorkspaceRoot != "" {
+			for i, dir := range opts.ProjectDirs {
+				if !filepath.IsAbs(dir) {
+					opts.ProjectDirs[i] = filepath.Join(exeContext.WorkspaceRoot, dir)
+				}
+			}
 		}
-		if t.globalDir != "" || t.projectDir != "" {
-			if fresh, err := skills.Load(t.globalDir, projectDir); err == nil {
+		if opts.SystemDir != "" || opts.UserDir != "" || len(opts.ProjectDirs) > 0 || len(opts.Plugins) > 0 {
+			if fresh, err := skills.LoadScoped(opts); err == nil {
 				t.Skills.Merge(fresh)
 				s, ok = t.Skills.Get(in.Name)
 			}

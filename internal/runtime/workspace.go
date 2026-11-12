@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"code-agent/internal/mcp"
+	"code-agent/internal/plugins"
 	"code-agent/internal/session"
 	"code-agent/internal/skills"
 	"code-agent/internal/tools"
@@ -23,9 +24,10 @@ import (
 // ToolReg exists because the MCP tool SET differs per workspace, not because
 // built-in tool instances do.
 type WorkspaceInstance struct {
-	RootPath string
-	SkillReg *skills.Registry
-	Store    session.Store
+	RootPath     string
+	SkillReg     *skills.Registry
+	SkillOptions skills.LoadOptions
+	Store        session.Store
 
 	// MCPMgr owns this workspace's MCP server connections (subprocesses and remote
 	// sessions). Nil when MCP is not enabled on the registry or the workspace
@@ -222,7 +224,16 @@ func (inst *WorkspaceInstance) initMCP(mc *workspaceMCP) {
 	}
 	// Host-injected servers layer BELOW the workspace files: same-name workspace
 	// entries win, mirroring how user scope sits below project scope.
-	servers := mcp.Merge(mcp.Config{Servers: mc.injected}, resolved).Servers
+	pluginMCP := mcp.Config{}
+	if mc.cfg.GlobalSkillsDir != "" {
+		var pluginErr error
+		pluginMCP, pluginErr = plugins.MCPConfigForSkillsDir(mc.cfg.GlobalSkillsDir)
+		if pluginErr != nil {
+			fmt.Fprintf(os.Stderr, "[workspace] %s: plugin MCP error: %v\n", inst.RootPath, pluginErr)
+			pluginMCP = mcp.Config{}
+		}
+	}
+	servers := mcp.Merge(pluginMCP, mcp.Config{Servers: mc.injected}, resolved).Servers
 	if !mc.cfg.Profile.AllowsSubprocess() {
 		servers = mcp.RemoteServers(servers)
 	}
@@ -498,7 +509,7 @@ func (wr *WorkspaceRegistry) buildInstance(root string) (*WorkspaceInstance, err
 		return nil, fmt.Errorf("workspace_registry: open store for %s: %w", root, err)
 	}
 
-	skillReg, err := skills.Load(wr.globalSkillsDir, filepath.Join(root, "skills"))
+	skillOptions, skillReg, err := loadWorkspaceSkills(wr.globalSkillsDir, root)
 	if err != nil {
 		store.Close()
 		return nil, fmt.Errorf("workspace_registry: load skills for %s: %w", root, err)
@@ -513,8 +524,9 @@ func (wr *WorkspaceRegistry) buildInstance(root string) (*WorkspaceInstance, err
 	}
 
 	return &WorkspaceInstance{
-		RootPath: root,
-		SkillReg: skillReg,
-		Store:    store,
+		RootPath:     root,
+		SkillReg:     skillReg,
+		SkillOptions: skillOptions,
+		Store:        store,
 	}, nil
 }

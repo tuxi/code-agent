@@ -35,6 +35,7 @@ import (
 	"code-agent/internal/runtime"
 	"code-agent/internal/server"
 	"code-agent/internal/settings"
+	"code-agent/internal/systemskills"
 )
 
 // defaultCapabilities is the capability set advertised in the WebSocket hello
@@ -90,6 +91,11 @@ func run() error {
 
 	root, _ := os.Getwd()
 	home, _ := os.UserHomeDir()
+	if home != "" {
+		if err := systemskills.InstallForHome(home, systemskills.Embedded(), "embedded:codeagentd"); err != nil {
+			return fmt.Errorf("install system skills: %w", err)
+		}
+	}
 	cfg, _ := runtime.LoadSettingsWithTrust(context.Background(), root, home, nil, runtime.TrustAlways, os.Stderr)
 	markStartup("settings")
 	// Mutable injected resolver (A2): POST /v1/secrets updates it, and every

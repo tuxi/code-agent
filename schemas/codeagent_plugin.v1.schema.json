@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://codeagent.dev/schemas/codeagent_plugin.v1.schema.json",
+  "title": "CodeAgent plugin manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "name", "version", "description"],
+  "properties": {
+    "schema": { "const": "codeagent.plugin.v1" },
+    "name": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$" },
+    "version": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$" },
+    "description": { "type": "string", "minLength": 1 },
+    "skills": {
+      "oneOf": [
+        { "type": "string" },
+        { "type": "array", "items": { "type": "string" }, "uniqueItems": true }
+      ]
+    },
+    "mcpServers": {
+      "oneOf": [
+        { "type": "string" },
+        { "type": "object" }
+      ]
+    },
+    "apps": {},
+    "hooks": {},
+    "interface": {
+      "type": "object",
+      "properties": {
+        "displayName": { "type": "string" },
+        "shortDescription": { "type": "string" },
+        "longDescription": { "type": "string" },
+        "developerName": { "type": "string" },
+        "category": { "type": "string" },
+        "capabilities": { "type": "array", "items": { "type": "string" } },
+        "websiteURL": { "type": "string" },
+        "privacyPolicyURL": { "type": "string" },
+        "termsOfServiceURL": { "type": "string" },
+        "defaultPrompt": {},
+        "brandColor": { "type": "string" },
+        "composerIcon": { "type": "string" },
+        "logo": { "type": "string" },
+        "logoDark": { "type": "string" },
+        "screenshots": { "type": "array", "items": { "type": "string" } }
+      }
+    }
+  }
+}

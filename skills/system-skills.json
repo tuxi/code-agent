@@ -1,0 +1,78 @@
+{
+  "schema": "codeagent.system-skills.v1",
+  "bundle_version": "2026.11.12.1",
+  "skills": [
+    {
+      "name": "review-change",
+      "source": "skills/review-change",
+      "destination": "review-change",
+      "sha256": "553b5ceede32213787f8618e1fc13ea98c2db8d13479fad060f8b7a7296bd58a",
+      "scope": "system",
+      "version": "1",
+      "files": [
+        {
+          "path": "SKILL.md",
+          "sha256": "8e264bc3b94e07e86fac9cbdd25b49c03dd7ef60e00541e4e597863fba16db39"
+        }
+      ]
+    },
+    {
+      "name": "skill-creator",
+      "source": "skills/skill-creator",
+      "destination": "skill-creator",
+      "sha256": "0cc6f3a89200698ff8b8b30420d2ee3b591382a44fed4b29b020e8d948d6760c",
+      "scope": "system",
+      "version": "1",
+      "files": [
+        {
+          "path": "LICENSE.txt",
+          "sha256": "58d1e17ffe5109a7ae296caafcadfdbe6a7d176f0bc4ab01e12a689b0499d8bd"
+        },
+        {
+          "path": "SKILL.md",
+          "sha256": "21222e2d716364c92ca3f1c04aa8f75f25728a32cc42b74273b4f63e716c3e85"
+        }
+      ]
+    },
+    {
+      "name": "ui-adaptation",
+      "source": "skills/ui-adaptation",
+      "destination": "ui-adaptation",
+      "sha256": "ced31742121a03afb4a9481216698829ac3b16ba59c1ee0e167d51a8f2b1b4f1",
+      "scope": "system",
+      "version": "2",
+      "dependencies": [
+        "review-change",
+        "verify-change"
+      ],
+      "references": [
+        "docs/visual-layout-understanding.md",
+        "docs/primary-perception-ownership-contract.md",
+        "schemas/view_image_result.v1.schema.json",
+        "schemas/ui_evidence.v1.schema.json",
+        "schemas/ui_layout.v1.schema.json",
+        "schemas/ui_preview_lineage.v1.schema.json"
+      ],
+      "files": [
+        {
+          "path": "SKILL.md",
+          "sha256": "bf1b97433f97661646830ead42db8a325c276dedf2a6c38b8c1d3080bcb26d3c"
+        }
+      ]
+    },
+    {
+      "name": "verify-change",
+      "source": "skills/verify-change",
+      "destination": "verify-change",
+      "sha256": "2b87e8f6213e84a08d0abf25a8358328bfb573b2b7aaf5e441b0673acb9b1263",
+      "scope": "system",
+      "version": "1",
+      "files": [
+        {
+          "path": "SKILL.md",
+          "sha256": "9daf144a222f174b96ab95b68f20fbaef791b8890c4c0b3f3b8da98d55cc502a"
+        }
+      ]
+    }
+  ]
+}

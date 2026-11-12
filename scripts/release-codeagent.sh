@@ -20,6 +20,8 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
+go run ./cmd/system-skills --check
+
 # --- knobs ---------------------------------------------------------------------
 BINARY_NAME="codeagent"
 REPO="tuxi/code-agent"

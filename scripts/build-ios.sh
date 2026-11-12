@@ -22,16 +22,13 @@ MACOS_MIN="15.0"             # aligned with Talkify MACOSX_DEPLOYMENT_TARGET
 PKG="./mobile"               # Go package bound (symbol prefix is `Mobile`, its package name)
 OUT_DIR="${1:-build}"
 RUNTIME_VERSION="${CODEAGENT_VERSION:-dev}"
-# Skills shipped with the app. These SKILL.md files are user-level (global)
-# skills, copied into the Application Support directory on first launch so they
-# are available to every workspace. The user can add their own skills there later.
-# List skill directory names (not full paths).
-BUNDLED_SKILLS=(review-change verify-change skill-creator)
-SKILLS_SRC="./skills"
 # -------------------------------------------------------------------------------
 
 OUT="${OUT_DIR}/${FRAMEWORK_NAME}.xcframework"
 export PATH="$(go env GOPATH)/bin:${PATH}"
+
+echo "==> validating system skill bundle"
+go run ./cmd/system-skills --check
 
 command -v xcodebuild >/dev/null 2>&1 || { echo "error: xcodebuild not found (install Xcode)"; exit 1; }
 
@@ -93,25 +90,13 @@ while IFS= read -r -d '' plist; do
   fi
 done < <(find "${OUT}" -mindepth 2 -name Info.plist -print0)
 
-# ---- package skills alongside the xcframework -----------------------------------
-echo "==> packaging skills"
+# ---- package the generated system skill bundle alongside the xcframework -------
+echo "==> packaging system skills"
 SKILLS_OUT="${OUT_DIR}/skills"
 rm -rf "${SKILLS_OUT}"
-mkdir -p "${SKILLS_OUT}"
-copied=0
-skipped=0
-for skill in "${BUNDLED_SKILLS[@]}"; do
-  src="${SKILLS_SRC}/${skill}"
-  if [ -f "${src}/SKILL.md" ]; then
-    cp -R "${src}" "${SKILLS_OUT}/"
-    echo "    bundled: ${skill}"
-    ((copied++)) || true
-  else
-    echo "    skipped: ${skill} (no SKILL.md at ${src})"
-    ((skipped++)) || true
-  fi
-done
-echo "    skills: ${copied} bundled, ${skipped} skipped"
+mkdir -p "${SKILLS_OUT}/.system"
+cp -R "./internal/systemskills/bundle/." "${SKILLS_OUT}/.system/"
+echo "    bundled: ${SKILLS_OUT}/.system"
 
 echo "==> verifying"
 for platform in ios macos; do
@@ -130,4 +115,4 @@ echo
 echo "==> done: ${OUT}"
 echo "    Next:  scripts/release-ios.sh <version>   # → zip + GitHub Release"
 echo "    Swift: import ${FRAMEWORK_NAME}            // symbols prefixed Mobile* (Go package name)"
-echo "    resources: ${SKILLS_OUT}                  // skills → copy into Application Support/skills (global/user-level)"
+echo "    resources: ${SKILLS_OUT}                  // .system → copy into Application Support/skills"

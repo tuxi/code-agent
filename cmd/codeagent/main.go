@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"code-agent/cmd/codeagent/tui"
 	"code-agent/internal/agent"
 	"code-agent/internal/app"
@@ -12,6 +13,7 @@ import (
 	"code-agent/internal/runtime"
 	"code-agent/internal/session"
 	"code-agent/internal/settings"
+	"code-agent/internal/systemskills"
 	"code-agent/internal/ui"
 	"context"
 	"encoding/json"
@@ -93,6 +95,11 @@ func run() error {
 	if cfg.GlobalSkillsDir == "" {
 		if home, err := os.UserHomeDir(); err == nil {
 			cfg.GlobalSkillsDir = filepath.Join(home, ".codeagent", "skills")
+		}
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		if err := systemskills.InstallForHome(home, systemskills.Embedded(), "embedded:codeagent"); err != nil {
+			return fmt.Errorf("install system skills: %w", err)
 		}
 	}
 	// Same pattern for prompt templates.
@@ -901,51 +908,83 @@ func runTUI(ctx context.Context, cfg settings.Settings, mc settings.ModelConfig,
 // runPlugin handles `codeagent plugin <subcommand> [args...]`.
 func runPlugin(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: codeagent plugin <install|list|remove> [args...]")
+		return fmt.Errorf("usage: codeagent plugin <install|list|enable|disable|remove> [args...]")
 	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+	skillsDir := filepath.Join(home, ".codeagent", "skills")
 	switch args[0] {
 	case "install":
 		if len(args) < 2 {
-			return fmt.Errorf("usage: codeagent plugin install <repo-url> [plugin-name]")
+			return fmt.Errorf("usage: codeagent plugin install <local-dir-or-zip> [--yes]")
 		}
-		repoURL := args[1]
-		pluginName := ""
-		if len(args) >= 3 {
-			pluginName = args[2]
+		source := args[1]
+		confirmed := false
+		for _, arg := range args[2:] {
+			if arg == "--yes" || arg == "-y" {
+				confirmed = true
+			} else {
+				return fmt.Errorf("unknown plugin install option %q", arg)
+			}
 		}
-		n, err := plugins.InstallPlugin(repoURL, pluginName)
+		if !confirmed {
+			fmt.Fprintf(os.Stderr, "Install plugin from %q into %s? [y/N] ", source, plugins.PluginsRootForSkillsDir(skillsDir))
+			answer, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+			confirmed = strings.EqualFold(strings.TrimSpace(answer), "y") || strings.EqualFold(strings.TrimSpace(answer), "yes")
+		}
+		if !confirmed {
+			return plugins.ErrConfirmationRequired
+		}
+		entry, err := plugins.InstallLocal(skillsDir, source, plugins.InstallOptions{Confirmed: true, Source: source})
 		if err != nil {
 			return err
 		}
-		fmt.Printf("Installed %d skill(s) from plugin %q.\n", n, pluginName)
-		fmt.Println("Restart codeagent or start a new session for them to appear.")
+		fmt.Printf("Installed plugin %s@%s into %s.\n", entry.Name, entry.Version, entry.Path)
+		fmt.Println("Restart the codeagent runtime for its namespaced skills and enabled MCP servers to appear.")
 		return nil
 	case "list":
-		installed, err := plugins.LoadInstalled()
+		installed, err := plugins.LoadInstalledRegistryForSkillsDir(skillsDir)
 		if err != nil {
 			return err
 		}
-		if len(installed) == 0 {
+		if len(installed.Plugins) == 0 {
 			fmt.Println("No plugins installed.")
-			fmt.Println("Install one with: codeagent plugin install <repo-url> <plugin-name>")
+			fmt.Println("Install one with: codeagent plugin install <local-dir-or-zip>")
 			return nil
 		}
 		fmt.Println("Installed plugins:")
-		for _, ip := range installed {
-			fmt.Printf("  %s  (from %s, %d skills)\n", ip.Plugin.Name, ip.MarketplaceName, len(ip.Plugin.Skills))
+		for _, ip := range installed.Plugins {
+			state := "enabled"
+			if !ip.Enabled {
+				state = "disabled"
+			}
+			fmt.Printf("  %s@%s  [%s]  %s\n", ip.Name, ip.Version, state, ip.Path)
 		}
+		return nil
+	case "enable", "disable":
+		if len(args) != 2 {
+			return fmt.Errorf("usage: codeagent plugin %s <plugin-name>", args[0])
+		}
+		enabled := args[0] == "enable"
+		if err := plugins.SetPluginEnabled(skillsDir, args[1], enabled); err != nil {
+			return err
+		}
+		fmt.Printf("Plugin %q %sd.\n", args[1], args[0])
+		fmt.Println("Restart the codeagent runtime to apply the change.")
 		return nil
 	case "remove":
 		if len(args) < 2 {
 			return fmt.Errorf("usage: codeagent plugin remove <plugin-name>")
 		}
-		if err := plugins.UninstallPlugin(args[1]); err != nil {
+		if err := plugins.UninstallLocal(skillsDir, args[1]); err != nil {
 			return err
 		}
 		fmt.Printf("Removed plugin %q.\n", args[1])
 		return nil
 	default:
-		return fmt.Errorf("unknown plugin subcommand: %s (try install, list, remove)", args[0])
+		return fmt.Errorf("unknown plugin subcommand: %s (try install, list, enable, disable, remove)", args[0])
 	}
 }
 
@@ -969,8 +1008,10 @@ func printUsage() {
   codeagent skill init <name>              scaffold a new skill under ./skills/<name>/
   codeagent prompt init <name>             scaffold a prompt template under .codeagent/prompts/
   codeagent prompt list                    list loaded prompt templates
-  codeagent plugin install <url> [name]    install skill plugins from a marketplace repo
-  codeagent plugin list                    list installed plugins
+  codeagent plugin install <path> [--yes]  install a local plugin directory or zip
+  codeagent plugin list                    list versioned plugin caches
+  codeagent plugin enable <name>           enable a plugin
+  codeagent plugin disable <name>          disable a plugin without deleting it
   codeagent plugin remove <name>           remove an installed plugin
 
 Flags:
