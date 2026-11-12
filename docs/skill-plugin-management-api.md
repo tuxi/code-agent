@@ -227,8 +227,8 @@ Success is HTTP 201 with `runtime-plugin-mutation/v1`:
 - `POST /v1/runtime/plugins/{name}/disable`
 
 The response contains the updated plugin item and reload semantics. Disabled
-plugins contribute neither namespaced skills nor MCP servers. Mutation endpoints
-remain fail-closed: enable/disable/install/uninstall reject a tampered plugin.
+plugins contribute neither namespaced skills nor MCP servers. Enable, disable,
+and install remain integrity fail-closed for tampered plugins.
 
 ### Uninstall
 
@@ -245,8 +245,13 @@ remain fail-closed: enable/disable/install/uninstall reject a tampered plugin.
 }
 ```
 
-The cache path must resolve inside the plugin cache root. Symlink escapes and
-paths outside that root are refused. Registry state is updated after cache
+Uninstall deliberately does not require manifest/bundle integrity so a tampered
+plugin can be purged. The plugin must still exist in the installed registry; its
+name and version come from that registry. The cache path must be a real
+directory strictly inside `plugins/cache` and must match
+`plugins/cache/<registry-name>/<registry-version>`, with no symlink component,
+path escape, or non-cache target. Unsafe paths are refused before any deletion
+and return `plugin_cache_path_unsafe`. Registry state is updated after cache
 cleanup.
 
 ## Error codes
@@ -264,6 +269,7 @@ Errors remain in the unified envelope. `data.code` is the stable machine code:
 | 404 | `plugin_not_found` | Plugin is not installed. |
 | 409 | `workspace_scope_unresolved` | Session exists but requires workspace rebind. |
 | 409 | `plugin_integrity_error` | A mutation was rejected because manifest/bundle or cache integrity failed. |
+| 409 | `plugin_cache_path_unsafe` | Uninstall refused a symlinked, escaped, or non-cache path. |
 | 422 | `plugin_manifest_invalid` | Local plugin manifest is malformed or invalid. |
 | 428 | `plugin_confirmation_required` | `confirmed: true` was not supplied. |
 | 500 | `skill_inventory_failed` | Skill roots could not be read. |

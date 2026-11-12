@@ -31,6 +31,7 @@ const (
 	CodePluginSourceUnsupported    = "plugin_source_unsupported"
 	CodePluginManifestInvalid      = "plugin_manifest_invalid"
 	CodePluginIntegrityError       = "plugin_integrity_error"
+	CodePluginCachePathUnsafe      = "plugin_cache_path_unsafe"
 	CodePluginNotFound             = "plugin_not_found"
 	CodePluginRegistryInvalid      = "plugin_registry_invalid"
 	CodePluginOperationFailed      = "plugin_operation_failed"
@@ -429,10 +430,13 @@ func (m *SkillPluginManager) UninstallPlugin(ctx context.Context, name string) (
 	if !ok {
 		return UninstallPluginMutation{}, managementError(CodePluginNotFound, "plugin is not installed", plugins.ErrPluginNotFound)
 	}
-	if _, err := plugins.VerifyInstalled(entry); err != nil {
-		return UninstallPluginMutation{}, managementError(CodePluginIntegrityError, "installed plugin failed integrity verification", err)
-	}
 	if err := plugins.UninstallLocal(m.skillsDir, name); err != nil {
+		if errorsIsPluginNotFound(err) {
+			return UninstallPluginMutation{}, managementError(CodePluginNotFound, "plugin is not installed", err)
+		}
+		if errorsIsUnsafePluginCachePath(err) {
+			return UninstallPluginMutation{}, managementError(CodePluginCachePathUnsafe, "plugin cache path failed safety checks", err)
+		}
 		return UninstallPluginMutation{}, managementError(CodePluginOperationFailed, "plugin could not be uninstalled", err)
 	}
 	reloadRequired, err := m.pluginReloadRequired(name)
@@ -890,6 +894,10 @@ func errorsIsManifestInvalid(err error) bool {
 
 func errorsIsPluginNotFound(err error) bool {
 	return managementErrorsIs(err, plugins.ErrPluginNotFound)
+}
+
+func errorsIsUnsafePluginCachePath(err error) bool {
+	return managementErrorsIs(err, plugins.ErrUnsafePluginCachePath)
 }
 
 func managementErrorsIs(err, target error) bool {

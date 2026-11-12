@@ -253,8 +253,9 @@ func TestSkillPluginManagerReadOnlyInventoryToleratesTamperedPlugins(t *testing.
 	if err := os.WriteFile(manifestPath, []byte(`{"schema":"tampered"}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	startupManager := NewSkillPluginManager(skillsDir)
 
-	pluginsInventory, err := manager.PluginInventory(ctx)
+	pluginsInventory, err := startupManager.PluginInventory(ctx)
 	if err != nil {
 		t.Fatalf("plugin inventory must tolerate one tampered plugin: %v", err)
 	}
@@ -272,7 +273,7 @@ func TestSkillPluginManagerReadOnlyInventoryToleratesTamperedPlugins(t *testing.
 		t.Fatalf("healthy plugin item = %#v", byName["healthy"])
 	}
 
-	skillsInventory, err := manager.SkillInventory(ctx, "sess", workspace)
+	skillsInventory, err := startupManager.SkillInventory(ctx, "sess", workspace)
 	if err != nil {
 		t.Fatalf("skill inventory must tolerate one tampered plugin: %v", err)
 	}
@@ -288,14 +289,11 @@ func TestSkillPluginManagerReadOnlyInventoryToleratesTamperedPlugins(t *testing.
 		t.Fatalf("skill inventory warnings = %#v", skillsInventory.Warnings)
 	}
 
-	if _, err := manager.SetPluginEnabled(ctx, "broken", false); managementCode(err) != CodePluginIntegrityError {
+	if _, err := startupManager.SetPluginEnabled(ctx, "broken", false); managementCode(err) != CodePluginIntegrityError {
 		t.Fatalf("enable/disable must fail closed for tampered plugin: %v", err)
 	}
-	if _, err := manager.UninstallPlugin(ctx, "broken"); managementCode(err) != CodePluginIntegrityError {
-		t.Fatalf("uninstall must fail closed for tampered plugin: %v", err)
-	}
-	if _, err := os.Stat(brokenEntry.Path); err != nil {
-		t.Fatalf("failed mutation removed tampered plugin cache: %v", err)
+	if _, err := startupManager.InstallLocalPlugin(ctx, InstallLocalPluginRequest{Source: broken, Confirmed: true}); err == nil {
+		t.Fatal("install must remain fail-closed when the cached plugin was tampered")
 	}
 
 	raw, err := json.Marshal(struct {
@@ -309,6 +307,24 @@ func TestSkillPluginManagerReadOnlyInventoryToleratesTamperedPlugins(t *testing.
 		if strings.Contains(string(raw), forbidden) {
 			t.Fatalf("inventory leaked %q: %s", forbidden, raw)
 		}
+	}
+
+	removed, err := startupManager.UninstallPlugin(ctx, "broken")
+	if err != nil {
+		t.Fatalf("tampered plugin uninstall must succeed: %v", err)
+	}
+	if removed.Name != "broken" || removed.Version != "1.0.0" || !removed.ReloadRequired || removed.ReloadHint == "" {
+		t.Fatalf("tampered plugin uninstall response = %#v", removed)
+	}
+	if _, err := os.Stat(brokenEntry.Path); !os.IsNotExist(err) {
+		t.Fatalf("tampered plugin cache still exists after uninstall: %v", err)
+	}
+	registry, err = plugins.LoadInstalledRegistryForSkillsDir(skillsDir)
+	if err != nil || len(registry.Plugins) != 1 || registry.Plugins[0].Name != "healthy" {
+		t.Fatalf("registry after tampered uninstall = %#v, %v", registry, err)
+	}
+	if _, err := startupManager.UninstallPlugin(ctx, "missing"); managementCode(err) != CodePluginNotFound {
+		t.Fatalf("missing plugin uninstall error = %v", err)
 	}
 }
 
@@ -457,5 +473,37 @@ func TestPluginInterfaceProjectionDropsUnsafeValues(t *testing.T) {
 	}
 	if item.Logo != "" || item.BrandColor != "" || item.WebsiteURL != "" {
 		t.Fatalf("unsafe interface values survived projection: %#v", item)
+	}
+}
+
+func TestSkillPluginManagerUninstallRejectsUnsafeCachePath(t *testing.T) {
+	skillsDir := filepath.Join(t.TempDir(), "skills")
+	source := writeManagementPlugin(t, "outside", "1.0.0", "Outside path test", nil)
+	if _, err := plugins.InstallLocal(skillsDir, source, plugins.InstallOptions{Confirmed: true, Source: "local_directory"}); err != nil {
+		t.Fatal(err)
+	}
+	manager := NewSkillPluginManager(skillsDir)
+	outside := t.TempDir()
+	sentinel := filepath.Join(outside, "keep.txt")
+	if err := os.WriteFile(sentinel, []byte("keep"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	registry, err := plugins.LoadInstalledRegistryForSkillsDir(skillsDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry.Plugins[0].Path = outside
+	if err := plugins.SaveInstalledRegistryForSkillsDir(skillsDir, registry); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.UninstallPlugin(context.Background(), "outside"); managementCode(err) != CodePluginCachePathUnsafe {
+		t.Fatalf("unsafe cache path error = %v", err)
+	}
+	if _, err := os.Stat(sentinel); err != nil {
+		t.Fatalf("outside-cache content was removed: %v", err)
+	}
+	registry, err = plugins.LoadInstalledRegistryForSkillsDir(skillsDir)
+	if err != nil || len(registry.Plugins) != 1 {
+		t.Fatalf("registry after refused uninstall = %#v, %v", registry, err)
 	}
 }

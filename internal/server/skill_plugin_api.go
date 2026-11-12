@@ -179,7 +179,7 @@ func writeManagementError(w http.ResponseWriter, r *http.Request, err error) {
 		status = http.StatusBadRequest
 	case "conversation_not_found", runtimepkg.CodePluginNotFound:
 		status = http.StatusNotFound
-	case "workspace_scope_unresolved", runtimepkg.CodePluginIntegrityError:
+	case "workspace_scope_unresolved", runtimepkg.CodePluginIntegrityError, runtimepkg.CodePluginCachePathUnsafe:
 		status = http.StatusConflict
 	case runtimepkg.CodePluginConfirmationRequired:
 		status = http.StatusPreconditionRequired

@@ -220,6 +220,18 @@ func TestSkillPluginManagementPluginRoutesAndErrors(t *testing.T) {
 		t.Fatalf("management error leaked internal cause: %s", rec.Body.String())
 	}
 	service.pluginErr = &runtimepkg.ManagementError{
+		Code: runtimepkg.CodePluginCachePathUnsafe, Message: "plugin cache path failed safety checks",
+		Cause: errors.New("plugin cache path must be strictly inside the cache root"),
+	}
+	rec = serveManagementRequest(mux, http.MethodDelete, "/v1/runtime/plugins/docs", nil, auth)
+	assertManagementError(t, rec, http.StatusConflict, runtimepkg.CodePluginCachePathUnsafe)
+	service.pluginErr = &runtimepkg.ManagementError{
+		Code: runtimepkg.CodePluginNotFound, Message: "plugin is not installed",
+		Cause: errors.New("plugin is not installed"),
+	}
+	rec = serveManagementRequest(mux, http.MethodDelete, "/v1/runtime/plugins/missing", nil, auth)
+	assertManagementError(t, rec, http.StatusNotFound, runtimepkg.CodePluginNotFound)
+	service.pluginErr = &runtimepkg.ManagementError{
 		Code: runtimepkg.CodePluginRegistryInvalid, Message: "plugin registry could not be read",
 		Cause: errors.New("/Users/private/.codeagent/plugins/installed-plugins.json: permission denied"),
 	}

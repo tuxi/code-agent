@@ -3,6 +3,7 @@ package plugins
 import (
 	"archive/zip"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -196,8 +197,8 @@ func TestUninstallLocalRejectsCacheSymlinkEscape(t *testing.T) {
 	if err := os.Symlink(outside, entry.Path); err != nil {
 		t.Fatal(err)
 	}
-	if err := UninstallLocal(skillsDir, "docs"); err == nil {
-		t.Fatal("uninstall followed a cache symlink outside the plugin cache")
+	if err := UninstallLocal(skillsDir, "docs"); !errors.Is(err, ErrUnsafePluginCachePath) {
+		t.Fatalf("uninstall symlink escape error = %v", err)
 	}
 	if _, err := os.Stat(outside); err != nil {
 		t.Fatalf("outside directory was removed: %v", err)
@@ -205,6 +206,92 @@ func TestUninstallLocalRejectsCacheSymlinkEscape(t *testing.T) {
 	registry, err := LoadInstalledRegistryForSkillsDir(skillsDir)
 	if err != nil || len(registry.Plugins) != 1 {
 		t.Fatalf("registry after refused uninstall = %#v, %v", registry, err)
+	}
+}
+
+func TestUninstallLocalRejectsOutsideCachePath(t *testing.T) {
+	skillsDir := filepath.Join(t.TempDir(), "skills")
+	source := filepath.Join(t.TempDir(), "docs-plugin")
+	writeTestPlugin(t, source)
+	if _, err := InstallLocal(skillsDir, source, InstallOptions{Confirmed: true, Source: source}); err != nil {
+		t.Fatal(err)
+	}
+	outside := t.TempDir()
+	sentinel := filepath.Join(outside, "keep.txt")
+	if err := os.WriteFile(sentinel, []byte("keep"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	registry, err := LoadInstalledRegistryForSkillsDir(skillsDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry.Plugins[0].Path = outside
+	if err := SaveInstalledRegistryForSkillsDir(skillsDir, registry); err != nil {
+		t.Fatal(err)
+	}
+	if err := UninstallLocal(skillsDir, "docs"); !errors.Is(err, ErrUnsafePluginCachePath) {
+		t.Fatalf("outside-cache uninstall error = %v", err)
+	}
+	if _, err := os.Stat(sentinel); err != nil {
+		t.Fatalf("outside-cache content was removed: %v", err)
+	}
+	registry, err = LoadInstalledRegistryForSkillsDir(skillsDir)
+	if err != nil || len(registry.Plugins) != 1 {
+		t.Fatalf("registry after refused uninstall = %#v, %v", registry, err)
+	}
+}
+
+func TestUninstallLocalRejectsCachePathIdentityMismatch(t *testing.T) {
+	skillsDir := filepath.Join(t.TempDir(), "skills")
+	source := filepath.Join(t.TempDir(), "docs-plugin")
+	writeTestPlugin(t, source)
+	if _, err := InstallLocal(skillsDir, source, InstallOptions{Confirmed: true, Source: source}); err != nil {
+		t.Fatal(err)
+	}
+	otherCache := filepath.Join(PluginsRootForSkillsDir(skillsDir), "cache", "other", "1.0.0")
+	if err := os.MkdirAll(otherCache, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sentinel := filepath.Join(otherCache, "keep.txt")
+	if err := os.WriteFile(sentinel, []byte("keep"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	registry, err := LoadInstalledRegistryForSkillsDir(skillsDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry.Plugins[0].Path = otherCache
+	if err := SaveInstalledRegistryForSkillsDir(skillsDir, registry); err != nil {
+		t.Fatal(err)
+	}
+	if err := UninstallLocal(skillsDir, "docs"); !errors.Is(err, ErrUnsafePluginCachePath) {
+		t.Fatalf("identity-mismatch uninstall error = %v", err)
+	}
+	if _, err := os.Stat(sentinel); err != nil {
+		t.Fatalf("other plugin cache content was removed: %v", err)
+	}
+}
+
+func TestUninstallLocalHealthyPluginAndMissingPlugin(t *testing.T) {
+	skillsDir := filepath.Join(t.TempDir(), "skills")
+	source := filepath.Join(t.TempDir(), "docs-plugin")
+	writeTestPlugin(t, source)
+	entry, err := InstallLocal(skillsDir, source, InstallOptions{Confirmed: true, Source: source})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := UninstallLocal(skillsDir, "docs"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(entry.Path); !os.IsNotExist(err) {
+		t.Fatalf("plugin cache still exists after uninstall: %v", err)
+	}
+	registry, err := LoadInstalledRegistryForSkillsDir(skillsDir)
+	if err != nil || len(registry.Plugins) != 0 {
+		t.Fatalf("registry after uninstall = %#v, %v", registry, err)
+	}
+	if err := UninstallLocal(skillsDir, "docs"); !errors.Is(err, ErrPluginNotFound) {
+		t.Fatalf("missing plugin uninstall error = %v", err)
 	}
 }
 
