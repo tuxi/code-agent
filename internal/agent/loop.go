@@ -215,7 +215,8 @@ type Runner struct {
 	// successful todo_write, in model order on the main goroutine.
 	todos []tools.Todo
 
-	Compactor session.Compactor
+	outputTokens int
+	Compactor    session.Compactor
 
 	// ContextEditor clears stale tool results and thinking blocks before
 	// compaction runs. Nil means skip this step.
@@ -997,6 +998,7 @@ func (r *Runner) ResumeTurn(ctx context.Context, sess *session.Session) (TurnRes
 // appends the user message first) and ResumeTurn (which does not), so both paths
 // execute identical control flow.
 func (r *Runner) drive(ctx context.Context, sess *session.Session) (TurnResult, error) {
+	r.outputTokens = session.OutputTokenBudget(sess.ContextWindow)
 	turn := TurnResult{TurnID: r.emitTurnID}
 
 	// Reflection (P4.3) per-turn state: at most one self-check pass, and the
@@ -1023,6 +1025,7 @@ func (r *Runner) drive(ctx context.Context, sess *session.Session) (TurnResult, 
 	// search-happy model reformulating the same query is cut off past the cap.
 	webSearches := 0
 	var turnAssets []assets.Ref
+	contextRecoveries := 0
 	startStep := 0
 	if state := r.continuation; state != nil {
 		r.continuation = nil
@@ -1159,6 +1162,17 @@ func (r *Runner) drive(ctx context.Context, sess *session.Session) (TurnResult, 
 		turn.BillingUnits += usage.BillingUnits
 		turn.TokensUsed += usage.PromptTokens + usage.CompletionTokens
 		if err != nil {
+			if model.IsContextLimit(err) && contextRecoveries < 1 && streamedText.Len() == 0 && streamedReasoning.Len() == 0 {
+				changed, compactErr := r.CompactContext(ctx, sess)
+				if compactErr != nil {
+					return turn, fmt.Errorf("context recovery: %w", compactErr)
+				}
+				if changed {
+					contextRecoveries++
+					i--
+					continue
+				}
+			}
 			return turn, err
 		}
 
@@ -1682,8 +1696,8 @@ func (r *Runner) checkpoint(ctx context.Context, sess *session.Session) {
 // (the recent window already is the whole history) is not recorded, and a
 // measured compaction that stayed over the threshold puts the session in
 // cooldown (see Session.NeedCompaction) instead of retrying every iteration.
-func (r *Runner) maybeCompact(ctx context.Context, sess *session.Session) error {
-	if r.Compactor == nil || !sess.NeedCompaction() {
+func (r *Runner) maybeCompact(ctx context.Context, sess *session.Session) (err error) {
+	if r.Compactor == nil || (!sess.NeedCompaction() && !contextPressure(sess)) {
 		return nil
 	}
 
@@ -1692,13 +1706,27 @@ func (r *Runner) maybeCompact(ctx context.Context, sess *session.Session) error 
 	// prompt-cache performance — a healthy cache gets a higher bar (don't
 	// break a working prefix), a cold cache gets a lower one (reclaim
 	// context aggressively).
-	if last := sess.LastCompaction(); last != nil && last.Finalized() {
+	if last := sess.LastCompaction(); last != nil && last.Finalized() && !contextPressure(sess) {
 		growthRequired := int(float64(sess.CompactThreshold) * r.effectiveCooldownRatio())
 		if sess.PromptTokens < last.AfterTokens+growthRequired {
 			return nil
 		}
 	}
 
+	if last := sess.LastCompaction(); last != nil && !last.Finalized() {
+		return nil
+	}
+
+	// Preparation is transactional with summarization: a failed provider call
+	// must not save the pruned fragments as the new authoritative context.
+	original := *sess
+	original.Messages = append([]model.Message(nil), sess.Messages...)
+	original.Compactions = append([]session.CompactionStats(nil), sess.Compactions...)
+	defer func() {
+		if err != nil {
+			*sess = original
+		}
+	}()
 	before := sess.PromptTokens
 
 	// Context editing: clear stale tool results before the LLM summarizer
@@ -1782,6 +1810,9 @@ func (r *Runner) complete(ctx context.Context, req model.Request, streamedText, 
 	// and subagents all get them without each call site remembering to.
 	req.Messages = r.injectGitInfo(req.Messages)
 	req.Messages = withCurrentDate(withReferenceProtocol(req.Messages), time.Now())
+	if req.MaxOutputTokens == 0 {
+		req.MaxOutputTokens = r.outputTokens
+	}
 	req.SessionID = r.emitSessionID
 	req.TurnID = r.emitTurnID
 	req.RequestID = r.emitRequestID

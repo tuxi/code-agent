@@ -239,7 +239,9 @@ type ContextSnapshot struct {
 // ContextModel is the static budget: how much headroom the model provides and
 // at what point compaction kicks in. Both values are in tokens.
 type ContextModel struct {
-	Name string `json:"name"`
+	OutputTokenBudget int    `json:"output_token_budget"`
+	InputTokenBudget  int    `json:"input_token_budget"`
+	Name              string `json:"name"`
 	// ReasoningEffort is the session's sticky reasoning budget ("" = the model
 	// config default applies) — the effective level this conversation runs at.
 	ReasoningEffort  string  `json:"reasoning_effort"`
@@ -300,11 +302,13 @@ func contextSnapshotFromSession(s *session.Session) ContextSnapshot {
 
 	snap := ContextSnapshot{
 		Model: ContextModel{
-			Name:             s.Model,
-			ReasoningEffort:  s.ReasoningEffort,
-			ContextWindow:    cw,
-			CompactThreshold: ct,
-			CompactRatio:     ratio,
+			Name:              s.Model,
+			OutputTokenBudget: session.OutputTokenBudget(cw),
+			InputTokenBudget:  session.InputTokenBudget(cw),
+			ReasoningEffort:   s.ReasoningEffort,
+			ContextWindow:     cw,
+			CompactThreshold:  ct,
+			CompactRatio:      ratio,
 		},
 		Current: ContextCurrent{
 			PromptTokens: s.PromptTokens,
@@ -316,11 +320,13 @@ func contextSnapshotFromSession(s *session.Session) ContextSnapshot {
 	// Compaction log.
 	cc := ContextCompact{TotalCount: len(s.Compactions)}
 	for _, c := range s.Compactions {
-		cc.TotalSavedTokens += c.SavedTokens
+		if c.Finalized() {
+			cc.TotalSavedTokens += c.SavedTokens
+		}
 	}
 	if len(s.Compactions) > 0 {
 		last := s.Compactions[len(s.Compactions)-1]
-		ineffective := last.AfterTokens >= 0 && last.SavedTokens <= 0
+		ineffective := last.AfterTokens >= 0 && (last.SavedTokens <= 0 || last.AfterTokens >= ct)
 		cc.Last = &CompactEntry{
 			BeforeTokens: last.BeforeTokens,
 			AfterTokens:  last.AfterTokens,
@@ -336,7 +342,7 @@ func contextSnapshotFromSession(s *session.Session) ContextSnapshot {
 	// Structural breakdown.
 	snap.Structure = ContextStructure{
 		MessageCount:    len(s.Messages),
-		EstimatedTokens: estimateMessageTokens(s.Messages),
+		EstimatedTokens: session.EstimateContextTokens(s.Messages),
 		HasSummary:      s.Summary != "",
 		SummaryChars:    len(s.Summary),
 	}
@@ -1205,6 +1211,7 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 		writeJSON(w, r, http.StatusOK, detail)
 	})
 
+	registerContextCompaction(mux, repo, executor)
 	mux.HandleFunc("GET /v1/conversations/{id}/context", func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
 		s, err := repo.Load(r.Context(), id)

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 )
 
 // Compactor shrinks a session's history when it grows too large for the context
@@ -109,7 +110,17 @@ func (c *LLMCompactor) Compact(ctx context.Context, sess *Session) error {
 	// ineffective-compaction guard backstops the pathological case where
 	// system + summary alone bust the threshold.)
 	recentStart := len(conversation) - 1
-	budget := c.KeepRecentTokens - approxTokens(conversation[recentStart])
+	keepTokens := c.KeepRecentTokens
+	// Calibrate the tail against actual usage: chars/4 can severely undercount
+	// provider-visible reasoning and multilingual history.
+	estimated := 0
+	for _, m := range msgs {
+		estimated += approxTokens(m)
+	}
+	if estimated > 0 && sess.PromptTokens > estimated {
+		keepTokens = max(1, int(float64(keepTokens)*float64(estimated)/float64(sess.PromptTokens)))
+	}
+	budget := keepTokens - approxTokens(conversation[recentStart])
 	for recentStart > 0 {
 		cost := approxTokens(conversation[recentStart-1])
 		if cost > budget {
@@ -131,7 +142,7 @@ func (c *LLMCompactor) Compact(ctx context.Context, sess *Session) error {
 		return nil
 	}
 
-	summary, err := c.summarize(ctx, sess.ID, sess.Summary, toFold)
+	summary, err := c.summarizeBounded(ctx, sess, toFold)
 	if err != nil {
 		return err
 	}
@@ -154,6 +165,41 @@ func (c *LLMCompactor) Compact(ctx context.Context, sess *Session) error {
 // call, so it does not pass through the agent loop's request stamping and must
 // set this itself.
 func (c *LLMCompactor) summarize(ctx context.Context, sessionID, prev string, msgs []model.Message) (string, error) {
+	return c.summarizeText(ctx, sessionID, prev, renderMessages(msgs), 8192)
+}
+
+func (c *LLMCompactor) summarizeBounded(ctx context.Context, sess *Session, msgs []model.Message) (string, error) {
+	text, summary := renderMessages(msgs), sess.Summary
+	window := sess.ContextWindow
+	if window <= 0 {
+		window = 128000
+	}
+	output := min(8192, OutputTokenBudget(window))
+	// One byte per token is deliberately conservative for this internal text
+	// request. Split even a single huge tool result without dropping its content.
+	for len(text) > 0 {
+		capacity := window - output - window/10 - len(summarizeSystemPrompt) - len(summary) - 512
+		if capacity <= 0 {
+			return "", errors.New("compaction summary exceeds input budget")
+		}
+		end := min(len(text), capacity)
+		for end > 0 && end < len(text) && !utf8.RuneStart(text[end]) {
+			end--
+		}
+		if end == 0 {
+			return "", errors.New("compaction input budget too small")
+		}
+		var err error
+		summary, err = c.summarizeText(ctx, sess.ID, summary, text[:end], output)
+		if err != nil {
+			return "", err
+		}
+		text = text[end:]
+	}
+	return summary, nil
+}
+
+func (c *LLMCompactor) summarizeText(ctx context.Context, sessionID, prev, text string, output int) (string, error) {
 	var b strings.Builder
 	if prev != "" {
 		b.WriteString("Existing summary so far:\n")
@@ -161,13 +207,14 @@ func (c *LLMCompactor) summarize(ctx context.Context, sessionID, prev string, ms
 		b.WriteString("\n\n")
 	}
 	b.WriteString("New conversation to fold into the summary:\n")
-	b.WriteString(renderMessages(msgs))
+	b.WriteString(text)
 	b.WriteString("\nProduce the updated cumulative summary.")
 
 	resp, err := c.Provider.Complete(ctx, model.Request{
-		SessionID:   sessionID,
-		Model:       c.ModelName,
-		Temperature: c.Temperature,
+		SessionID:       sessionID,
+		MaxOutputTokens: output,
+		Model:           c.ModelName,
+		Temperature:     c.Temperature,
 		Messages: []model.Message{
 			{Role: model.RoleSystem, Content: summarizeSystemPrompt},
 			{Role: model.RoleUser, Content: b.String()},
@@ -175,6 +222,9 @@ func (c *LLMCompactor) summarize(ctx context.Context, sessionID, prev string, ms
 	})
 	if err != nil {
 		return "", fmt.Errorf("compaction summarize: %w", err)
+	}
+	if resp.FinishReason == "length" || resp.FinishReason == "max_tokens" {
+		return "", errors.New("compaction summarize: output limit reached")
 	}
 	summary := strings.TrimSpace(resp.Content)
 	if summary == "" {
@@ -188,7 +238,7 @@ func (c *LLMCompactor) summarize(ctx context.Context, sessionID, prev string, ms
 // order of magnitude — the true post-compaction size is still measured by the
 // next model call's reported usage (see the loop's maybeCompact).
 func approxTokens(m model.Message) int {
-	n := len(m.Content)
+	n := len(m.Content) + len(m.ReasoningContent)
 	for _, tc := range m.ToolCalls {
 		n += len(tc.Function.Name) + len(tc.Function.Arguments)
 	}

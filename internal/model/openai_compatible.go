@@ -131,6 +131,7 @@ func defaultHTTPClient() *http.Client {
 }
 
 type chatCompletionRequest struct {
+	MaxTokens       int               `json:"max_tokens,omitempty"`
 	SessionID       string            `json:"session_id,omitempty"`
 	TurnID          string            `json:"turn_id,omitempty"`
 	RequestID       string            `json:"request_id,omitempty"`
@@ -476,6 +477,7 @@ func (p *OpenAICompatibleProvider) CompleteStream(ctx context.Context, req Reque
 		Messages:        newWireMessages(req.Messages),
 		Temperature:     req.Temperature,
 		ReasoningEffort: reasoningEffortToOpenAI(req.ReasoningEffort),
+		MaxTokens:       req.MaxOutputTokens,
 		Tools:           toolsForGatewayRequest(req.Messages, req.Tools),
 		ToolChoice:      req.ToolChoice,
 		Stream:          true,
@@ -652,6 +654,7 @@ func (p *OpenAICompatibleProvider) Complete(ctx context.Context, req Request) (R
 		Messages:        newWireMessages(req.Messages),
 		Temperature:     req.Temperature,
 		ReasoningEffort: reasoningEffortToOpenAI(req.ReasoningEffort),
+		MaxTokens:       req.MaxOutputTokens,
 		Tools:           toolsForGatewayRequest(req.Messages, req.Tools),
 		ToolChoice:      req.ToolChoice,
 	}

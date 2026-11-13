@@ -78,14 +78,15 @@ func NewResponsesProviderWithKey(baseURL, apiKey string) *ResponsesProvider {
 // parameters are silently ignored by compliant providers (OpenAI and DeepSeek
 // both), so this universal subset works against either.
 type responsesRequest struct {
-	Model        string              `json:"model"`
-	Instructions string              `json:"instructions,omitempty"`
-	Input        []responseItem      `json:"input"`
-	Temperature  float64             `json:"temperature,omitempty"`
-	Reasoning    *responsesReasoning `json:"reasoning,omitempty"`
-	Tools        *[]responsesTool    `json:"tools,omitempty"`
-	ToolChoice   string              `json:"tool_choice,omitempty"`
-	Stream       bool                `json:"stream,omitempty"`
+	MaxOutputTokens int                 `json:"max_output_tokens,omitempty"`
+	Model           string              `json:"model"`
+	Instructions    string              `json:"instructions,omitempty"`
+	Input           []responseItem      `json:"input"`
+	Temperature     float64             `json:"temperature,omitempty"`
+	Reasoning       *responsesReasoning `json:"reasoning,omitempty"`
+	Tools           *[]responsesTool    `json:"tools,omitempty"`
+	ToolChoice      string              `json:"tool_choice,omitempty"`
+	Stream          bool                `json:"stream,omitempty"`
 }
 
 // responsesReasoning is the Responses API reasoning-config block: the thinking
@@ -284,13 +285,14 @@ func toResponsesRequest(req Request, webSearch bool) responsesRequest {
 		*tools = append(*tools, responsesTool{Type: "web_search"})
 	}
 	return responsesRequest{
-		Model:        req.Model,
-		Instructions: strings.Join(instructions, "\n\n"),
-		Input:        items,
-		Temperature:  req.Temperature,
-		Reasoning:    reasoningEffortToResponses(req.ReasoningEffort),
-		Tools:        tools,
-		ToolChoice:   req.ToolChoice,
+		MaxOutputTokens: req.MaxOutputTokens,
+		Model:           req.Model,
+		Instructions:    strings.Join(instructions, "\n\n"),
+		Input:           items,
+		Temperature:     req.Temperature,
+		Reasoning:       reasoningEffortToResponses(req.ReasoningEffort),
+		Tools:           tools,
+		ToolChoice:      req.ToolChoice,
 	}
 }
 

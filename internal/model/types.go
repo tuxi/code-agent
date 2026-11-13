@@ -269,6 +269,8 @@ type ToolFunction struct {
 const ReasoningEffortOff = "off"
 
 type Request struct {
+	// MaxOutputTokens bounds generation, including reasoning where supported.
+	MaxOutputTokens int `json:"max_output_tokens,omitempty"`
 	// SessionID and ExecutionID are Gateway correlation identifiers. They are
 	// carried on the request envelope, never inserted into model-visible text.
 	SessionID   string    `json:"session_id,omitempty"`

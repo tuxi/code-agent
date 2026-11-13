@@ -119,3 +119,14 @@ func (e *APIError) Error() string {
 	}
 	return fmt.Sprintf("model api error: status=%d%s body=%s", e.StatusCode, target, body)
 }
+
+// IsContextLimit only recognizes provider context rejections, never transport
+// failures or unrelated bad requests. Recovery belongs to the owning runner.
+func IsContextLimit(err error) bool {
+	var api *APIError
+	if !errors.As(err, &api) {
+		return false
+	}
+	text := strings.ToLower(api.Code + " " + api.Type + " " + api.Message)
+	return strings.Contains(text, "context_length_exceeded") || strings.Contains(text, "maximum context length") || strings.Contains(text, "context window exceeded")
+}
