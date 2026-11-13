@@ -425,6 +425,7 @@ func TestExecuteEvidencePath(t *testing.T) {
 		t.Fatal(err)
 	}
 	args["evidence_path"] = "evidence.json"
+	args["layout"].(map[string]any)["source"].(map[string]any)["evidence_sha256"] = digestBytes(evidenceBytes)
 	result := execute(t, NewTool(), root, args)
 	if result.Failure != nil {
 		t.Fatalf("execute failed: %+v", result.Failure)
@@ -432,6 +433,164 @@ func TestExecuteEvidencePath(t *testing.T) {
 	decoded := decodeResult(t, result)
 	if decoded.EvidencePath != "evidence.json" || decoded.EvidenceSHA256 != digestBytes(evidenceBytes) {
 		t.Fatalf("evidence identity = %+v", decoded)
+	}
+}
+
+func TestExecuteEvidencePathRequiresEvidenceSHA(t *testing.T) {
+	root, sha, _ := testWorkspace(t)
+	args := validArgs(sha)
+	evidenceBytes := mustJSON(t, args["evidence"])
+	delete(args, "evidence")
+	if err := os.WriteFile(filepath.Join(root, "evidence.json"), evidenceBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	args["evidence_path"] = "evidence.json"
+
+	result := execute(t, NewTool(), root, args)
+	if result.Failure == nil || result.Failure.Kind != "evidence_mismatch" {
+		t.Fatalf("failure = %+v", result.Failure)
+	}
+	if !strings.Contains(result.Failure.Message, "evidence_sha256") {
+		t.Fatalf("failure message = %q", result.Failure.Message)
+	}
+}
+
+func TestExecuteEvidencePathRejectsTamperedEvidence(t *testing.T) {
+	root, sha, _ := testWorkspace(t)
+	args := validArgs(sha)
+	evidenceBytes := mustJSON(t, args["evidence"])
+	delete(args, "evidence")
+	evidencePath := filepath.Join(root, "evidence.json")
+	if err := os.WriteFile(evidencePath, evidenceBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	args["evidence_path"] = "evidence.json"
+	args["layout"].(map[string]any)["source"].(map[string]any)["evidence_sha256"] = digestBytes(evidenceBytes)
+
+	var evidence map[string]any
+	if err := json.Unmarshal(evidenceBytes, &evidence); err != nil {
+		t.Fatal(err)
+	}
+	element := evidence["elements"].([]any)[0].(map[string]any)
+	element["text"] = "Tampered"
+	if err := os.WriteFile(evidencePath, mustJSON(t, evidence), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	result := execute(t, NewTool(), root, args)
+	if result.Failure == nil || result.Failure.Kind != "evidence_mismatch" {
+		t.Fatalf("failure = %+v", result.Failure)
+	}
+}
+
+func TestExecuteEvidencePathRejectsSourceAssetIDMismatch(t *testing.T) {
+	root, sha, _ := testWorkspace(t)
+	args := validArgs(sha)
+	evidence := args["evidence"].(map[string]any)
+	delete(args, "evidence")
+	evidence["source"].(map[string]any)["asset_id"] = "asset_source_other"
+	evidenceBytes := mustJSON(t, evidence)
+	if err := os.WriteFile(filepath.Join(root, "evidence.json"), evidenceBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	args["evidence_path"] = "evidence.json"
+	args["layout"].(map[string]any)["source"].(map[string]any)["evidence_sha256"] = digestBytes(evidenceBytes)
+
+	result := execute(t, NewTool(), root, args)
+	if result.Failure == nil || result.Failure.Kind != "evidence_mismatch" {
+		t.Fatalf("failure = %+v", result.Failure)
+	}
+	if !strings.Contains(result.Failure.Message, "asset_id") {
+		t.Fatalf("failure message = %q", result.Failure.Message)
+	}
+}
+
+func TestExecuteEvidencePathRejectsCanvasMismatch(t *testing.T) {
+	root, sha, _ := testWorkspace(t)
+	args := validArgs(sha)
+	evidence := args["evidence"].(map[string]any)
+	delete(args, "evidence")
+	evidence["source"].(map[string]any)["width"] = 201
+	evidenceBytes := mustJSON(t, evidence)
+	if err := os.WriteFile(filepath.Join(root, "evidence.json"), evidenceBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	args["evidence_path"] = "evidence.json"
+	args["layout"].(map[string]any)["source"].(map[string]any)["evidence_sha256"] = digestBytes(evidenceBytes)
+
+	result := execute(t, NewTool(), root, args)
+	if result.Failure == nil || result.Failure.Kind != "evidence_mismatch" {
+		t.Fatalf("failure = %+v", result.Failure)
+	}
+}
+
+func TestExecuteEvidencePathRejectsInvalidPaths(t *testing.T) {
+	root, sha, _ := testWorkspace(t)
+	if err := os.Mkdir(filepath.Join(root, "evidence-dir"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	outside := t.TempDir()
+	outsideEvidence := filepath.Join(outside, "evidence.json")
+	if err := os.WriteFile(outsideEvidence, mustJSON(t, baseEvidence(sha)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outsideEvidence, filepath.Join(root, "evidence-link")); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name string
+		path string
+		kind string
+	}{
+		{"missing file", "missing.json", "not_found"},
+		{"directory path", "evidence-dir", "invalid_arguments"},
+		{"symlink escape", "evidence-link", "blocked"},
+		{"absolute path", "/tmp/evidence.json", "blocked"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			args := validArgs(sha)
+			delete(args, "evidence")
+			args["evidence_path"] = tc.path
+			result := execute(t, NewTool(), root, args)
+			if result.Failure == nil || result.Failure.Kind != tc.kind {
+				t.Fatalf("failure = %+v, want %q", result.Failure, tc.kind)
+			}
+		})
+	}
+}
+
+func TestExecuteEvidencePathReuseIsDeterministic(t *testing.T) {
+	root, sha, _ := testWorkspace(t)
+	args := validArgs(sha)
+	evidenceBytes := mustJSON(t, args["evidence"])
+	delete(args, "evidence")
+	if err := os.WriteFile(filepath.Join(root, "evidence.json"), evidenceBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	args["evidence_path"] = "evidence.json"
+	args["layout"].(map[string]any)["source"].(map[string]any)["evidence_sha256"] = digestBytes(evidenceBytes)
+
+	tool := NewTool()
+	first := execute(t, tool, root, args)
+	if first.Failure != nil {
+		t.Fatalf("first execute failed: %+v", first.Failure)
+	}
+	firstResult := decodeResult(t, first)
+	second := execute(t, tool, root, args)
+	if second.Failure != nil {
+		t.Fatalf("second execute failed: %+v", second.Failure)
+	}
+	secondResult := decodeResult(t, second)
+	if secondResult.Created || secondResult.LayoutRevision != firstResult.LayoutRevision {
+		t.Fatalf("second revision = %+v, want reused %d", secondResult, firstResult.LayoutRevision)
+	}
+	if secondResult.EvidenceSHA256 != firstResult.EvidenceSHA256 || secondResult.EvidencePath != firstResult.EvidencePath {
+		t.Fatalf("evidence identity changed across repeats: %+v vs %+v", firstResult, secondResult)
+	}
+	if secondResult.LayoutPath != firstResult.LayoutPath || secondResult.OverlayPath != firstResult.OverlayPath {
+		t.Fatalf("revision paths changed across repeats: %+v vs %+v", firstResult, secondResult)
 	}
 }
 

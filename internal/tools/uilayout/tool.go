@@ -55,6 +55,7 @@ func (*Tool) Name() string { return "ui_layout" }
 func (*Tool) Description() string {
 	return "Validate and persist a model-authored ui_layout.v1 document against a workspace source image and optional ui_evidence.v1. " +
 		"Checks the frozen schema, source SHA-256, canvas dimensions, node IDs, normalized bboxes, responsive invariants, and evidence references. " +
+		"When evidence_path is supplied the layout must declare source.evidence_schema=ui_evidence.v1 and a source.evidence_sha256 matching the file bytes. " +
 		"Returns the stored layout revision and an annotated overlay image. This tool does not generate or infer layout content."
 }
 
@@ -70,7 +71,7 @@ func (*Tool) InputSchema() json.RawMessage {
 		},
 		"evidence_path": {
 			Type:        "string",
-			Description: "Optional workspace-relative ui_evidence.v1 JSON file.",
+			Description: "Optional workspace-relative ui_evidence.v1 JSON file. The layout must declare source.evidence_schema=ui_evidence.v1 and source.evidence_sha256 matching this file's bytes.",
 		},
 		"evidence": {
 			Type:        "object",
@@ -225,7 +226,8 @@ func (t *Tool) Execute(ctx context.Context, ec tools.ExecutionContext, raw json.
 	var evidenceData []byte
 	evidenceRel := ""
 	evidenceSHA := ""
-	if strings.TrimSpace(in.EvidencePath) != "" {
+	evidenceFromPath := strings.TrimSpace(in.EvidencePath) != ""
+	if evidenceFromPath {
 		evidenceAbs, rel, err := resolveWorkspaceFile(ec.WorkspaceRoot, in.EvidencePath, "evidence_path")
 		if err != nil {
 			return failureFromError(err), nil
@@ -249,11 +251,36 @@ func (t *Tool) Execute(ctx context.Context, ec tools.ExecutionContext, raw json.
 		if err := json.Unmarshal(evidenceData, &evidence); err != nil {
 			return tools.FailureResult("evidence_mismatch", "ui_layout evidence could not be decoded: "+err.Error()), nil
 		}
-		if evidence.Source.SHA256 != sourceSHA || evidence.Source.Width != width || evidence.Source.Height != height {
-			return tools.FailureResult("evidence_mismatch", "ui_layout evidence source does not match the source image."), nil
+		if evidence.Source.SHA256 != sourceSHA {
+			return tools.FailureResult("evidence_mismatch", "ui_layout evidence source sha256 does not match the source image."), nil
+		}
+		if evidence.Source.Width != width || evidence.Source.Height != height {
+			return tools.FailureResult("evidence_mismatch", fmt.Sprintf(
+				"ui_layout evidence canvas %dx%d does not match the source image %dx%d.",
+				evidence.Source.Width, evidence.Source.Height, width, height,
+			)), nil
+		}
+		if document.Source.AssetID != evidence.Source.AssetID {
+			return tools.FailureResult("evidence_mismatch", "ui_layout source asset_id does not match the evidence source asset."), nil
+		}
+		if document.Source.SourceAssetSHA256 != evidence.Source.SHA256 {
+			return tools.FailureResult("evidence_mismatch", "ui_layout source_asset_sha256 does not match the evidence source sha256."), nil
 		}
 		evidenceSHA = digestBytes(evidenceData)
-		if document.Source.EvidenceSHA256 != "" && document.Source.EvidenceSHA256 != evidenceSHA {
+		if evidenceFromPath {
+			// A persisted evidence file carries a known content digest. Bind the
+			// layout to it explicitly so a swapped or edited file cannot pass as
+			// the evidence the layout was authored against.
+			if document.Source.EvidenceSchema != "ui_evidence.v1" {
+				return tools.FailureResult("evidence_mismatch", "ui_layout source.evidence_schema must be ui_evidence.v1 when evidence_path is supplied."), nil
+			}
+			if document.Source.EvidenceSHA256 == "" {
+				return tools.FailureResult("evidence_mismatch", "ui_layout source.evidence_sha256 is required when evidence_path is supplied."), nil
+			}
+			if document.Source.EvidenceSHA256 != evidenceSHA {
+				return tools.FailureResult("evidence_mismatch", "ui_layout evidence_sha256 does not match the evidence file bytes."), nil
+			}
+		} else if document.Source.EvidenceSHA256 != "" && document.Source.EvidenceSHA256 != evidenceSHA {
 			return tools.FailureResult("evidence_mismatch", "ui_layout evidence_sha256 does not match the supplied ui_evidence.v1 bytes."), nil
 		}
 	} else if layoutUsesEvidence(document) || document.Source.EvidenceSHA256 != "" {
