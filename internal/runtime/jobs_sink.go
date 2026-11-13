@@ -42,6 +42,7 @@ type JobEventSink struct {
 	mu      sync.Mutex
 	live    func(sessionID string) agent.Emitter // nil until SetLiveResolver
 	pending map[string]*pendingOutput
+	budgets map[string]*outputBudget
 }
 
 type pendingOutput struct {
@@ -49,15 +50,38 @@ type pendingOutput struct {
 	timer *time.Timer
 }
 
+// outputBudget tracks how many bytes of one job's output have been persisted.
+// Mirrors the per-tool-call ToolStreamBudget: persistence is capped, live
+// streaming is not.
+type outputBudget struct {
+	persisted int64
+	dropped   int64
+	tail      []byte
+}
+
 const (
 	jobFlushBytes = 4 * 1024
 	jobFlushDelay = 750 * time.Millisecond
+
+	// jobOutputBudget is the head budget: bytes of one job's stdout persisted
+	// verbatim into session_events. Overflow stays live-only and is summarized
+	// by one marker event at job_finished. Without this cap a long-running job
+	// writes ~32KB events indefinitely (observed: 66GB of session_events).
+	jobOutputBudget = 256 * 1024
+	// jobOutputTailBytes is how much of the dropped overflow is kept for the
+	// end-of-job truncation marker.
+	jobOutputTailBytes = 4 * 1024
 )
 
 // NewJobEventSink builds the sink over the event store. ctx should be the
 // process/server context (jobs outlive turns, so never a turn context).
 func NewJobEventSink(ctx context.Context, store session.EventStore) *JobEventSink {
-	return &JobEventSink{ctx: ctx, store: store, pending: make(map[string]*pendingOutput)}
+	return &JobEventSink{
+		ctx:     ctx,
+		store:   store,
+		pending: make(map[string]*pendingOutput),
+		budgets: make(map[string]*outputBudget),
+	}
 }
 
 func (s *JobEventSink) AcquireJobLease(dir string, owner jobs.Owner) (func(), error) {
@@ -94,6 +118,9 @@ func (s *JobEventSink) Emit(ev agent.Event) {
 }
 
 func (s *JobEventSink) JobStarted(snap jobs.Snapshot) {
+	s.mu.Lock()
+	delete(s.budgets, snap.ID)
+	s.mu.Unlock()
 	s.publish(agent.Event{
 		Kind: agent.EventJobStarted, At: time.Now(),
 		SessionID: snap.ID, TurnID: snap.Owner.TurnID, CallID: snap.Owner.CallID,
@@ -123,6 +150,7 @@ func (s *JobEventSink) JobOutput(id string, chunk []byte) {
 
 func (s *JobEventSink) JobFinished(snap jobs.Snapshot) {
 	s.flush(snap.ID)
+	s.finishOutputBudget(snap.ID)
 	ev := agent.Event{
 		Kind: agent.EventJobFinished, At: time.Now(),
 		SessionID: snap.ID, TurnID: snap.Owner.TurnID, CallID: snap.Owner.CallID,
@@ -242,12 +270,84 @@ func (s *JobEventSink) takeLocked(id string, p *pendingOutput) []byte {
 
 // emitOutput persists a coalesced output span and fans it to the job's own
 // live stream — child only. The parent stream gets brackets, never the output
-// firehose (§8.4-2), so this goes through emitChild, not ForwardBracket.
+// firehose (§8.4-2), so this goes through the child partition only.
+//
+// Persistence is capped per job (jobOutputBudget); live fan-out is not, so a
+// terminal keeps showing output after the budget is spent. Overflow is
+// summarized by finishOutputBudget at job_finished.
 func (s *JobEventSink) emitOutput(id string, buf []byte) {
 	if len(buf) == 0 {
 		return
 	}
-	s.emitChild(agent.Event{
-		Kind: agent.EventJobOutput, At: time.Now(), SessionID: id, Chunk: string(buf),
+	now := time.Now()
+	persist, live := s.admitOutput(id, buf)
+	ev := agent.Event{
+		Kind: agent.EventJobOutput, At: now, SessionID: id, Chunk: string(live),
+	}
+	if len(persist) > 0 {
+		if seq := s.record(id, agent.Event{
+			Kind: agent.EventJobOutput, At: now, SessionID: id, Chunk: string(persist),
+		}); seq > 0 {
+			ev.Seq = seq
+		}
+	}
+	s.fanLive(id, ev)
+}
+
+// admitOutput reserves up to the job's remaining persistence budget and keeps
+// the tail of any dropped overflow for the final marker.
+func (s *JobEventSink) admitOutput(id string, chunk []byte) (persist, live []byte) {
+	s.mu.Lock()
+	b := s.budgets[id]
+	if b == nil {
+		b = &outputBudget{}
+		s.budgets[id] = b
+	}
+	remaining := int64(jobOutputBudget) - b.persisted
+	n := 0
+	if remaining > 0 {
+		n = len(chunk)
+		if int64(n) > remaining {
+			n = int(remaining)
+		}
+		b.persisted += int64(n)
+	}
+	if dropped := len(chunk) - n; dropped > 0 {
+		b.dropped += int64(dropped)
+		b.tail = appendBoundedTail(b.tail, chunk[n:], jobOutputTailBytes)
+	}
+	s.mu.Unlock()
+	return chunk[:n], chunk
+}
+
+// finishOutputBudget persists one marker when a job's output overflowed the
+// persistence budget, then forgets the job's budget. Persist-only: the live
+// stream already received the full output.
+func (s *JobEventSink) finishOutputBudget(id string) {
+	s.mu.Lock()
+	b := s.budgets[id]
+	delete(s.budgets, id)
+	s.mu.Unlock()
+	if b == nil || b.dropped == 0 {
+		return
+	}
+	chunk := fmt.Sprintf(
+		"\n… [job output truncated: %d bytes not persisted; tail follows] …\n",
+		b.dropped,
+	)
+	if len(b.tail) > 0 {
+		chunk += string(b.tail)
+	}
+	s.record(id, agent.Event{
+		Kind: agent.EventJobOutput, At: time.Now(), SessionID: id, Chunk: chunk,
 	})
+}
+
+// appendBoundedTail keeps the last limit bytes of the concatenation.
+func appendBoundedTail(tail, chunk []byte, limit int) []byte {
+	tail = append(tail, chunk...)
+	if len(tail) > limit {
+		tail = append([]byte(nil), tail[len(tail)-limit:]...)
+	}
+	return tail
 }

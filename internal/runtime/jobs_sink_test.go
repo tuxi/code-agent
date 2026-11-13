@@ -405,3 +405,64 @@ func TestForwardBracketTaskEvents(t *testing.T) {
 		t.Fatalf("live = %+v, want one frame with parent-partition seq %d", evs, parent[0].Seq)
 	}
 }
+
+func TestJobEventSinkCapsPersistedOutput(t *testing.T) {
+	store := &fakeEventStore{}
+	live := &recordingEmitter{}
+	sink := NewJobEventSink(context.Background(), store)
+	sink.SetLiveResolver(func(id string) agent.Emitter { return live })
+
+	sink.JobStarted(jobs.Snapshot{ID: "job_big", Command: "xcodebuild", Owner: testOwner})
+	const chunkBytes = 4 * 1024
+	totalChunks := (jobOutputBudget / chunkBytes) + 4 // 4 chunks of overflow
+	chunk := []byte(strings.Repeat("x", chunkBytes))
+	for i := 0; i < totalChunks; i++ {
+		sink.JobOutput("job_big", chunk)
+	}
+	sink.JobFinished(jobs.Snapshot{ID: "job_big", Status: jobs.Exited, Owner: testOwner})
+
+	rows, _ := store.SessionEvents(context.Background(), "job_big")
+	var persisted, markerBytes int
+	var markerChunk string
+	for _, r := range rows {
+		if r.Kind != string(agent.EventJobOutput) {
+			continue
+		}
+		var ev agent.Event
+		if err := json.Unmarshal(r.Payload, &ev); err != nil {
+			t.Fatalf("payload: %v", err)
+		}
+		if strings.Contains(ev.Chunk, "not persisted") {
+			markerBytes++
+			markerChunk = ev.Chunk
+			continue
+		}
+		persisted += len(ev.Chunk)
+	}
+	if persisted > jobOutputBudget {
+		t.Errorf("persisted output = %d bytes, budget %d", persisted, jobOutputBudget)
+	}
+	if markerBytes != 1 {
+		t.Errorf("truncation markers = %d, want 1", markerBytes)
+	}
+	if !strings.Contains(markerChunk, strings.Repeat("x", 16)) {
+		t.Errorf("marker does not retain the overflow tail: %q", markerChunk)
+	}
+
+	// Live streaming must remain uncapped: the terminal keeps showing output
+	// after the persistence budget is spent.
+	var liveBytes int
+	for _, ev := range live.snapshot() {
+		if ev.Kind == agent.EventJobOutput {
+			liveBytes += len(ev.Chunk)
+		}
+	}
+	if want := totalChunks * chunkBytes; liveBytes != want {
+		t.Errorf("live output = %d bytes, want %d", liveBytes, want)
+	}
+
+	kinds := kindsOf(rows)
+	if len(kinds) == 0 || kinds[len(kinds)-1] != "job_finished" {
+		t.Errorf("last persisted kind = %v, want job_finished last", kinds)
+	}
+}
