@@ -192,11 +192,195 @@ func TestExecutePersistsRevisionAndOverlay(t *testing.T) {
 	}
 }
 
+func TestExecuteValidatesEvidenceSHA256(t *testing.T) {
+	t.Run("matching digest", func(t *testing.T) {
+		root, sha, _ := testWorkspace(t)
+		args := validArgs(sha)
+		evidenceBytes := mustJSON(t, args["evidence"])
+		layout := args["layout"].(map[string]any)
+		layout["source"].(map[string]any)["evidence_sha256"] = digestBytes(evidenceBytes)
+
+		result := execute(t, NewTool(), root, args)
+		if result.Failure != nil {
+			t.Fatalf("execute failed: %+v", result.Failure)
+		}
+		decoded := decodeResult(t, result)
+		if decoded.EvidenceSHA256 != digestBytes(evidenceBytes) {
+			t.Fatalf("evidence sha = %q", decoded.EvidenceSHA256)
+		}
+	})
+
+	t.Run("mismatched digest", func(t *testing.T) {
+		root, sha, _ := testWorkspace(t)
+		args := validArgs(sha)
+		layout := args["layout"].(map[string]any)
+		layout["source"].(map[string]any)["evidence_sha256"] = strings.Repeat("0", 64)
+
+		result := execute(t, NewTool(), root, args)
+		if result.Failure == nil || result.Failure.Kind != "evidence_mismatch" {
+			t.Fatalf("failure = %+v", result.Failure)
+		}
+	})
+
+	t.Run("declared digest without evidence", func(t *testing.T) {
+		root, sha, _ := testWorkspace(t)
+		args := validArgs(sha)
+		delete(args, "evidence")
+		layout := args["layout"].(map[string]any)
+		layout["source"].(map[string]any)["evidence_sha256"] = strings.Repeat("a", 64)
+
+		result := execute(t, NewTool(), root, args)
+		if result.Failure == nil || result.Failure.Kind != "evidence_mismatch" {
+			t.Fatalf("failure = %+v", result.Failure)
+		}
+	})
+
+	t.Run("evidence path digest", func(t *testing.T) {
+		root, sha, _ := testWorkspace(t)
+		args := validArgs(sha)
+		evidenceBytes := mustJSON(t, args["evidence"])
+		delete(args, "evidence")
+		if err := os.WriteFile(filepath.Join(root, "evidence.json"), evidenceBytes, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		args["evidence_path"] = "evidence.json"
+		layout := args["layout"].(map[string]any)
+		layout["source"].(map[string]any)["evidence_sha256"] = digestBytes(evidenceBytes)
+
+		result := execute(t, NewTool(), root, args)
+		if result.Failure != nil {
+			t.Fatalf("execute failed: %+v", result.Failure)
+		}
+	})
+}
+
+func TestRevisionReuseRejectsTamperedArtifacts(t *testing.T) {
+	tests := []struct {
+		name   string
+		tamper func(t *testing.T, revisionDir string)
+	}{
+		{"metadata symlink", func(t *testing.T, revisionDir string) {
+			replaceWithSymlink(t, filepath.Join(revisionDir, "metadata.json"))
+		}},
+		{"layout symlink", func(t *testing.T, revisionDir string) {
+			replaceWithSymlink(t, filepath.Join(revisionDir, "layout.json"))
+		}},
+		{"overlay symlink", func(t *testing.T, revisionDir string) {
+			replaceWithSymlink(t, filepath.Join(revisionDir, "overlay.png"))
+		}},
+		{"metadata path tampering", func(t *testing.T, revisionDir string) {
+			path := filepath.Join(revisionDir, "metadata.json")
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var metadata revisionMetadata
+			if err := json.Unmarshal(data, &metadata); err != nil {
+				t.Fatal(err)
+			}
+			metadata.LayoutPath = "../../outside/layout.json"
+			metadata.OverlayPath = "/tmp/outside-overlay.png"
+			if err := os.WriteFile(path, mustJSON(t, metadata), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			root, sha, _ := testWorkspace(t)
+			artifactID := "layout_" + sha[:16]
+			tool := NewTool()
+			first := execute(t, tool, root, validArgs(sha))
+			if first.Failure != nil {
+				t.Fatalf("first execute failed: %+v", first.Failure)
+			}
+			firstResult := decodeResult(t, first)
+			if firstResult.LayoutRevision != 1 {
+				t.Fatalf("first revision = %d", firstResult.LayoutRevision)
+			}
+			revisionDir := filepath.Join(root, ".codeagent", "assets", "ui-layout", artifactID, revisionName(1))
+			tc.tamper(t, revisionDir)
+
+			second := execute(t, tool, root, validArgs(sha))
+			if second.Failure != nil {
+				t.Fatalf("second execute failed: %+v", second.Failure)
+			}
+			secondResult := decodeResult(t, second)
+			if !secondResult.Created || secondResult.LayoutRevision != 2 {
+				t.Fatalf("tampered revision was reused: %+v", secondResult)
+			}
+			assertInsideWorkspace(t, root, secondResult.LayoutPath)
+			assertInsideWorkspace(t, root, secondResult.OverlayPath)
+			if !strings.Contains(secondResult.LayoutPath, revisionName(2)) ||
+				!strings.Contains(secondResult.OverlayPath, revisionName(2)) {
+				t.Fatalf("revision paths do not point at the new revision: %+v", secondResult)
+			}
+			if secondResult.LayoutPath == "../../outside/layout.json" || secondResult.OverlayPath == "/tmp/outside-overlay.png" {
+				t.Fatalf("tampered metadata path was trusted: %+v", secondResult)
+			}
+		})
+	}
+}
+
+func TestMatchesWorkspaceRelativePath(t *testing.T) {
+	expected := ".codeagent/assets/ui-layout/layout_x/revision-000001/layout.json"
+	for _, value := range []string{
+		expected,
+		"./.codeagent/assets/ui-layout/layout_x/revision-000001/layout.json",
+	} {
+		if !matchesWorkspaceRelativePath(value, expected) {
+			t.Fatalf("%q should match %q", value, expected)
+		}
+	}
+	for _, value := range []string{
+		"",
+		"../outside/layout.json",
+		"../../outside/layout.json",
+		"/tmp/layout.json",
+		`..\outside\layout.json`,
+		" .codeagent/assets/layout.json",
+		".codeagent/assets/ui-layout/layout_y/revision-000001/layout.json",
+	} {
+		if matchesWorkspaceRelativePath(value, expected) {
+			t.Fatalf("%q should not match %q", value, expected)
+		}
+	}
+}
+
+func replaceWithSymlink(t *testing.T, path string) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(t.TempDir(), filepath.Base(path))
+	if err := os.WriteFile(target, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, path); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func assertInsideWorkspace(t *testing.T, root, workspaceRelative string) {
+	t.Helper()
+	if workspaceRelative == "" || filepath.IsAbs(workspaceRelative) {
+		t.Fatalf("path %q is not workspace-relative", workspaceRelative)
+	}
+	abs := filepath.Join(root, filepath.FromSlash(workspaceRelative))
+	rel, err := filepath.Rel(root, abs)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		t.Fatalf("path %q escapes the workspace", workspaceRelative)
+	}
+}
+
 func TestExecuteAcceptsLayoutWithoutEvidence(t *testing.T) {
 	root, sha, _ := testWorkspace(t)
 	args := validArgs(sha)
 	layout := args["layout"].(map[string]any)
-	delete(layout["source"].(map[string]any), "evidence_schema")
 	rootNode := layout["root"].(map[string]any)
 	rootNode["evidence_ids"] = []any{}
 	for _, child := range rootNode["children"].([]any) {

@@ -224,6 +224,7 @@ func (t *Tool) Execute(ctx context.Context, ec tools.ExecutionContext, raw json.
 
 	var evidenceData []byte
 	evidenceRel := ""
+	evidenceSHA := ""
 	if strings.TrimSpace(in.EvidencePath) != "" {
 		evidenceAbs, rel, err := resolveWorkspaceFile(ec.WorkspaceRoot, in.EvidencePath, "evidence_path")
 		if err != nil {
@@ -251,7 +252,11 @@ func (t *Tool) Execute(ctx context.Context, ec tools.ExecutionContext, raw json.
 		if evidence.Source.SHA256 != sourceSHA || evidence.Source.Width != width || evidence.Source.Height != height {
 			return tools.FailureResult("evidence_mismatch", "ui_layout evidence source does not match the source image."), nil
 		}
-	} else if document.Source.EvidenceSchema != "" || layoutUsesEvidence(document) {
+		evidenceSHA = digestBytes(evidenceData)
+		if document.Source.EvidenceSHA256 != "" && document.Source.EvidenceSHA256 != evidenceSHA {
+			return tools.FailureResult("evidence_mismatch", "ui_layout evidence_sha256 does not match the supplied ui_evidence.v1 bytes."), nil
+		}
+	} else if layoutUsesEvidence(document) || document.Source.EvidenceSHA256 != "" {
 		return tools.FailureResult("evidence_mismatch", "ui_layout references ui_evidence.v1 but no evidence document was supplied."), nil
 	}
 
@@ -295,10 +300,8 @@ func (t *Tool) Execute(ctx context.Context, ec tools.ExecutionContext, raw json.
 	}
 	if evidenceRel != "" {
 		meta.EvidencePath = evidenceRel
-		meta.EvidenceSHA256 = digestBytes(evidenceData)
-	} else if len(evidenceData) > 0 {
-		meta.EvidenceSHA256 = digestBytes(evidenceData)
 	}
+	meta.EvidenceSHA256 = evidenceSHA
 
 	t.mu.Lock()
 	persisted, err := persistRevision(ec.WorkspaceRoot, artifactID, canonicalLayout, overlayData, meta)

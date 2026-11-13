@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"image/png"
 	"io"
 	"os"
 	"path/filepath"
@@ -91,7 +92,7 @@ func persistRevision(root, artifactID string, layoutCanonical, overlay []byte, m
 		return persistedRevision{}, fmt.Errorf("ui_layout artifact directory escapes the asset root")
 	}
 
-	latest, existing, err := findExistingRevision(artifactDir, meta)
+	latest, existing, err := findExistingRevision(rootCanonical, artifactDir, meta)
 	if err != nil {
 		return persistedRevision{}, err
 	}
@@ -142,7 +143,7 @@ func persistRevision(root, artifactID string, layoutCanonical, overlay []byte, m
 	}
 }
 
-func findExistingRevision(artifactDir string, meta revisionMetadata) (int, *persistedRevision, error) {
+func findExistingRevision(rootCanonical, artifactDir string, meta revisionMetadata) (int, *persistedRevision, error) {
 	entries, err := os.ReadDir(artifactDir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -171,12 +172,43 @@ func findExistingRevision(artifactDir string, meta revisionMetadata) (int, *pers
 		if entry.revision > latest {
 			latest = entry.revision
 		}
-		data, err := os.ReadFile(filepath.Join(artifactDir, entry.name, "metadata.json"))
-		if err != nil {
+		revisionDir := filepath.Join(artifactDir, entry.name)
+		metadataBytes, ok := readRegularFile(filepath.Join(revisionDir, "metadata.json"))
+		if !ok {
 			continue
 		}
 		var existing revisionMetadata
-		if err := json.Unmarshal(data, &existing); err != nil {
+		if err := json.Unmarshal(metadataBytes, &existing); err != nil {
+			continue
+		}
+		if existing.Kind != "ui_layout_revision" ||
+			existing.LayoutArtifactID != meta.LayoutArtifactID ||
+			existing.LayoutRevision != entry.revision {
+			continue
+		}
+		expectedLayoutPath, ok := workspaceRelativePath(rootCanonical, filepath.Join(revisionDir, "layout.json"))
+		if !ok || !matchesWorkspaceRelativePath(existing.LayoutPath, expectedLayoutPath) {
+			continue
+		}
+		expectedOverlayPath, ok := workspaceRelativePath(rootCanonical, filepath.Join(revisionDir, "overlay.png"))
+		if !ok || !matchesWorkspaceRelativePath(existing.OverlayPath, expectedOverlayPath) {
+			continue
+		}
+		layoutBytes, ok := readRegularFile(filepath.Join(revisionDir, "layout.json"))
+		if !ok {
+			continue
+		}
+		layoutDigest := digestBytes(layoutBytes)
+		if existing.LayoutSHA256 != layoutDigest ||
+			existing.LayoutRevisionSHA256 != "sha256:"+layoutDigest {
+			continue
+		}
+		overlayBytes, ok := readRegularFile(filepath.Join(revisionDir, "overlay.png"))
+		if !ok {
+			continue
+		}
+		config, err := png.DecodeConfig(bytes.NewReader(overlayBytes))
+		if err != nil || config.Width != existing.OverlayWidth || config.Height != existing.OverlayHeight {
 			continue
 		}
 		if existing.LayoutSHA256 == meta.LayoutSHA256 &&
@@ -184,8 +216,7 @@ func findExistingRevision(artifactDir string, meta revisionMetadata) (int, *pers
 			existing.EvidenceSHA256 == meta.EvidenceSHA256 &&
 			existing.OverlayWidth == meta.OverlayWidth &&
 			existing.OverlayHeight == meta.OverlayHeight &&
-			existing.Canvas == meta.Canvas &&
-			revisionFilesExist(artifactDir, entry.name) {
+			existing.Canvas == meta.Canvas {
 			return latest, &persistedRevision{
 				Revision:    existing.LayoutRevision,
 				LayoutPath:  existing.LayoutPath,
@@ -197,14 +228,44 @@ func findExistingRevision(artifactDir string, meta revisionMetadata) (int, *pers
 	return latest, nil, nil
 }
 
-func revisionFilesExist(artifactDir, revisionDirName string) bool {
-	for _, name := range []string{"layout.json", "overlay.png"} {
-		info, err := os.Stat(filepath.Join(artifactDir, revisionDirName, name))
-		if err != nil || !info.Mode().IsRegular() {
-			return false
-		}
+func readRegularFile(path string) ([]byte, bool) {
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() {
+		return nil, false
 	}
-	return true
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, false
+	}
+	return data, true
+}
+
+// workspaceRelativePath returns the workspace-relative slash path for an
+// absolute path, or false when the path is not strictly inside the workspace.
+func workspaceRelativePath(rootCanonical, absolute string) (string, bool) {
+	rel, err := filepath.Rel(rootCanonical, absolute)
+	if err != nil {
+		return "", false
+	}
+	rel = filepath.ToSlash(filepath.Clean(rel))
+	if rel == "." || rel == ".." || strings.HasPrefix(rel, "../") || filepath.IsAbs(rel) {
+		return "", false
+	}
+	return rel, true
+}
+
+func matchesWorkspaceRelativePath(value, expected string) bool {
+	if value == "" || strings.TrimSpace(value) != value || strings.Contains(value, "\\") {
+		return false
+	}
+	if filepath.IsAbs(filepath.FromSlash(value)) {
+		return false
+	}
+	cleaned := filepath.ToSlash(filepath.Clean(filepath.FromSlash(value)))
+	if cleaned == "." || cleaned == ".." || strings.HasPrefix(cleaned, "../") {
+		return false
+	}
+	return cleaned == expected
 }
 
 func revisionName(revision int) string {

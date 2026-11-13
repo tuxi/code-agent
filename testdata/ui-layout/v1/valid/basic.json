@@ -4,7 +4,7 @@
     "asset_id": "asset_fixture_source",
     "source_asset_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     "evidence_schema": "ui_evidence.v1",
-    "evidence_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "evidence_sha256": "947cf05b1718f17a77f46c3b46c368b6c7ad5b5ce3bd5df9013b29de3d477c26",
     "canvas": {"width": 1290, "height": 2796}
   },
   "screen": {

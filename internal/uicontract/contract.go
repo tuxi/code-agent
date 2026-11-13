@@ -4,6 +4,8 @@
 package uicontract
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -156,8 +158,8 @@ func ValidateUILayout(documentData, evidenceData []byte) error {
 
 	var evidenceIDs map[string]struct{}
 	if len(evidenceData) == 0 {
-		if document.Source.EvidenceSchema != "" {
-			return fmt.Errorf("source.evidence_schema %q requires matching evidence", document.Source.EvidenceSchema)
+		if document.Source.EvidenceSHA256 != "" {
+			return fmt.Errorf("source.evidence_sha256 requires matching evidence")
 		}
 		if err := requireNoLayoutEvidenceReferences(document); err != nil {
 			return err
@@ -171,6 +173,12 @@ func ValidateUILayout(documentData, evidenceData []byte) error {
 	}
 	if err := ValidateUIEvidence(evidenceData); err != nil {
 		return fmt.Errorf("evidence: %w", err)
+	}
+	if document.Source.EvidenceSHA256 != "" {
+		sum := sha256.Sum256(evidenceData)
+		if hex.EncodeToString(sum[:]) != document.Source.EvidenceSHA256 {
+			return fmt.Errorf("source.evidence_sha256 does not match the evidence bytes")
+		}
 	}
 	evidenceIDs = make(map[string]struct{}, len(evidence.Elements))
 	for _, element := range evidence.Elements {
@@ -386,6 +394,7 @@ type layoutSource struct {
 	AssetID           string `json:"asset_id"`
 	SourceAssetSHA256 string `json:"source_asset_sha256"`
 	EvidenceSchema    string `json:"evidence_schema"`
+	EvidenceSHA256    string `json:"evidence_sha256"`
 }
 
 type layoutNode struct {

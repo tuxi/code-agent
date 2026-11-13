@@ -1,6 +1,8 @@
 package uicontract
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -66,12 +68,52 @@ func TestLayoutWithoutEvidenceReferencesNeedsNoEvidence(t *testing.T) {
 	children := root["children"].([]any)
 	children[0].(map[string]any)["id"] = "n_child"
 	root["children"] = children
+	decoded["source"].(map[string]any)["evidence_schema"] = "ui_evidence.v1"
 	clean, err := json.Marshal(decoded)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := ValidateUILayout(clean, nil); err != nil {
 		t.Fatalf("layout without evidence references failed: %v", err)
+	}
+}
+
+func TestLayoutEvidenceDigestRequiresEvidence(t *testing.T) {
+	document := readRepoFile(t, "testdata", "ui-layout", "v1", "valid", "basic.json")
+	var decoded map[string]any
+	if err := json.Unmarshal(document, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	decoded["source"].(map[string]any)["evidence_sha256"] = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	root := decoded["root"].(map[string]any)
+	for _, child := range root["children"].([]any) {
+		child.(map[string]any)["evidence_ids"] = []any{}
+	}
+	root["evidence_ids"] = []any{}
+	decoded["assumptions"] = []any{}
+	clean, err := json.Marshal(decoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateUILayout(clean, nil); err == nil {
+		t.Fatal("layout with evidence_sha256 passed without a ui_evidence.v1 document")
+	}
+}
+
+func TestValidLayoutEvidenceDigestMatchesFixture(t *testing.T) {
+	layout := readRepoFile(t, "testdata", "ui-layout", "v1", "valid", "basic.json")
+	evidence := readRepoFile(t, "testdata", "ui-evidence", "v1", "valid", "basic.json")
+	var document struct {
+		Source struct {
+			EvidenceSHA256 string `json:"evidence_sha256"`
+		} `json:"source"`
+	}
+	if err := json.Unmarshal(layout, &document); err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(evidence)
+	if document.Source.EvidenceSHA256 != hex.EncodeToString(sum[:]) {
+		t.Fatalf("fixture evidence_sha256 = %q, want %q", document.Source.EvidenceSHA256, hex.EncodeToString(sum[:]))
 	}
 }
 
