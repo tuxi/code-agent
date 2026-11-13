@@ -71,7 +71,7 @@ func (*Tool) InputSchema() json.RawMessage {
 		},
 		"evidence_path": {
 			Type:        "string",
-			Description: "Optional workspace-relative ui_evidence.v1 JSON file. The layout must declare source.evidence_schema=ui_evidence.v1 and source.evidence_sha256 matching this file's bytes.",
+			Description: "Optional workspace-relative ui_evidence.v1 JSON file. The layout must declare source.evidence_schema=ui_evidence.v1 and source.evidence_sha256 matching this file's bytes; source.asset_id must equal the evidence source asset_id.",
 		},
 		"evidence": {
 			Type:        "object",
