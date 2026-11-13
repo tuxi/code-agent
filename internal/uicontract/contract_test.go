@@ -1,6 +1,7 @@
 package uicontract
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -45,6 +46,32 @@ func TestValidLayoutFixture(t *testing.T) {
 	}
 	if err := ValidateUILayout(document, evidence); err != nil {
 		t.Fatalf("semantics: %v", err)
+	}
+}
+
+func TestLayoutEvidenceReferencesRequireEvidence(t *testing.T) {
+	document := readRepoFile(t, "testdata", "ui-layout", "v1", "valid", "basic.json")
+	if err := ValidateUILayout(document, nil); err == nil {
+		t.Fatal("layout with evidence references passed without a ui_evidence.v1 document")
+	}
+}
+
+func TestLayoutWithoutEvidenceReferencesNeedsNoEvidence(t *testing.T) {
+	document := readRepoFile(t, "testdata", "ui-layout", "v1", "invalid", "duplicate-node-id.json")
+	var decoded map[string]any
+	if err := json.Unmarshal(document, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	root := decoded["root"].(map[string]any)
+	children := root["children"].([]any)
+	children[0].(map[string]any)["id"] = "n_child"
+	root["children"] = children
+	clean, err := json.Marshal(decoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateUILayout(clean, nil); err != nil {
+		t.Fatalf("layout without evidence references failed: %v", err)
 	}
 }
 

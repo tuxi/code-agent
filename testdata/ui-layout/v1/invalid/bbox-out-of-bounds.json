@@ -1,0 +1,39 @@
+{
+  "schema": "ui_layout.v1",
+  "source": {
+    "asset_id": "asset_fixture_source",
+    "source_asset_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "canvas": {"width": 1290, "height": 2796}
+  },
+  "screen": {
+    "type": "fixture",
+    "primary_action": "continue",
+    "content_priority": ["content"],
+    "states": ["default"]
+  },
+  "root": {
+    "id": "n_root",
+    "role": "screen",
+    "bbox": {"x": 0.0, "y": 0.0, "width": 1.0, "height": 1.0},
+    "layout": {"mode": "vertical_stack"},
+    "children": [
+      {
+        "id": "n_title",
+        "role": "heading",
+        "bbox": {"x": 0.9, "y": 0.1, "width": 0.5, "height": 0.04},
+        "layout": {"mode": "absolute"},
+        "confidence": 0.8,
+        "evidence": "observed"
+      }
+    ],
+    "confidence": 0.8,
+    "evidence": "inferred"
+  },
+  "responsive": {
+    "invariants": [{"id": "inv_fixture", "statement": "Fixture invariant."}],
+    "targets": {"iphone_portrait": {"columns": 1}},
+    "node_policies": []
+  },
+  "assumptions": [],
+  "confidence": 0.8
+}

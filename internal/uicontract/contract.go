@@ -155,33 +155,60 @@ func ValidateUILayout(documentData, evidenceData []byte) error {
 	}
 
 	var evidenceIDs map[string]struct{}
-	if len(evidenceData) > 0 {
-		var evidence evidenceDocument
-		if err := decodeJSON(evidenceData, &evidence); err != nil {
-			return fmt.Errorf("decode evidence: %w", err)
+	if len(evidenceData) == 0 {
+		if document.Source.EvidenceSchema != "" {
+			return fmt.Errorf("source.evidence_schema %q requires matching evidence", document.Source.EvidenceSchema)
 		}
-		evidenceIDs = make(map[string]struct{}, len(evidence.Elements))
-		for _, element := range evidence.Elements {
-			evidenceIDs[element.ID] = struct{}{}
-		}
-		if document.Source.AssetID != evidence.Source.AssetID {
-			return fmt.Errorf("source.asset_id %q does not match evidence asset %q", document.Source.AssetID, evidence.Source.AssetID)
-		}
-		if document.Source.SourceAssetSHA256 != evidence.Source.SHA256 {
-			return fmt.Errorf("source.source_asset_sha256 does not match evidence source sha256")
-		}
-	}
-
-	if evidenceIDs != nil {
-		if err := checkLayoutEvidenceReferences(document.Root, evidenceIDs); err != nil {
+		if err := requireNoLayoutEvidenceReferences(document); err != nil {
 			return err
 		}
-		for i, assumption := range document.Assumptions {
-			for j, id := range assumption.EvidenceIDs {
-				if _, ok := evidenceIDs[id]; !ok {
-					return fmt.Errorf("assumptions[%d].evidence_ids[%d] %q does not reference evidence", i, j, id)
-				}
+		return nil
+	}
+
+	var evidence evidenceDocument
+	if err := decodeJSON(evidenceData, &evidence); err != nil {
+		return fmt.Errorf("decode evidence: %w", err)
+	}
+	if err := ValidateUIEvidence(evidenceData); err != nil {
+		return fmt.Errorf("evidence: %w", err)
+	}
+	evidenceIDs = make(map[string]struct{}, len(evidence.Elements))
+	for _, element := range evidence.Elements {
+		evidenceIDs[element.ID] = struct{}{}
+	}
+	if document.Source.AssetID != evidence.Source.AssetID {
+		return fmt.Errorf("source.asset_id %q does not match evidence asset %q", document.Source.AssetID, evidence.Source.AssetID)
+	}
+	if document.Source.SourceAssetSHA256 != evidence.Source.SHA256 {
+		return fmt.Errorf("source.source_asset_sha256 does not match evidence source sha256")
+	}
+
+	if err := checkLayoutEvidenceReferences(document.Root, evidenceIDs); err != nil {
+		return err
+	}
+	for i, assumption := range document.Assumptions {
+		for j, id := range assumption.EvidenceIDs {
+			if _, ok := evidenceIDs[id]; !ok {
+				return fmt.Errorf("assumptions[%d].evidence_ids[%d] %q does not reference evidence", i, j, id)
 			}
+		}
+	}
+	return nil
+}
+
+func requireNoLayoutEvidenceReferences(document layoutDocument) error {
+	nodes := []layoutNode{document.Root}
+	for len(nodes) > 0 {
+		node := nodes[len(nodes)-1]
+		nodes = nodes[:len(nodes)-1]
+		if len(node.EvidenceIDs) > 0 {
+			return fmt.Errorf("layout node %q references evidence but no ui_evidence.v1 document was supplied", node.ID)
+		}
+		nodes = append(nodes, node.Children...)
+	}
+	for i, assumption := range document.Assumptions {
+		if len(assumption.EvidenceIDs) > 0 {
+			return fmt.Errorf("assumptions[%d] references evidence but no ui_evidence.v1 document was supplied", i)
 		}
 	}
 	return nil
@@ -358,6 +385,7 @@ type layoutDocument struct {
 type layoutSource struct {
 	AssetID           string `json:"asset_id"`
 	SourceAssetSHA256 string `json:"source_asset_sha256"`
+	EvidenceSchema    string `json:"evidence_schema"`
 }
 
 type layoutNode struct {

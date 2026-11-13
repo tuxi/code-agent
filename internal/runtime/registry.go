@@ -25,6 +25,7 @@ import (
 	"code-agent/internal/tools/skill"
 	"code-agent/internal/tools/task"
 	"code-agent/internal/tools/todo"
+	"code-agent/internal/tools/uilayout"
 	"code-agent/internal/tools/webfetch"
 	"code-agent/internal/tools/websearch"
 	workflowtool "code-agent/internal/tools/workflow"
@@ -71,6 +72,7 @@ func RegisterBuiltinTools(registry *tools.Registry, cfg settings.Settings, cred 
 		skill.NewLoadSkillToolWithOptions(skillReg, skillOptions),
 		imageview.NewTool(),
 		previewtool.NewTool(),
+		uilayout.NewTool(),
 	}
 	// LSP tools — best-effort.
 	lspClient := initLSPClient(root)
