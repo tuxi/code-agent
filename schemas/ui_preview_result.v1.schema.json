@@ -16,7 +16,7 @@
     "title": {"type": "string", "minLength": 1, "maxLength": 256},
     "mode": {"type": "string", "enum": ["adaptation", "explore"]},
     "lineage": {
-      "description": "The exact ui_preview_lineage.v1 object for adaptation previews; null for explore previews. Validated under that schema by the runtime contract check.",
+      "description": "The exact ui_preview_lineage.v2 object for adaptation previews; null for explore previews. Validated under that schema by the runtime contract check.",
       "type": ["object", "null"]
     },
     "fallback_asset": {"$ref": "#/$defs/fallback_asset"}

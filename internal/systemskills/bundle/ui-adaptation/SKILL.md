@@ -2,7 +2,7 @@
 name: ui-adaptation
 description: Understand an app, web, or design-mockup image's layout and adapt it across iPhone Duo, iPhone, and iPad. Use when the user provides a screenshot or design image and asks to analyze its layout, preserve or adapt it across devices, generate responsive previews, or verify that an implementation visually matches the source. Do not use for generic image captioning or for UI implementation that has no visual reference.
 metadata:
-  version: "5"
+  version: "6"
 ---
 
 # UI Adaptation
@@ -14,8 +14,10 @@ schema details matter. The executable contracts are
 `references/schemas/view_image_result.v1.schema.json`,
 `references/schemas/ui_evidence.v1.schema.json`,
 `references/schemas/ui_layout.v1.schema.json`,
-`references/schemas/ui_layout_result.v1.schema.json`, and
-`references/schemas/ui_preview_lineage.v1.schema.json`. Tool ownership and prompt
+`references/schemas/ui_layout_result.v1.schema.json`,
+`references/schemas/ui_preview_lineage.v1.schema.json`,
+`references/schemas/ui_preview_lineage.v2.schema.json`, and
+`references/schemas/ui_preview_result.v1.schema.json`. Tool ownership and prompt
 boundaries are normative in
 `references/docs/primary-perception-ownership-contract.md`.
 
@@ -212,7 +214,7 @@ available through the asset/Inspector surface and summarize what matters.
 - “原图” denotes the source asset. It is not a request for `detail="original"`;
   original detail remains capability-gated by `image_detail_original=true`.
 - A preview interaction is not production proof and is not an approval signal.
-- A preview derived from a reviewed layout must carry `ui_preview_lineage.v1` so
-  its layout revision and source image remain traceable.
+- A preview derived from a reviewed layout must carry `ui_preview_lineage.v2` so
+  its layout revision, source image, evidence, target, and state remain traceable.
 - Do not modify production UI merely because the model generated a plausible
   preview; require an approved layout contract and explicit implementation scope.

@@ -34,7 +34,7 @@ func (*Tool) Name() string { return "ui_preview" }
 
 func (*Tool) Description() string {
 	return "Create an interactive UI preview from a trusted HTML fragment and a workspace raster fallback. " +
-		"mode=adaptation (the default) requires a ui_preview_lineage.v1 object binding the reviewed ui_layout revision, source image, evidence, target, and UI state; the runtime rejects a layout-less adaptation preview. " +
+		"mode=adaptation (the default) requires a ui_preview_lineage.v2 object binding the reviewed ui_layout revision, source image, evidence, target, and UI state; the runtime rejects a layout-less adaptation preview. " +
 		"mode=explore produces a standalone explore preview and must not carry lineage. " +
 		"Use this instead of pasting preview HTML into ordinary output."
 }
@@ -52,7 +52,7 @@ func (*Tool) InputSchema() json.RawMessage {
 		},
 		"lineage": {
 			Type:        "object",
-			Description: "ui_preview_lineage.v1 object. Required for adaptation previews and forbidden for explore previews.",
+			Description: "ui_preview_lineage.v2 object. Required for adaptation previews and forbidden for explore previews.",
 		},
 		"title": {
 			Type:        "string",
@@ -142,7 +142,7 @@ func (t *Tool) Execute(ctx context.Context, ec tools.ExecutionContext, raw json.
 	case preview.ModeAdaptation:
 		if lineage == nil {
 			return tools.FailureResult(preview.LineageRequired,
-				"ui_preview adaptation mode requires a ui_preview_lineage.v1 object binding the reviewed layout revision, source image, target, and state. "+
+				"ui_preview adaptation mode requires a ui_preview_lineage.v2 object binding the reviewed layout revision, source image, target, and state. "+
 					"Pass mode=explore only for a standalone explore preview."), nil
 		}
 	case preview.ModeExplore:

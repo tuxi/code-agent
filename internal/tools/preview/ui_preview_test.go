@@ -210,7 +210,7 @@ func createLayoutRevision(t *testing.T, root, sourceSHA string) layoutRevisionOu
 func validLineage(t *testing.T, layout layoutRevisionOut) preview.Lineage {
 	t.Helper()
 	return preview.Lineage{
-		Schema:               "ui_preview_lineage.v1",
+		Schema:               preview.LineageSchema,
 		LayoutArtifactID:     layout.LayoutArtifactID,
 		LayoutRevision:       layout.LayoutRevision,
 		LayoutRevisionSHA256: layout.LayoutRevisionSHA256,
@@ -509,5 +509,34 @@ func TestUIPreviewRejectsSymlinkedSource(t *testing.T) {
 	result := executeUIPreview(t, root, uiPreviewArgs(t, "p1f-symlink-source", "", &lineage))
 	if result.Failure == nil || result.Failure.Kind != preview.LineageUnavailable {
 		t.Fatalf("symlinked source failure = %+v", result.Failure)
+	}
+}
+
+func TestUIPreviewRejectsV1LineageForAdaptation(t *testing.T) {
+	root := t.TempDir()
+	writeFallbackPNG(t, filepath.Join(root, "assets", "fallback.png"))
+	sourceSHA := writeSourcePNG(t, root)
+	layout := createLayoutRevision(t, root, sourceSHA)
+	v1 := map[string]any{
+		"schema":                 "ui_preview_lineage.v1",
+		"layout_artifact_id":     layout.LayoutArtifactID,
+		"layout_revision":        layout.LayoutRevision,
+		"layout_revision_sha256": layout.LayoutRevisionSHA256,
+		"source_asset_id":        layout.SourceAssetID,
+		"source_asset_sha256":    layout.SourceAssetSHA256,
+		"approval":               map[string]any{"state": "not_required"},
+		"target_matrix":          map[string]any{"id": "matrix_p1f_test", "targets": []string{"duo_folded"}},
+	}
+	args, err := json.Marshal(map[string]any{
+		"artifact_key": "p1f-v1-lineage", "title": "P1-F preview",
+		"viewer_html": "<div></div>", "fallback_path": "assets/fallback.png",
+		"lineage": v1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := executeUIPreview(t, root, args)
+	if result.Failure == nil || result.Failure.Kind != preview.LineageInvalid {
+		t.Fatalf("v1 lineage failure = %+v", result.Failure)
 	}
 }

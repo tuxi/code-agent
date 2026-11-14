@@ -16,5 +16,8 @@ var UIEvidenceV1 []byte
 //go:embed ui_preview_lineage.v1.schema.json
 var UIPreviewLineageV1 []byte
 
+//go:embed ui_preview_lineage.v2.schema.json
+var UIPreviewLineageV2 []byte
+
 //go:embed ui_preview_result.v1.schema.json
 var UIPreviewResultV1 []byte

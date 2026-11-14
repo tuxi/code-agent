@@ -15,6 +15,8 @@ import (
 	"strings"
 
 	"github.com/google/jsonschema-go/jsonschema"
+
+	"code-agent/schemas"
 )
 
 var previewArtifactKeyPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,191}$`)
@@ -228,17 +230,38 @@ func requireNoLayoutEvidenceReferences(document layoutDocument) error {
 	return nil
 }
 
-// ValidatePreviewLineage validates the semantic identity fields for one
-// ui_preview_lineage.v1 record. It assumes the document has already passed the
-// frozen schema; the cross-field rules below cannot be expressed in JSON Schema.
+// ValidatePreviewLineage validates cross-field semantics for a lineage record.
+// v1 remains frozen and keeps its original rules; v2 adds the P1-F target,
+// state, evidence, and target-matrix bindings.
 func ValidatePreviewLineage(documentData []byte) error {
 	var document previewLineageDocument
 	if err := decodeJSON(documentData, &document); err != nil {
 		return err
 	}
-	if document.Schema != "ui_preview_lineage.v1" {
-		return fmt.Errorf("schema must be ui_preview_lineage.v1")
+	switch document.Schema {
+	case "ui_preview_lineage.v1":
+		return validatePreviewLineageV1(document)
+	case "ui_preview_lineage.v2":
+		return validatePreviewLineageV2(document)
+	default:
+		return fmt.Errorf("schema must be ui_preview_lineage.v1 or ui_preview_lineage.v2")
 	}
+}
+
+func validatePreviewLineageV1(document previewLineageDocument) error {
+	if document.LayoutRevision < 1 {
+		return fmt.Errorf("layout_revision must be at least 1")
+	}
+	if len(document.TargetMatrix.Targets) == 0 {
+		return fmt.Errorf("target_matrix.targets must not be empty")
+	}
+	if document.Approval.State == "user_confirmed" && document.Approval.EvidenceRef == "" {
+		return fmt.Errorf("approval.evidence_ref is required for user_confirmed lineage")
+	}
+	return nil
+}
+
+func validatePreviewLineageV2(document previewLineageDocument) error {
 	if !strings.HasPrefix(document.LayoutArtifactID, "layout_") {
 		return fmt.Errorf("layout_artifact_id must use the layout_ prefix")
 	}
@@ -292,7 +315,7 @@ func ValidatePreviewLineage(documentData []byte) error {
 
 // ValidateUIPreviewResult validates the stable ui_preview_result.v1 side-channel.
 // Lineage presence is bound to the preview mode, and a non-null lineage must be
-// a valid ui_preview_lineage.v1 record.
+// a valid ui_preview_lineage.v2 record.
 func ValidateUIPreviewResult(documentData []byte) error {
 	var document previewResultDocument
 	if err := decodeJSON(documentData, &document); err != nil {
@@ -315,7 +338,10 @@ func ValidateUIPreviewResult(documentData []byte) error {
 	switch document.Mode {
 	case "adaptation":
 		if !hasLineage {
-			return fmt.Errorf("adaptation preview requires ui_preview_lineage.v1")
+			return fmt.Errorf("adaptation preview requires ui_preview_lineage.v2")
+		}
+		if err := ValidateAgainstSchema(schemas.UIPreviewLineageV2, document.Lineage); err != nil {
+			return fmt.Errorf("lineage schema: %w", err)
 		}
 		if err := ValidatePreviewLineage(document.Lineage); err != nil {
 			return fmt.Errorf("lineage: %w", err)

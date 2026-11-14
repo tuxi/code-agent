@@ -23,6 +23,7 @@ import (
 const (
 	MetadataPreviewMode = "preview_mode"
 	MetadataLineage     = "ui_preview_lineage"
+	LineageSchema       = "ui_preview_lineage.v2"
 	MaxLineageBytes     = 8 << 10
 )
 
@@ -69,7 +70,7 @@ func lineageErrorKind(err error) string {
 	return LineageInvalid
 }
 
-// Lineage is the executable ui_preview_lineage.v1 record. It binds a preview
+// Lineage is the executable ui_preview_lineage.v2 record. It binds a preview
 // revision to one reviewed layout revision, one source image, one target, and
 // one UI state.
 type Lineage struct {
@@ -136,20 +137,20 @@ func (l *Lineage) UnmarshalJSON(data []byte) error {
 // cross-field rules, then returns the typed record.
 func DecodeLineage(data []byte) (*Lineage, error) {
 	if len(bytes.TrimSpace(data)) == 0 || string(bytes.TrimSpace(data)) == "null" {
-		return nil, lineageError(LineageRequired, "ui_preview_lineage.v1 is required")
+		return nil, lineageError(LineageRequired, "ui_preview_lineage.v2 is required")
 	}
 	if len(data) > MaxLineageBytes {
-		return nil, lineageError(LineageInvalid, "ui_preview_lineage.v1 exceeds the %d-byte budget", MaxLineageBytes)
+		return nil, lineageError(LineageInvalid, "ui_preview_lineage.v2 exceeds the %d-byte budget", MaxLineageBytes)
 	}
-	if err := uicontract.ValidateAgainstSchema(schemas.UIPreviewLineageV1, data); err != nil {
-		return nil, lineageError(LineageInvalid, "ui_preview_lineage.v1 is invalid: %v", err)
+	if err := uicontract.ValidateAgainstSchema(schemas.UIPreviewLineageV2, data); err != nil {
+		return nil, lineageError(LineageInvalid, "ui_preview_lineage.v2 is invalid: %v", err)
 	}
 	if err := uicontract.ValidatePreviewLineage(data); err != nil {
-		return nil, lineageError(LineageInvalid, "ui_preview_lineage.v1 is invalid: %v", err)
+		return nil, lineageError(LineageInvalid, "ui_preview_lineage.v2 is invalid: %v", err)
 	}
 	var lineage Lineage
 	if err := json.Unmarshal(data, &lineage); err != nil {
-		return nil, lineageError(LineageInvalid, "ui_preview_lineage.v1 could not be decoded: %v", err)
+		return nil, lineageError(LineageInvalid, "ui_preview_lineage.v2 could not be decoded: %v", err)
 	}
 	if lineage.EvidenceSHA256 != nil {
 		trimmed := strings.TrimSpace(*lineage.EvidenceSHA256)
@@ -166,11 +167,11 @@ func DecodeLineage(data []byte) (*Lineage, error) {
 // wire input, so metadata cannot be accepted with fields the schema rejects.
 func (l *Lineage) Validate() error {
 	if l == nil {
-		return lineageError(LineageRequired, "ui_preview_lineage.v1 is required")
+		return lineageError(LineageRequired, "ui_preview_lineage.v2 is required")
 	}
 	data, err := json.Marshal(l)
 	if err != nil {
-		return lineageError(LineageInvalid, "ui_preview_lineage.v1 could not be encoded: %v", err)
+		return lineageError(LineageInvalid, "ui_preview_lineage.v2 could not be encoded: %v", err)
 	}
 	_, err = DecodeLineage(data)
 	return err
@@ -418,7 +419,7 @@ func validateDraftLineage(mode PreviewMode, lineage *Lineage) *Error {
 	switch mode {
 	case ModeAdaptation:
 		if lineage == nil {
-			return NewError(CodeInvalidArtifact, "Adaptation preview requires ui_preview_lineage.v1.", false)
+			return NewError(CodeInvalidArtifact, "Adaptation preview requires ui_preview_lineage.v2.", false)
 		}
 		if err := lineage.Validate(); err != nil {
 			return NewError(CodeInvalidArtifact, "Preview lineage is invalid: "+err.Error(), false)

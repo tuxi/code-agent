@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://code-agent.local/schemas/ui_preview_result.v1.schema.json",
+  "title": "UI Preview Result v1",
+  "description": "Stable structured side-channel returned by the ui_preview tool. It classifies the preview as an adaptation preview (lineage required) or a standalone explore preview (lineage null). Artifact identity, revision, viewer, and asset bytes are assigned later by the preview runtime.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "artifact_key", "kind", "title", "mode", "lineage", "fallback_asset"],
+  "properties": {
+    "schema": {"const": "ui_preview_result.v1"},
+    "artifact_key": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,191}$"
+    },
+    "kind": {"type": "string", "enum": ["interactive_html", "static_image"]},
+    "title": {"type": "string", "minLength": 1, "maxLength": 256},
+    "mode": {"type": "string", "enum": ["adaptation", "explore"]},
+    "lineage": {
+      "description": "The exact ui_preview_lineage.v2 object for adaptation previews; null for explore previews. Validated under that schema by the runtime contract check.",
+      "type": ["object", "null"]
+    },
+    "fallback_asset": {"$ref": "#/$defs/fallback_asset"}
+  },
+  "$defs": {
+    "fallback_asset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["asset_id", "relative_path", "mime_type", "width", "height", "sha256"],
+      "properties": {
+        "asset_id": {
+          "type": "string",
+          "pattern": "^asset_[A-Za-z0-9._:-]{1,180}$"
+        },
+        "relative_path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        },
+        "mime_type": {
+          "type": "string",
+          "enum": ["image/png", "image/jpeg", "image/webp"]
+        },
+        "width": {"type": "integer", "minimum": 0},
+        "height": {"type": "integer", "minimum": 0},
+        "sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      }
+    }
+  }
+}

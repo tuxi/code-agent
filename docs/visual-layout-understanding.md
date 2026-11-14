@@ -712,12 +712,13 @@ existing production code remain authoritative.
 ### 10.7 Preview lineage
 
 A layout interpretation is useful only if a preview can be traced back to the
-exact reviewed revision. P1-F implements `ui_preview_lineage.v1` for previews
-derived from `ui_layout.v1`:
+exact reviewed revision. P1-F implements `ui_preview_lineage.v2` for previews
+derived from `ui_layout.v1`. The frozen `ui_preview_lineage.v1` contract remains
+unchanged for existing consumers:
 
 ```json
 {
-  "schema": "ui_preview_lineage.v1",
+  "schema": "ui_preview_lineage.v2",
   "layout_artifact_id": "layout_dreamlog_duo_home",
   "layout_revision": 3,
   "layout_revision_sha256": "sha256:...",
@@ -738,8 +739,10 @@ derived from `ui_layout.v1`:
 ```
 
 The canonical schema is
+[`schemas/ui_preview_lineage.v2.schema.json`](../schemas/ui_preview_lineage.v2.schema.json);
+the frozen v1 schema remains at
 [`schemas/ui_preview_lineage.v1.schema.json`](../schemas/ui_preview_lineage.v1.schema.json).
-The `ui_preview` tool validates it before producing a draft, and the preview
+The `ui_preview` tool validates v2 before producing a draft, and the preview
 runtime stores the validated object under
 `preview.Artifact.Metadata["ui_preview_lineage"]` with
 `Metadata["preview_mode"]`. Both keys participate in `revision_sha256`, so
@@ -785,7 +788,7 @@ on its structured output side-channel:
   "kind": "interactive_html",
   "title": "DreamLog Duo Home",
   "mode": "adaptation",
-  "lineage": { "...": "ui_preview_lineage.v1" },
+  "lineage": { "...": "ui_preview_lineage.v2" },
   "fallback_asset": {
     "asset_id": "asset_...",
     "relative_path": "assets/fallback.png",
@@ -1009,7 +1012,7 @@ split-view layouts.
 These P0 gates are normative:
 
 - all JSON Schemas (`view_image_result.v1`, `ui_evidence.v1`, `ui_layout.v1`,
-  and `ui_preview_lineage.v1`) compile and resolve;
+  `ui_preview_lineage.v1`, and `ui_preview_lineage.v2`) compile and resolve;
 - every valid fixture passes schema and semantic validation;
 - every invalid fixture fails at least one validation layer;
 - unknown fields fail closed;

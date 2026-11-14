@@ -3,7 +3,7 @@
 Status: backend checkpoint, pending independent acceptance
 Date: 2026-11-14
 Base: code-agent `71fd16a`
-Scope: `ui_preview_lineage.v1` backend only
+Scope: `ui_preview_lineage.v2` backend only; v1 remains frozen
 
 P1-F binds a UI adaptation preview to the reviewed `ui_layout.v1` revision. It
 does not redesign the preview runtime, add a five-form generation matrix, or
@@ -11,8 +11,9 @@ add AgentKit lineage UI.
 
 ## Delivered
 
-- `schemas/ui_preview_lineage.v1.schema.json` now binds
-  `source_asset_id` / `source_asset_sha256`, `evidence_sha256`,
+- `schemas/ui_preview_lineage.v1.schema.json` remains byte-for-byte frozen.
+  `schemas/ui_preview_lineage.v2.schema.json` is the P1-F adaptation contract and
+  binds `source_asset_id` / `source_asset_sha256`, `evidence_sha256`,
   `layout_artifact_id` / `layout_revision` / `layout_revision_sha256`, one
   `target`, one `state`, and the `target_matrix` context.
 - `schemas/ui_preview_result.v1.schema.json` is the stable `ui_preview` output
@@ -27,8 +28,9 @@ add AgentKit lineage UI.
     when the layout recorded an evidence path;
   - `target` in the layout's `responsive.targets`;
   - `state` in the layout's `screen.states`.
-- `ui_preview` defaults to `mode=adaptation` and requires lineage. Standalone
-  previews must pass `mode=explore` and must not carry lineage.
+- `ui_preview` defaults to `mode=adaptation`, requires a v2 lineage, and rejects
+  v1 lineage for adaptation previews. Standalone previews must pass
+  `mode=explore` and must not carry lineage.
 - Validated lineage and mode are stored in preview artifact metadata under
   `ui_preview_lineage` and `preview_mode`. Both are part of
   `revision_sha256`, so replay returns the recorded lineage with the exact
@@ -49,14 +51,14 @@ add AgentKit lineage UI.
 - `go vet ./internal/preview/... ./internal/uicontract/... ./internal/tools/preview/... ./internal/tools/uilayout/... ./schemas/...`
 - `go test -count=1 ./internal/preview/... ./internal/uicontract/... ./internal/tools/preview/... ./internal/tools/uilayout/... ./internal/server/ ./internal/capability/`
 
-Positive and negative coverage includes: valid and invalid lineage fixtures;
-valid and invalid `ui_preview_result.v1` fixtures; adaptation default without
-lineage; explore with lineage; unknown lineage and input fields; target and
-state not declared by the layout; tampered source image; tampered persisted
-layout revision; evidence digest mismatch; missing or mismatched source
-identity; artifact metadata mode/lineage coupling; persistence and replay of
-lineage metadata; and existing preview fixture, security, revision, and replay
-suites.
+Positive and negative coverage includes: v1 compatibility and the v1/v2 boundary;
+valid and invalid v2 lineage fixtures; valid and invalid `ui_preview_result.v1`
+fixtures; adaptation default without lineage; v1 lineage rejected for adaptation;
+explore with lineage; unknown lineage and input fields; target and state not
+declared by the layout; tampered source image; tampered persisted layout
+revision; evidence digest mismatch; missing or mismatched source identity;
+artifact metadata mode/lineage coupling; persistence and replay of lineage
+metadata; and existing preview fixture, security, revision, and replay suites.
 
 ## Known limitations
 

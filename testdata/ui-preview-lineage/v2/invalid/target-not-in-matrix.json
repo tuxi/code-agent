@@ -1,0 +1,16 @@
+{
+  "schema": "ui_preview_lineage.v2",
+  "layout_artifact_id": "layout_fixture_commerce",
+  "layout_revision": 3,
+  "layout_revision_sha256": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+  "source_asset_id": "asset_fixture_source",
+  "source_asset_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "evidence_sha256": null,
+  "approval": {"state": "not_required"},
+  "target": "iphone_landscape",
+  "state": "default",
+  "target_matrix": {
+    "id": "matrix_fixture_duo_iphone_ipad",
+    "targets": ["duo_folded", "iphone_portrait"]
+  }
+}

@@ -5,7 +5,7 @@
   "title": "Fixture adaptation preview",
   "mode": "adaptation",
   "lineage": {
-    "schema": "ui_preview_lineage.v1",
+    "schema": "ui_preview_lineage.v2",
     "layout_artifact_id": "layout_fixture_commerce",
     "layout_revision": 3,
     "layout_revision_sha256": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",

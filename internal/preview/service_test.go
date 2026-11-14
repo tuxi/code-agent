@@ -409,7 +409,7 @@ func writeLineageWorkspace(t *testing.T) (string, Lineage) {
 		t.Fatal(err)
 	}
 	return root, Lineage{
-		Schema:               "ui_preview_lineage.v1",
+		Schema:               LineageSchema,
 		LayoutArtifactID:     "layout_fixture",
 		LayoutRevision:       1,
 		LayoutRevisionSHA256: "sha256:" + layoutDigest,

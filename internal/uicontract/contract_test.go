@@ -132,7 +132,7 @@ func TestInvalidLayoutFixtures(t *testing.T) {
 	}
 }
 
-func TestValidPreviewLineageFixture(t *testing.T) {
+func TestPreviewLineageV1Compatibility(t *testing.T) {
 	schema := readRepoFile(t, "schemas", "ui_preview_lineage.v1.schema.json")
 	document := readRepoFile(t, "testdata", "ui-preview-lineage", "v1", "valid", "basic.json")
 	if err := ValidateAgainstSchema(schema, document); err != nil {
@@ -141,19 +141,36 @@ func TestValidPreviewLineageFixture(t *testing.T) {
 	if err := ValidatePreviewLineage(document); err != nil {
 		t.Fatalf("semantics: %v", err)
 	}
+	v2Document := readRepoFile(t, "testdata", "ui-preview-lineage", "v2", "valid", "basic.json")
+	if err := ValidateAgainstSchema(schema, v2Document); err == nil {
+		t.Fatal("frozen v1 schema accepted a v2 lineage document")
+	}
 }
 
-func TestInvalidPreviewLineageFixture(t *testing.T) {
-	schema := readRepoFile(t, "schemas", "ui_preview_lineage.v1.schema.json")
-	for _, path := range fixtureFiles(t, "testdata", "ui-preview-lineage", "v1", "invalid") {
-		t.Run(filepath.Base(path), func(t *testing.T) {
-			document := readFile(t, path)
-			schemaErr := ValidateAgainstSchema(schema, document)
-			semanticErr := ValidatePreviewLineage(document)
-			if schemaErr == nil && semanticErr == nil {
-				t.Fatal("invalid preview lineage fixture passed both schema and semantic validation")
-			}
-		})
+func TestPreviewLineageFixtures(t *testing.T) {
+	for _, version := range []string{"v1", "v2"} {
+		schema := readRepoFile(t, "schemas", "ui_preview_lineage."+version+".schema.json")
+		for _, path := range fixtureFiles(t, "testdata", "ui-preview-lineage", version, "valid") {
+			t.Run(version+"/valid/"+filepath.Base(path), func(t *testing.T) {
+				document := readFile(t, path)
+				if err := ValidateAgainstSchema(schema, document); err != nil {
+					t.Fatalf("schema: %v", err)
+				}
+				if err := ValidatePreviewLineage(document); err != nil {
+					t.Fatalf("semantics: %v", err)
+				}
+			})
+		}
+		for _, path := range fixtureFiles(t, "testdata", "ui-preview-lineage", version, "invalid") {
+			t.Run(version+"/invalid/"+filepath.Base(path), func(t *testing.T) {
+				document := readFile(t, path)
+				schemaErr := ValidateAgainstSchema(schema, document)
+				semanticErr := ValidatePreviewLineage(document)
+				if schemaErr == nil && semanticErr == nil {
+					t.Fatal("invalid preview lineage fixture passed both schema and semantic validation")
+				}
+			})
+		}
 	}
 }
 

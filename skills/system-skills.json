@@ -38,9 +38,9 @@
       "name": "ui-adaptation",
       "source": "skills/ui-adaptation",
       "destination": "ui-adaptation",
-      "sha256": "efd2ca928517a79e8e6ece2adf4f08b68b5267fdc2d394a4c51f8203f478286c",
+      "sha256": "f4d725411c374ece6ceee555e6d0254a8765725237dfd80abc6168cac43be43c",
       "scope": "system",
-      "version": "5",
+      "version": "6",
       "dependencies": [
         "review-change",
         "verify-change"
@@ -52,12 +52,14 @@
         "schemas/ui_evidence.v1.schema.json",
         "schemas/ui_layout.v1.schema.json",
         "schemas/ui_layout_result.v1.schema.json",
-        "schemas/ui_preview_lineage.v1.schema.json"
+        "schemas/ui_preview_lineage.v1.schema.json",
+        "schemas/ui_preview_lineage.v2.schema.json",
+        "schemas/ui_preview_result.v1.schema.json"
       ],
       "files": [
         {
           "path": "SKILL.md",
-          "sha256": "e3df502604d3cfc5dd4777a0a0d91563a4c91fd1e81e89e3684a6b53f5b0e1c0"
+          "sha256": "61448706a7cbf70c6664a2a4c665a6028fff1aa107c8cd6e43c2acdeec304efc"
         },
         {
           "path": "references/docs/primary-perception-ownership-contract.md",
@@ -81,7 +83,15 @@
         },
         {
           "path": "references/schemas/ui_preview_lineage.v1.schema.json",
-          "sha256": "1a438a6b0eadb3ad27e64639accc77f69cb19e084dea81510a791cc155a10c4b"
+          "sha256": "e236913fb222ff2f4e44d6914a19f31b8702d1cfb4153d97d1b4aa11995c6d48"
+        },
+        {
+          "path": "references/schemas/ui_preview_lineage.v2.schema.json",
+          "sha256": "6b16e774070a42d537cfab19aaa343847320b03cafac30046f09066adcca8cbe"
+        },
+        {
+          "path": "references/schemas/ui_preview_result.v1.schema.json",
+          "sha256": "7e6ad5ffab10120511ea7a886f87c2b913d6974c6d5f93bf9dbaf2a10ab6ddbd"
         },
         {
           "path": "references/schemas/view_image_result.v1.schema.json",
