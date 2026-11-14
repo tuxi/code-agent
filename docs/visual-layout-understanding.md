@@ -712,8 +712,8 @@ existing production code remain authoritative.
 ### 10.7 Preview lineage
 
 A layout interpretation is useful only if a preview can be traced back to the
-exact reviewed revision. P1 adds an optional `lineage` object to `ui_preview`
-for previews derived from `ui_layout.v1`:
+exact reviewed revision. P1-F implements `ui_preview_lineage.v1` for previews
+derived from `ui_layout.v1`:
 
 ```json
 {
@@ -723,10 +723,13 @@ for previews derived from `ui_layout.v1`:
   "layout_revision_sha256": "sha256:...",
   "source_asset_id": "asset_turn_..._source_...",
   "source_asset_sha256": "64-hex",
+  "evidence_sha256": null,
   "approval": {
     "state": "user_confirmed",
     "evidence_ref": "turn_.../user_message_..."
   },
+  "target": "duo_folded",
+  "state": "default",
   "target_matrix": {
     "id": "matrix_dreamlog_duo_iphone_ipad",
     "targets": ["duo_folded", "duo_unfolded", "iphone_portrait", "ipad_landscape"]
@@ -736,25 +739,67 @@ for previews derived from `ui_layout.v1`:
 
 The canonical schema is
 [`schemas/ui_preview_lineage.v1.schema.json`](../schemas/ui_preview_lineage.v1.schema.json).
-The runtime stores the validated object under
-`preview.Artifact.Metadata["ui_preview_lineage"]` and echoes it in the
-`ui_preview` tool output. The preview artifact remains revision-addressed by the
-existing preview contract.
+The `ui_preview` tool validates it before producing a draft, and the preview
+runtime stores the validated object under
+`preview.Artifact.Metadata["ui_preview_lineage"]` with
+`Metadata["preview_mode"]`. Both keys participate in `revision_sha256`, so
+replay returns the recorded lineage with the exact preview revision.
 
-Lineage rules:
+Preview classes are explicit:
 
-- `layout_artifact_id`, `layout_revision`, and `layout_revision_sha256` identify
-  the exact reviewed layout revision;
-- `source_asset_id` and `source_asset_sha256` identify the source image;
-- `approval.state = user_confirmed` requires a non-empty `approval.evidence_ref`;
-- `approval` is provenance, not proof; clients must display it as recorded
-  lineage and must not treat model-authored text alone as a user approval event;
-- previews derived from a layout contract require lineage; standalone
-  `ui_preview` calls omit lineage entirely;
-- `approval.state = not_required` is only for a layout-derived preview whose
-  workflow explicitly does not require user confirmation;
-- missing, dangling, or digest-mismatched lineage fails the preview draft closed;
-- replay returns the stored lineage unchanged with the preview revision.
+- `mode=adaptation` is the `ui_preview` default. It requires lineage.
+- `mode=explore` is a standalone preview and must omit lineage. A standalone
+  preview is never presented as a layout-derived adaptation preview.
+- At the transport level an omitted draft `mode` is classified as `explore`;
+  only the `ui_preview` tool applies the stricter adaptation default.
+- A layout-less `ui_preview` call fails with `lineage_required`.
+
+Before any preview artifact is created, the runtime checks:
+
+- `layout_artifact_id` / `layout_revision` identify an existing persisted
+  `ui_layout_revision`;
+- `layout_revision_sha256` equals the persisted layout digest;
+- `source_asset_id` / `source_asset_sha256` match the layout revision, the
+  layout document, and the current source image bytes on disk;
+- `evidence_sha256` is `null` exactly when the layout has no evidence, and when
+  present matches the layout revision, the layout document, and the current
+  evidence file bytes;
+- `target` is declared in both `target_matrix.targets` and the layout revision's
+  `responsive.targets`;
+- `state` is declared in the layout revision's `screen.states`.
+
+`approval.state = user_confirmed` requires a non-empty
+`approval.evidence_ref`. `approval` is provenance, not proof: clients display it
+as recorded lineage and must not treat model-authored text alone as a user
+approval event. Missing, dangling, or digest-mismatched identity fails the
+preview draft closed with a typed `lineage_*` failure.
+
+The `ui_preview` tool returns
+[`schemas/ui_preview_result.v1.schema.json`](../schemas/ui_preview_result.v1.schema.json)
+on its structured output side-channel:
+
+```json
+{
+  "schema": "ui_preview_result.v1",
+  "artifact_key": "ui-adaptation:dreamlog-duo-home",
+  "kind": "interactive_html",
+  "title": "DreamLog Duo Home",
+  "mode": "adaptation",
+  "lineage": { "...": "ui_preview_lineage.v1" },
+  "fallback_asset": {
+    "asset_id": "asset_...",
+    "relative_path": "assets/fallback.png",
+    "mime_type": "image/png",
+    "width": 1400,
+    "height": 900,
+    "sha256": "64-hex"
+  }
+}
+```
+
+Artifact identity, revision, viewer bytes, and asset bytes remain owned by the
+existing preview contract. P1-F does not add a five-form generation matrix, an
+AgentKit lineage UI, or any production UI surface.
 
 ### 10.8 Tool result contract
 

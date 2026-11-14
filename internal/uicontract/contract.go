@@ -10,11 +10,14 @@ import (
 	"fmt"
 	"math"
 	pathpkg "path"
+	"regexp"
 	"sort"
 	"strings"
 
 	"github.com/google/jsonschema-go/jsonschema"
 )
+
+var previewArtifactKeyPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,191}$`)
 
 // ValidateAgainstSchema validates one JSON document against a local JSON Schema.
 func ValidateAgainstSchema(schemaData, documentData []byte) error {
@@ -226,20 +229,131 @@ func requireNoLayoutEvidenceReferences(document layoutDocument) error {
 }
 
 // ValidatePreviewLineage validates the semantic identity fields for one
-// ui_preview_lineage.v1 record.
+// ui_preview_lineage.v1 record. It assumes the document has already passed the
+// frozen schema; the cross-field rules below cannot be expressed in JSON Schema.
 func ValidatePreviewLineage(documentData []byte) error {
 	var document previewLineageDocument
 	if err := decodeJSON(documentData, &document); err != nil {
 		return err
 	}
+	if document.Schema != "ui_preview_lineage.v1" {
+		return fmt.Errorf("schema must be ui_preview_lineage.v1")
+	}
+	if !strings.HasPrefix(document.LayoutArtifactID, "layout_") {
+		return fmt.Errorf("layout_artifact_id must use the layout_ prefix")
+	}
 	if document.LayoutRevision < 1 {
 		return fmt.Errorf("layout_revision must be at least 1")
+	}
+	if _, ok := revisionDigest(document.LayoutRevisionSHA256); !ok {
+		return fmt.Errorf("layout_revision_sha256 must be sha256:<64 lowercase hex>")
+	}
+	if !strings.HasPrefix(document.SourceAssetID, "asset_") {
+		return fmt.Errorf("source_asset_id must use the asset_ prefix")
+	}
+	if !isLowerHexSHA256(document.SourceAssetSHA256) {
+		return fmt.Errorf("source_asset_sha256 must be 64 lowercase hex characters")
+	}
+	if document.EvidenceSHA256 != nil && !isLowerHexSHA256(*document.EvidenceSHA256) {
+		return fmt.Errorf("evidence_sha256 must be null or 64 lowercase hex characters")
+	}
+	if strings.TrimSpace(document.Target) == "" {
+		return fmt.Errorf("target is required")
+	}
+	state := strings.TrimSpace(document.State)
+	if state == "" || len([]rune(state)) > 64 {
+		return fmt.Errorf("state must contain 1 to 64 characters")
+	}
+	if !strings.HasPrefix(document.TargetMatrix.ID, "matrix_") {
+		return fmt.Errorf("target_matrix.id must use the matrix_ prefix")
 	}
 	if len(document.TargetMatrix.Targets) == 0 {
 		return fmt.Errorf("target_matrix.targets must not be empty")
 	}
+	seen := make(map[string]struct{}, len(document.TargetMatrix.Targets))
+	targetFound := false
+	for _, target := range document.TargetMatrix.Targets {
+		if _, exists := seen[target]; exists {
+			return fmt.Errorf("target_matrix.targets contains duplicate %q", target)
+		}
+		seen[target] = struct{}{}
+		if target == document.Target {
+			targetFound = true
+		}
+	}
+	if !targetFound {
+		return fmt.Errorf("target %q is not included in target_matrix.targets", document.Target)
+	}
 	if document.Approval.State == "user_confirmed" && document.Approval.EvidenceRef == "" {
 		return fmt.Errorf("approval.evidence_ref is required for user_confirmed lineage")
+	}
+	return nil
+}
+
+// ValidateUIPreviewResult validates the stable ui_preview_result.v1 side-channel.
+// Lineage presence is bound to the preview mode, and a non-null lineage must be
+// a valid ui_preview_lineage.v1 record.
+func ValidateUIPreviewResult(documentData []byte) error {
+	var document previewResultDocument
+	if err := decodeJSON(documentData, &document); err != nil {
+		return err
+	}
+	if document.Schema != "ui_preview_result.v1" {
+		return fmt.Errorf("schema must be ui_preview_result.v1")
+	}
+	if !previewArtifactKeyPattern.MatchString(document.ArtifactKey) {
+		return fmt.Errorf("artifact_key is invalid")
+	}
+	if document.Kind != "interactive_html" && document.Kind != "static_image" {
+		return fmt.Errorf("kind %q is unsupported", document.Kind)
+	}
+	title := strings.TrimSpace(document.Title)
+	if title == "" || len([]rune(title)) > 256 {
+		return fmt.Errorf("title must contain 1 to 256 characters")
+	}
+	hasLineage := len(document.Lineage) > 0 && string(document.Lineage) != "null"
+	switch document.Mode {
+	case "adaptation":
+		if !hasLineage {
+			return fmt.Errorf("adaptation preview requires ui_preview_lineage.v1")
+		}
+		if err := ValidatePreviewLineage(document.Lineage); err != nil {
+			return fmt.Errorf("lineage: %w", err)
+		}
+	case "explore":
+		if hasLineage {
+			return fmt.Errorf("explore preview must not carry lineage")
+		}
+	default:
+		return fmt.Errorf("preview mode %q is unsupported", document.Mode)
+	}
+	if !strings.HasPrefix(document.FallbackAsset.AssetID, "asset_") {
+		return fmt.Errorf("fallback_asset.asset_id must use the asset_ prefix")
+	}
+	if err := validateWorkspaceRelativePath("fallback_asset.relative_path", document.FallbackAsset.RelativePath); err != nil {
+		return err
+	}
+	switch document.FallbackAsset.MIMEType {
+	case "image/png", "image/jpeg", "image/webp":
+	default:
+		return fmt.Errorf("fallback_asset.mime_type %q is unsupported", document.FallbackAsset.MIMEType)
+	}
+	if document.FallbackAsset.Width < 0 || document.FallbackAsset.Height < 0 {
+		return fmt.Errorf("fallback_asset dimensions must not be negative")
+	}
+	if !isLowerHexSHA256(document.FallbackAsset.SHA256) {
+		return fmt.Errorf("fallback_asset.sha256 must be 64 lowercase hex characters")
+	}
+	return nil
+}
+
+func validateWorkspaceRelativePath(field, value string) error {
+	if value == "" || strings.TrimSpace(value) != value || strings.Contains(value, "\\") || pathpkg.IsAbs(value) {
+		return fmt.Errorf("%s must be a workspace-relative slash path", field)
+	}
+	cleaned := pathpkg.Clean(value)
+	if cleaned == "." || cleaned == ".." || strings.HasPrefix(cleaned, "../") {
+		return fmt.Errorf("%s must not escape the workspace", field)
 	}
 	return nil
 }
@@ -425,14 +539,40 @@ type layoutAssumption struct {
 }
 
 type previewLineageDocument struct {
-	LayoutRevision int64 `json:"layout_revision"`
-	Approval       struct {
+	Schema               string  `json:"schema"`
+	LayoutArtifactID     string  `json:"layout_artifact_id"`
+	LayoutRevision       int64   `json:"layout_revision"`
+	LayoutRevisionSHA256 string  `json:"layout_revision_sha256"`
+	SourceAssetID        string  `json:"source_asset_id"`
+	SourceAssetSHA256    string  `json:"source_asset_sha256"`
+	EvidenceSHA256       *string `json:"evidence_sha256"`
+	Approval             struct {
 		State       string `json:"state"`
 		EvidenceRef string `json:"evidence_ref"`
 	} `json:"approval"`
+	Target       string `json:"target"`
+	State        string `json:"state"`
 	TargetMatrix struct {
+		ID      string   `json:"id"`
 		Targets []string `json:"targets"`
 	} `json:"target_matrix"`
+}
+
+type previewResultDocument struct {
+	Schema        string          `json:"schema"`
+	ArtifactKey   string          `json:"artifact_key"`
+	Kind          string          `json:"kind"`
+	Title         string          `json:"title"`
+	Mode          string          `json:"mode"`
+	Lineage       json.RawMessage `json:"lineage"`
+	FallbackAsset struct {
+		AssetID      string `json:"asset_id"`
+		RelativePath string `json:"relative_path"`
+		MIMEType     string `json:"mime_type"`
+		Width        int    `json:"width"`
+		Height       int    `json:"height"`
+		SHA256       string `json:"sha256"`
+	} `json:"fallback_asset"`
 }
 
 type viewImageResultDocument struct {

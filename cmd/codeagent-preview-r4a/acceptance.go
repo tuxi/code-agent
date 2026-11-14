@@ -154,6 +154,7 @@ func runAcceptance(ctx context.Context, opts AcceptanceOptions) (AcceptanceSumma
 	provider := &agent.FauxProvider{Steps: []agent.FauxStep{
 		agent.FauxTool("ui_preview", map[string]any{
 			"artifact_key":           prepared.ArtifactKey,
+			"mode":                   "explore",
 			"title":                  prepared.Title,
 			"summary":                prepared.Summary,
 			"viewer_html":            prepared.ViewerHTML,

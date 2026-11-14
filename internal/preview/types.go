@@ -234,6 +234,8 @@ func (f *FallbackDraft) UnmarshalJSON(data []byte) error {
 
 type Draft struct {
 	ArtifactKey  string            `json:"artifact_key"`
+	Mode         PreviewMode       `json:"mode,omitempty"`
+	Lineage      *Lineage          `json:"lineage,omitempty"`
 	Kind         Kind              `json:"kind"`
 	Title        string            `json:"title"`
 	Summary      string            `json:"summary,omitempty"`
@@ -411,6 +413,9 @@ func (a Artifact) Validate() *Error {
 	}
 	if a.Security != DefaultSecurity() {
 		return NewError(CodeInvalidArtifact, "Preview security metadata is invalid.", false)
+	}
+	if err := validateArtifactLineage(a.Metadata); err != nil {
+		return err
 	}
 	if a.Error != nil {
 		if len([]byte(a.Error.Message)) > MaxErrorTextBytes {

@@ -362,3 +362,160 @@ func TestMaterializedViewerAllowsHeaderAndOpenAIWidgetStateAPI(t *testing.T) {
 		t.Fatalf("window.open navigation error = %+v", err)
 	}
 }
+
+func writeLineageWorkspace(t *testing.T) (string, Lineage) {
+	t.Helper()
+	root := t.TempDir()
+	source := testPNG(t)
+	if err := os.WriteFile(filepath.Join(root, "source.png"), source, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sourceSHA := digestHex(source)
+	layout := map[string]any{
+		"schema": "ui_layout.v1",
+		"source": map[string]any{
+			"asset_id":            "asset_fixture_source",
+			"source_asset_sha256": sourceSHA,
+		},
+		"screen":     map[string]any{"states": []any{"default"}},
+		"responsive": map[string]any{"targets": map[string]any{"duo_folded": map[string]any{"columns": 1}}},
+	}
+	layoutBytes, err := json.Marshal(layout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	layoutDigest := digestHex(layoutBytes)
+	revisionDir := filepath.Join(root, ".codeagent", "assets", "ui-layout", "layout_fixture", "revision-000001")
+	if err := os.MkdirAll(revisionDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(revisionDir, "layout.json"), layoutBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	metadata, err := json.Marshal(map[string]any{
+		"kind":                   "ui_layout_revision",
+		"layout_artifact_id":     "layout_fixture",
+		"layout_revision":        1,
+		"layout_revision_sha256": "sha256:" + layoutDigest,
+		"layout_sha256":          layoutDigest,
+		"source_path":            "source.png",
+		"source_asset_id":        "asset_fixture_source",
+		"source_asset_sha256":    sourceSHA,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(revisionDir, "metadata.json"), metadata, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return root, Lineage{
+		Schema:               "ui_preview_lineage.v1",
+		LayoutArtifactID:     "layout_fixture",
+		LayoutRevision:       1,
+		LayoutRevisionSHA256: "sha256:" + layoutDigest,
+		SourceAssetID:        "asset_fixture_source",
+		SourceAssetSHA256:    sourceSHA,
+		Approval:             LineageApproval{State: "not_required"},
+		Target:               "duo_folded",
+		State:                "default",
+		TargetMatrix:         LineageTargetMatrix{ID: "matrix_fixture", Targets: []string{"duo_folded"}},
+	}
+}
+
+func lineageRequest(root string, draft Draft) ProduceRequest {
+	return ProduceRequest{
+		SessionID: "session_preview", TurnID: "turn_1", CallID: "call_1",
+		WorkspaceRoot: root, ProducerID: "ui_preview", Capability: "ui-adaptation",
+		Assets: []assets.Ref{{ID: "asset_fallback", MIMEType: "image/png", WorkspaceRelativePath: "fallback.png"}},
+		Drafts: []Draft{draft},
+	}
+}
+
+func TestAdaptationDraftRequiresLineage(t *testing.T) {
+	service, _ := newTestService(t)
+	draft := readyDraft("artifact")
+	draft.Mode = ModeAdaptation
+	result := service.Produce(context.Background(), lineageRequest(t.TempDir(), draft))
+	if len(result.Rejected) != 1 || result.Rejected[0].Err.Code != CodeInvalidArtifact {
+		t.Fatalf("adaptation without lineage = %+v", result)
+	}
+}
+
+func TestExploreDraftRejectsLineage(t *testing.T) {
+	root, lineage := writeLineageWorkspace(t)
+	service, _ := newTestService(t)
+	draft := readyDraft("artifact")
+	draft.Mode = ModeExplore
+	draft.Lineage = &lineage
+	result := service.Produce(context.Background(), lineageRequest(root, draft))
+	if len(result.Rejected) != 1 || result.Rejected[0].Err.Code != CodeInvalidArtifact {
+		t.Fatalf("explore with lineage = %+v", result)
+	}
+}
+
+func TestAdaptationDraftValidatesWorkspaceAndPersistsLineage(t *testing.T) {
+	root, lineage := writeLineageWorkspace(t)
+	service, store := newTestService(t)
+	draft := readyDraft("artifact")
+	draft.Mode = ModeAdaptation
+	draft.Lineage = &lineage
+	result := service.Produce(context.Background(), lineageRequest(root, draft))
+	if result.Fatal != nil || len(result.Rejected) != 0 || len(result.Artifacts) != 1 {
+		t.Fatalf("adaptation produce = %+v", result)
+	}
+	artifact := result.Artifacts[0]
+	if artifact.Metadata[MetadataPreviewMode] != "adaptation" || artifact.Metadata[MetadataLineage] == nil {
+		t.Fatalf("artifact metadata = %+v", artifact.Metadata)
+	}
+	persisted, err := store.GetArtifact(context.Background(), artifact.SessionID, artifact.ArtifactID, artifact.Revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted.Metadata[MetadataPreviewMode] != "adaptation" || persisted.Metadata[MetadataLineage] == nil {
+		t.Fatalf("persisted metadata = %+v", persisted.Metadata)
+	}
+	replay := ApplyReplay([]Event{{
+		Kind: "preview_artifact", SessionID: artifact.SessionID, TurnID: artifact.TurnID, Artifact: &artifact,
+	}})
+	if replay.Error != nil || len(replay.Artifacts) != 1 {
+		t.Fatalf("replay = %+v", replay)
+	}
+	if replay.Artifacts[0].Metadata[MetadataPreviewMode] != "adaptation" {
+		t.Fatalf("replay metadata = %+v", replay.Artifacts[0].Metadata)
+	}
+}
+
+func TestAdaptationDraftRejectsMismatchedLineage(t *testing.T) {
+	root, lineage := writeLineageWorkspace(t)
+	service, _ := newTestService(t)
+	lineage.SourceAssetSHA256 = strings.Repeat("f", 64)
+	draft := readyDraft("artifact")
+	draft.Mode = ModeAdaptation
+	draft.Lineage = &lineage
+	result := service.Produce(context.Background(), lineageRequest(root, draft))
+	if len(result.Rejected) != 1 || result.Rejected[0].Err.Code != CodeInvalidArtifact {
+		t.Fatalf("mismatched lineage = %+v", result)
+	}
+}
+
+func TestArtifactRejectsLineageMetadataWithoutMode(t *testing.T) {
+	root, lineage := writeLineageWorkspace(t)
+	service, _ := newTestService(t)
+	draft := readyDraft("artifact")
+	draft.Mode = ModeAdaptation
+	draft.Lineage = &lineage
+	result := service.Produce(context.Background(), lineageRequest(root, draft))
+	if len(result.Artifacts) != 1 {
+		t.Fatalf("produce = %+v", result)
+	}
+	artifact := result.Artifacts[0].Clone()
+	delete(artifact.Metadata, MetadataPreviewMode)
+	hash, err := RevisionSHA256(artifact)
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifact.RevisionSHA256 = hash
+	if err := artifact.Validate(); err == nil || err.Code != CodeInvalidArtifact {
+		t.Fatalf("lineage without mode validation = %+v", err)
+	}
+}

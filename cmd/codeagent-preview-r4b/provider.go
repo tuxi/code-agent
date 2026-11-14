@@ -42,6 +42,7 @@ func (p *previewTriggerProvider) Complete(ctx context.Context, request model.Req
 	}
 	args, err := json.Marshal(map[string]any{
 		"artifact_key":           p.preview.ArtifactKey,
+		"mode":                   "explore",
 		"title":                  p.preview.Title,
 		"summary":                p.preview.Summary,
 		"viewer_html":            p.preview.ViewerHTML,

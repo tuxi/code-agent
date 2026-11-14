@@ -1,0 +1,16 @@
+{
+  "schema": "ui_preview_result.v1",
+  "artifact_key": "ui-adaptation:fixture-unknown-mode",
+  "kind": "interactive_html",
+  "title": "Fixture unknown mode",
+  "mode": "production",
+  "lineage": null,
+  "fallback_asset": {
+    "asset_id": "asset_fixture_fallback",
+    "relative_path": "assets/fallback.png",
+    "mime_type": "image/png",
+    "width": 1400,
+    "height": 900,
+    "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  }
+}

@@ -157,6 +157,31 @@ func TestInvalidPreviewLineageFixture(t *testing.T) {
 	}
 }
 
+func TestPreviewResultFixtures(t *testing.T) {
+	schema := readRepoFile(t, "schemas", "ui_preview_result.v1.schema.json")
+	for _, path := range fixtureFiles(t, "testdata", "ui-preview-result", "v1", "valid") {
+		t.Run("valid/"+filepath.Base(path), func(t *testing.T) {
+			document := readFile(t, path)
+			if err := ValidateAgainstSchema(schema, document); err != nil {
+				t.Fatalf("schema: %v", err)
+			}
+			if err := ValidateUIPreviewResult(document); err != nil {
+				t.Fatalf("semantics: %v", err)
+			}
+		})
+	}
+	for _, path := range fixtureFiles(t, "testdata", "ui-preview-result", "v1", "invalid") {
+		t.Run("invalid/"+filepath.Base(path), func(t *testing.T) {
+			document := readFile(t, path)
+			schemaErr := ValidateAgainstSchema(schema, document)
+			semanticErr := ValidateUIPreviewResult(document)
+			if schemaErr == nil && semanticErr == nil {
+				t.Fatal("invalid preview result fixture passed both schema and semantic validation")
+			}
+		})
+	}
+}
+
 func TestViewImageResultFixtures(t *testing.T) {
 	schema := readRepoFile(t, "schemas", "view_image_result.v1.schema.json")
 	for _, path := range fixtureFiles(t, "testdata", "view-image-result", "v1", "valid") {

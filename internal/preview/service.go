@@ -123,6 +123,18 @@ func (s *Service) produceOne(ctx context.Context, request ProduceRequest, draft 
 	if err := validateDraft(draft); err != nil {
 		return Artifact{}, err
 	}
+	mode, modeErr := normalizeDraftMode(draft.Mode)
+	if modeErr != nil {
+		return Artifact{}, modeErr
+	}
+	if err := validateDraftLineage(mode, draft.Lineage); err != nil {
+		return Artifact{}, err
+	}
+	if mode == ModeAdaptation {
+		if err := ValidateLineageForPreview(ctx, request.WorkspaceRoot, draft.Lineage); err != nil {
+			return Artifact{}, NewError(CodeInvalidArtifact, "Preview lineage does not match the reviewed layout revision: "+err.Error(), false)
+		}
+	}
 	namespace := Namespace{
 		SessionID: request.SessionID, Capability: request.Capability,
 		ProducerID: request.ProducerID, ArtifactKey: draft.ArtifactKey,
@@ -162,7 +174,10 @@ func (s *Service) produceOne(ctx context.Context, request ProduceRequest, draft 
 		Fallback:      fallbackFor(draft.Fallback),
 		Security:      DefaultSecurity(),
 		Error:         nil,
-		Metadata:      map[string]any{},
+		Metadata:      map[string]any{MetadataPreviewMode: string(mode)},
+	}
+	if draft.Lineage != nil {
+		artifact.Metadata[MetadataLineage] = draft.Lineage
 	}
 
 	assetBytes := make(map[string][]byte, len(draft.Assets))

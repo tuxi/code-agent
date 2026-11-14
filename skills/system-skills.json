@@ -38,7 +38,7 @@
       "name": "ui-adaptation",
       "source": "skills/ui-adaptation",
       "destination": "ui-adaptation",
-      "sha256": "cc513764ea7f2348102495734d4f05cfe3380d58a4e331d50275cb0c1d6d19f4",
+      "sha256": "efd2ca928517a79e8e6ece2adf4f08b68b5267fdc2d394a4c51f8203f478286c",
       "scope": "system",
       "version": "5",
       "dependencies": [
@@ -81,7 +81,7 @@
         },
         {
           "path": "references/schemas/ui_preview_lineage.v1.schema.json",
-          "sha256": "e236913fb222ff2f4e44d6914a19f31b8702d1cfb4153d97d1b4aa11995c6d48"
+          "sha256": "1a438a6b0eadb3ad27e64639accc77f69cb19e084dea81510a791cc155a10c4b"
         },
         {
           "path": "references/schemas/view_image_result.v1.schema.json",

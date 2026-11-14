@@ -1,0 +1,16 @@
+{
+  "schema": "ui_preview_result.v1",
+  "artifact_key": "ui-adaptation:fixture-bad-path",
+  "kind": "interactive_html",
+  "title": "Fixture bad fallback path",
+  "mode": "explore",
+  "lineage": null,
+  "fallback_asset": {
+    "asset_id": "asset_fixture_fallback",
+    "relative_path": "../escape.png",
+    "mime_type": "image/png",
+    "width": 1400,
+    "height": 900,
+    "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  }
+}

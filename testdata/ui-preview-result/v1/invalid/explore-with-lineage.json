@@ -1,0 +1,28 @@
+{
+  "schema": "ui_preview_result.v1",
+  "artifact_key": "ui-adaptation:fixture-explore-with-lineage",
+  "kind": "interactive_html",
+  "title": "Fixture explore with lineage",
+  "mode": "explore",
+  "lineage": {
+    "schema": "ui_preview_lineage.v1",
+    "layout_artifact_id": "layout_fixture_commerce",
+    "layout_revision": 3,
+    "layout_revision_sha256": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "source_asset_id": "asset_fixture_source",
+    "source_asset_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "evidence_sha256": null,
+    "approval": {"state": "not_required"},
+    "target": "duo_folded",
+    "state": "default",
+    "target_matrix": {"id": "matrix_fixture_duo_iphone_ipad", "targets": ["duo_folded"]}
+  },
+  "fallback_asset": {
+    "asset_id": "asset_fixture_fallback",
+    "relative_path": "assets/fallback.png",
+    "mime_type": "image/png",
+    "width": 1400,
+    "height": 900,
+    "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  }
+}

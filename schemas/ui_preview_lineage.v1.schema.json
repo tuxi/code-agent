@@ -1,12 +1,24 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://code-agent.local/schemas/ui_preview_lineage.v1.schema.json",
-  "$comment": "Frozen for P0.1 on 2026-11-11.",
+  "$comment": "P1-F backend implementation of the P0.1 preview lineage contract. additive: target, state, evidence_sha256.",
   "title": "UI Preview Lineage v1",
-  "description": "Traceability record linking a UI preview artifact to the reviewed layout revision and source asset.",
+  "description": "Traceability record linking one UI preview revision to the reviewed layout revision and source asset. Adaptation previews require this record; standalone explore previews must not carry it.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema", "layout_artifact_id", "layout_revision", "layout_revision_sha256", "source_asset_id", "source_asset_sha256", "approval", "target_matrix"],
+  "required": [
+    "schema",
+    "layout_artifact_id",
+    "layout_revision",
+    "layout_revision_sha256",
+    "source_asset_id",
+    "source_asset_sha256",
+    "evidence_sha256",
+    "approval",
+    "target",
+    "state",
+    "target_matrix"
+  ],
   "properties": {
     "schema": {"const": "ui_preview_lineage.v1"},
     "layout_artifact_id": {
@@ -26,7 +38,23 @@
       "type": "string",
       "pattern": "^[a-f0-9]{64}$"
     },
+    "evidence_sha256": {
+      "type": ["string", "null"],
+      "pattern": "^[a-f0-9]{64}$",
+      "description": "Digest of the ui_evidence.v1 bytes bound by the layout revision, or null when the layout has no evidence."
+    },
     "approval": {"$ref": "#/$defs/approval"},
+    "target": {
+      "type": "string",
+      "enum": ["duo_folded", "duo_unfolded", "iphone_portrait", "iphone_landscape", "ipad_portrait", "ipad_landscape"],
+      "description": "The single form factor this preview revision depicts. Must be one of target_matrix.targets and a target declared by the layout revision."
+    },
+    "state": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "description": "The UI state this preview revision depicts. Must be declared by the layout revision screen.states."
+    },
     "target_matrix": {"$ref": "#/$defs/target_matrix"}
   },
   "$defs": {
