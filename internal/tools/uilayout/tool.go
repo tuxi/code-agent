@@ -56,7 +56,8 @@ func (*Tool) Description() string {
 	return "Validate and persist a model-authored ui_layout.v1 document against a workspace source image and optional ui_evidence.v1. " +
 		"Checks the frozen schema, source SHA-256, canvas dimensions, node IDs, normalized bboxes, responsive invariants, and evidence references. " +
 		"When evidence_path is supplied the layout must declare source.evidence_schema=ui_evidence.v1 and a source.evidence_sha256 matching the file bytes. " +
-		"Returns the stored layout revision and an annotated overlay image. This tool does not generate or infer layout content."
+		"Returns the stored layout revision and an annotated overlay image. This tool does not generate or infer layout content. " +
+		"Fails closed unless the selected model can process image input AND images returned inside tool results; no prompt, evidence, or layout content can bypass this."
 }
 
 func (*Tool) InputSchema() json.RawMessage {
@@ -124,6 +125,20 @@ func coded(kind, message string) error { return &codedError{kind: kind, message:
 func (t *Tool) Execute(ctx context.Context, ec tools.ExecutionContext, raw json.RawMessage) (tools.ToolResult, error) {
 	if err := ctx.Err(); err != nil {
 		return tools.ToolResult{}, err
+	}
+	// Visual layout requires the main model to have observed the source pixels.
+	// This is a runtime capability check, not a prompt choice: no argument,
+	// evidence document, or user instruction can enable it, and the zero value
+	// is fail-closed. Nothing below this point may persist a revision.
+	if !ec.ImageCapabilities.Input {
+		return tools.FailureResult("image_input_unsupported",
+			"ui_layout requires visual observation of the source image, but the selected model cannot process image input. No layout revision was created. "+
+				"Stop the visual layout flow and report the unsupported capability; do not build a layout from OCR or ui_evidence alone. Evidence-only layout is not supported."), nil
+	}
+	if !ec.ImageCapabilities.ToolInput {
+		return tools.FailureResult("tool_image_input_unsupported",
+			"ui_layout requires visual observation of the source image, but the selected provider cannot process images returned inside tool results. No layout revision was created. "+
+				"Stop the visual layout flow and report the unsupported capability; do not continue to inspect_ui_image or build a normal layout from OCR/evidence alone. Evidence-only layout is not supported."), nil
 	}
 	maxBytes := t.MaxImageBytes
 	if maxBytes <= 0 {

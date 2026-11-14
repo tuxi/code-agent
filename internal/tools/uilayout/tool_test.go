@@ -906,11 +906,17 @@ func baseEvidence(sha string) map[string]any {
 
 func execute(t *testing.T, tool *Tool, root string, args map[string]any) tools.ToolResult {
 	t.Helper()
+	return executeWithCaps(t, tool, root, args, tools.ImageCapabilities{Input: true, ToolInput: true})
+}
+
+func executeWithCaps(t *testing.T, tool *Tool, root string, args map[string]any, caps tools.ImageCapabilities) tools.ToolResult {
+	t.Helper()
 	raw := mustJSON(t, args)
 	result, err := tool.Execute(context.Background(), tools.ExecutionContext{
-		WorkspaceRoot: root,
-		TurnID:        "turn_test",
-		CallID:        "call_test",
+		WorkspaceRoot:     root,
+		TurnID:            "turn_test",
+		CallID:            "call_test",
+		ImageCapabilities: caps,
 	}, raw)
 	if err != nil {
 		t.Fatalf("execute: %v", err)

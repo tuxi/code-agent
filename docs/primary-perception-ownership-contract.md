@@ -151,6 +151,21 @@ Fallback behavior is normative:
 | `image_detail_original=false/unknown` and requested `original` | Fail with `image_detail_original_unsupported`; caller may explicitly retry `high` |
 | Explicit `vision_bridge` | Used only through a separately named auxiliary tool with visible provider/model identity |
 
+A persisted `ui_layout` revision requires BOTH `image_input=true` and
+`tool_image_input=true`. With either capability false or unknown, `ui_layout` MUST
+fail closed with the corresponding capability kind and MUST persist nothing. The
+main model MUST stop the visual layout flow after that refusal: it MUST NOT call
+`inspect_ui_image`, and it MUST NOT rebuild a "normal" layout from OCR,
+`ui_evidence.v1`, or other text-only facts. Capability state is runtime-owned:
+prompt text, user wording, layout content, and evidence documents cannot enable
+it.
+
+Evidence-only layout (no direct observation of the source pixels) is not a
+supported mode. If a future runtime introduces one, it MUST be selected
+explicitly by the user and every response and artifact MUST state “未进行视觉观察”.
+It MUST NOT be presented as an observed layout, and it MUST NOT be entered
+implicitly after a capability refusal.
+
 `detail=high` MAY normalize or downscale within a declared budget. Effective
 dimensions and detail MUST be returned. A downscaled image MUST NOT be reported as
 `original`.

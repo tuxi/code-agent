@@ -1,6 +1,6 @@
 {
   "schema": "codeagent.system-skills.v1",
-  "bundle_version": "2026.11.14.1",
+  "bundle_version": "2026.11.14.2",
   "skills": [
     {
       "name": "review-change",
@@ -38,9 +38,9 @@
       "name": "ui-adaptation",
       "source": "skills/ui-adaptation",
       "destination": "ui-adaptation",
-      "sha256": "1f75eba05b5707fdd83c6c2b59dd68e508600ee40b62e7ca1428d6124cfc482c",
+      "sha256": "cc513764ea7f2348102495734d4f05cfe3380d58a4e331d50275cb0c1d6d19f4",
       "scope": "system",
-      "version": "4",
+      "version": "5",
       "dependencies": [
         "review-change",
         "verify-change"
@@ -57,11 +57,11 @@
       "files": [
         {
           "path": "SKILL.md",
-          "sha256": "8c112acd379f11df13f332f8e3cc42723684fb28d0af99a4885bd6863ea07fec"
+          "sha256": "e3df502604d3cfc5dd4777a0a0d91563a4c91fd1e81e89e3684a6b53f5b0e1c0"
         },
         {
           "path": "references/docs/primary-perception-ownership-contract.md",
-          "sha256": "9bcedb80ca0f2bc82944e8a00fb237db7721d27333eab55504cdc803517854c1"
+          "sha256": "782f290ae6c37ae1ce4e3d2be0a46970b1bfd79b59e1e11e8baa6c9c01ae3e42"
         },
         {
           "path": "references/docs/visual-layout-understanding.md",
