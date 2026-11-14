@@ -40,10 +40,23 @@ import (
 // registry. It returns a RunnerRef whose R field must be set after BuildRunner
 // returns — all three tools dereference it lazily at Execute time.
 func WirePlanTools(registry *tools.Registry, plansDir string) *agent.RunnerRef {
+	return wirePlanTools(registry, plansDir, func(string) bool { return true })
+}
+
+// wirePlanTools is WirePlanTools with the deployment's tool allowlist. Every
+// registration site must go through the allowlist: these three tools are
+// otherwise exposed to the model even when agent.builtin_tools is set to [].
+func wirePlanTools(registry *tools.Registry, plansDir string, allowed func(string) bool) *agent.RunnerRef {
 	ref := &agent.RunnerRef{}
-	_ = registry.Register(agent.NewEnterPlanModeTool(ref))
-	_ = registry.Register(agent.NewProposePlanTool(ref, plansDir))
-	_ = registry.Register(agent.NewAskUserTool(ref))
+	if allowed("enter_plan_mode") {
+		_ = registry.Register(agent.NewEnterPlanModeTool(ref))
+	}
+	if allowed("propose_plan") {
+		_ = registry.Register(agent.NewProposePlanTool(ref, plansDir))
+	}
+	if allowed("ask_user") {
+		_ = registry.Register(agent.NewAskUserTool(ref))
+	}
 	return ref
 }
 
@@ -272,7 +285,7 @@ func BuildBaseRegistry(ctx context.Context, cfg settings.Settings, mc settings.M
 	// Plan mode tools: enter_plan_mode and propose_plan. They use a RunnerRef for
 	// late binding — the Runner is constructed after the registry. The returned ref
 	// must be wired via planRef.R = runner after BuildRunner.
-	planRef := WirePlanTools(registry, filepath.Join(root, ".codeagent", "plans"))
+	planRef := wirePlanTools(registry, filepath.Join(root, ".codeagent", "plans"), cfg.Agent.ToolAllowed)
 
 	return registry, skillReg, planRef, jobSink, nil
 }

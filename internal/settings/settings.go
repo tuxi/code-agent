@@ -716,6 +716,12 @@ func MergeSettings(base *Settings, overlay Settings) {
 	if overlay.Agent.CodingTools != nil {
 		base.Agent.CodingTools = overlay.Agent.CodingTools
 	}
+	// BuiltinTools is a deny-by-default allowlist: the highest layer that sets it
+	// wins. It MUST be carried over here — dropping it silently reintroduces every
+	// server-side tool in the merged settings a daemon/embedded runtime builds from.
+	if overlay.Agent.BuiltinTools != nil {
+		base.Agent.BuiltinTools = overlay.Agent.BuiltinTools
+	}
 	if overlay.Agent.BackgroundJobNotifications != nil {
 		base.Agent.BackgroundJobNotifications = overlay.Agent.BackgroundJobNotifications
 	}

@@ -249,12 +249,15 @@ func newWireMessages(messages []Message) []wireMessage {
 		} else {
 			w.Content = m.Content
 		}
-		out = append(out, w)
-		// Flush before any non-tool message so the images land between the tool
-		// results and whatever follows (assistant reply or new user turn).
+		// Flush BEFORE any non-tool message so the images land between the run of
+		// tool results and whatever follows (assistant reply or new user turn).
+		// Appending first would insert a user message between an assistant
+		// tool_calls message and its tool results — DeepSeek rejects that with
+		// "tool_calls must be followed by tool messages" on the next step.
 		if m.Role != RoleTool {
 			flushToolImages()
 		}
+		out = append(out, w)
 	}
 	flushToolImages()
 	return out
