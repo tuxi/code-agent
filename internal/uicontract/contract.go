@@ -9,6 +9,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	pathpkg "path"
+	"sort"
+	"strings"
 
 	"github.com/google/jsonschema-go/jsonschema"
 )
@@ -446,6 +449,165 @@ type viewImageAsset struct {
 	Role          string `json:"role"`
 	SourceAssetID string `json:"source_asset_id"`
 	SourceBBox    *bbox  `json:"source_bbox"`
+}
+
+// ValidateUILayoutResult validates identity, asset, and digest consistency for
+// ui_layout_result.v1.
+func ValidateUILayoutResult(documentData []byte) error {
+	var document layoutResultDocument
+	if err := decodeJSON(documentData, &document); err != nil {
+		return err
+	}
+	if document.Schema != "ui_layout_result.v1" {
+		return fmt.Errorf("schema must be ui_layout_result.v1")
+	}
+	if !strings.HasPrefix(document.LayoutArtifactID, "layout_") {
+		return fmt.Errorf("layout_artifact_id must use the layout_ prefix")
+	}
+	if document.LayoutRevision < 1 {
+		return fmt.Errorf("layout_revision must be at least 1")
+	}
+	layoutDigest, ok := revisionDigest(document.LayoutRevisionSHA256)
+	if !ok {
+		return fmt.Errorf("layout_revision_sha256 must be sha256:<64 lowercase hex>")
+	}
+	if !isLowerHexSHA256(document.SourceAssetSHA256) {
+		return fmt.Errorf("source_asset_sha256 must be 64 lowercase hex characters")
+	}
+	if !strings.HasPrefix(document.SourceAssetID, "asset_") {
+		return fmt.Errorf("source_asset_id must use the asset_ prefix")
+	}
+	if document.EvidenceSHA256 != nil && !isLowerHexSHA256(*document.EvidenceSHA256) {
+		return fmt.Errorf("evidence_sha256 must be null or 64 lowercase hex characters")
+	}
+	if document.Canvas.Width < 1 || document.Canvas.Height < 1 {
+		return fmt.Errorf("canvas dimensions must be positive")
+	}
+	if document.NodeCount < 1 {
+		return fmt.Errorf("node_count must be at least 1")
+	}
+	if document.AssumptionCount < 0 {
+		return fmt.Errorf("assumption_count must not be negative")
+	}
+	if len(document.Targets) == 0 {
+		return fmt.Errorf("targets must not be empty")
+	}
+	if !sort.StringsAreSorted(document.Targets) {
+		return fmt.Errorf("targets must be sorted for deterministic output")
+	}
+	for i := 1; i < len(document.Targets); i++ {
+		if document.Targets[i] == document.Targets[i-1] {
+			return fmt.Errorf("targets contains duplicate %q", document.Targets[i])
+		}
+	}
+
+	if document.OverlayAsset.AssetID == document.LayoutJSONAsset.AssetID {
+		return fmt.Errorf("overlay_asset.asset_id must differ from layout_json_asset.asset_id")
+	}
+	if err := validateLayoutResultAsset("overlay_asset", document.OverlayAsset, "layout_overlay"); err != nil {
+		return err
+	}
+	if err := validateLayoutResultAsset("layout_json_asset", document.LayoutJSONAsset, "layout_json"); err != nil {
+		return err
+	}
+	if document.OverlayAsset.Kind != "image" || document.OverlayAsset.MIMEType != "image/png" {
+		return fmt.Errorf("overlay_asset must be an image/png asset")
+	}
+	if document.LayoutJSONAsset.Kind != "file" || document.LayoutJSONAsset.MIMEType != "application/json" {
+		return fmt.Errorf("layout_json_asset must be an application/json file asset")
+	}
+	if document.OverlayAsset.Width < 1 || document.OverlayAsset.Height < 1 {
+		return fmt.Errorf("overlay_asset dimensions must be positive")
+	}
+	if document.OverlayAsset.Width > document.Canvas.Width || document.OverlayAsset.Height > document.Canvas.Height {
+		return fmt.Errorf("overlay_asset must not exceed the source canvas")
+	}
+	if document.LayoutJSONAsset.Width != 0 || document.LayoutJSONAsset.Height != 0 {
+		return fmt.Errorf("layout_json_asset must not declare image dimensions")
+	}
+	if document.OverlayAsset.RelativePath == document.LayoutJSONAsset.RelativePath {
+		return fmt.Errorf("overlay_asset and layout_json_asset must use distinct paths")
+	}
+	if document.LayoutJSONAsset.SHA256 != layoutDigest {
+		return fmt.Errorf("layout_json_asset.sha256 must match layout_revision_sha256")
+	}
+	return nil
+}
+
+func validateLayoutResultAsset(path string, asset layoutResultAsset, role string) error {
+	if asset.AssetRole != role {
+		return fmt.Errorf("%s.asset_role must be %q", path, role)
+	}
+	if !strings.HasPrefix(asset.AssetID, "asset_") {
+		return fmt.Errorf("%s.asset_id must use the asset_ prefix", path)
+	}
+	if !isLowerHexSHA256(asset.SHA256) {
+		return fmt.Errorf("%s.sha256 must be 64 lowercase hex characters", path)
+	}
+	if asset.RelativePath == "" || strings.TrimSpace(asset.RelativePath) != asset.RelativePath ||
+		strings.Contains(asset.RelativePath, "\\") || pathpkg.IsAbs(asset.RelativePath) {
+		return fmt.Errorf("%s.relative_path must be a workspace-relative slash path", path)
+	}
+	cleaned := pathpkg.Clean(asset.RelativePath)
+	if cleaned == "." || cleaned == ".." || strings.HasPrefix(cleaned, "../") {
+		return fmt.Errorf("%s.relative_path must not escape the workspace", path)
+	}
+	if pathpkg.Base(asset.RelativePath) != asset.Filename {
+		return fmt.Errorf("%s.filename must match the relative_path basename", path)
+	}
+	return nil
+}
+
+func revisionDigest(value string) (string, bool) {
+	if !strings.HasPrefix(value, "sha256:") {
+		return "", false
+	}
+	digest := strings.TrimPrefix(value, "sha256:")
+	return digest, isLowerHexSHA256(digest)
+}
+
+func isLowerHexSHA256(value string) bool {
+	if len(value) != 64 || strings.ToLower(value) != value {
+		return false
+	}
+	if _, err := hex.DecodeString(value); err != nil {
+		return false
+	}
+	return true
+}
+
+type layoutResultDocument struct {
+	Schema               string             `json:"schema"`
+	LayoutArtifactID     string             `json:"layout_artifact_id"`
+	LayoutRevision       int                `json:"layout_revision"`
+	LayoutRevisionSHA256 string             `json:"layout_revision_sha256"`
+	SourceAssetID        string             `json:"source_asset_id"`
+	SourceAssetSHA256    string             `json:"source_asset_sha256"`
+	EvidenceSHA256       *string            `json:"evidence_sha256"`
+	Canvas               layoutResultCanvas `json:"canvas"`
+	NodeCount            int                `json:"node_count"`
+	AssumptionCount      int                `json:"assumption_count"`
+	Targets              []string           `json:"targets"`
+	Created              bool               `json:"created"`
+	OverlayAsset         layoutResultAsset  `json:"overlay_asset"`
+	LayoutJSONAsset      layoutResultAsset  `json:"layout_json_asset"`
+}
+
+type layoutResultCanvas struct {
+	Width  int `json:"width"`
+	Height int `json:"height"`
+}
+
+type layoutResultAsset struct {
+	AssetID      string `json:"asset_id"`
+	AssetRole    string `json:"asset_role"`
+	Kind         string `json:"kind"`
+	RelativePath string `json:"relative_path"`
+	Filename     string `json:"filename"`
+	MIMEType     string `json:"mime_type"`
+	Width        int    `json:"width"`
+	Height       int    `json:"height"`
+	SHA256       string `json:"sha256"`
 }
 
 func walkLayoutNode(node layoutNode, ids map[string]struct{}, count *int) error {

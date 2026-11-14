@@ -1,0 +1,241 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://code-agent.local/schemas/ui_evidence.v1.schema.json",
+  "$comment": "Frozen for P0.1 on 2026-11-11.",
+  "title": "UI Evidence v1",
+  "description": "Deterministic, bounded visual evidence extracted from a UI source. It is not the model's layout interpretation.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "source",
+    "coordinate_space",
+    "producer",
+    "elements",
+    "repeated_groups",
+    "source_tree",
+    "crops",
+    "uncertainties",
+    "limits"
+  ],
+  "properties": {
+    "schema": {
+      "const": "ui_evidence.v1"
+    },
+    "source": {
+      "$ref": "#/$defs/source"
+    },
+    "coordinate_space": {
+      "const": "normalized_top_left"
+    },
+    "producer": {
+      "$ref": "#/$defs/producer"
+    },
+    "elements": {
+      "type": "array",
+      "maxItems": 500,
+      "items": {
+        "$ref": "#/$defs/element"
+      }
+    },
+    "repeated_groups": {
+      "type": "array",
+      "maxItems": 100,
+      "items": {
+        "$ref": "#/$defs/repeated_group"
+      }
+    },
+    "source_tree": {
+      "$ref": "#/$defs/source_tree"
+    },
+    "crops": {
+      "type": "array",
+      "maxItems": 16,
+      "items": {
+        "$ref": "#/$defs/crop"
+      }
+    },
+    "uncertainties": {
+      "type": "array",
+      "maxItems": 32,
+      "items": {
+        "$ref": "#/$defs/uncertainty"
+      }
+    },
+    "limits": {
+      "$ref": "#/$defs/limits"
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[A-Za-z][A-Za-z0-9._:-]{0,127}$"
+    },
+    "asset_id": {
+      "type": "string",
+      "pattern": "^asset_[A-Za-z0-9._:-]{1,180}$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "bbox": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["x", "y", "width", "height"],
+      "properties": {
+        "x": {"type": "number", "minimum": 0, "maximum": 1},
+        "y": {"type": "number", "minimum": 0, "maximum": 1},
+        "width": {"type": "number", "minimum": 0, "maximum": 1},
+        "height": {"type": "number", "minimum": 0, "maximum": 1}
+      }
+    },
+    "evidence": {
+      "type": "string",
+      "enum": ["observed", "inferred", "uncertain"]
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["asset_id", "source_kind", "sha256", "mime_type", "width", "height"],
+      "properties": {
+        "asset_id": {"$ref": "#/$defs/asset_id"},
+        "source_kind": {
+          "type": "string",
+          "enum": ["static_image", "app_screenshot", "web_screenshot"]
+        },
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "mime_type": {
+          "type": "string",
+          "enum": ["image/png", "image/jpeg", "image/webp"]
+        },
+        "width": {"type": "integer", "minimum": 1},
+        "height": {"type": "integer", "minimum": 1}
+      }
+    },
+    "producer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1, "maxLength": 128},
+        "version": {"type": "string", "minLength": 1, "maxLength": 64}
+      }
+    },
+    "element": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "bbox", "confidence", "evidence"],
+      "properties": {
+        "id": {"$ref": "#/$defs/id"},
+        "kind": {
+          "type": "string",
+          "enum": ["text", "image", "icon", "control", "container", "separator", "unknown"]
+        },
+        "role": {"type": "string", "minLength": 1, "maxLength": 64},
+        "bbox": {"$ref": "#/$defs/bbox"},
+        "text": {"type": "string", "maxLength": 8192},
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "evidence": {"$ref": "#/$defs/evidence"},
+        "parent_id": {
+          "type": ["string", "null"],
+          "pattern": "^[A-Za-z][A-Za-z0-9._:-]{0,127}$"
+        },
+        "interactive": {"type": "boolean"}
+      }
+    },
+    "repeated_group": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "axis", "member_ids", "bbox", "confidence", "evidence"],
+      "properties": {
+        "id": {"$ref": "#/$defs/id"},
+        "axis": {"type": "string", "enum": ["vertical", "horizontal", "grid", "unknown"]},
+        "member_ids": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 100,
+          "items": {"$ref": "#/$defs/id"}
+        },
+        "bbox": {"$ref": "#/$defs/bbox"},
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "evidence": {"$ref": "#/$defs/evidence"}
+      }
+    },
+    "source_tree": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "nodes", "truncated"],
+      "properties": {
+        "kind": {"type": "string", "enum": ["accessibility", "dom", "none"]},
+        "nodes": {
+          "type": "array",
+          "maxItems": 1000,
+          "items": {"$ref": "#/$defs/source_node"}
+        },
+        "truncated": {"type": "boolean"}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"kind": {"const": "none"}}},
+          "then": {"properties": {"nodes": {"maxItems": 0}}}
+        }
+      ]
+    },
+    "source_node": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "parent_id", "role", "interactive", "visible", "enabled"],
+      "properties": {
+        "id": {"$ref": "#/$defs/id"},
+        "parent_id": {
+          "type": ["string", "null"],
+          "pattern": "^[A-Za-z][A-Za-z0-9._:-]{0,127}$"
+        },
+        "role": {"type": "string", "minLength": 1, "maxLength": 64},
+        "label": {"type": "string", "maxLength": 4096},
+        "bbox": {"$ref": "#/$defs/bbox"},
+        "interactive": {"type": "boolean"},
+        "visible": {"type": "boolean"},
+        "enabled": {"type": "boolean"}
+      }
+    },
+    "crop": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["asset_id", "source_bbox", "purpose"],
+      "properties": {
+        "asset_id": {"$ref": "#/$defs/asset_id"},
+        "source_bbox": {"$ref": "#/$defs/bbox"},
+        "purpose": {
+          "type": "string",
+          "enum": ["navigation", "content", "controls", "repeated_group", "detail", "unknown"]
+        }
+      }
+    },
+    "uncertainty": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["description", "related_element_ids"],
+      "properties": {
+        "description": {"type": "string", "minLength": 1, "maxLength": 1024},
+        "related_element_ids": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {"$ref": "#/$defs/id"}
+        },
+        "reason": {"type": "string", "maxLength": 1024}
+      }
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["element_count", "elements_truncated", "tree_nodes_truncated"],
+      "properties": {
+        "element_count": {"type": "integer", "minimum": 0, "maximum": 500},
+        "elements_truncated": {"type": "boolean"},
+        "tree_nodes_truncated": {"type": "boolean"}
+      }
+    }
+  }
+}

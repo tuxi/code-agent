@@ -7,5 +7,8 @@ import _ "embed"
 //go:embed ui_layout.v1.schema.json
 var UILayoutV1 []byte
 
+//go:embed ui_layout_result.v1.schema.json
+var UILayoutResultV1 []byte
+
 //go:embed ui_evidence.v1.schema.json
 var UIEvidenceV1 []byte

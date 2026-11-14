@@ -1,0 +1,131 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://code-agent.local/schemas/ui_layout_result.v1.schema.json",
+  "$comment": "Stable for P1-E on 2026-11-14.",
+  "title": "UI Layout Result v1",
+  "description": "Stable structured result of a successful ui_layout call. Identity fields bind one persisted layout revision to its source image, evidence, canonical JSON asset, and rendered overlay asset.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "layout_artifact_id",
+    "layout_revision",
+    "layout_revision_sha256",
+    "source_asset_id",
+    "source_asset_sha256",
+    "evidence_sha256",
+    "canvas",
+    "node_count",
+    "assumption_count",
+    "targets",
+    "created",
+    "overlay_asset",
+    "layout_json_asset"
+  ],
+  "properties": {
+    "schema": {"const": "ui_layout_result.v1"},
+    "layout_artifact_id": {"$ref": "#/$defs/artifact_id"},
+    "layout_revision": {"type": "integer", "minimum": 1},
+    "layout_revision_sha256": {"$ref": "#/$defs/revision_sha256"},
+    "source_asset_id": {"$ref": "#/$defs/asset_id"},
+    "source_asset_sha256": {"$ref": "#/$defs/sha256"},
+    "evidence_sha256": {
+      "type": ["string", "null"],
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "canvas": {"$ref": "#/$defs/canvas"},
+    "node_count": {"type": "integer", "minimum": 1},
+    "assumption_count": {"type": "integer", "minimum": 0},
+    "targets": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 16,
+      "uniqueItems": true,
+      "items": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$"}
+    },
+    "created": {"type": "boolean"},
+    "overlay_asset": {"$ref": "#/$defs/overlay_asset"},
+    "layout_json_asset": {"$ref": "#/$defs/layout_json_asset"}
+  },
+  "$defs": {
+    "artifact_id": {
+      "type": "string",
+      "pattern": "^layout_[A-Za-z0-9._-]{1,180}$"
+    },
+    "asset_id": {
+      "type": "string",
+      "pattern": "^asset_[A-Za-z0-9._:-]{1,180}$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "revision_sha256": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "relative_path": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096,
+      "pattern": "^[^\\\\]+$"
+    },
+    "canvas": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["width", "height"],
+      "properties": {
+        "width": {"type": "integer", "minimum": 1},
+        "height": {"type": "integer", "minimum": 1}
+      }
+    },
+    "overlay_asset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "asset_id",
+        "asset_role",
+        "kind",
+        "relative_path",
+        "filename",
+        "mime_type",
+        "width",
+        "height",
+        "sha256"
+      ],
+      "properties": {
+        "asset_id": {"$ref": "#/$defs/asset_id"},
+        "asset_role": {"const": "layout_overlay"},
+        "kind": {"const": "image"},
+        "relative_path": {"$ref": "#/$defs/relative_path"},
+        "filename": {"type": "string", "minLength": 1, "maxLength": 512},
+        "mime_type": {"const": "image/png"},
+        "width": {"type": "integer", "minimum": 1},
+        "height": {"type": "integer", "minimum": 1},
+        "sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "layout_json_asset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "asset_id",
+        "asset_role",
+        "kind",
+        "relative_path",
+        "filename",
+        "mime_type",
+        "sha256"
+      ],
+      "properties": {
+        "asset_id": {"$ref": "#/$defs/asset_id"},
+        "asset_role": {"const": "layout_json"},
+        "kind": {"const": "file"},
+        "relative_path": {"$ref": "#/$defs/relative_path"},
+        "filename": {"type": "string", "minLength": 1, "maxLength": 512},
+        "mime_type": {"const": "application/json"},
+        "sha256": {"$ref": "#/$defs/sha256"}
+      }
+    }
+  }
+}

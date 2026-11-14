@@ -101,28 +101,6 @@ type input struct {
 	ArtifactID   string          `json:"artifact_id"`
 }
 
-type result struct {
-	Kind                 string       `json:"kind"`
-	LayoutArtifactID     string       `json:"layout_artifact_id"`
-	LayoutRevision       int          `json:"layout_revision"`
-	LayoutRevisionSHA256 string       `json:"layout_revision_sha256"`
-	LayoutPath           string       `json:"layout_path"`
-	OverlayPath          string       `json:"overlay_path"`
-	OverlayWidth         int          `json:"overlay_width"`
-	OverlayHeight        int          `json:"overlay_height"`
-	SourcePath           string       `json:"source_path"`
-	SourceAssetID        string       `json:"source_asset_id"`
-	SourceAssetSHA256    string       `json:"source_asset_sha256"`
-	SourceMIMEType       string       `json:"source_mime_type"`
-	Canvas               layoutCanvas `json:"canvas"`
-	NodeCount            int          `json:"node_count"`
-	AssumptionCount      int          `json:"assumption_count"`
-	Targets              []string     `json:"targets"`
-	EvidencePath         string       `json:"evidence_path,omitempty"`
-	EvidenceSHA256       string       `json:"evidence_sha256,omitempty"`
-	Created              bool         `json:"created"`
-}
-
 type evidenceSource struct {
 	AssetID string `json:"asset_id"`
 	SHA256  string `json:"sha256"`
@@ -310,6 +288,9 @@ func (t *Tool) Execute(ctx context.Context, ec tools.ExecutionContext, raw json.
 	}
 
 	sourceAssetID := document.Source.AssetID
+	overlaySHA := digestBytes(overlayData)
+	nodeCount := countLayoutNodes(document.Root)
+	assumptionCount := len(document.Assumptions)
 	meta := revisionMetadata{
 		Kind:                 "ui_layout_revision",
 		LayoutArtifactID:     artifactID,
@@ -317,13 +298,14 @@ func (t *Tool) Execute(ctx context.Context, ec tools.ExecutionContext, raw json.
 		LayoutSHA256:         digestBytes(canonicalLayout),
 		OverlayWidth:         overlayWidth,
 		OverlayHeight:        overlayHeight,
+		OverlaySHA256:        overlaySHA,
 		SourcePath:           sourceRel,
 		SourceAssetID:        sourceAssetID,
 		SourceAssetSHA256:    sourceSHA,
 		SourceMIMEType:       mimeType,
 		Canvas:               document.Source.Canvas,
-		NodeCount:            countLayoutNodes(document.Root),
-		AssumptionCount:      len(document.Assumptions),
+		NodeCount:            nodeCount,
+		AssumptionCount:      assumptionCount,
 	}
 	if evidenceRel != "" {
 		meta.EvidencePath = evidenceRel
@@ -339,39 +321,41 @@ func (t *Tool) Execute(ctx context.Context, ec tools.ExecutionContext, raw json.
 
 	targets := document.targets()
 	sort.Strings(targets)
-	output := result{
-		Kind:                 "ui_layout",
-		LayoutArtifactID:     artifactID,
-		LayoutRevision:       persisted.Revision,
-		LayoutRevisionSHA256: revisionSHA,
-		LayoutPath:           persisted.LayoutPath,
-		OverlayPath:          persisted.OverlayPath,
-		OverlayWidth:         overlayWidth,
-		OverlayHeight:        overlayHeight,
-		SourcePath:           sourceRel,
-		SourceAssetID:        sourceAssetID,
-		SourceAssetSHA256:    sourceSHA,
-		SourceMIMEType:       mimeType,
-		Canvas:               document.Source.Canvas,
-		NodeCount:            countLayoutNodes(document.Root),
-		AssumptionCount:      len(document.Assumptions),
-		Targets:              targets,
-		EvidencePath:         evidenceRel,
-		EvidenceSHA256:       meta.EvidenceSHA256,
-		Created:              persisted.Created,
-	}
-	outputJSON, err := json.Marshal(output)
-	if err != nil {
-		return tools.ToolResult{}, err
-	}
 
 	rootAbs, err := filepath.Abs(ec.WorkspaceRoot)
 	if err != nil {
 		return tools.ToolResult{}, err
 	}
-	overlayAbs := filepath.Join(rootAbs, filepath.FromSlash(persisted.OverlayPath))
-	overlayAssetID := assets.StableID(ec.TurnID, ec.CallID, 0, revisionSHA, "ui_layout_overlay")
 	workspaceID := assets.WorkspaceID(rootAbs)
+	overlayAbs := filepath.Join(rootAbs, filepath.FromSlash(persisted.OverlayPath))
+	layoutAbs := filepath.Join(rootAbs, filepath.FromSlash(persisted.LayoutPath))
+	overlayAssetID := assets.StableID(ec.TurnID, ec.CallID, 0, revisionSHA, "ui_layout_overlay")
+	layoutAssetID := assets.StableID(ec.TurnID, ec.CallID, 1, revisionSHA, "ui_layout_layout_json")
+
+	output := buildResult(resultInputs{
+		LayoutArtifactID:     artifactID,
+		LayoutRevision:       persisted.Revision,
+		LayoutRevisionSHA256: revisionSHA,
+		SourceAssetID:        sourceAssetID,
+		SourceAssetSHA256:    sourceSHA,
+		EvidenceSHA256:       evidenceSHA,
+		Canvas:               document.Source.Canvas,
+		NodeCount:            nodeCount,
+		AssumptionCount:      assumptionCount,
+		Targets:              targets,
+		Created:              persisted.Created,
+		OverlayAsset: makeResultAsset(
+			overlayAssetID, "layout_overlay", "image", persisted.OverlayPath, "image/png", overlaySHA, overlayWidth, overlayHeight,
+		),
+		LayoutJSONAsset: makeResultAsset(
+			layoutAssetID, "layout_json", "file", persisted.LayoutPath, "application/json", meta.LayoutSHA256, 0, 0,
+		),
+	})
+	outputJSON, err := output.marshal()
+	if err != nil {
+		return tools.ToolResult{}, err
+	}
+
 	overlayRef := assets.Ref{
 		ID:                    overlayAssetID,
 		Kind:                  "image",
@@ -389,7 +373,29 @@ func (t *Tool) Execute(ctx context.Context, ec tools.ExecutionContext, raw json.
 			"source_asset_id":        sourceAssetID,
 			"source_asset_sha256":    sourceSHA,
 			"canvas":                 document.Source.Canvas,
-			"node_count":             output.NodeCount,
+			"node_count":             nodeCount,
+		},
+		SourceTurnID: ec.TurnID,
+		SourceCallID: ec.CallID,
+	}
+	layoutRef := assets.Ref{
+		ID:                    layoutAssetID,
+		Kind:                  "file",
+		URI:                   assets.WorkspaceURI(workspaceID, persisted.LayoutPath, nil),
+		DisplayName:           "layout.json",
+		WorkspaceID:           workspaceID,
+		WorkspaceRelativePath: persisted.LayoutPath,
+		AbsolutePath:          layoutAbs,
+		MIMEType:              "application/json",
+		Metadata: map[string]any{
+			"asset_role":             "layout_json",
+			"layout_artifact_id":     artifactID,
+			"layout_revision":        persisted.Revision,
+			"layout_revision_sha256": revisionSHA,
+			"source_asset_id":        sourceAssetID,
+			"source_asset_sha256":    sourceSHA,
+			"canvas":                 document.Source.Canvas,
+			"node_count":             nodeCount,
 		},
 		SourceTurnID: ec.TurnID,
 		SourceCallID: ec.CallID,
@@ -399,9 +405,9 @@ func (t *Tool) Execute(ctx context.Context, ec tools.ExecutionContext, raw json.
 	if !persisted.Created {
 		verb = "Reused"
 	}
-	content := fmt.Sprintf("%s ui_layout revision %d for %s (%d nodes, overlay %dx%d).",
-		verb, persisted.Revision, sourceRel, output.NodeCount, overlayWidth, overlayHeight)
-	return tools.ToolResult{Content: content, Output: outputJSON, Assets: []assets.Ref{overlayRef}}, nil
+	content := fmt.Sprintf("%s ui_layout revision %d for %s (%d nodes, overlay %dx%d, canonical layout.json).",
+		verb, persisted.Revision, sourceRel, nodeCount, overlayWidth, overlayHeight)
+	return tools.ToolResult{Content: content, Output: outputJSON, Assets: []assets.Ref{overlayRef, layoutRef}}, nil
 }
 
 func layoutUsesEvidence(document layoutDocument) bool {

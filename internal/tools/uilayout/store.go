@@ -33,6 +33,7 @@ type revisionMetadata struct {
 	OverlayPath          string       `json:"overlay_path"`
 	OverlayWidth         int          `json:"overlay_width"`
 	OverlayHeight        int          `json:"overlay_height"`
+	OverlaySHA256        string       `json:"overlay_sha256"`
 	SourcePath           string       `json:"source_path"`
 	SourceAssetID        string       `json:"source_asset_id"`
 	SourceAssetSHA256    string       `json:"source_asset_sha256"`
@@ -207,6 +208,10 @@ func findExistingRevision(rootCanonical, artifactDir string, meta revisionMetada
 		if !ok {
 			continue
 		}
+		overlayDigest := digestBytes(overlayBytes)
+		if existing.OverlaySHA256 == "" || existing.OverlaySHA256 != overlayDigest {
+			continue
+		}
 		config, err := png.DecodeConfig(bytes.NewReader(overlayBytes))
 		if err != nil || config.Width != existing.OverlayWidth || config.Height != existing.OverlayHeight {
 			continue
@@ -216,6 +221,7 @@ func findExistingRevision(rootCanonical, artifactDir string, meta revisionMetada
 			existing.EvidenceSHA256 == meta.EvidenceSHA256 &&
 			existing.OverlayWidth == meta.OverlayWidth &&
 			existing.OverlayHeight == meta.OverlayHeight &&
+			existing.OverlaySHA256 == meta.OverlaySHA256 &&
 			existing.Canvas == meta.Canvas {
 			return latest, &persistedRevision{
 				Revision:    existing.LayoutRevision,

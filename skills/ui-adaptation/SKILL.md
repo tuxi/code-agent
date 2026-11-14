@@ -2,18 +2,22 @@
 name: ui-adaptation
 description: Understand an app, web, or design-mockup image's layout and adapt it across iPhone Duo, iPhone, and iPad. Use when the user provides a screenshot or design image and asks to analyze its layout, preserve or adapt it across devices, generate responsive previews, or verify that an implementation visually matches the source. Do not use for generic image captioning or for UI implementation that has no visual reference.
 metadata:
-  version: "3"
+  version: "4"
 ---
 
 # UI Adaptation
 
 Start with visual understanding, then design, then implementation. Do not jump
-from a screenshot to generated UI code. Read `docs/visual-layout-understanding.md`
-when the evidence or layout schema details matter. The executable contracts are
-`schemas/view_image_result.v1.schema.json`,
-`schemas/ui_evidence.v1.schema.json`, `schemas/ui_layout.v1.schema.json`, and
-`schemas/ui_preview_lineage.v1.schema.json`. Tool ownership and prompt boundaries
-are normative in `docs/primary-perception-ownership-contract.md`.
+from a screenshot to generated UI code. Read
+`references/docs/visual-layout-understanding.md` when the evidence or layout
+schema details matter. The executable contracts are
+`references/schemas/view_image_result.v1.schema.json`,
+`references/schemas/ui_evidence.v1.schema.json`,
+`references/schemas/ui_layout.v1.schema.json`,
+`references/schemas/ui_layout_result.v1.schema.json`, and
+`references/schemas/ui_preview_lineage.v1.schema.json`. Tool ownership and prompt
+boundaries are normative in
+`references/docs/primary-perception-ownership-contract.md`.
 
 ## Workflow
 

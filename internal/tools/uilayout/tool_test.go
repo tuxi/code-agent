@@ -95,8 +95,8 @@ func TestExecutePersistsRevisionAndOverlay(t *testing.T) {
 	if firstResult.SourceAssetSHA256 != digestBytes(sourceBytes) || firstResult.SourceAssetSHA256 != sha {
 		t.Fatalf("source sha = %s", firstResult.SourceAssetSHA256)
 	}
-	if firstResult.OverlayWidth != 200 || firstResult.OverlayHeight != 400 {
-		t.Fatalf("overlay size = %dx%d", firstResult.OverlayWidth, firstResult.OverlayHeight)
+	if firstResult.OverlayAsset.Width != 200 || firstResult.OverlayAsset.Height != 400 {
+		t.Fatalf("overlay size = %dx%d", firstResult.OverlayAsset.Width, firstResult.OverlayAsset.Height)
 	}
 	if len(firstResult.Targets) != 2 || firstResult.Targets[0] != "duo_folded" || firstResult.Targets[1] != "iphone_portrait" {
 		t.Fatalf("targets = %v", firstResult.Targets)
@@ -104,14 +104,23 @@ func TestExecutePersistsRevisionAndOverlay(t *testing.T) {
 	if !strings.HasPrefix(firstResult.LayoutRevisionSHA256, "sha256:") || len(firstResult.LayoutRevisionSHA256) != len("sha256:")+64 {
 		t.Fatalf("revision sha = %q", firstResult.LayoutRevisionSHA256)
 	}
+	if firstResult.LayoutJSONAsset.SHA256 != strings.TrimPrefix(firstResult.LayoutRevisionSHA256, "sha256:") {
+		t.Fatalf("layout asset sha = %q", firstResult.LayoutJSONAsset.SHA256)
+	}
+	if firstResult.Schema != resultSchema {
+		t.Fatalf("result schema = %q", firstResult.Schema)
+	}
 
-	layoutPath := filepath.Join(root, filepath.FromSlash(firstResult.LayoutPath))
+	layoutPath := filepath.Join(root, filepath.FromSlash(firstResult.LayoutJSONAsset.RelativePath))
 	layoutBytes, err := os.ReadFile(layoutPath)
 	if err != nil {
 		t.Fatalf("read persisted layout: %v", err)
 	}
 	if got := "sha256:" + digestBytes(layoutBytes); got != firstResult.LayoutRevisionSHA256 {
 		t.Fatalf("stored layout digest = %s, want %s", got, firstResult.LayoutRevisionSHA256)
+	}
+	if got := digestBytes(layoutBytes); got != firstResult.LayoutJSONAsset.SHA256 {
+		t.Fatalf("layout asset digest = %s, want %s", firstResult.LayoutJSONAsset.SHA256, got)
 	}
 	var persisted layoutDocument
 	if err := json.Unmarshal(layoutBytes, &persisted); err != nil {
@@ -133,10 +142,16 @@ func TestExecutePersistsRevisionAndOverlay(t *testing.T) {
 		t.Fatalf("metadata = %+v", metadata)
 	}
 
-	overlayPath := filepath.Join(root, filepath.FromSlash(firstResult.OverlayPath))
+	overlayPath := filepath.Join(root, filepath.FromSlash(firstResult.OverlayAsset.RelativePath))
 	overlayBytes, err := os.ReadFile(overlayPath)
 	if err != nil {
 		t.Fatalf("read overlay: %v", err)
+	}
+	if got := digestBytes(overlayBytes); got != firstResult.OverlayAsset.SHA256 {
+		t.Fatalf("overlay asset digest = %s, want %s", firstResult.OverlayAsset.SHA256, got)
+	}
+	if firstResult.OverlayAsset.SHA256 != metadata.OverlaySHA256 {
+		t.Fatalf("overlay asset digest does not match metadata: %+v", metadata)
 	}
 	overlay, err := png.Decode(bytes.NewReader(overlayBytes))
 	if err != nil {
@@ -145,11 +160,21 @@ func TestExecutePersistsRevisionAndOverlay(t *testing.T) {
 	if overlay.Bounds().Dx() != 200 || overlay.Bounds().Dy() != 400 {
 		t.Fatalf("overlay bounds = %v", overlay.Bounds())
 	}
-	if len(first.Assets) != 1 || first.Assets[0].MIMEType != "image/png" {
+	if len(first.Assets) != 2 {
 		t.Fatalf("assets = %+v", first.Assets)
+	}
+	if first.Assets[0].MIMEType != "image/png" || first.Assets[0].ID != firstResult.OverlayAsset.AssetID {
+		t.Fatalf("overlay asset = %+v", first.Assets[0])
 	}
 	if first.Assets[0].Metadata["asset_role"] != "layout_overlay" {
 		t.Fatalf("overlay asset metadata = %+v", first.Assets[0].Metadata)
+	}
+	if first.Assets[1].Kind != "file" || first.Assets[1].MIMEType != "application/json" ||
+		first.Assets[1].ID != firstResult.LayoutJSONAsset.AssetID {
+		t.Fatalf("layout asset = %+v", first.Assets[1])
+	}
+	if first.Assets[1].Metadata["asset_role"] != "layout_json" {
+		t.Fatalf("layout asset metadata = %+v", first.Assets[1].Metadata)
 	}
 
 	if got := pixelAt(overlay, 20, 40); got != (color.NRGBA{34, 153, 84, 255}) {
@@ -167,8 +192,8 @@ func TestExecutePersistsRevisionAndOverlay(t *testing.T) {
 	if secondResult.Created || secondResult.LayoutRevision != 1 {
 		t.Fatalf("identical layout revision = %+v, want reused revision 1", secondResult)
 	}
-	if secondResult.OverlayPath != firstResult.OverlayPath {
-		t.Fatalf("reused overlay path = %q", secondResult.OverlayPath)
+	if secondResult.OverlayAsset.RelativePath != firstResult.OverlayAsset.RelativePath {
+		t.Fatalf("reused overlay path = %q", secondResult.OverlayAsset.RelativePath)
 	}
 
 	changed := cloneArgs(t, args)
@@ -205,8 +230,8 @@ func TestExecuteValidatesEvidenceSHA256(t *testing.T) {
 			t.Fatalf("execute failed: %+v", result.Failure)
 		}
 		decoded := decodeResult(t, result)
-		if decoded.EvidenceSHA256 != digestBytes(evidenceBytes) {
-			t.Fatalf("evidence sha = %q", decoded.EvidenceSHA256)
+		if decoded.EvidenceSHA256 == nil || *decoded.EvidenceSHA256 != digestBytes(evidenceBytes) {
+			t.Fatalf("evidence sha = %v", decoded.EvidenceSHA256)
 		}
 	})
 
@@ -309,13 +334,13 @@ func TestRevisionReuseRejectsTamperedArtifacts(t *testing.T) {
 			if !secondResult.Created || secondResult.LayoutRevision != 2 {
 				t.Fatalf("tampered revision was reused: %+v", secondResult)
 			}
-			assertInsideWorkspace(t, root, secondResult.LayoutPath)
-			assertInsideWorkspace(t, root, secondResult.OverlayPath)
-			if !strings.Contains(secondResult.LayoutPath, revisionName(2)) ||
-				!strings.Contains(secondResult.OverlayPath, revisionName(2)) {
+			assertInsideWorkspace(t, root, secondResult.LayoutJSONAsset.RelativePath)
+			assertInsideWorkspace(t, root, secondResult.OverlayAsset.RelativePath)
+			if !strings.Contains(secondResult.LayoutJSONAsset.RelativePath, revisionName(2)) ||
+				!strings.Contains(secondResult.OverlayAsset.RelativePath, revisionName(2)) {
 				t.Fatalf("revision paths do not point at the new revision: %+v", secondResult)
 			}
-			if secondResult.LayoutPath == "../../outside/layout.json" || secondResult.OverlayPath == "/tmp/outside-overlay.png" {
+			if secondResult.LayoutJSONAsset.RelativePath == "../../outside/layout.json" || secondResult.OverlayAsset.RelativePath == "/tmp/outside-overlay.png" {
 				t.Fatalf("tampered metadata path was trusted: %+v", secondResult)
 			}
 		})
@@ -393,8 +418,8 @@ func TestExecuteAcceptsLayoutWithoutEvidence(t *testing.T) {
 		t.Fatalf("execute failed: %+v", result.Failure)
 	}
 	decoded := decodeResult(t, result)
-	if decoded.EvidenceSHA256 != "" || decoded.EvidencePath != "" {
-		t.Fatalf("unexpected evidence identity: %+v", decoded)
+	if decoded.EvidenceSHA256 != nil {
+		t.Fatalf("unexpected evidence identity: %+v", decoded.EvidenceSHA256)
 	}
 }
 
@@ -410,8 +435,8 @@ func TestExecuteCustomArtifactID(t *testing.T) {
 	if decoded.LayoutArtifactID != "layout_custom_test" {
 		t.Fatalf("artifact id = %q", decoded.LayoutArtifactID)
 	}
-	if !strings.Contains(decoded.LayoutPath, "/layout_custom_test/") {
-		t.Fatalf("layout path = %q", decoded.LayoutPath)
+	if !strings.Contains(decoded.LayoutJSONAsset.RelativePath, "/layout_custom_test/") {
+		t.Fatalf("layout path = %q", decoded.LayoutJSONAsset.RelativePath)
 	}
 }
 
@@ -431,8 +456,8 @@ func TestExecuteEvidencePath(t *testing.T) {
 		t.Fatalf("execute failed: %+v", result.Failure)
 	}
 	decoded := decodeResult(t, result)
-	if decoded.EvidencePath != "evidence.json" || decoded.EvidenceSHA256 != digestBytes(evidenceBytes) {
-		t.Fatalf("evidence identity = %+v", decoded)
+	if decoded.EvidenceSHA256 == nil || *decoded.EvidenceSHA256 != digestBytes(evidenceBytes) {
+		t.Fatalf("evidence identity = %+v", decoded.EvidenceSHA256)
 	}
 }
 
@@ -586,10 +611,12 @@ func TestExecuteEvidencePathReuseIsDeterministic(t *testing.T) {
 	if secondResult.Created || secondResult.LayoutRevision != firstResult.LayoutRevision {
 		t.Fatalf("second revision = %+v, want reused %d", secondResult, firstResult.LayoutRevision)
 	}
-	if secondResult.EvidenceSHA256 != firstResult.EvidenceSHA256 || secondResult.EvidencePath != firstResult.EvidencePath {
+	if secondResult.EvidenceSHA256 == nil || firstResult.EvidenceSHA256 == nil ||
+		*secondResult.EvidenceSHA256 != *firstResult.EvidenceSHA256 {
 		t.Fatalf("evidence identity changed across repeats: %+v vs %+v", firstResult, secondResult)
 	}
-	if secondResult.LayoutPath != firstResult.LayoutPath || secondResult.OverlayPath != firstResult.OverlayPath {
+	if secondResult.LayoutJSONAsset.RelativePath != firstResult.LayoutJSONAsset.RelativePath ||
+		secondResult.OverlayAsset.RelativePath != firstResult.OverlayAsset.RelativePath {
 		t.Fatalf("revision paths changed across repeats: %+v vs %+v", firstResult, secondResult)
 	}
 }

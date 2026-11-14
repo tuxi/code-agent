@@ -1,0 +1,246 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://code-agent.local/schemas/ui_layout.v1.schema.json",
+  "$comment": "Frozen for P0.1 on 2026-11-11.",
+  "title": "UI Layout v1",
+  "description": "Model-authored layout interpretation and responsive contract for one source UI image.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "source", "screen", "root", "responsive", "assumptions", "confidence"],
+  "properties": {
+    "schema": {"const": "ui_layout.v1"},
+    "source": {"$ref": "#/$defs/source"},
+    "screen": {"$ref": "#/$defs/screen"},
+    "root": {"$ref": "#/$defs/node"},
+    "responsive": {"$ref": "#/$defs/responsive"},
+    "assumptions": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {"$ref": "#/$defs/assumption"}
+    },
+    "confidence": {"type": "number", "minimum": 0, "maximum": 1}
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[A-Za-z][A-Za-z0-9._:-]{0,127}$"
+    },
+    "asset_id": {
+      "type": "string",
+      "pattern": "^asset_[A-Za-z0-9._:-]{1,180}$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "bbox": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["x", "y", "width", "height"],
+      "properties": {
+        "x": {"type": "number", "minimum": 0, "maximum": 1},
+        "y": {"type": "number", "minimum": 0, "maximum": 1},
+        "width": {"type": "number", "minimum": 0, "maximum": 1},
+        "height": {"type": "number", "minimum": 0, "maximum": 1}
+      }
+    },
+    "evidence": {
+      "type": "string",
+      "enum": ["observed", "inferred", "uncertain"]
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["asset_id", "source_asset_sha256", "canvas"],
+      "properties": {
+        "asset_id": {"$ref": "#/$defs/asset_id"},
+        "source_asset_sha256": {"$ref": "#/$defs/sha256"},
+        "evidence_schema": {"const": "ui_evidence.v1"},
+        "evidence_sha256": {"$ref": "#/$defs/sha256"},
+        "canvas": {"$ref": "#/$defs/canvas"}
+      }
+    },
+    "canvas": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["width", "height"],
+      "properties": {
+        "width": {"type": "integer", "minimum": 1},
+        "height": {"type": "integer", "minimum": 1}
+      }
+    },
+    "screen": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "primary_action", "content_priority", "states"],
+      "properties": {
+        "type": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$"},
+        "primary_action": {"type": "string", "minLength": 1, "maxLength": 256},
+        "content_priority": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 32,
+          "items": {"type": "string", "minLength": 1, "maxLength": 256}
+        },
+        "states": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 32,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1, "maxLength": 64}
+        }
+      }
+    },
+    "node": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "role", "layout", "confidence", "evidence"],
+      "properties": {
+        "id": {"$ref": "#/$defs/id"},
+        "role": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$"},
+        "bbox": {"$ref": "#/$defs/bbox"},
+        "content": {"$ref": "#/$defs/content"},
+        "layout": {"$ref": "#/$defs/layout"},
+        "style": {"$ref": "#/$defs/style"},
+        "behavior": {"$ref": "#/$defs/behavior"},
+        "children": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {"$ref": "#/$defs/node"}
+        },
+        "evidence_ids": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {"$ref": "#/$defs/id"}
+        },
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "evidence": {"$ref": "#/$defs/evidence"}
+      }
+    },
+    "content": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "text": {"type": "string", "maxLength": 8192},
+        "asset_id": {"$ref": "#/$defs/asset_id"},
+        "control_label": {"type": "string", "maxLength": 1024}
+      },
+      "minProperties": 1
+    },
+    "layout": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode"],
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": ["vertical_stack", "horizontal_stack", "grid", "overlay", "scroll", "absolute", "unknown"]
+        },
+        "direction": {"type": "string", "enum": ["vertical", "horizontal", "both", "none"]},
+        "distribution": {"type": "string", "minLength": 1, "maxLength": 64},
+        "alignment": {"type": "string", "minLength": 1, "maxLength": 64},
+        "wrap": {"type": "string", "enum": ["wrap", "nowrap", "unknown"]},
+        "sizing": {"type": "string", "minLength": 1, "maxLength": 64},
+        "gap": {"type": "number", "minimum": 0, "maximum": 1}
+      }
+    },
+    "style": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "visual_emphasis": {"type": "string", "enum": ["primary", "secondary", "tertiary", "none"]},
+        "typography_scale": {"type": "string", "enum": ["display", "title", "headline", "body", "caption", "unknown"]},
+        "notes": {"type": "string", "maxLength": 1024}
+      },
+      "minProperties": 1
+    },
+    "behavior": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "scroll_axis": {"type": "string", "enum": ["vertical", "horizontal", "none", "unknown"]},
+        "sticky": {"type": "boolean"},
+        "action": {"type": "string", "maxLength": 256}
+      },
+      "minProperties": 1
+    },
+    "responsive": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["invariants", "targets", "node_policies"],
+      "properties": {
+        "invariants": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 32,
+          "items": {"$ref": "#/$defs/invariant"}
+        },
+        "targets": {
+          "type": "object",
+          "minProperties": 1,
+          "maxProperties": 16,
+          "propertyNames": {"pattern": "^[a-z][a-z0-9_]{0,63}$"},
+          "additionalProperties": {"$ref": "#/$defs/target"}
+        },
+        "node_policies": {
+          "type": "array",
+          "maxItems": 200,
+          "items": {"$ref": "#/$defs/node_policy"}
+        }
+      }
+    },
+    "invariant": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "statement"],
+      "properties": {
+        "id": {"$ref": "#/$defs/id"},
+        "statement": {"type": "string", "minLength": 1, "maxLength": 1024}
+      }
+    },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "layout": {"type": "string", "minLength": 1, "maxLength": 64},
+        "columns": {"type": "integer", "minimum": 1, "maximum": 8},
+        "navigation": {"type": "string", "minLength": 1, "maxLength": 64},
+        "max_content_width": {"type": "number", "minimum": 1, "maximum": 10000},
+        "scroll_owner": {"type": "string", "minLength": 1, "maxLength": 128},
+        "sticky_controls": {
+          "type": "array",
+          "maxItems": 32,
+          "items": {"type": "string", "minLength": 1, "maxLength": 128}
+        },
+        "presentation": {"type": "string", "enum": ["inline", "sheet", "split", "sidebar", "fullscreen", "unknown"]},
+        "notes": {"type": "string", "maxLength": 1024}
+      },
+      "minProperties": 1
+    },
+    "node_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["node_id", "policy"],
+      "properties": {
+        "node_id": {"$ref": "#/$defs/id"},
+        "policy": {"type": "string", "enum": ["preserve", "reflow", "replace", "hide", "promote"]},
+        "notes": {"type": "string", "maxLength": 1024}
+      }
+    },
+    "assumption": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["statement", "confidence", "evidence", "evidence_ids"],
+      "properties": {
+        "statement": {"type": "string", "minLength": 1, "maxLength": 1024},
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "evidence": {"$ref": "#/$defs/evidence"},
+        "evidence_ids": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {"$ref": "#/$defs/id"}
+        }
+      }
+    }
+  }
+}

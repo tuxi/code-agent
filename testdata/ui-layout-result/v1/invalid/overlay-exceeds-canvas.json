@@ -1,0 +1,34 @@
+{
+  "schema": "ui_layout_result.v1",
+  "layout_artifact_id": "layout_fixture_commerce",
+  "layout_revision": 3,
+  "layout_revision_sha256": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+  "source_asset_id": "asset_fixture_source",
+  "source_asset_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "evidence_sha256": null,
+  "canvas": {"width": 1290, "height": 2796},
+  "node_count": 3,
+  "assumption_count": 0,
+  "targets": ["duo_folded"],
+  "created": true,
+  "overlay_asset": {
+    "asset_id": "asset_turn_fixture_call_fixture_000_overlay",
+    "asset_role": "layout_overlay",
+    "kind": "image",
+    "relative_path": ".codeagent/assets/ui-layout/layout_fixture_commerce/revision-000003/overlay.png",
+    "filename": "overlay.png",
+    "mime_type": "image/png",
+    "width": 2048,
+    "height": 4096,
+    "sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+  },
+  "layout_json_asset": {
+    "asset_id": "asset_turn_fixture_call_fixture_001_layout",
+    "asset_role": "layout_json",
+    "kind": "file",
+    "relative_path": ".codeagent/assets/ui-layout/layout_fixture_commerce/revision-000003/layout.json",
+    "filename": "layout.json",
+    "mime_type": "application/json",
+    "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+  }
+}

@@ -756,7 +756,25 @@ Lineage rules:
 - missing, dangling, or digest-mismatched lineage fails the preview draft closed;
 - replay returns the stored lineage unchanged with the preview revision.
 
-### 10.8 Persistence and versioning
+### 10.8 Tool result contract
+
+A successful `ui_layout` call returns a `ui_layout_result.v1` document on the
+structured tool-output side-channel. The canonical schema is
+[`schemas/ui_layout_result.v1.schema.json`](../schemas/ui_layout_result.v1.schema.json).
+The document binds one persisted revision to its identity and to two assets:
+
+- `overlay_asset`: the rendered annotated overlay as an `image/png` asset;
+- `layout_json_asset`: the canonical `layout.json` as an `application/json`
+  file asset, so a client can parse it without re-deriving a path.
+
+Each asset descriptor carries `asset_id`, `asset_role`, `relative_path`,
+`filename`, `mime_type`, and `sha256`. Every `asset_id` matches the corresponding
+entry in the tool-result asset side-channel. `layout_json_asset.sha256` equals
+the digest in `layout_revision_sha256`, and `evidence_sha256` is `null` when no
+`ui_evidence.v1` document was bound. Targets are sorted, identical calls reuse
+the same revision, and the result, `metadata.json`, and assets must agree.
+
+### 10.9 Persistence and versioning
 
 - Store canonical JSON as a workspace artifact linked by source asset hash.
 - Store the rendered annotated overlay as an image asset.
@@ -768,7 +786,7 @@ Lineage rules:
 - A new layout revision for the same source is a new artifact revision, not a
   mutation of prior replay evidence.
 
-### 10.9 Presentation
+### 10.10 Presentation
 
 Users should not be asked to read raw JSON by default. The client presents:
 

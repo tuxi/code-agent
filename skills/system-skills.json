@@ -1,6 +1,6 @@
 {
   "schema": "codeagent.system-skills.v1",
-  "bundle_version": "2026.11.12.2",
+  "bundle_version": "2026.11.14.1",
   "skills": [
     {
       "name": "review-change",
@@ -38,9 +38,9 @@
       "name": "ui-adaptation",
       "source": "skills/ui-adaptation",
       "destination": "ui-adaptation",
-      "sha256": "edbd2b8ea7a7b6658372e9dc386347a501ca32ffb5a1155475e3659a05ddcf4f",
+      "sha256": "1f75eba05b5707fdd83c6c2b59dd68e508600ee40b62e7ca1428d6124cfc482c",
       "scope": "system",
-      "version": "3",
+      "version": "4",
       "dependencies": [
         "review-change",
         "verify-change"
@@ -51,12 +51,41 @@
         "schemas/view_image_result.v1.schema.json",
         "schemas/ui_evidence.v1.schema.json",
         "schemas/ui_layout.v1.schema.json",
+        "schemas/ui_layout_result.v1.schema.json",
         "schemas/ui_preview_lineage.v1.schema.json"
       ],
       "files": [
         {
           "path": "SKILL.md",
-          "sha256": "6853bac8d44539070b01ac1fd14bd48043888d512074d36cc53caad621f179e7"
+          "sha256": "8c112acd379f11df13f332f8e3cc42723684fb28d0af99a4885bd6863ea07fec"
+        },
+        {
+          "path": "references/docs/primary-perception-ownership-contract.md",
+          "sha256": "9bcedb80ca0f2bc82944e8a00fb237db7721d27333eab55504cdc803517854c1"
+        },
+        {
+          "path": "references/docs/visual-layout-understanding.md",
+          "sha256": "d7f840990d551a92b27ec61e4bf29d029a3e14f06b71b45283ed8a2a5dba07b2"
+        },
+        {
+          "path": "references/schemas/ui_evidence.v1.schema.json",
+          "sha256": "021e0ff12b93c47e76bfd1bea27c126a930104bc0babe9174221cc1b2e5674a8"
+        },
+        {
+          "path": "references/schemas/ui_layout.v1.schema.json",
+          "sha256": "09d31c1eadc0cf1eb91c8ac6490546d6590ce21e7763b153e5c6961789f24001"
+        },
+        {
+          "path": "references/schemas/ui_layout_result.v1.schema.json",
+          "sha256": "c539a74f1cd9c3b56c39f0048c4b051952f7e58e4e6c6fb7cce13a840132f4fa"
+        },
+        {
+          "path": "references/schemas/ui_preview_lineage.v1.schema.json",
+          "sha256": "e236913fb222ff2f4e44d6914a19f31b8702d1cfb4153d97d1b4aa11995c6d48"
+        },
+        {
+          "path": "references/schemas/view_image_result.v1.schema.json",
+          "sha256": "79a7f45aa794fd2f0b3c04f6b034f9ddaa593b2a3431cd2bfc75cddbb692306a"
         }
       ]
     },
