@@ -21,3 +21,6 @@ var UIPreviewLineageV2 []byte
 
 //go:embed ui_preview_result.v1.schema.json
 var UIPreviewResultV1 []byte
+
+//go:embed ui_preview_matrix.v1.schema.json
+var UIPreviewMatrixV1 []byte

@@ -1,0 +1,76 @@
+{
+  "schema": "ui_preview_matrix_manifest.v1",
+  "matrix_id": "matrix_p1g_golden",
+  "matrix_sha256": "sha256:a35e74e09a7dd0411d1ccc29d69823e7c11a09b196e61458b5d0e30fb94de290",
+  "source_asset": {
+    "asset_id": "asset_p1g_source",
+    "sha256": "d951a3e2f992ccd9350fb7d806c7aaf43ce04d9862241280d1c11dc405d8b66e"
+  },
+  "layout": {
+    "artifact_id": "layout_p1g",
+    "revision": 1,
+    "revision_sha256": "sha256:a893c728c2e5c60ebc189c1ce7be0ab56a1344c9430e716e5eacea5caf860dc3"
+  },
+  "evidence_sha256": null,
+  "target_matrix": {
+    "id": "matrix_p1g_golden",
+    "targets": [
+      "ipad_landscape",
+      "iphone_portrait"
+    ]
+  },
+  "states": [
+    "default",
+    "loading"
+  ],
+  "coverage": {
+    "targets": 2,
+    "states": 2,
+    "expected": 4,
+    "completed": 2,
+    "failed": 1,
+    "missing": 1,
+    "complete": false
+  },
+  "entries": [
+    {
+      "target": "ipad_landscape",
+      "state": "default",
+      "status": "completed",
+      "preview_artifact_id": "preview_golden_ipad_default",
+      "preview_revision": 1,
+      "preview_revision_sha256": "sha256:f986ed15cbedab331d439d3ab6d98d64e1b4e56c6cffd601e5a26a5acfc7c030",
+      "error": null
+    },
+    {
+      "target": "ipad_landscape",
+      "state": "loading",
+      "status": "failed",
+      "preview_artifact_id": "preview_golden_ipad_loading",
+      "preview_revision": 1,
+      "preview_revision_sha256": "sha256:1856067b99f67a48182e238f32fe9409ce595478a4a21c2138a5123c2c112735",
+      "error": {
+        "code": "preview_viewer_fetch_failed",
+        "message": "viewer bytes could not be fetched"
+      }
+    },
+    {
+      "target": "iphone_portrait",
+      "state": "default",
+      "status": "completed",
+      "preview_artifact_id": "preview_golden_iphone_default",
+      "preview_revision": 1,
+      "preview_revision_sha256": "sha256:77776f98adf23ea65dab5cca0f84bad7e577009e8e9585a448feaed117676e59",
+      "error": null
+    },
+    {
+      "target": "iphone_portrait",
+      "state": "loading",
+      "status": "missing",
+      "preview_artifact_id": null,
+      "preview_revision": null,
+      "preview_revision_sha256": null,
+      "error": null
+    }
+  ]
+}
