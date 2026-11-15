@@ -1,8 +1,17 @@
-# P1-F Backend and macOS UI Freeze
+# P1-F Cross-Platform Freeze
 
-Status: frozen for backend and macOS UI; iOS preview presentation deferred
-Date: 2026-11-14 (backend); updated 2026-11-15 after the macOS UI acceptance and viewer fixes
+Status: P1-F cross-platform functional freeze: PASS
+Date: 2026-11-14 (backend); updated 2026-11-15 after the macOS and iOS UI acceptance
 Scope: P1-F preview lineage, presentation and viewer. No five-form generation matrix (that is P1-G).
+
+## Closeout
+
+P1-F cross-platform functional freeze: PASS
+
+Known stability debt:
+
+- failed ui_preview tool-group expansion main-thread stall
+- transient first viewer/asset 404 on session switch/replay
 
 ## Platform acceptance status
 
@@ -12,27 +21,29 @@ Scope: P1-F preview lineage, presentation and viewer. No five-form generation ma
 | AgentKit macOS UI: preview cards, adaptation/explore labels, revision 1/2, v2 lineage facts, target/state/matrix, approval, layout/evidence Inspector, fallback, evidence card, live/replay, one Block per revision, negative suppression | **PASS** |
 | Interactive viewer (Mac): request issued, viewer bytes served, iframe rendered for revisions 1 and 2 | **PASS** |
 | iOS Runtime transport: HTTPS + bearer pairing, server persistence, session list, event replay, tool rendering | **PASS** |
-| iOS preview presentation: inline preview card, interactive viewer, fallback presentation, lineage Inspector entry | **Not implemented (deferred)** |
-| Full cross-platform freeze | **Not claimed** |
+| iOS preview presentation: inline preview card, interactive viewer, fallback presentation, lineage Inspector entry | **PASS** |
+| Full cross-platform freeze | **PASS** |
 
-iOS was exercised against the same acceptance Runtime over HTTPS with a trusted CA: the app paired with the server, switched to it, listed the remote workspace and its sessions, replayed the P1-F event stream, and rendered the turns and their tool activity. It does **not** render the P1-F inline preview card or viewer: the iOS conversation uses the native timeline, while the card and viewer are implemented only in the macOS Web workbench. No iOS viewer request occurs. P1-F is therefore frozen **for macOS and backend only**; iOS preview presentation is deferred until it is implemented and must not be counted as a cross-platform pass.
+P1-F.1 iOS acceptance used clean archives at code-agent `20e2374`, AgentKit `ea683e1`, ClientToolsKit `4b79e6e`, Talkify `511c2c5`, and FileViewerKit `dce9bb5`, connected to the acceptance Runtime over HTTPS with Bearer authentication. The native iOS timeline rendered adaptation and explore cards, revisions 1 and 2, target/state/matrix and lineage digests, fallback PNGs, the authenticated viewer, lineage/layout/evidence Inspector documents, live and replayed events, one Block per revision, the viewer-404 error + Retry + fallback path, and both required negative paths. No source or frozen fixture was modified.
 
-Viewer defects found during the macOS acceptance were fixed in AgentKit on `main`:
+Presentation and viewer work recorded in AgentKit on `main`:
 
 | Commit | Fix |
 |---|---|
 | `458b5d2` | Every viewer/asset resolution failure now answers the page with an explicit error code; late preview artifacts refresh the bridge snapshot; the page times out after 10 s and shows the error plus Retry above the fallback. |
 | `d2edab2` | Projection correlates each tool result with the artifact revision its own lineage and fallback identity describe, not the newest revision of a reused call ID. |
 | `d81ab99` | `RuntimeSnapshot` keeps the full accepted revision history so replayed turns and exact-revision viewer requests can resolve earlier revisions; latest-only semantics remain for current-state consumers. |
+| `ea683e1` | The native iOS timeline renders the validated `ui_preview_result.v1` card, authenticated viewer, fallback and lineage Inspector; viewer HTML is fetched with the bearer token in the Authorization header only. |
 
 ## Pinned versions
 
 | Repo | Commit | Role |
 |---|---|---|
 | code-agent | `20e2374` | frozen backend |
-| AgentKit | `e610a36` (acceptance build); `d81ab99` (viewer fixes on `main`) | macOS presentation |
+| AgentKit | `ea683e1` | P1-F.1 native iOS preview card; includes the viewer fixes above |
 | ClientToolsKit | `4b79e6e` | UI inspection tools |
-| Talkify | `eb90777` | pinned acceptance build; the user's final verification used the current working tree |
+| FileViewerKit | `dce9bb5` | local Talkify dependency |
+| Talkify | `511c2c5` | clean-archive P1-F.1 iOS acceptance build |
 
 ## Independent acceptance
 
@@ -49,7 +60,9 @@ Confirmed invariants:
 - Rejected requests create no preview artifact, no revision, no fallback bytes, and no workspace writes.
 - Lineage is bound to one specific layout revision: a rev2 lineage carrying a rev1 digest fails.
 
-macOS UI acceptance ran against the same real backend through the Runtime HTTP/WebSocket path, using the real P1-E artifacts, and covered the positive matrix above plus the negative sessions. Full evidence: `chater` acceptance report for P1-F (2026-11-15), including runtime viewer request logs, artifact/revision digests, and the app-side negative results.
+macOS UI acceptance ran against the same real backend through the Runtime HTTP/WebSocket path, using the real P1-E artifacts, and covered the positive matrix above plus the negative sessions. iOS P1-F.1 acceptance ran the native timeline against an HTTPS + Bearer Runtime and covered the preview cards, viewer, fallback, Inspector documents, live/replay, one Block per revision, the viewer-404 path and the negative sessions. Full evidence: the macOS and iOS P1-F acceptance reports (2026-11-15), including runtime viewer request logs, artifact/revision digests, and the app-side negative results.
+
+Known stability debt is recorded in **Closeout**; it does not change the functional freeze or any frozen contract.
 
 ## Frozen contracts
 
@@ -79,7 +92,7 @@ Failure kinds are frozen as `lineage_required`, `lineage_invalid`, `lineage_mism
 
 ## Out of scope
 
-- iOS preview presentation (inline card, viewer, fallback, lineage Inspector): not implemented on the native iOS timeline; deferred (see Platform acceptance status).
+- The two known stability items in **Closeout**: the failed `ui_preview` tool-group expansion main-thread stall and the transient first viewer/asset 404 on session switch/replay. They are recorded debt, not part of this freeze.
 - The five-form generation matrix (`P1-G`): not implemented here.
 - `approval` is recorded provenance; there is no server-side user approval event source.
 
@@ -95,3 +108,5 @@ go test -count=1 ./internal/preview/... ./internal/tools/preview/... ./internal/
 ```
 
 AgentKit (after viewer fixes): `PreviewWorkbenchTests` 7/7, `UIPreviewPresentationTests` 15/15, `PreviewWorkbenchRenderTests` 10/10, `ConversationWeb*` 49/49.
+
+iOS P1-F.1: clean-archive simulator build succeeded at the pinned versions above; the real HTTPS + Bearer acceptance covered the cards, revisions, lineage/digest facts, viewer, fallback, Inspector documents, live/replay, one Block per revision, the viewer-404 path and both required negative paths. Evidence: the iOS P1-F.1 acceptance report (2026-11-15).
