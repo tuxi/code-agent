@@ -241,9 +241,12 @@ func mergeWriteStatus(old, next string) string {
 }
 
 type Event struct {
-	Background *BackgroundContinuationInfo `json:"Background,omitempty"`
-	Kind       EventKind
-	At         time.Time
+	ContextSnapshot       *RequestContextSnapshot     `json:"context_snapshot,omitempty"`
+	OutputEvidenceVersion int                         `json:"output_evidence_version,omitempty"`
+	FileWrites            []tools.FileWrite           `json:"file_writes,omitempty"`
+	Background            *BackgroundContinuationInfo `json:"Background,omitempty"`
+	Kind                  EventKind
+	At                    time.Time
 
 	// Correlation IDs: which session and turn produced this event. A single
 	// console reads them as constant, but a multiplexed bus (concurrent runs, a

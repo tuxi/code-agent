@@ -49,6 +49,7 @@ const (
 // are ignored rather than rejected, so a richer Claude config still loads — we
 // simply don't act on the parts we don't yet support.
 type ServerConfig struct {
+	Source  string            `json:"-"`
 	Name    string            `json:"-"`       // map key in `mcpServers`
 	Type    string            `json:"type"`    // stdio (default) | http | sse; "streamable-http" == http
 	Command string            `json:"command"` // stdio: executable to launch
@@ -137,7 +138,7 @@ func ResolveDesktop(root string, inheritClaude bool) (Config, error) {
 		for _, name := range skipped {
 			fmt.Fprintf(os.Stderr, "[mcp] skipped inherited Claude server %q (failed validation)\n", name)
 		}
-		layers = append(layers, imported)
+		layers = append(layers, WithSource(imported, "claude_user"))
 	}
 	user, err := LoadUser()
 	if err != nil {
@@ -153,7 +154,7 @@ func ResolveDesktop(root string, inheritClaude bool) (Config, error) {
 	}
 	// Precedence (highest wins on same name): local > project > user (> Claude
 	// import), matching Claude. Merge is lowest-first, so append in that order.
-	layers = append(layers, user, proj, local)
+	layers = append(layers, WithSource(user, "user"), WithSource(proj, "project"), WithSource(local, "local"))
 	return Merge(layers...), nil
 }
 

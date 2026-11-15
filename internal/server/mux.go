@@ -656,6 +656,9 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 	}
 	advertisedCapabilities := make([]string, 0, len(opts.Capabilities)+1)
 	for _, capability := range opts.Capabilities {
+		if capability == sessionRailCapability {
+			continue // Full six-section semantics are not installed yet.
+		}
 		if capability == backgroundJobControlCapability && opts.BackgroundJobs == nil {
 			continue
 		}
@@ -749,6 +752,7 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 	registerSecretsRoutes(mux, opts)
 	registerSettingsRoutes(mux, opts)
 	registerBackgroundJobRoutes(mux, repo, opts.BackgroundJobs)
+	registerSessionRailRoutes(mux, repo, eventStore, opts, executor)
 	registerPermissionRoutes(mux, opts)
 	registerGitBranchRoutes(mux, opts)
 	registerAutomationRoutes(mux, opts)
@@ -1410,6 +1414,9 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 		capabilityResolver = func(ctx context.Context) []string {
 			var caps []string
 			for _, cap := range opts.CapabilityResolver(ctx) {
+				if cap == sessionRailCapability {
+					continue
+				}
 				if cap == "durable_validation_contract_v1" && !runtimeCapabilities.DurableValidationContract {
 					continue
 				}

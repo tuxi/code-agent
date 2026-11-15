@@ -177,7 +177,7 @@ func (b *Builder) Build() (*Session, error) {
 	if id == "" {
 		id = NewID()
 	}
-	return &Session{
+	sess := &Session{
 		ID: id,
 		Messages: []model.Message{
 			{Role: model.RoleSystem, Content: systemContent},
@@ -187,7 +187,28 @@ func (b *Builder) Build() (*Session, error) {
 		Metadata:         map[string]any{},
 		CreatedAt:        now,
 		UpdatedAt:        now,
-	}, nil
+	}
+	for _, cf := range contextFiles {
+		display := filepath.Base(cf.Path)
+		if rel, e := filepath.Rel(b.WorkspaceRoot, cf.Path); e == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			display = filepath.ToSlash(rel)
+		}
+		source := RegisterContextSource(sess, "memory_files", filepath.Base(cf.Path), display, cf.Content, cf.Path)
+		source.Scope = "ancestor"
+		if rel, e := filepath.Rel(b.WorkspaceRoot, cf.Path); e == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			source.Scope = "workspace"
+		}
+		if home, e := os.UserHomeDir(); e == nil && filepath.Dir(cf.Path) == filepath.Join(home, ".codeagent") {
+			source.Scope = "global"
+		}
+		source.Prefix = fmt.Sprintf("<project_instructions path=\"%s\">\n", cf.Path)
+		ContextCatalog(sess)[source.ID] = source
+	}
+	if idx := strings.TrimSpace(b.SkillsIndex); idx != "" {
+		RegisterContextSource(sess, "skills_index", "Available skills index", "", idx)
+	}
+	sess.Metadata["context_source_ledger_v1"] = true
+	return sess, nil
 }
 
 // newSessionID returns a sortable, human-readable, collision-resistant id:

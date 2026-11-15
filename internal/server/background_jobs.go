@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"code-agent/internal/conversation"
 	"code-agent/internal/jobs"
@@ -16,6 +17,8 @@ const backgroundJobControlCapability = "background_job_control_v1"
 // A control snapshot is terminal only after process cleanup and the terminal
 // event have completed. Registry.Cancel's immediate marker is only a request.
 type backgroundJobView struct {
+	StartedAt       string      `json:"started_at,omitempty"`
+	FinishedAt      string      `json:"finished_at,omitempty"`
 	JobID           string      `json:"job_id"`
 	SessionID       string      `json:"session_id"`
 	TurnID          string      `json:"turn_id"`
@@ -40,7 +43,13 @@ func backgroundJobSnapshot(job *jobs.Job) backgroundJobView {
 		TurnID: snap.Owner.TurnID, CallID: snap.Owner.CallID,
 		Command: snap.Command, Status: snap.Status, DurationMS: snap.DurationMS,
 		CancelRequested: snap.Status == jobs.Canceled, OutputTail: truncate.Tail(job.Logs(), 2000)}
+	if !snap.StartedAt.IsZero() {
+		view.StartedAt = snap.StartedAt.UTC().Format(time.RFC3339Nano)
+	}
 	if finished {
+		if !snap.FinishedAt.IsZero() {
+			view.FinishedAt = snap.FinishedAt.UTC().Format(time.RFC3339Nano)
+		}
 		view.ExitCode = &snap.ExitCode
 	} else {
 		view.Status = jobs.Running

@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"code-agent/internal/tools"
@@ -28,11 +29,13 @@ const connectTimeout = 30 * time.Second
 // tools.Tool, and tears the subprocesses down on Close. It is the single owner
 // of MCP sessions — nothing else holds one — so shutdown is exactly one call.
 type Manager struct {
-	trace    io.Writer // per-call raw I/O trace; io.Discard unless debugging
-	sessions []*mcpsdk.ClientSession
-	tools    []tools.Tool
-	prompts  []*promptEntry // discovered MCP prompts (user-invoked; see prompts.go)
-	report   []ServerStatus
+	stateMu     sync.RWMutex
+	connections map[string]ConnectionSnapshot
+	trace       io.Writer // per-call raw I/O trace; io.Discard unless debugging
+	sessions    []*mcpsdk.ClientSession
+	tools       []tools.Tool
+	prompts     []*promptEntry // discovered MCP prompts (user-invoked; see prompts.go)
+	report      []ServerStatus
 }
 
 // ServerStatus is the connect outcome for one server, for the startup summary.
@@ -61,9 +64,11 @@ func NewManager(trace io.Writer) *Manager {
 func (m *Manager) Connect(ctx context.Context, servers []ServerConfig) error {
 	for _, s := range servers {
 		st := ServerStatus{Name: s.Name}
+		m.recordConnection(s.Name, "connecting", nil)
 		session, n, err := m.connectOne(ctx, s)
 		if err != nil {
 			st.Err = err
+			m.recordConnection(s.Name, "failed", nil)
 			m.report = append(m.report, st)
 			continue
 		}
@@ -121,6 +126,11 @@ func (m *Manager) connectOne(ctx context.Context, s ServerConfig) (*mcpsdk.Clien
 		}
 	}
 	m.tools = append(m.tools, discovered...)
+	m.recordConnection(s.Name, "connected", discovered)
+	go func() {
+		_ = session.Wait()
+		m.recordConnection(s.Name, "disconnected", nil)
+	}()
 	return session, len(discovered), nil
 }
 

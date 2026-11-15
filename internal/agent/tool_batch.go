@@ -528,25 +528,44 @@ func (r *Runner) commitToolResult(ctx context.Context, sess *session.Session, tu
 		observation = TruncateObservation(observation, maxObservationBytes)
 	}
 
+	if p.known && res.succeeded && res.stepError == "" {
+		if announcer, ok := p.tool.(tools.SkillAnnouncer); ok {
+			if name, version, scope, loaded := announcer.AnnounceSkill(p.input); loaded {
+				source := session.RegisterContextSource(sess, "skills", name, "", observation, name+"\x00"+version+"\x00"+scope)
+				source.Scope, source.Version = scope, version
+				session.ContextCatalog(sess)[source.ID] = source
+				calls := session.SkillContextCalls(sess)
+				calls[p.call.ID] = source.ID
+				if len(calls) > 4096 {
+					calls = map[string]string{p.call.ID: source.ID}
+				}
+				sess.Metadata[session.ContextSkillCallsKey] = calls
+			}
+		}
+	}
 	step.Observation = observation
 	step.FinishedAt = time.Now()
 	turn.Steps = append(turn.Steps, step)
-	assetRefs := normalizeToolAssets(res.assetRefs, r.WorkspaceRoot, r.emitTurnID, p.call.ID)
-	toolLocalAssets := r.visionToolLocalAssets(assetRefs)
+	writes := append(append([]tools.FileWrite(nil), res.wrote...), res.nestedWrites...)
+	assetRefs := normalizeToolAssets(outputWriteAssets(res.assetRefs, writes, r.WorkspaceRoot, r.emitTurnID, p.call.ID), r.WorkspaceRoot, r.emitTurnID, p.call.ID)
+	// Output navigation references must not change the model's image inputs.
+	toolLocalAssets := r.visionToolLocalAssets(normalizeToolAssets(res.assetRefs, r.WorkspaceRoot, r.emitTurnID, p.call.ID))
 	*turnAssets = append(*turnAssets, assetRefs...)
 
 	r.emit(Event{
-		Kind:        EventToolFinished,
-		CallID:      p.call.ID,
-		Step:        step.Index,
-		ToolName:    p.call.Function.Name,
-		Observation: observation,
-		Output:      res.output,
-		Assets:      assetRefs,
-		ToolUsage:   res.usage,
-		Elapsed:     time.Since(res.toolStart),
-		Err:         step.Error,
-		Failure:     string(obs.FailureType),
+		Kind:                  EventToolFinished,
+		OutputEvidenceVersion: 1,
+		FileWrites:            writes,
+		CallID:                p.call.ID,
+		Step:                  step.Index,
+		ToolName:              p.call.Function.Name,
+		Observation:           observation,
+		Output:                res.output,
+		Assets:                assetRefs,
+		ToolUsage:             res.usage,
+		Elapsed:               time.Since(res.toolStart),
+		Err:                   step.Error,
+		Failure:               string(obs.FailureType),
 	})
 	r.emitPreviewArtifacts(ctx, p, assetRefs, res.previews, res.clientPreviewOrigin)
 

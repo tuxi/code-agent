@@ -50,13 +50,15 @@ type Owner struct {
 // runtime routing metadata, not model-facing state — excluded from the JSON the
 // job_* tools return.
 type Snapshot struct {
-	OutputTail string `json:"-"`
-	ID         string `json:"job_id"`
-	Command    string `json:"command"`
-	Status     Status `json:"status"`
-	ExitCode   int    `json:"exit_code"` // -1 when canceled or no normal exit code is available
-	DurationMS int64  `json:"duration_ms"`
-	Owner      Owner  `json:"-"`
+	OutputTail string    `json:"-"`
+	StartedAt  time.Time `json:"-"`
+	FinishedAt time.Time `json:"-"`
+	ID         string    `json:"job_id"`
+	Command    string    `json:"command"`
+	Status     Status    `json:"status"`
+	ExitCode   int       `json:"exit_code"` // -1 when canceled or no normal exit code is available
+	DurationMS int64     `json:"duration_ms"`
+	Owner      Owner     `json:"-"`
 }
 
 // Sink observes job lifecycle transitions and output as they happen (P8.7
@@ -108,6 +110,8 @@ func (j *Job) Snapshot() Snapshot {
 	}
 	return Snapshot{
 		ID:         j.id,
+		StartedAt:  j.started,
+		FinishedAt: j.ended,
 		Command:    j.command,
 		Status:     j.status,
 		ExitCode:   j.exitCode,

@@ -34,6 +34,8 @@ type cooldownSample struct {
 }
 
 type Runner struct {
+	contextSession *session.Session
+	contextTools   *tools.Registry
 	// RuntimeInputs enables optional durable result delivery at model boundaries.
 	// Nil preserves the legacy loop; this port never initiates a model request.
 	RuntimeInputs              session.RuntimeInputStore
@@ -999,6 +1001,8 @@ func (r *Runner) ResumeTurn(ctx context.Context, sess *session.Session) (TurnRes
 // execute identical control flow.
 func (r *Runner) drive(ctx context.Context, sess *session.Session) (TurnResult, error) {
 	r.outputTokens = session.OutputTokenBudget(sess.ContextWindow)
+	r.contextSession = sess
+	defer func() { r.contextSession = nil; r.contextTools = nil }()
 	turn := TurnResult{TurnID: r.emitTurnID}
 
 	// Reflection (P4.3) per-turn state: at most one self-check pass, and the
@@ -1072,6 +1076,7 @@ func (r *Runner) drive(ctx context.Context, sess *session.Session) (TurnResult, 
 		if (r.PlanState == PlanStatusPlanning || r.PlanState == PlanStatusProposing) && r.PlanTools != nil {
 			activeTools = r.PlanTools
 		}
+		r.contextTools = activeTools
 		toolDefs := toolDefinitions(activeTools)
 		advertised := make(map[string]bool, len(toolDefs))
 		for _, d := range toolDefs {
@@ -1839,6 +1844,7 @@ func (r *Runner) complete(ctx context.Context, req model.Request, streamedText, 
 	}
 	r.emit(Event{
 		Kind:              EventModelRequest,
+		ContextSnapshot:   r.captureRequestContext(req),
 		ModelName:         req.Model,
 		Provider:          r.ProviderName,
 		BaseURL:           r.BaseURL,

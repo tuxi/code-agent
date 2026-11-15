@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"code-agent/internal/mcp"
-	"code-agent/internal/plugins"
 	"code-agent/internal/session"
 	"code-agent/internal/skills"
 	"code-agent/internal/tools"
@@ -51,7 +50,10 @@ type WorkspaceInstance struct {
 
 	// mcpMTime records the latest mod-time of .mcp.json/.mcp.local.json at the
 	// last connection or reload. ServeRunBuilder.Build checks it per-turn.
-	mcpMTime time.Time
+	mcpMTime       time.Time
+	mcpInventory   []mcp.ServerConfig
+	mcpDiagnostics []string
+	mcpInitialized bool
 
 	// mu serialises hot-reload against concurrent reads of MCPMgr/ToolReg/mcpMTime.
 	mu sync.RWMutex
@@ -200,6 +202,7 @@ func (wr *WorkspaceRegistry) ReconfigureMCP(cfg settings.Settings, injected []mc
 		inst.mu.Lock()
 		oldMgr := inst.MCPMgr
 		inst.MCPMgr = nil
+		inst.mcpInitialized = false
 		inst.ToolReg = nil
 		inst.mcpCfg = mc
 		inst.mcpMTime = time.Time{}
@@ -217,23 +220,18 @@ func (wr *WorkspaceRegistry) ReconfigureMCP(cfg settings.Settings, injected []mc
 // opt-in enhancement, and a broken .mcp.json (or a dead server) must not make the
 // whole workspace unusable — the conversation still gets every built-in tool.
 func (inst *WorkspaceInstance) initMCP(mc *workspaceMCP) {
-	resolved, err := mcp.ResolveDesktop(inst.RootPath, mc.inheritClaude)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "[workspace] %s: .mcp.json error (MCP disabled for this workspace): %v\n", inst.RootPath, err)
-		resolved = mcp.Config{}
+	servers, diagnostics := resolveWorkspaceMCP(mc, inst.RootPath)
+	for _, code := range diagnostics {
+		fmt.Fprintf(os.Stderr, "[workspace] MCP configuration: %s\n", code)
 	}
-	// Host-injected servers layer BELOW the workspace files: same-name workspace
-	// entries win, mirroring how user scope sits below project scope.
-	pluginMCP := mcp.Config{}
-	if mc.cfg.GlobalSkillsDir != "" {
-		var pluginErr error
-		pluginMCP, pluginErr = plugins.MCPConfigForSkillsDir(mc.cfg.GlobalSkillsDir)
-		if pluginErr != nil {
-			fmt.Fprintf(os.Stderr, "[workspace] %s: plugin MCP error: %v\n", inst.RootPath, pluginErr)
-			pluginMCP = mcp.Config{}
-		}
-	}
-	servers := mcp.Merge(pluginMCP, mcp.Config{Servers: mc.injected}, resolved).Servers
+	inst.mu.Lock()
+	inst.mcpInventory = servers
+	inst.mcpDiagnostics = diagnostics
+	inst.mcpCfg = mc
+	inst.mcpInitialized = false
+	inst.mu.Unlock()
+	defer func() { inst.mu.Lock(); inst.mcpInitialized = true; inst.mu.Unlock() }()
+
 	if !mc.cfg.Profile.AllowsSubprocess() {
 		servers = mcp.RemoteServers(servers)
 	}
@@ -389,12 +387,16 @@ func (inst *WorkspaceInstance) ReloadMCP() (changed bool) {
 		return false
 	}
 
-	resolved, err := mcp.ResolveDesktop(inst.RootPath, mc.inheritClaude)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "[workspace] %s: .mcp.json reload error: %v\n", inst.RootPath, err)
+	servers, diagnostics := resolveWorkspaceMCP(mc, inst.RootPath)
+	for _, code := range diagnostics {
+		fmt.Fprintf(os.Stderr, "[workspace] MCP configuration: %s\n", code)
+	}
+	if len(diagnostics) > 0 {
+		inst.mcpDiagnostics = diagnostics
 		return false
 	}
-	servers := mcp.Merge(mcp.Config{Servers: mc.injected}, resolved).Servers
+
+	inventory := append([]mcp.ServerConfig(nil), servers...)
 	if !mc.cfg.Profile.AllowsSubprocess() {
 		servers = mcp.RemoteServers(servers)
 	}
@@ -422,6 +424,7 @@ func (inst *WorkspaceInstance) ReloadMCP() (changed bool) {
 	}
 
 	oldMgr := inst.MCPMgr
+	inst.mcpInventory, inst.mcpDiagnostics, inst.mcpInitialized = inventory, diagnostics, true
 	inst.MCPMgr = newMgr
 	inst.ToolReg = newReg
 	inst.mcpMTime = newTime

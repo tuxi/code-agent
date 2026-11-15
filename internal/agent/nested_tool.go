@@ -87,17 +87,25 @@ func (r *Runner) ExecuteNestedTool(
 		if result.Failure != nil {
 			failure = result.Failure.Kind
 		}
+		writes := []tools.FileWrite{}
+		if executor != "client" && builtinWriteTools[tool.Name()] {
+			writes = append(writes, result.Wrote...)
+		}
+		writes = append(writes, result.NestedWrites...)
+		refs := normalizeToolAssets(outputWriteAssets(result.Assets, writes, r.WorkspaceRoot, r.emitTurnID, nestedCallID), r.WorkspaceRoot, r.emitTurnID, nestedCallID)
 		r.emit(Event{
-			Kind:        EventToolFinished,
-			CallID:      nestedCallID,
-			ToolName:    tool.Name(),
-			Observation: result.Content,
-			Output:      result.Output,
-			Assets:      result.Assets,
-			ToolUsage:   result.Usage,
-			Elapsed:     time.Since(started),
-			Err:         errText,
-			Failure:     failure,
+			Kind:                  EventToolFinished,
+			OutputEvidenceVersion: 1,
+			FileWrites:            writes,
+			CallID:                nestedCallID,
+			ToolName:              tool.Name(),
+			Observation:           result.Content,
+			Output:                result.Output,
+			Assets:                refs,
+			ToolUsage:             result.Usage,
+			Elapsed:               time.Since(started),
+			Err:                   errText,
+			Failure:               failure,
 		})
 		r.emitPreviewArtifacts(ctx, toolCallPlan{
 			call:    model.ToolCall{ID: nestedCallID, Function: model.FunctionCall{Name: tool.Name()}},
