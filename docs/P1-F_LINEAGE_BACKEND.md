@@ -1,6 +1,6 @@
 # P1-F Preview Lineage Backend
 
-Status: backend frozen 2026-11-14; see `docs/P1-F_FREEZE.md`. Independent acceptance passed 7/7 positive and 28/28 negative. macOS UI acceptance passed 2026-11-15 after the AgentKit viewer fixes; iOS preview transport is deferred.
+Status: backend frozen 2026-11-14; see `docs/P1-F_FREEZE.md`. Independent acceptance passed 7/7 positive and 28/28 negative. macOS UI acceptance passed 2026-11-15 after the AgentKit viewer fixes; iOS preview presentation is deferred (native iOS timeline has no inline card/viewer); the iOS Runtime transport itself was verified.
 Date: 2026-11-14
 Base: code-agent `71fd16a`
 Scope: `ui_preview_lineage.v2` backend only; v1 remains frozen

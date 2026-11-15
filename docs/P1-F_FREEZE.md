@@ -1,6 +1,6 @@
 # P1-F Backend and macOS UI Freeze
 
-Status: frozen for backend and macOS UI; iOS preview transport deferred
+Status: frozen for backend and macOS UI; iOS preview presentation deferred
 Date: 2026-11-14 (backend); updated 2026-11-15 after the macOS UI acceptance and viewer fixes
 Scope: P1-F preview lineage, presentation and viewer. No five-form generation matrix (that is P1-G).
 
@@ -11,10 +11,11 @@ Scope: P1-F preview lineage, presentation and viewer. No five-form generation ma
 | Backend P1-F: tools, lineage validation, preview service, filesystem store, viewer/asset resolution, replay | **PASS** |
 | AgentKit macOS UI: preview cards, adaptation/explore labels, revision 1/2, v2 lineage facts, target/state/matrix, approval, layout/evidence Inspector, fallback, evidence card, live/replay, one Block per revision, negative suppression | **PASS** |
 | Interactive viewer (Mac): request issued, viewer bytes served, iframe rendered for revisions 1 and 2 | **PASS** |
-| iOS preview transport: preview cards and viewer rendering on a real Runtime connection | **Not verified** |
+| iOS Runtime transport: HTTPS + bearer pairing, server persistence, session list, event replay, tool rendering | **PASS** |
+| iOS preview presentation: inline preview card, interactive viewer, fallback presentation, lineage Inspector entry | **Not implemented (deferred)** |
 | Full cross-platform freeze | **Not claimed** |
 
-The iOS build was installed and launched on the iPhone 17 Pro simulator, and the real app draft screen rendered, but no preview Runtime transport was exercised. AgentKit intentionally rejects loopback Runtime endpoints on iOS and no HTTPS remote Runtime with a trusted certificate was stood up. P1-F is therefore frozen **for macOS and backend only**; iOS preview transport is deferred and must not be counted as a cross-platform pass.
+iOS was exercised against the same acceptance Runtime over HTTPS with a trusted CA: the app paired with the server, switched to it, listed the remote workspace and its sessions, replayed the P1-F event stream, and rendered the turns and their tool activity. It does **not** render the P1-F inline preview card or viewer: the iOS conversation uses the native timeline, while the card and viewer are implemented only in the macOS Web workbench. No iOS viewer request occurs. P1-F is therefore frozen **for macOS and backend only**; iOS preview presentation is deferred until it is implemented and must not be counted as a cross-platform pass.
 
 Viewer defects found during the macOS acceptance were fixed in AgentKit on `main`:
 
@@ -78,7 +79,7 @@ Failure kinds are frozen as `lineage_required`, `lineage_invalid`, `lineage_mism
 
 ## Out of scope
 
-- iOS preview transport: not verified; deferred (see Platform acceptance status).
+- iOS preview presentation (inline card, viewer, fallback, lineage Inspector): not implemented on the native iOS timeline; deferred (see Platform acceptance status).
 - The five-form generation matrix (`P1-G`): not implemented here.
 - `approval` is recorded provenance; there is no server-side user approval event source.
 
