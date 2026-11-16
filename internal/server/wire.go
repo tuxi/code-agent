@@ -20,6 +20,8 @@ import (
 // single place transport concerns are expressed; the core struct is left
 // untouched. Field order groups the common header first, then per-kind fields.
 type wireEvent struct {
+	ContextMaintenance     *agent.ContextMaintenance         `json:"context_maintenance,omitempty"`
+	ContextOperationID     string                            `json:"context_operation_id,omitempty"`
 	Background             *agent.BackgroundContinuationInfo `json:"background,omitempty"`
 	ValidationContract     *session.ValidationContract       `json:"validation_contract,omitempty"`
 	ValidationContractHash string                            `json:"validation_contract_hash,omitempty"`
@@ -143,6 +145,8 @@ const maxWireDiffFiles = 200
 // identity), which keeps this function deterministic for golden tests.
 func toWire(e agent.Event) wireEvent {
 	w := wireEvent{
+		ContextMaintenance: e.ContextMaintenance,
+		ContextOperationID: e.ContextOperationID,
 		Background:         e.Background,
 		ModelSelection:     e.ModelSelection,
 		ModelSucceeded:     e.ModelSucceeded,

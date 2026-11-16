@@ -16,6 +16,9 @@ import (
 // the loop must not fake a "0 tokens" state after compacting: the true size is a
 // measurement, not an assumption.
 type CompactionStats struct {
+	MaintenanceID    string `json:",omitempty"`
+	ClearedResults   int    `json:",omitempty"`
+	PrunedTokens     int    `json:",omitempty"`
 	BeforeTokens     int
 	AfterTokens      int     // -1 until finalized by the next model call
 	SavedTokens      int     // BeforeTokens - AfterTokens (can be negative if a summary grew the prompt)

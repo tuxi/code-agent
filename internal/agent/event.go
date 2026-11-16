@@ -41,20 +41,21 @@ const (
 	// model says something and then calls tools in the same step. It is
 	// persisted so clients can render the full conversation — the model's
 	// between-tool remarks — not just the final answer (turn_finished).
-	EventAssistantText   EventKind = "assistant_text"
-	EventToolStarted     EventKind = "tool_started"
-	EventToolStdout      EventKind = "tool_stdout" // a stdout chunk during tool execution
-	EventToolStderr      EventKind = "tool_stderr" // a stderr chunk during tool execution
-	EventToolFinished    EventKind = "tool_finished"
-	EventPreviewArtifact EventKind = "preview_artifact"
-	EventObserved        EventKind = "observed"      // a tool result was classified (P4.1)
-	EventAutoApproved    EventKind = "auto_approved" // auto mode granted a side-effecting call without a human prompt (audit; p9.1 §12.3)
-	EventReflected       EventKind = "reflected"     // a finalize self-check fired (P4.3)
-	EventPreMutation     EventKind = "pre_mutation"  // a pre-mutation root-cause self-check fired (P4.3-R Move 3)
-	EventVerified        EventKind = "verified"      // a deterministic finalize verify ran (P4.3-R Move 2)
-	EventSkillLoaded     EventKind = "skill_loaded"  // a skill body was loaded (P6)
-	EventTodoUpdated     EventKind = "todo_updated"  // the model's task checklist changed (8.4)
-	EventCompacted       EventKind = "compacted"
+	EventAssistantText      EventKind = "assistant_text"
+	EventToolStarted        EventKind = "tool_started"
+	EventToolStdout         EventKind = "tool_stdout" // a stdout chunk during tool execution
+	EventToolStderr         EventKind = "tool_stderr" // a stderr chunk during tool execution
+	EventToolFinished       EventKind = "tool_finished"
+	EventPreviewArtifact    EventKind = "preview_artifact"
+	EventObserved           EventKind = "observed"      // a tool result was classified (P4.1)
+	EventAutoApproved       EventKind = "auto_approved" // auto mode granted a side-effecting call without a human prompt (audit; p9.1 §12.3)
+	EventReflected          EventKind = "reflected"     // a finalize self-check fired (P4.3)
+	EventPreMutation        EventKind = "pre_mutation"  // a pre-mutation root-cause self-check fired (P4.3-R Move 3)
+	EventVerified           EventKind = "verified"      // a deterministic finalize verify ran (P4.3-R Move 2)
+	EventSkillLoaded        EventKind = "skill_loaded"  // a skill body was loaded (P6)
+	EventTodoUpdated        EventKind = "todo_updated"  // the model's task checklist changed (8.4)
+	EventCompacted          EventKind = "compacted"
+	EventContextMaintenance EventKind = "context_maintenance"
 	// EventContextPruned: tier-0 deterministic pruning ran (P12.c) — old tool
 	// results truncated / think-blocks stripped outside the protected tail, with
 	// no LLM call. SavedTokens carries the approximate reclaimed size; the true
@@ -241,6 +242,8 @@ func mergeWriteStatus(old, next string) string {
 }
 
 type Event struct {
+	ContextMaintenance    *ContextMaintenance         `json:"context_maintenance,omitempty"`
+	ContextOperationID    string                      `json:"context_operation_id,omitempty"`
 	ContextSnapshot       *RequestContextSnapshot     `json:"context_snapshot,omitempty"`
 	OutputEvidenceVersion int                         `json:"output_evidence_version,omitempty"`
 	FileWrites            []tools.FileWrite           `json:"file_writes,omitempty"`

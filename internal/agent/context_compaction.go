@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 
+	"code-agent/internal/model"
 	"code-agent/internal/session"
 )
 
@@ -18,7 +19,17 @@ func contextPressure(s *session.Session) bool {
 
 // CompactContext bypasses thresholds and cache cooldown for explicit recovery
 // and manual requests. It never executes tools or appends a user turn.
-func (r *Runner) CompactContext(ctx context.Context, s *session.Session) (bool, error) {
+func (r *Runner) CompactContext(ctx context.Context, s *session.Session) (changed bool, err error) {
+	original := *s
+	original.Messages = append([]model.Message(nil), s.Messages...)
+	original.Compactions = append([]session.CompactionStats(nil), s.Compactions...)
+	observation := r.beginContextMaintenance(s)
+	defer func() {
+		if err != nil {
+			*s = original
+		}
+		observation.finish(s, err, changed)
+	}()
 	if r.Compactor == nil {
 		return false, errors.New("context compaction is unavailable")
 	}
@@ -29,10 +40,11 @@ func (r *Runner) CompactContext(ctx context.Context, s *session.Session) (bool, 
 		forced.KeepRecentTokens = max(1, min(forced.KeepRecentTokens, session.EstimateContextTokens(s.Messages)/4))
 		compactor = &forced
 	}
+	observation.summarizing()
 	if err := compactor.Compact(ctx, s); err != nil {
 		return false, err
 	}
-	changed := len(s.Messages) != beforeLen || s.Summary != beforeSummary
+	changed = len(s.Messages) != beforeLen || s.Summary != beforeSummary
 	if changed {
 		if last := s.LastCompaction(); last != nil && !last.Finalized() {
 			// Recovery can fold again before any successful request measures

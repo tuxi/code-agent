@@ -1210,14 +1210,16 @@ func (r *Runner) drive(ctx context.Context, sess *session.Session) (TurnResult, 
 		// cools down (see NeedCompaction) and the event says so out loud, because
 		// the silent alternative is an endless compact-measure-compact loop.
 		if stat := sess.FinalizeCompaction(resp.Usage.PromptTokens); stat != nil {
+			r.measuredContextMaintenance(stat, sess.CompactThreshold)
 			r.emit(Event{
-				Kind:         EventCompacted,
-				BeforeTokens: stat.BeforeTokens,
-				AfterTokens:  stat.AfterTokens,
-				SavedTokens:  stat.SavedTokens,
-				Ratio:        stat.CompressionRatio,
-				SummaryChars: stat.SummaryChars,
-				Ineffective:  sess.CompactThreshold > 0 && stat.AfterTokens >= sess.CompactThreshold,
+				Kind:               EventCompacted,
+				ContextOperationID: stat.MaintenanceID,
+				BeforeTokens:       stat.BeforeTokens,
+				AfterTokens:        stat.AfterTokens,
+				SavedTokens:        stat.SavedTokens,
+				Ratio:              stat.CompressionRatio,
+				SummaryChars:       stat.SummaryChars,
+				Ineffective:        sess.CompactThreshold > 0 && stat.AfterTokens >= sess.CompactThreshold,
 			})
 		}
 
@@ -1727,10 +1729,13 @@ func (r *Runner) maybeCompact(ctx context.Context, sess *session.Session) (err e
 	original := *sess
 	original.Messages = append([]model.Message(nil), sess.Messages...)
 	original.Compactions = append([]session.CompactionStats(nil), sess.Compactions...)
+	observation := r.beginContextMaintenance(sess)
+	generated := false
 	defer func() {
 		if err != nil {
 			*sess = original
 		}
+		observation.finish(sess, err, generated)
 	}()
 	before := sess.PromptTokens
 
@@ -1738,7 +1743,8 @@ func (r *Runner) maybeCompact(ctx context.Context, sess *session.Session) (err e
 	// runs. Free (no LLM call), reduces tokens the model must read.
 	if r.ContextEditor != nil {
 		if n := r.ContextEditor.Edit(sess); n > 0 {
-			r.emit(Event{Kind: EventContextEdited, Text: fmt.Sprintf("cleared %d stale tool results", n)})
+			observation.value.ClearedResults += n
+			r.emit(Event{Kind: EventContextEdited, ContextOperationID: observation.value.OperationID, Text: fmt.Sprintf("cleared %d stale tool results", n)})
 		}
 	}
 
@@ -1751,7 +1757,8 @@ func (r *Runner) maybeCompact(ctx context.Context, sess *session.Session) (err e
 		saved, truncated, toolMsgs := session.PruneOldContext(sess, r.CompactKeepTokens)
 		if saved > 0 {
 			savedTokens := saved / 4
-			r.emit(Event{Kind: EventContextPruned, BeforeTokens: before, SavedTokens: savedTokens})
+			observation.value.EstimatedSavedTokens = &savedTokens
+			r.emit(Event{Kind: EventContextPruned, ContextOperationID: observation.value.OperationID, BeforeTokens: before, SavedTokens: savedTokens})
 			fragmented := toolMsgs > 0 && float64(truncated)/float64(toolMsgs) > 0.3
 			if !fragmented && before-savedTokens < sess.CompactThreshold {
 				return nil
@@ -1760,6 +1767,7 @@ func (r *Runner) maybeCompact(ctx context.Context, sess *session.Session) (err e
 	}
 
 	prevLen, prevSummary := len(sess.Messages), sess.Summary
+	observation.summarizing()
 	if err := r.Compactor.Compact(ctx, sess); err != nil {
 		return err
 	}
@@ -1767,6 +1775,7 @@ func (r *Runner) maybeCompact(ctx context.Context, sess *session.Session) (err e
 		return nil // nothing was folded
 	}
 	sess.RecordCompaction(before, len(sess.Summary))
+	generated = true
 	return nil
 }
 
