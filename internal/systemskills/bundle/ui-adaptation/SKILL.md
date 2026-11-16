@@ -200,8 +200,13 @@ separate calls and separate lineage.
 
 - `completed`: `ui_preview` produced a valid revision and fallback for that cell.
 - `failed`: the cell exhausted its retry policy, or failed with a capability or
-  lineage error that needs a different model/layout/user decision. Preserve the
-  tool's error code and message. Never fabricate a viewer, fallback, or lineage.
+  lineage error that needs a different model/layout/user decision. Matrix entry
+  errors must use the closed preview/lineage failure set. A `ui_preview` tool
+  failure such as `not_found` or `blocked` is not itself a matrix error code:
+  map the cell to the nearest frozen preview kind (for example
+  `preview_render_failed`, `preview_artifact_missing`, or
+  `preview_invalid_artifact`) and keep the original tool code and message in
+  the message text. Never fabricate a viewer, fallback, or lineage.
 - `missing`: the cell was intentionally skipped, canceled before generation, or
   never attempted. It carries no preview reference and no error.
 

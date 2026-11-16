@@ -38,7 +38,7 @@
       "name": "ui-adaptation",
       "source": "skills/ui-adaptation",
       "destination": "ui-adaptation",
-      "sha256": "98185390059bfe46cc041f18f3330e90c2419d5810a62194206a29f9a24cff81",
+      "sha256": "fb7b7fd20afbf131ea1236d6f00591b0a1d0ee58dd919cfb1453ef46e61244ff",
       "scope": "system",
       "version": "7",
       "dependencies": [
@@ -60,7 +60,7 @@
       "files": [
         {
           "path": "SKILL.md",
-          "sha256": "6e633a922558c4489fa1aff7a1d1a799c73abdb9fa4daa792b8292432bb2209e"
+          "sha256": "f577081533eb32a2c9a5e9c43cfc7a2a2b5e87968109175c2e7871b2b54f3965"
         },
         {
           "path": "references/docs/preview-matrix-orchestration.md",
