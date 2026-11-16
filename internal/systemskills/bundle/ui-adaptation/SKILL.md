@@ -2,7 +2,7 @@
 name: ui-adaptation
 description: Understand an app, web, or design-mockup image's layout and adapt it across iPhone Duo, iPhone, and iPad. Use when the user provides a screenshot or design image and asks to analyze its layout, preserve or adapt it across devices, generate responsive previews, or verify that an implementation visually matches the source. Do not use for generic image captioning or for UI implementation that has no visual reference.
 metadata:
-  version: "6"
+  version: "7"
 ---
 
 # UI Adaptation
@@ -19,7 +19,9 @@ schema details matter. The executable contracts are
 `references/schemas/ui_preview_lineage.v2.schema.json`, and
 `references/schemas/ui_preview_result.v1.schema.json`. Tool ownership and prompt
 boundaries are normative in
-`references/docs/primary-perception-ownership-contract.md`.
+`references/docs/primary-perception-ownership-contract.md`. The canonical
+2×2 matrix request, retry, missing-cell and resume examples are in
+`references/docs/preview-matrix-orchestration.md`.
 
 ## Workflow
 
@@ -151,7 +153,116 @@ For each target, decide:
 
 A wider screen needs a new information layout, not a stretched phone layout.
 
-### 7. Preview and verify
+### 7. Generate the preview matrix
+
+A matrix is one reviewed `ui_layout.v1` revision plus one independent
+`ui_preview` call per target × state cell. The backend does not generate HTML:
+the main model authors every cell's viewer and fallback, while the runtime
+validates, persists, and aggregates. Read
+`references/docs/preview-matrix-orchestration.md` for a complete 2×2 example.
+
+#### 7.1 Freeze the matrix identity and cell list
+
+Before drawing any cell, fix:
+
+- `matrix_id` (`matrix_<slug>`);
+- the sorted target set, for example `["duo_folded", "iphone_portrait"]`;
+- the states in the layout's declaration order, for example
+  `["default", "loading"]`;
+- one stable, cell-specific `artifact_key` per target × state, for example
+  `matrix-dreamlog-duo_folded-default-r1`.
+
+Every cell must appear exactly once. Record the cells in `todo_write` (one item
+per cell) so progress and retries survive a long turn or a resumed session.
+
+#### 7.2 Use one layout revision for the whole matrix
+
+Call `ui_layout` once for the source and all targets/states. Every cell lineage
+must bind that exact `artifact_id`, `revision`, `revision_sha256`, source asset,
+evidence digest, and `target_matrix`. Do not create a separate layout revision
+per target, and do not mix revisions in one matrix.
+
+#### 7.3 Call `ui_preview` independently for every cell
+
+For each cell:
+
+- use `mode=adaptation`;
+- pass `ui_preview_lineage.v2` with `target` and `state` equal to the cell and
+  `target_matrix` identical to the matrix;
+- author a self-contained viewer and keep a workspace raster fallback;
+- use that cell's own `artifact_key`.
+
+A preview revision belongs to exactly one cell. Never reuse another target's or
+state's preview, artifact key, or revision. Similar layouts still require
+separate calls and separate lineage.
+
+#### 7.4 Track completed, failed, and missing cells
+
+- `completed`: `ui_preview` produced a valid revision and fallback for that cell.
+- `failed`: the cell exhausted its retry policy, or failed with a capability or
+  lineage error that needs a different model/layout/user decision. Preserve the
+  tool's error code and message. Never fabricate a viewer, fallback, or lineage.
+- `missing`: the cell was intentionally skipped, canceled before generation, or
+  never attempted. It carries no preview reference and no error.
+
+A failed cell does not stop the other cells. Continue generating every remaining
+cell before aggregating.
+
+#### 7.5 Retry one cell at a time
+
+Retry only the failed cell. Do not regenerate completed cells.
+
+- Use `ui_preview` again for that cell with the same artifact key (a new revision)
+  or a new per-cell key; keep the lineage target/state unchanged.
+- Use the latest successful revision in the final matrix. If the retry also
+  fails, record the latest error and continue.
+- Do not retry a capability refusal (`image_input_unsupported`,
+  `tool_image_input_unsupported`, `image_detail_original_unsupported`) without a
+  different capable model or an explicit user decision. Do not retry a lineage
+  mismatch with the same wrong layout/target/state; fix the identity first.
+- Never retry by pointing at another cell's preview: the matrix rejects a shared
+  artifact, and the cell would still have the wrong lineage.
+
+#### 7.6 Aggregate once with `ui_preview_matrix`
+
+After all cells are attempted, make one `ui_preview_matrix` call with every
+target × state entry, exactly once:
+
+- completed → `preview_ref` (the cell's artifact key or explicit
+  `artifact_id` + `revision` + digest);
+- failed → `error` with the recorded code and message;
+- missing → neither `preview_ref` nor `error`.
+
+Pass the same `layout`, `target_matrix`, and `states` used by every lineage.
+Do not omit a failed or missing cell, add a synthetic cell, or call the matrix
+tool once per cell. A request-level matrix error is a request bug; fix the
+request. A failed cell is a cell outcome and does not fail the matrix.
+
+#### 7.7 Cancel and resume
+
+- On user cancel, stop starting new cells and aggregate the attempted cells as a
+  partial matrix immediately. Unattempted cells are `missing`; completed
+  revisions must not be discarded.
+- On resume, read the previous matrix result (entries and `preview_ref`s) or
+  `.codeagent/assets/ui-preview-matrix/<matrix_id>/revision-<n>/matrix.json`.
+  Reuse completed references, generate only failed/missing cells, then aggregate
+  a new matrix revision with all entries.
+- If the layout revision changed, start a new matrix identity instead of mixing
+  old and new cell lineages.
+- If a previous reference is unavailable, regenerate that cell. Never guess an
+  artifact ID or reuse another cell's revision.
+
+#### 7.8 Verify coverage before reporting
+
+Coverage is runtime-owned. Do not claim numbers that disagree with `entries`.
+
+- `expected == targets × states`;
+- `completed + failed + missing == expected`;
+- `complete` is true only when every cell completed;
+- report the matrix id/revision/path and every failed/missing cell with its
+  error code or explicit missing reason.
+
+### 8. Preview and verify
 
 Use `ui_preview` for approved target designs. Keep a static fallback. After the
 preview or implementation renders, inspect target screenshots with `view_image`
@@ -168,7 +279,7 @@ Check:
 
 Separate a design preview from proof that production UI was implemented.
 
-### 8. Implement and verify
+### 9. Implement and verify
 
 Before editing production UI, read the existing screens, shared components,
 navigation, state ownership, and design system. Reuse production components and
@@ -216,5 +327,17 @@ available through the asset/Inspector surface and summarize what matters.
 - A preview interaction is not production proof and is not an approval signal.
 - A preview derived from a reviewed layout must carry `ui_preview_lineage.v2` so
   its layout revision, source image, evidence, target, and state remain traceable.
+- One preview revision cannot fill two matrix cells. Shared artifacts, a reused
+  artifact key, or a lineage whose target/state differs from the cell are matrix
+  errors, not shortcuts.
+- A failed cell and a missing cell are different outcomes. A failed cell carries
+  the tool's error; a missing cell carries nothing and must not be given a
+  synthetic error or preview.
+- Do not call `ui_preview_matrix` before all attempted cells are resolved. One
+  call covers the whole matrix; per-cell matrix calls produce conflicting
+  revisions and make resume ambiguous.
+- After a resume, trust the persisted matrix entries and their `preview_ref`s.
+  Regenerating an already completed cell is wasted work and can change the
+  matrix revision without a user request.
 - Do not modify production UI merely because the model generated a plausible
   preview; require an approved layout contract and explicit implementation scope.

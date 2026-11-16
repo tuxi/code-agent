@@ -1,6 +1,6 @@
 {
   "schema": "codeagent.system-skills.v1",
-  "bundle_version": "2026.11.14.2",
+  "bundle_version": "2026.11.17.1",
   "skills": [
     {
       "name": "review-change",
@@ -38,9 +38,9 @@
       "name": "ui-adaptation",
       "source": "skills/ui-adaptation",
       "destination": "ui-adaptation",
-      "sha256": "f4d725411c374ece6ceee555e6d0254a8765725237dfd80abc6168cac43be43c",
+      "sha256": "98185390059bfe46cc041f18f3330e90c2419d5810a62194206a29f9a24cff81",
       "scope": "system",
-      "version": "6",
+      "version": "7",
       "dependencies": [
         "review-change",
         "verify-change"
@@ -54,12 +54,17 @@
         "schemas/ui_layout_result.v1.schema.json",
         "schemas/ui_preview_lineage.v1.schema.json",
         "schemas/ui_preview_lineage.v2.schema.json",
-        "schemas/ui_preview_result.v1.schema.json"
+        "schemas/ui_preview_result.v1.schema.json",
+        "docs/preview-matrix-orchestration.md"
       ],
       "files": [
         {
           "path": "SKILL.md",
-          "sha256": "61448706a7cbf70c6664a2a4c665a6028fff1aa107c8cd6e43c2acdeec304efc"
+          "sha256": "6e633a922558c4489fa1aff7a1d1a799c73abdb9fa4daa792b8292432bb2209e"
+        },
+        {
+          "path": "references/docs/preview-matrix-orchestration.md",
+          "sha256": "9837f49e0782933271dca0404b607b00c267b2f2be3174d16e5bb566558094f5"
         },
         {
           "path": "references/docs/primary-perception-ownership-contract.md",
