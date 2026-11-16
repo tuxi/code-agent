@@ -103,7 +103,7 @@ func Persist(ctx context.Context, workspaceRoot string, m Matrix) (Persisted, er
 		return Persisted{}, newError(CodeInvalid, "matrix asset directory escapes the workspace")
 	}
 	if err := os.MkdirAll(base, 0o700); err != nil {
-		return Persisted{}, newError(CodeStoreUnavailable, "matrix asset directory is unavailable: %v", err)
+		return Persisted{}, newErrorWithDiagnostic(CodeStoreUnavailable, "matrix asset directory is unavailable", err)
 	}
 	baseCanonical, err := workspace.CanonicalPath(base)
 	if err != nil {
@@ -114,7 +114,7 @@ func Persist(ctx context.Context, workspaceRoot string, m Matrix) (Persisted, er
 	}
 	matrixDir := filepath.Join(baseCanonical, m.MatrixID)
 	if err := os.MkdirAll(matrixDir, 0o700); err != nil {
-		return Persisted{}, newError(CodeStoreUnavailable, "matrix directory is unavailable: %v", err)
+		return Persisted{}, newErrorWithDiagnostic(CodeStoreUnavailable, "matrix directory is unavailable", err)
 	}
 	matrixDir, err = workspace.CanonicalPath(matrixDir)
 	if err != nil {
@@ -147,7 +147,7 @@ func Persist(ctx context.Context, workspaceRoot string, m Matrix) (Persisted, er
 			if os.IsExist(err) {
 				continue
 			}
-			return Persisted{}, newError(CodeStoreUnavailable, "matrix revision directory is unavailable: %v", err)
+			return Persisted{}, newErrorWithDiagnostic(CodeStoreUnavailable, "matrix revision directory is unavailable", err)
 		}
 		metadata := revisionMetadata{
 			Kind:           revisionMetadataKind,
@@ -169,7 +169,7 @@ func Persist(ctx context.Context, workspaceRoot string, m Matrix) (Persisted, er
 		} {
 			if err := writeFileAtomic(dir, name, data); err != nil {
 				_ = os.RemoveAll(dir)
-				return Persisted{}, newError(CodeStoreUnavailable, "matrix revision could not be written: %v", err)
+				return Persisted{}, newErrorWithDiagnostic(CodeStoreUnavailable, "matrix revision could not be written", err)
 			}
 		}
 		matrixPath, ok := workspaceRelativePath(rootCanonical, filepath.Join(dir, "matrix.json"))
@@ -192,7 +192,7 @@ func findStoredRevision(rootCanonical, matrixDir string, m Matrix, matrixBytes, 
 		if os.IsNotExist(err) {
 			return 0, nil, nil
 		}
-		return 0, nil, newError(CodeStoreUnavailable, "matrix directory is unavailable: %v", err)
+		return 0, nil, newErrorWithDiagnostic(CodeStoreUnavailable, "matrix directory is unavailable", err)
 	}
 	type candidate struct {
 		revision int64

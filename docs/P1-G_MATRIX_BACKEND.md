@@ -1,6 +1,6 @@
 # P1-G Preview Matrix Backend
 
-Status: backend checkpoint (not final acceptance)
+Status: backend checkpoint (independent acceptance passed 2026-11-16)
 Date: 2026-11-16
 Base: code-agent `d20cdaa` (P1-F frozen backend)
 Scope: `ui_preview_matrix.v1` aggregation of independent `ui_preview` revisions

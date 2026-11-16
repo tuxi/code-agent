@@ -1,6 +1,6 @@
 # P1-G Preview Matrix Tool Binding
 
-Status: checkpoint (independent backend acceptance pending)
+Status: checkpoint (independent backend acceptance passed; layout-unavailable sanitization checkpoint 2026-11-16)
 Date: 2026-11-16
 Base: code-agent `48601e1`
 Scope: model-callable `ui_preview_matrix` built-in over the merged backend
@@ -133,6 +133,34 @@ Tests cover:
   carry an actionable `preview_ref` plus fallback asset identity;
 - golden: `internal/tools/previewmatrix/testdata/golden/result.json` for a 2×2
   matrix with two completed cells, one failed cell, and one missing cell.
+
+## Checkpoint: model-visible layout-unavailable sanitization (2026-11-16)
+
+Independent backend acceptance over `27c19dc` passed 32/33. The only failure was
+a request-level `matrix_layout_unavailable` result whose `ToolResult.Content`
+carried the absolute revision path from `os.Lstat`.
+
+Change:
+
+- `internal/preview/matrix.Error` now separates `Message` (model-safe) from a
+  runtime-only `Diagnostic()`. Path-bearing layout load and matrix persistence
+  causes are recorded only in the diagnostic; `Error()` stays path-free.
+- `ui_preview_matrix` projects every `matrix_layout_unavailable` failure to the
+  stable `layout revision metadata is unavailable` and every store-unavailable
+  failure to `preview store is unavailable`. No absolute path, `.codeagent`
+  path, or raw `os` error text reaches `ToolResult.Content` or `Failure`.
+- Regression tests cover nonexistent revisions, non-regular metadata, permission
+  errors, and revision-directory symlink escapes in both
+  `internal/preview/matrix` and `internal/tools/previewmatrix`.
+
+Verification:
+
+- 33/33 acceptance scenarios pass on the fixed tree, including N10 (layout
+  unavailable, no model-visible leak) and all persistence/replay scenarios.
+- `go test -count=1 ./internal/preview/... ./internal/tools/previewmatrix/
+  ./internal/tools/preview/ ./internal/tools/uilayout/ ./internal/uicontract/`
+  passes.
+- No matrix/P1-F schema, AgentKit, Talkify, or frozen fixture changes.
 
 ## Out of scope
 

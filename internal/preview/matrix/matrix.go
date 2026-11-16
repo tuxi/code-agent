@@ -7,6 +7,7 @@ package matrix
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -38,10 +39,18 @@ const (
 	CodeStoreUnavailable  = "matrix_store_unavailable"
 )
 
-// Error is a typed build or persistence failure.
+// PublicLayoutUnavailableMessage is the only model-visible text for a layout
+// unavailable failure. Filesystem detail stays in Error.Diagnostic so tool
+// results never carry absolute paths.
+const PublicLayoutUnavailableMessage = "layout revision metadata is unavailable"
+
+// Error is a typed build or persistence failure. Message is always safe to
+// surface to a model; Diagnostic keeps runtime-only detail such as the failing
+// filesystem path and must never be copied into a tool result.
 type Error struct {
-	Code    string
-	Message string
+	Code       string
+	Message    string
+	diagnostic string
 }
 
 func (e *Error) Error() string {
@@ -51,8 +60,35 @@ func (e *Error) Error() string {
 	return e.Message
 }
 
+// Diagnostic returns runtime-only failure detail. It may contain absolute
+// paths and is intended for logs and tests, never for model-visible output.
+func (e *Error) Diagnostic() string {
+	if e == nil {
+		return ""
+	}
+	return e.diagnostic
+}
+
 func newError(code, format string, args ...any) *Error {
 	return &Error{Code: code, Message: fmt.Sprintf(format, args...)}
+}
+
+func newErrorWithDiagnostic(code, message string, cause error) *Error {
+	e := &Error{Code: code, Message: message}
+	if cause != nil {
+		e.diagnostic = cause.Error()
+	}
+	return e
+}
+
+// Diagnostic returns the runtime-only detail attached to a matrix error, or ""
+// when err carries none.
+func Diagnostic(err error) string {
+	var e *Error
+	if errors.As(err, &e) {
+		return e.diagnostic
+	}
+	return ""
 }
 
 // ErrorCode classifies err as a matrix error, or returns "matrix_invalid".

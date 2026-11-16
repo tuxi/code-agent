@@ -399,15 +399,21 @@ func previewFailure(err error) *matrix.EntryError {
 func buildFailure(err error) tools.ToolResult {
 	code := matrix.ErrorCode(err)
 	kind := "runtime"
+	message := "ui_preview_matrix: matrix build failed."
 	switch code {
 	case matrix.CodeInvalid, matrix.CodeLayoutInvalid, matrix.CodeLayoutMismatch:
 		kind = "invalid_arguments"
+		message = "ui_preview_matrix: " + err.Error()
 	case matrix.CodeLayoutUnavailable:
 		kind = "not_found"
+		// Filesystem detail stays in matrix.Diagnostic(err); the model sees only
+		// the stable failure text and never an absolute or workspace path.
+		message = matrix.PublicLayoutUnavailableMessage
 	case matrix.CodeStoreUnavailable:
 		kind = "unavailable"
+		message = "ui_preview_matrix: preview store is unavailable."
 	}
-	return tools.FailureResult(kind, "ui_preview_matrix: "+err.Error())
+	return tools.FailureResult(kind, message)
 }
 
 func decodeStrict(raw json.RawMessage, target any) error {

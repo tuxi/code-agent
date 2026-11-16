@@ -206,18 +206,18 @@ func loadLayout(ctx context.Context, root string, ref LayoutRef) (layoutState, e
 	revisionDir := filepath.Join(rootCanonical, layoutBaseDir, ref.ArtifactID, fmt.Sprintf(matrixRevisionFmt, ref.Revision))
 	revisionCanonical, err := workspace.CanonicalPath(revisionDir)
 	if err != nil {
-		return layoutState{}, newError(CodeLayoutUnavailable, "layout revision path is unavailable: %v", err)
+		return layoutState{}, newErrorWithDiagnostic(CodeLayoutUnavailable, "layout revision path is unavailable", err)
 	}
 	if workspace.ClassifyPath(rootCanonical, revisionCanonical) != workspace.PathInsideWorkspace {
 		return layoutState{}, newError(CodeLayoutUnavailable, "layout revision path is outside the workspace")
 	}
 	metadataBytes, err := readRegularFile(revisionCanonical, "metadata.json")
 	if err != nil {
-		return layoutState{}, newError(CodeLayoutUnavailable, "layout revision metadata is unavailable: %v", err)
+		return layoutState{}, newErrorWithDiagnostic(CodeLayoutUnavailable, "layout revision metadata is unavailable", err)
 	}
 	layoutBytes, err := readRegularFile(revisionCanonical, "layout.json")
 	if err != nil {
-		return layoutState{}, newError(CodeLayoutUnavailable, "layout revision document is unavailable: %v", err)
+		return layoutState{}, newErrorWithDiagnostic(CodeLayoutUnavailable, "layout revision document is unavailable", err)
 	}
 	var metadata layoutRevisionMetadata
 	if err := json.Unmarshal(metadataBytes, &metadata); err != nil {
