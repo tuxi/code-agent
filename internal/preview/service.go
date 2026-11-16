@@ -80,6 +80,15 @@ func (s *Service) Available() bool {
 	return s != nil && s.Store != nil
 }
 
+// PreviewStore exposes the immutable store so runtime-owned tools can resolve
+// previously produced revisions without reaching into the service.
+func (s *Service) PreviewStore() Store {
+	if s == nil {
+		return nil
+	}
+	return s.Store
+}
+
 func (s *Service) Produce(ctx context.Context, request ProduceRequest) ProduceResult {
 	var result ProduceResult
 	if !s.Available() {

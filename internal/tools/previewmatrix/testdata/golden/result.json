@@ -1,0 +1,109 @@
+{
+  "schema": "ui_preview_matrix_result.v1",
+  "matrix_id": "matrix_p1g_tool_golden",
+  "matrix_revision": 1,
+  "matrix_sha256": "sha256:fec547442dbb3a38a90663286b1f225cfc3ed6d73599c2916ae1ecbd50b0f40d",
+  "created": true,
+  "matrix_path": ".codeagent/assets/ui-preview-matrix/matrix_p1g_tool_golden/revision-000001/matrix.json",
+  "manifest_schema": "ui_preview_matrix_manifest.v1",
+  "manifest_sha256": "sha256:87c055aae6d7b3473efed4d4e067be60b9e1fe8180d362725b10f56cfcfc46c7",
+  "manifest_path": ".codeagent/assets/ui-preview-matrix/matrix_p1g_tool_golden/revision-000001/manifest.json",
+  "source_asset": {
+    "asset_id": "asset_p1g_tool_source",
+    "sha256": "3e797341410a48dd4db70f738a519d6ee29f67e5b911ecc2f637b871dbd2ded4"
+  },
+  "layout": {
+    "artifact_id": "layout_p1g_tool",
+    "revision": 1,
+    "revision_sha256": "sha256:b7f06063f9106650d10b6e5ab1db0557c43b6142e5996218ba9cca17a59b8893"
+  },
+  "evidence_sha256": null,
+  "target_matrix": {
+    "id": "matrix_p1g_tool_golden",
+    "targets": [
+      "ipad_landscape",
+      "iphone_portrait"
+    ]
+  },
+  "states": [
+    "default",
+    "loading"
+  ],
+  "coverage": {
+    "targets": 2,
+    "states": 2,
+    "expected": 4,
+    "completed": 2,
+    "failed": 1,
+    "missing": 1,
+    "complete": false
+  },
+  "entries": [
+    {
+      "target": "ipad_landscape",
+      "state": "default",
+      "status": "completed",
+      "preview_ref": {
+        "artifact_id": "preview_96e228a373969c08a12bbf44",
+        "revision": 1,
+        "revision_sha256": "sha256:2f8d3f2d3905a6bed0a58612d92c01d4436d79fae5120584454ad2a39dc74ad8"
+      },
+      "preview_mode": "adaptation",
+      "fallback_asset": {
+        "asset_id": "asset_p1g_tool_fallback",
+        "mime_type": "image/png",
+        "width": 40,
+        "height": 30,
+        "sha256": "acc5703e586e513d3dc91fb5b095fc00044676797f3ad681a266d4263404387f"
+      },
+      "error": null
+    },
+    {
+      "target": "ipad_landscape",
+      "state": "loading",
+      "status": "failed",
+      "preview_ref": {
+        "artifact_id": "preview_2adc7b623ce6238fd6935750",
+        "revision": 1,
+        "revision_sha256": "sha256:ff5b54f2c82ec32f3d0047d2344530977ee43fa60075206ff09cdacedba557b9"
+      },
+      "preview_mode": "adaptation",
+      "fallback_asset": null,
+      "error": {
+        "code": "preview_viewer_fetch_failed",
+        "message": "viewer bytes could not be fetched"
+      }
+    },
+    {
+      "target": "iphone_portrait",
+      "state": "default",
+      "status": "completed",
+      "preview_ref": {
+        "artifact_id": "preview_4627483441cd9c34b83ca456",
+        "revision": 1,
+        "revision_sha256": "sha256:7fb42df216a8401d7740e18b3756e43eeaea0aa1e92a44671594cd2b1cd25929"
+      },
+      "preview_mode": "adaptation",
+      "fallback_asset": {
+        "asset_id": "asset_p1g_tool_fallback",
+        "mime_type": "image/png",
+        "width": 40,
+        "height": 30,
+        "sha256": "acc5703e586e513d3dc91fb5b095fc00044676797f3ad681a266d4263404387f"
+      },
+      "error": null
+    },
+    {
+      "target": "iphone_portrait",
+      "state": "loading",
+      "status": "missing",
+      "preview_ref": null,
+      "preview_mode": null,
+      "fallback_asset": null,
+      "error": null
+    }
+  ],
+  "error_types": [
+    "preview_viewer_fetch_failed"
+  ]
+}

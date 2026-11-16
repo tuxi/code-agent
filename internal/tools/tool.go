@@ -115,6 +115,12 @@ type ExecutionContext struct {
 	// conversation into a tool_sequence template. Injected by daemon hosts;
 	// nil means extract degrades with a clear error.
 	SessionTrace SessionTraceFunc
+
+	// PreviewStore is the session-scoped immutable preview store, when the host
+	// has one. Tools that resolve previously produced preview revisions (for
+	// example ui_preview_matrix) read through it; nil means preview resolution is
+	// unavailable and such tools degrade with a clear error.
+	PreviewStore preview.Store
 }
 
 // ImageCapabilities separates ordinary user-image input, tool-result image

@@ -18,6 +18,7 @@ import (
 	"code-agent/internal/tools/git"
 	"code-agent/internal/tools/imageview"
 	"code-agent/internal/tools/preview"
+	"code-agent/internal/tools/previewmatrix"
 	"code-agent/internal/tools/projectcfg"
 	"code-agent/internal/tools/search"
 	"code-agent/internal/tools/sessions"
@@ -86,6 +87,7 @@ func RegisterBuiltinTools(registry *tools.Registry, cfg settings.Settings, cred 
 		imageview.NewTool(),
 		previewtool.NewTool(),
 		uilayout.NewTool(),
+		previewmatrix.NewTool(),
 	}
 	// LSP tools — best-effort.
 	lspClient := initLSPClient(root)

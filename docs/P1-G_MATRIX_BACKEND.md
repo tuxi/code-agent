@@ -180,9 +180,9 @@ Coverage in `internal/preview/matrix`:
 
 ## Known limitations
 
-- No CLI entry point and no tool binding: this phase is the backend aggregation
-  contract. Acceptance still needs a real P1-E/P1-F fixture run and, where a UI
-  is expected, AgentKit work.
+- The model-callable binding lives in `docs/P1-G_MATRIX_TOOL.md`
+  (`internal/tools/previewmatrix`). This document remains the backend
+  aggregation contract.
 - A subset matrix is a distinct target set: its previews must declare the same
   `target_matrix.targets` in their lineage, otherwise every cell fails with
   `lineage_mismatch` (by design).

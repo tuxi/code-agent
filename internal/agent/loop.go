@@ -1974,6 +1974,7 @@ func (r *Runner) executeTool(ctx context.Context, tool tools.Tool, callID string
 		AutomationStore:    r.AutomationStore,
 		WorkflowRunner:     r.WorkflowRunner,
 		SessionTrace:       r.SessionTrace,
+		PreviewStore:       previewStoreFor(r.PreviewProducer),
 		OnStdout: func(chunk string) {
 			r.emit(Event{Kind: EventToolStdout, CallID: callID, Chunk: chunk})
 		},

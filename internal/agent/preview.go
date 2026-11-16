@@ -13,6 +13,22 @@ type PreviewProducer interface {
 	Produce(ctx context.Context, request preview.ProduceRequest) preview.ProduceResult
 }
 
+// PreviewStoreProvider is an optional capability of a PreviewProducer that owns
+// an immutable preview store. Tools that resolve earlier revisions (such as
+// ui_preview_matrix) receive that store through ExecutionContext; a producer
+// without it leaves preview resolution unavailable.
+type PreviewStoreProvider interface {
+	PreviewStore() preview.Store
+}
+
+func previewStoreFor(producer PreviewProducer) preview.Store {
+	provider, ok := producer.(PreviewStoreProvider)
+	if !ok {
+		return nil
+	}
+	return provider.PreviewStore()
+}
+
 func (r *Runner) emitPreviewArtifacts(ctx context.Context, p toolCallPlan, resultAssets []assets.Ref, previews []preview.Draft, clientOrigin bool) {
 	if r.PreviewProducer == nil || len(previews) == 0 {
 		return

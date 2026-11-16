@@ -1,0 +1,205 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://code-agent.local/schemas/ui_preview_matrix_result.v1.schema.json",
+  "$comment": "P1-G tool binding result. Stable for the ui_preview_matrix built-in; it projects a persisted ui_preview_matrix.v1 revision without changing that contract.",
+  "title": "UI Preview Matrix Result v1",
+  "description": "Stable structured result of a successful ui_preview_matrix call. Every expected cell is present exactly once. Completed cells carry the resolved runtime-owned preview reference and fallback asset identity; failed cells carry an error type; missing cells claim nothing. Paths are workspace-relative and never absolute.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "matrix_id",
+    "matrix_revision",
+    "matrix_sha256",
+    "created",
+    "matrix_path",
+    "manifest_schema",
+    "manifest_sha256",
+    "manifest_path",
+    "source_asset",
+    "layout",
+    "evidence_sha256",
+    "target_matrix",
+    "states",
+    "coverage",
+    "entries",
+    "error_types"
+  ],
+  "properties": {
+    "schema": {"const": "ui_preview_matrix_result.v1"},
+    "matrix_id": {"$ref": "#/$defs/matrix_id"},
+    "matrix_revision": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Persisted revision of this matrix identity. Reusing an identical matrix returns the existing revision."
+    },
+    "matrix_sha256": {"$ref": "#/$defs/revision_sha256"},
+    "created": {"type": "boolean"},
+    "matrix_path": {"$ref": "#/$defs/relative_path"},
+    "manifest_schema": {"const": "ui_preview_matrix_manifest.v1"},
+    "manifest_sha256": {"$ref": "#/$defs/revision_sha256"},
+    "manifest_path": {"$ref": "#/$defs/relative_path"},
+    "source_asset": {"$ref": "#/$defs/source_asset"},
+    "layout": {"$ref": "#/$defs/layout"},
+    "evidence_sha256": {
+      "type": ["string", "null"],
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "target_matrix": {"$ref": "#/$defs/target_matrix"},
+    "states": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 32,
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1, "maxLength": 64}
+    },
+    "coverage": {"$ref": "#/$defs/coverage"},
+    "entries": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 512,
+      "items": {"$ref": "#/$defs/entry"}
+    },
+    "error_types": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$"},
+      "description": "Sorted unique failure kinds recorded by failed cells."
+    }
+  },
+  "$defs": {
+    "matrix_id": {
+      "type": "string",
+      "pattern": "^matrix_[A-Za-z0-9._:-]{1,180}$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "revision_sha256": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "relative_path": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096,
+      "pattern": "^[^\\\\]+$"
+    },
+    "target": {
+      "type": "string",
+      "enum": ["duo_folded", "duo_unfolded", "iphone_portrait", "iphone_landscape", "ipad_portrait", "ipad_landscape"]
+    },
+    "source_asset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["asset_id", "sha256"],
+      "properties": {
+        "asset_id": {"type": "string", "pattern": "^asset_[A-Za-z0-9._:-]{1,180}$"},
+        "sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "layout": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["artifact_id", "revision", "revision_sha256"],
+      "properties": {
+        "artifact_id": {"type": "string", "pattern": "^layout_[A-Za-z0-9._-]{1,180}$"},
+        "revision": {"type": "integer", "minimum": 1},
+        "revision_sha256": {"$ref": "#/$defs/revision_sha256"}
+      }
+    },
+    "target_matrix": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "targets"],
+      "properties": {
+        "id": {"$ref": "#/$defs/matrix_id"},
+        "targets": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/target"}
+        }
+      }
+    },
+    "preview_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["artifact_id", "revision", "revision_sha256"],
+      "description": "Runtime-owned preview revision identity resolved for this session.",
+      "properties": {
+        "artifact_id": {"type": "string", "pattern": "^preview_[A-Za-z0-9._:-]{1,180}$"},
+        "revision": {"type": "integer", "minimum": 1},
+        "revision_sha256": {"$ref": "#/$defs/revision_sha256"}
+      }
+    },
+    "fallback_asset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["asset_id", "mime_type", "width", "height", "sha256"],
+      "properties": {
+        "asset_id": {"type": "string", "pattern": "^asset_[A-Za-z0-9._:-]{1,180}$"},
+        "mime_type": {"type": "string", "enum": ["image/png", "image/jpeg", "image/webp"]},
+        "width": {"type": "integer", "minimum": 0},
+        "height": {"type": "integer", "minimum": 0},
+        "sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "entry_error": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "message"],
+      "properties": {
+        "code": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$"},
+        "message": {"type": "string", "minLength": 1, "maxLength": 1024}
+      }
+    },
+    "entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "target",
+        "state",
+        "status",
+        "preview_ref",
+        "preview_mode",
+        "fallback_asset",
+        "error"
+      ],
+      "properties": {
+        "target": {"$ref": "#/$defs/target"},
+        "state": {"type": "string", "minLength": 1, "maxLength": 64},
+        "status": {"type": "string", "enum": ["completed", "failed", "missing"]},
+        "preview_ref": {
+          "anyOf": [{"$ref": "#/$defs/preview_ref"}, {"type": "null"}]
+        },
+        "preview_mode": {
+          "type": ["string", "null"],
+          "enum": ["adaptation", "explore", null]
+        },
+        "fallback_asset": {
+          "anyOf": [{"$ref": "#/$defs/fallback_asset"}, {"type": "null"}]
+        },
+        "error": {
+          "anyOf": [{"$ref": "#/$defs/entry_error"}, {"type": "null"}]
+        }
+      }
+    },
+    "coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["targets", "states", "expected", "completed", "failed", "missing", "complete"],
+      "properties": {
+        "targets": {"type": "integer", "minimum": 1},
+        "states": {"type": "integer", "minimum": 1},
+        "expected": {"type": "integer", "minimum": 1},
+        "completed": {"type": "integer", "minimum": 0},
+        "failed": {"type": "integer", "minimum": 0},
+        "missing": {"type": "integer", "minimum": 0},
+        "complete": {"type": "boolean"}
+      }
+    }
+  }
+}

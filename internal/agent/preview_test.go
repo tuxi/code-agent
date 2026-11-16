@@ -136,3 +136,54 @@ func TestFlexStrictClientResolvesToClient(t *testing.T) {
 		t.Fatalf("strict-client flex executor = %q, want client", got)
 	}
 }
+
+// storeProvidingProducer is a PreviewProducer that also owns the immutable
+// preview store, mirroring preview.Service.
+type storeProvidingProducer struct{ store preview.Store }
+
+func (storeProvidingProducer) Produce(context.Context, preview.ProduceRequest) preview.ProduceResult {
+	return preview.ProduceResult{}
+}
+
+func (p storeProvidingProducer) PreviewStore() preview.Store { return p.store }
+
+type previewStoreProbe struct{ got preview.Store }
+
+func (p *previewStoreProbe) Name() string        { return "preview_store_probe" }
+func (p *previewStoreProbe) Description() string { return "probe" }
+func (p *previewStoreProbe) InputSchema() json.RawMessage {
+	return json.RawMessage(`{"type":"object"}`)
+}
+func (p *previewStoreProbe) Execute(_ context.Context, ec tools.ExecutionContext, _ json.RawMessage) (tools.ToolResult, error) {
+	p.got = ec.PreviewStore
+	return tools.ToolResult{Content: "ok"}, nil
+}
+
+func TestPreviewStoreReachesToolExecutionContext(t *testing.T) {
+	store, err := preview.NewFSStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := preview.NewService(store)
+	if service.PreviewStore() != store {
+		t.Fatal("preview.Service did not expose its store")
+	}
+	if got := previewStoreFor(service); got != store {
+		t.Fatalf("previewStoreFor(service) = %v", got)
+	}
+	if got := previewStoreFor(&capturedPreviewProducer{}); got != nil {
+		t.Fatalf("producer without a store returned %v", got)
+	}
+	if got := previewStoreFor(nil); got != nil {
+		t.Fatalf("nil producer returned %v", got)
+	}
+
+	probe := &previewStoreProbe{}
+	runner := &Runner{PreviewProducer: service}
+	if _, err := runner.executeTool(context.Background(), probe, "call_preview_store", json.RawMessage(`{}`), false); err != nil {
+		t.Fatal(err)
+	}
+	if probe.got != store {
+		t.Fatalf("tool ExecutionContext.PreviewStore = %v, want the service store", probe.got)
+	}
+}
