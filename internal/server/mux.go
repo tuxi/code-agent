@@ -758,6 +758,10 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 	registerAutomationRoutes(mux, opts)
 	registerWorkflowRoutes(mux, opts)
 	registerSkillPluginRoutes(mux, repo, opts)
+	registerComposerRoutes(mux, repo, opts)
+	registerComposerPathValidationRoute(mux, repo, opts)
+	registerComposerReferenceRoute(mux, repo, eventStore, opts)
+	registerComposerSuggestionRoute(mux, repo, executor, opts)
 
 	mux.HandleFunc("GET /v1/activity", func(w http.ResponseWriter, r *http.Request) {
 		generatedAt := time.Now().UTC()
