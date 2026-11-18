@@ -38,6 +38,11 @@ type Runner struct {
 	contextTools   *tools.Registry
 	// RuntimeInputs enables optional durable result delivery at model boundaries.
 	// Nil preserves the legacy loop; this port never initiates a model request.
+	// Supplements is opt-in until executor admission and transport recovery are wired.
+	Delivery                   session.TurnDeliveryStore
+	deliveryClosed             bool
+	Supplements                session.SupplementStore
+	OnSupplementsApplied       func([]session.SupplementApplication)
 	RuntimeInputs              session.RuntimeInputStore
 	ParkContinuation           ContinuationParker
 	ContinuationPolicyIdentity string
@@ -1001,6 +1006,12 @@ func (r *Runner) ResumeTurn(ctx context.Context, sess *session.Session) (TurnRes
 // appends the user message first) and ResumeTurn (which does not), so both paths
 // execute identical control flow.
 func (r *Runner) drive(ctx context.Context, sess *session.Session) (TurnResult, error) {
+	// Two independent finish transactions cannot atomically close one turn.
+	// Reject the combination until a shared delivery-boundary port is wired.
+	r.deliveryClosed = false
+	if r.Delivery == nil && r.Supplements != nil && r.RuntimeInputs != nil {
+		return TurnResult{TurnID: r.emitTurnID}, errors.New("supplements and runtime inputs require a shared finish boundary")
+	}
 	r.outputTokens = session.OutputTokenBudget(sess.ContextWindow)
 	r.contextSession = sess
 	defer func() { r.contextSession = nil; r.contextTools = nil }()
@@ -1059,6 +1070,9 @@ func (r *Runner) drive(ctx context.Context, sess *session.Session) (TurnResult, 
 		// A canceled context (Ctrl-C) must stop the turn at the step boundary
 		// without waiting for the next HTTP call to time out.
 		if err := ctx.Err(); err != nil {
+			return turn, err
+		}
+		if _, err := r.supplementBoundary(ctx, sess, false); err != nil {
 			return turn, err
 		}
 		if _, err := r.runtimeInputBoundary(ctx, sess, true, false); err != nil {
@@ -1265,6 +1279,12 @@ func (r *Runner) drive(ctx context.Context, sess *session.Session) (TurnResult, 
 			}
 			sess.Messages = append(sess.Messages, resp.AssistantMessage())
 			sess.UpdatedAt = time.Now()
+			if delivered, err := r.supplementBoundary(ctx, sess, true); err != nil {
+				return turn, err
+			} else if delivered > 0 {
+				r.emit(Event{Kind: EventAssistantText, Text: resp.Content})
+				continue
+			}
 			if delivered, err := r.runtimeInputBoundary(ctx, sess, true, true); err != nil {
 				return turn, err
 			} else if delivered > 0 {
@@ -1356,6 +1376,19 @@ func (r *Runner) drive(ctx context.Context, sess *session.Session) (TurnResult, 
 		r.checkpoint(ctx, sess)
 	}
 
+	// A hard step limit cannot consume new input and claim it was handled.
+	// Preserve pending supplements for explicit recovery rather than extending
+	// the budget or acknowledging input after the last model request.
+	if r.Delivery != nil {
+		if _, err := r.runtimeInputBoundary(ctx, sess, false, true); err != nil {
+			return turn, err
+		}
+	}
+	if r.Supplements != nil && r.Delivery == nil {
+		if err := r.Supplements.SealSupplementBoundary(ctx, sess.ID, r.emitTurnID); err != nil {
+			return turn, err
+		}
+	}
 	// Budget exhaustion is a terminal boundary too. Collect available inputs
 	// for the existing tool-free summary, then leave later results for a new
 	// user turn instead of replenishing the model step budget.

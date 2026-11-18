@@ -1,0 +1,253 @@
+package server
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"code-agent/internal/conversation"
+	"code-agent/internal/model"
+	"code-agent/internal/session"
+	db "code-agent/internal/session/sqlite"
+	"code-agent/internal/settings"
+)
+
+type queueHTTPModel struct{ effort string }
+
+func (m *queueHTTPModel) ResolveModel(string) (*settings.ModelConfig, error) {
+	c := &settings.ModelConfig{Model: "resolved", Name: "resolved", ReasoningEffort: m.effort}
+	c.Catalog.SupportedReasoningEfforts = []string{"low", "high"}
+	return c, nil
+}
+
+func TestUserQueueHTTPTrustedSelectionRetryAndScope(t *testing.T) {
+	ctx := context.Background()
+	s, err := db.New(filepath.Join(t.TempDir(), "db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err = s.Save(ctx, &session.Session{ID: "s", CreatedAt: time.Now(), UpdatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	queue, err := db.NewUserQueue(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	models := &queueHTTPModel{effort: "high"}
+	perms := &fakePermissionService{mode: "ask"}
+	scope := "owner"
+	contexts := queueContextService{repo: conversation.NewSQLiteRepository(s, 10000, 8000, "resolved", "", nil), models: models, permissions: perms, scope: func(context.Context, string) (string, error) { return scope, nil }}
+	service := &queueHTTPService{store: queue, contexts: contexts, consumerReady: true}
+	mux := http.NewServeMux()
+	if !registerUserQueueRoutes(mux, service, true) {
+		t.Fatal("not available")
+	}
+	request := func(method, path, body string) *httptest.ResponseRecorder {
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, httptest.NewRequest(method, path, strings.NewReader(body)))
+		return w
+	}
+	body := `{"request_id":"r","text":"next task","model":"selected"}`
+	first := request("POST", "/v1/conversations/s/queue", body)
+	var receipt session.QueuedMessageReceipt
+	if first.Code != 202 || json.Unmarshal(first.Body.Bytes(), &receipt) != nil || receipt.Input.Context.ReasoningEffort != "high" || receipt.Input.Context.AuthorizationScope != "owner" || receipt.Input.Context.ApprovalMode != "ask" {
+		t.Fatal(first.Code, first.Body.String())
+	}
+	models.effort = "low"
+	perms.mode = "full"
+	retry := request("POST", "/v1/conversations/s/queue", body)
+	if retry.Code != 202 || retry.Body.String() != first.Body.String() {
+		t.Fatal(retry.Code, retry.Body.String())
+	}
+	if w := request("POST", "/v1/conversations/s/queue", `{"request_id":"r","text":"changed","model":"selected"}`); w.Code != 409 {
+		t.Fatal(w.Code)
+	}
+	for _, extra := range []string{`"authorization_scope":"fake"`, `"approval_mode":"full"`, `"local_assets":[]`, `"workspace_path":"/other"`} {
+		if w := request("POST", "/v1/conversations/s/queue", `{"request_id":"x","text":"task","model":"selected",`+extra+`}`); w.Code != 400 {
+			t.Fatal(extra, w.Code)
+		}
+	}
+	if w := request("POST", "/v1/conversations/s/queue", `{"request_id":"bad","text":"task","model":"selected","reasoning_effort":"invalid"}`); w.Code != 400 {
+		t.Fatal(w.Code)
+	}
+	if w := request("GET", "/v1/conversations/s/queue?limit=1", ""); w.Code != 200 {
+		t.Fatal(w.Code, w.Body.String())
+	}
+	if w := request("GET", "/v1/conversations/s/queue?revision=0&after_sequence=0", ""); w.Code != 409 {
+		t.Fatal(w.Code)
+	}
+	scope = "another-owner"
+	if w := request("GET", "/v1/conversations/s/queue/r", ""); w.Code != 403 {
+		t.Fatal(w.Code)
+	}
+	if w := request("GET", "/v1/conversations/s/queue", ""); w.Code != 403 {
+		t.Fatal(w.Code)
+	}
+	scope = ""
+	if w := request("POST", "/v1/conversations/s/queue", body); w.Code != 403 {
+		t.Fatal(w.Code)
+	}
+}
+
+func TestUserQueueHTTPDisabledWithoutFullAssembly(t *testing.T) {
+	for _, svc := range []*queueHTTPService{nil, {}, {consumerReady: true}} {
+		mux := http.NewServeMux()
+		if registerUserQueueRoutes(mux, svc, true) {
+			t.Fatal("advertised incomplete service")
+		}
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, httptest.NewRequest("GET", "/v1/conversations/s/queue", nil))
+		if w.Code != 501 {
+			t.Fatal(w.Code)
+		}
+	}
+}
+
+func TestLocalUserQueueNewMuxRequiresOwner(t *testing.T) {
+	ctx := context.Background()
+	storage, err := db.New(filepath.Join(t.TempDir(), "queue.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer storage.Close()
+	if err = storage.Save(ctx, &session.Session{ID: "s", CreatedAt: time.Now(), UpdatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	queue, err := db.NewUserQueue(storage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := conversation.NewSQLiteRepository(storage, 10000, 8000, "resolved", "", nil)
+	events := &conversation.StoreEventAdapter{Store: storage}
+	executor := conversation.NewTurnExecutor(repo, events, conversation.NewActiveTurnRegistry(), conversation.NewSubscriptionManager(), nil)
+	local := NewLocalUserQueue(ctx, executor, queue, repo, &queueHTTPModel{effort: "high"}, &fakePermissionService{mode: "ask"}, "owner")
+	if local == nil {
+		t.Fatal("local queue missing")
+	}
+	defer local.Close()
+	auth := ServerAuth{Enabled: true, Token: strings.Repeat("a", 32)}
+	handler := NewMux(repo, events, executor, MuxOptions{LocalUserQueue: local, ServerAuth: auth})
+	req := func(method, path, body string, owner, shared bool) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(method, path, strings.NewReader(body))
+		if owner {
+			r.Header.Set("Authorization", "Bearer "+auth.Token)
+		}
+		if shared {
+			r = withSharedDeviceAuthContext(r)
+		}
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, r)
+		return w
+	}
+	const path = "/v1/conversations/s/queue"
+	const body = `{"request_id":"a","text":"task","model":"selected"}`
+	if w := req("POST", path, body, false, false); w.Code != 401 {
+		t.Fatal(w.Code)
+	}
+	if w := req("POST", path, body, false, true); w.Code != 403 {
+		t.Fatal(w.Code)
+	}
+	if w := req("POST", path, body, true, false); w.Code != 202 {
+		t.Fatal(w.Code, w.Body.String())
+	}
+	if w := req("GET", "/v1/runtime/capabilities", "", false, true); w.Code != 200 || !strings.Contains(w.Body.String(), `"user_queue_text_v1":false`) {
+		t.Fatal(w.Code, w.Body.String())
+	}
+	if w := req("GET", "/v1/runtime/capabilities", "", true, false); w.Code != 200 || !strings.Contains(w.Body.String(), `"user_queue_text_v1":true`) {
+		t.Fatal(w.Code, w.Body.String())
+	}
+}
+
+type localQueueIntegrationBuilder struct {
+	supplementIntegrationBuilder
+	queueHTTPModel
+}
+
+func TestLocalUserQueueDrainsAfterOrdinaryTurn(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	storage, err := db.New(filepath.Join(t.TempDir(), "queue.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer storage.Close()
+	if err = storage.Save(ctx, &session.Session{ID: "s", Messages: []model.Message{{Role: model.RoleSystem, Content: "test"}}, CreatedAt: time.Now(), UpdatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	queue, err := db.NewUserQueue(storage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := conversation.NewSQLiteRepository(storage, 10000, 8000, "resolved", "", nil)
+	events := &conversation.StoreEventAdapter{Store: storage}
+	provider := &supplementIntegrationProvider{started: make(chan string, 1), release: make(chan struct{})}
+	builder := &localQueueIntegrationBuilder{supplementIntegrationBuilder{provider}, queueHTTPModel{effort: "high"}}
+	e := conversation.NewTurnExecutor(repo, events, conversation.NewActiveTurnRegistry(), conversation.NewSubscriptionManager(), builder)
+	local := NewLocalUserQueue(ctx, e, queue, repo, builder, &fakePermissionService{mode: "ask"}, "owner")
+	defer local.Close()
+	auth := ServerAuth{Enabled: true, Token: strings.Repeat("a", 32)}
+	handler := NewMux(repo, events, e, MuxOptions{LocalUserQueue: local, ServerAuth: auth})
+	done := make(chan error, 1)
+	go func() { _, err := e.ExecuteWithRequestID(ctx, "s", "initial", "task", "selected", ""); done <- err }()
+	select {
+	case <-provider.started:
+	case err := <-done:
+		t.Fatal(err)
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	for _, id := range []string{"a", "b"} {
+		r := httptest.NewRequest("POST", "/v1/conversations/s/queue", strings.NewReader(`{"request_id":"`+id+`","text":"task `+id+`","model":"selected"}`))
+		r.Header.Set("Authorization", "Bearer "+auth.Token)
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, r)
+		if w.Code != 202 {
+			t.Fatal(w.Code, w.Body.String())
+		}
+	}
+	close(provider.release)
+	if err = <-done; err != nil {
+		t.Fatal(err)
+	}
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		records, err := storage.SessionEvents(ctx, "s")
+		if err != nil {
+			t.Fatal(err)
+		}
+		finished := 0
+		for _, r := range records {
+			if r.Kind == "turn_finished" {
+				finished++
+			}
+		}
+		if finished == 3 {
+			saved, err := storage.Load(ctx, "s")
+			if err != nil {
+				t.Fatal(err)
+			}
+			var queued []string
+			for _, m := range saved.Messages {
+				if m.Role == model.RoleUser && strings.HasPrefix(m.Content, "task ") {
+					queued = append(queued, m.Content)
+				}
+			}
+			if strings.Join(queued, ",") != "task a,task b" {
+				t.Fatal(queued)
+			}
+			return
+		}
+		select {
+		case <-ticker.C:
+		case <-ctx.Done():
+			t.Fatal("queue did not finish", ctx.Err())
+		}
+	}
+}

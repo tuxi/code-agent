@@ -95,7 +95,7 @@ func (s *Store) RecordRuntimeInput(ctx context.Context, in session.RuntimeInput,
 }
 
 func (s *Store) CheckpointRuntimeInputs(ctx context.Context, sess *session.Session, boundary session.RuntimeInputBoundary) ([]string, error) {
-	if sess.ID == "" || boundary.TurnID == "" {
+	if sess == nil || sess.ID == "" || boundary.TurnID == "" {
 		return nil, errors.New("runtime input requires a session and turn")
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -103,6 +103,23 @@ func (s *Store) CheckpointRuntimeInputs(ctx context.Context, sess *session.Sessi
 		return nil, err
 	}
 	defer tx.Rollback()
+	candidate := *sess
+	ids, err := s.checkpointRuntimeInputsTx(ctx, tx, &candidate, boundary)
+	if err != nil {
+		return nil, err
+	}
+	if err = tx.Commit(); err != nil {
+		return nil, err
+	}
+	*sess = candidate
+	if s.OnSave != nil && (len(ids) > 0 || len(boundary.Receipts) > 0 || boundary.Finalize) {
+		s.OnSave(sess, s.path)
+	}
+	return ids, nil
+}
+
+func (s *Store) checkpointRuntimeInputsTx(ctx context.Context, tx *sql.Tx, sess *session.Session, boundary session.RuntimeInputBoundary) ([]string, error) {
+	var err error
 	var archived string
 	if err = tx.QueryRowContext(ctx, `SELECT COALESCE(archived_at,'') FROM sessions WHERE id=?`, sess.ID).Scan(&archived); err != nil {
 		return nil, err
@@ -221,15 +238,8 @@ ON CONFLICT(id) DO UPDATE SET state='delivered',delivered_turn=CASE WHEN runtime
 			return nil, fmt.Errorf("runtime input checkpoint: %w", err)
 		}
 	}
-	if err = tx.Commit(); err != nil {
-		return nil, err
-	}
 	if changed {
-		sess.Messages = copySession.Messages
-		sess.UpdatedAt = copySession.UpdatedAt
-		if s.OnSave != nil {
-			s.OnSave(sess, s.path)
-		}
+		*sess = copySession
 	}
 	return ids, nil
 }

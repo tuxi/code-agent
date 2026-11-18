@@ -41,7 +41,9 @@ type TurnExecutor struct {
 	// scheduler is the process-wide admission controller. Its default is a
 	// single worker for backward-compatible FIFO behavior; deployments may raise
 	// the limit only after advertising the matching runtime capabilities.
-	scheduler *TurnScheduler
+	scheduler     *TurnScheduler
+	deliveryInbox deliveryInbox
+	queueWake     func(string)
 
 	requestMu     sync.Mutex
 	requestClaims map[string]string // sessionID + NUL + requestID -> accepted turnID
@@ -709,6 +711,15 @@ func (e *TurnExecutor) Resume(parentCtx context.Context, sessionID string) (agen
 			}
 		}
 	}
+	if recovered != nil {
+		queued, err := e.isUserQueueInput(parentCtx, *recovered)
+		if err != nil {
+			return agent.TurnResult{}, err
+		}
+		if queued {
+			return agent.TurnResult{}, session.ErrUserQueueUnavailable
+		}
+	}
 	requestID, inputText, wireModel := "", "", ""
 	var assets []model.GatewayAssetRef
 	var localAssets []model.LocalAssetRef
@@ -771,17 +782,30 @@ func (e *TurnExecutor) driveTurn(
 	// selection choice that survives resume/automation turns — else "" lets the
 	// model config default stand.
 	effectiveEffort := effort
+	queuedExecution := queueExecutionFrom(parentCtx)
+	if queuedExecution != nil {
+		effectiveEffort = queuedExecution.frozen.ReasoningEffort
+	}
+	if queuedExecution != nil && !ok {
+		return agent.TurnResult{}, errors.Join(session.ErrUserQueueContextChanged, queuedExecution.store.PauseUserQueueContext(context.WithoutCancel(parentCtx), sess.ID))
+	}
 	if ok {
 		rm, resolveErr := resolver.ResolveModel(wireModel)
 		if resolveErr != nil {
+			if queuedExecution != nil {
+				resolveErr = errors.Join(resolveErr, queuedExecution.store.PauseUserQueueContext(context.WithoutCancel(parentCtx), sess.ID))
+			}
 			return agent.TurnResult{}, resolveErr
 		}
 		resolvedModel = *rm
+		if queuedExecution != nil && (rm.Model != queuedExecution.frozen.ResolvedModel || (effectiveEffort != "" && !modelSupportsEffort(*rm, effectiveEffort))) {
+			return agent.TurnResult{}, errors.Join(session.ErrUserQueueContextChanged, queuedExecution.store.PauseUserQueueContext(context.WithoutCancel(parentCtx), sess.ID))
+		}
 		// A session-cached effort must be validated against the RESOLVED model:
 		// after a model switch the old effort may no longer be supported, in which
 		// case it is dropped (persisted below) and the config default applies —
 		// never fail the turn on a stale session value.
-		if effectiveEffort == "" && sess.ReasoningEffort != "" {
+		if queuedExecution == nil && effectiveEffort == "" && sess.ReasoningEffort != "" {
 			if modelSupportsEffort(resolvedModel, sess.ReasoningEffort) {
 				effectiveEffort = sess.ReasoningEffort
 			} else {
@@ -900,10 +924,19 @@ func (e *TurnExecutor) driveTurn(
 			if persistErr := pub.terminalPersistenceError(); persistErr != nil {
 				return agent.TurnResult{TurnID: turnID}, errors.Join(err, persistErr)
 			}
+			if queuedExecution == nil && e.queueWake != nil && claimed.RequestID != "" {
+				e.queueWake(sess.ID)
+			}
 		}
 		return agent.TurnResult{TurnID: turnID}, err
 	}
-	defer release()
+	queueWake := false
+	defer func() {
+		release()
+		if queueWake && e.queueWake != nil {
+			e.queueWake(sess.ID)
+		}
+	}()
 	if admitted != nil {
 		admitted(TurnAdmission{Delivery: "started", TurnID: turnID, Cursor: claimed.AcceptedSeq}, nil)
 	}
@@ -925,7 +958,31 @@ func (e *TurnExecutor) driveTurn(
 			})
 			sess.UpdatedAt = time.Now()
 		}
-		if startErr := turnRepo.StartTurnInput(context.WithoutCancel(parentCtx), claimed, sess); startErr != nil {
+		if queuedExecution != nil {
+			current, checkErr := queuedExecution.resolve(parentCtx, sess.ID, queuedExecution.frozen)
+			if checkErr != nil {
+				return agent.TurnResult{TurnID: turnID}, errors.Join(checkErr, queuedExecution.store.PauseUserQueueContext(context.WithoutCancel(parentCtx), sess.ID))
+			}
+			startedSeq, startErr := queuedExecution.store.StartUserQueueClaim(parentCtx, claimed, sess, current)
+			if startErr != nil {
+				return agent.TurnResult{TurnID: turnID}, startErr
+			}
+			records, replayErr := e.events.ReplaySince(parentCtx, sess.ID, startedSeq-1)
+			if replayErr != nil {
+				return agent.TurnResult{TurnID: turnID}, replayErr
+			}
+			for _, record := range records {
+				if record.Seq == startedSeq {
+					var event agent.Event
+					if decodeErr := json.Unmarshal(record.Payload, &event); decodeErr != nil {
+						return agent.TurnResult{TurnID: turnID}, decodeErr
+					}
+					event.Seq = record.Seq
+					pub.EmitPersisted(event)
+					break
+				}
+			}
+		} else if startErr := turnRepo.StartTurnInput(context.WithoutCancel(parentCtx), claimed, sess); startErr != nil {
 			return agent.TurnResult{TurnID: turnID}, startErr
 		}
 		prepared = true
@@ -1002,6 +1059,11 @@ func (e *TurnExecutor) driveTurn(
 		}
 	}
 	runner := e.rb.Build(rctx)
+	if provenance == nil && rctx.ManagedTask == nil && prepared && requestID != "" {
+		if err := e.configureTurnDelivery(parentCtx, sess.ID, turnID, runner, pub); err != nil {
+			return agent.TurnResult{TurnID: turnID}, err
+		}
+	}
 	if binding != nil {
 		if capable, ok := runner.(backgroundRunner); ok {
 			binding.Identity = capable.ContinuationIdentity()
@@ -1038,7 +1100,9 @@ func (e *TurnExecutor) driveTurn(
 	//    so a client sees paused/failed transitions.
 	recordStatus(sess, runErr)
 	e.emitLifecycle(pub, sess, res, runErr)
-	e.setTurnInputState(parentCtx, claimed, turnInputTerminalState(sess, runErr))
+	if queuedExecution == nil {
+		e.setTurnInputState(parentCtx, claimed, turnInputTerminalState(sess, runErr))
+	}
 	if store := e.continuationStore(); store != nil {
 		state := "finished"
 		if e.active.WasSuspended(sess.ID) {
@@ -1059,11 +1123,26 @@ func (e *TurnExecutor) driveTurn(
 	//    marker keep the persisted history consistent and resumable. WithoutCancel
 	//    keeps the save from being aborted by the turn's (or caller's) cancellation.
 	if !sess.IsEmpty() {
-		if serr := e.repo.Save(context.WithoutCancel(parentCtx), sess); serr != nil && e.OnSaveError != nil {
-			e.OnSaveError(serr)
+		if serr := e.repo.Save(context.WithoutCancel(parentCtx), sess); serr != nil {
+			if e.OnSaveError != nil {
+				e.OnSaveError(serr)
+			}
+			if queuedExecution == nil {
+				return res, runErr
+			}
+			if queuedExecution != nil {
+				return res, errors.Join(runErr, serr, queuedExecution.store.PauseUserQueueContext(context.WithoutCancel(parentCtx), sess.ID))
+			}
 		}
 	}
-
+	queueWake = queuedExecution == nil && claimed.RequestID != "" && turnInputTerminalState(sess, runErr) != ""
+	if queuedExecution != nil {
+		finishErr := e.finishQueueExecution(context.WithoutCancel(parentCtx), sess.ID, claimed, queuedExecution)
+		if finishErr != nil {
+			finishErr = errors.Join(finishErr, queuedExecution.store.PauseUserQueueContext(context.WithoutCancel(parentCtx), sess.ID))
+		}
+		runErr = errors.Join(runErr, finishErr)
+	}
 	return res, runErr
 }
 
@@ -1522,6 +1601,13 @@ func (e *TurnExecutor) recoverTurnInputs(ctx context.Context, sessionID string) 
 			if c, err := store.Continuation(ctx, input.SessionID); err == nil && c.TurnID == input.TurnID && len(c.Checkpoint) > 0 && c.State != "finished" {
 				continue
 			}
+		}
+		queued, queueErr := e.isUserQueueInput(ctx, input)
+		if queueErr != nil {
+			return rescheduled, queueErr
+		}
+		if queued {
+			continue
 		}
 		claimKey := input.SessionID + "\x00" + input.RequestID
 		if !e.claimRecovery(claimKey) {

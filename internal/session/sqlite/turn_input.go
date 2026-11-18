@@ -18,6 +18,22 @@ var _ session.TurnInputStore = (*Store)(nil)
 func (s *Store) SupportsValidationContracts() bool { return true }
 
 func (s *Store) ReserveTurnInput(ctx context.Context, input session.TurnInput, accepted session.EventRecord) (session.TurnInput, bool, int64, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return session.TurnInput{}, false, 0, err
+	}
+	defer tx.Rollback()
+	stored, created, seq, err := s.reserveTurnInputTx(ctx, tx, input, accepted)
+	if err != nil {
+		return session.TurnInput{}, false, 0, err
+	}
+	if err = tx.Commit(); err != nil {
+		return session.TurnInput{}, false, 0, err
+	}
+	return stored, created, seq, nil
+}
+
+func (s *Store) reserveTurnInputTx(ctx context.Context, tx *sql.Tx, input session.TurnInput, accepted session.EventRecord) (session.TurnInput, bool, int64, error) {
 	if input.ValidationContract != nil {
 		copy, err := input.ValidationContract.CloneValidated()
 		if err != nil {
@@ -34,11 +50,7 @@ func (s *Store) ReserveTurnInput(ctx context.Context, input session.TurnInput, a
 		}
 		input.ValidationContract = copy
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return session.TurnInput{}, false, 0, err
-	}
-	defer tx.Rollback()
+	var err error
 	if input.ManagedTask != nil && (accepted.SessionID != input.SessionID || accepted.TurnID != input.TurnID || accepted.Kind != "turn_accepted") {
 		return session.TurnInput{}, false, 0, collab.ErrConflict
 	}
@@ -61,7 +73,7 @@ func (s *Store) ReserveTurnInput(ctx context.Context, input session.TurnInput, a
 		if err != nil {
 			return session.TurnInput{}, false, 0, err
 		}
-		return stored, false, 0, tx.Commit()
+		return stored, false, 0, nil
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		return session.TurnInput{}, false, 0, err
@@ -112,9 +124,6 @@ func (s *Store) ReserveTurnInput(ctx context.Context, input session.TurnInput, a
 	if err = bindManagedAttempt(ctx, tx, input); err != nil {
 		return session.TurnInput{}, false, 0, err
 	}
-	if err := tx.Commit(); err != nil {
-		return session.TurnInput{}, false, 0, err
-	}
 	return input, true, seq, nil
 }
 
@@ -124,6 +133,13 @@ func (s *Store) StartTurnInput(ctx context.Context, input session.TurnInput, ses
 		return err
 	}
 	defer tx.Rollback()
+	if err = s.startTurnInputTx(ctx, tx, input, sess); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+func (s *Store) startTurnInputTx(ctx context.Context, tx *sql.Tx, input session.TurnInput, sess *session.Session) error {
+	var err error
 	if _, err = tx.ExecContext(ctx, `UPDATE coding_task_meta SET value=value WHERE key='store_id'`); err != nil {
 		return err
 	}
@@ -141,7 +157,7 @@ func (s *Store) StartTurnInput(ctx context.Context, input session.TurnInput, ses
 	if n, _ := result.RowsAffected(); n != 1 {
 		return fmt.Errorf("turn input %s/%s not found", input.SessionID, input.RequestID)
 	}
-	return tx.Commit()
+	return nil
 }
 
 func (s *Store) SetTurnInputState(ctx context.Context, sessionID, requestID string, state session.TurnInputState) error {

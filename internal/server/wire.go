@@ -20,6 +20,7 @@ import (
 // single place transport concerns are expressed; the core struct is left
 // untouched. Field order groups the common header first, then per-kind fields.
 type wireEvent struct {
+	SupplementApplication  *session.SupplementApplication    `json:"supplement_application,omitempty"`
 	ContextMaintenance     *agent.ContextMaintenance         `json:"context_maintenance,omitempty"`
 	ContextOperationID     string                            `json:"context_operation_id,omitempty"`
 	Background             *agent.BackgroundContinuationInfo `json:"background,omitempty"`
@@ -216,6 +217,9 @@ func toWire(e agent.Event) wireEvent {
 		Ineffective:   e.Ineffective,
 		ExitCode:      e.ExitCode,
 		Err:           e.Err,
+	}
+	if e.Kind == agent.EventKind("user_supplement_applied") {
+		w.SupplementApplication = e.SupplementApplication
 	}
 	if e.Kind == agent.EventTurnAccepted {
 		w.ValidationContract, w.ValidationContractHash = e.ValidationContract, e.ValidationContractHash

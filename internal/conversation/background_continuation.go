@@ -176,7 +176,13 @@ func (e *TurnExecutor) resumeBackground(ctx context.Context, store session.Conti
 	if err != nil {
 		return
 	}
-	defer release()
+	wakeQueue := false
+	defer func() {
+		release()
+		if wakeQueue && e.queueWake != nil {
+			e.queueWake(c.SessionID)
+		}
+	}()
 	if err = ctx.Err(); err != nil {
 		return
 	}
@@ -230,7 +236,8 @@ func (e *TurnExecutor) resumeBackground(ctx context.Context, store session.Conti
 	rctx := RuntimeContext{Session: sess, TurnID: c.TurnID, RequestID: binding.RequestID, Publisher: pub, Model: binding.WireModel, ResolvedModel: binding.ResolvedModel, ReasoningEffort: binding.Effort,
 		Approver: e.active.Approver(sess.ID), PlanApprover: e.active.PlanApprover(sess.ID), AskUserApprover: e.active.AskUserApprover(sess.ID), ClientWaiter: e.active.ClientToolWaiter(sess.ID), ClientTools: e.active.ClientTools(sess.ID), Credential: e.sessionCredential(sess.ID), RuntimeInputs: provider.RuntimeInputStore(), Checkpointer: repoCheckpointer{repo: e.repo, onErr: e.OnSaveError}}
 	rctx.ParkContinuation = e.backgroundParker(store, &binding, c.TurnID, pub)
-	runner, ok := e.rb.Build(rctx).(backgroundRunner)
+	builtRunner := e.rb.Build(rctx)
+	runner, ok := builtRunner.(backgroundRunner)
 	if !ok || !runner.CanContinueBackground() || runner.ContinuationIdentity() != binding.Identity {
 		e.backgroundBlocked(store, c, pub, errors.New("background continuation runtime configuration changed"))
 		return
@@ -269,6 +276,23 @@ func (e *TurnExecutor) resumeBackground(ctx context.Context, store session.Conti
 		return
 	}
 	defer func() { cancel(); e.active.FinishTurn(sess.ID) }()
+	if e.deliveryInbox != nil {
+		resume, ok := e.deliveryInbox.(interface {
+			ResumeTurnDeliveryBoundary(context.Context, string, string) error
+		})
+		if !ok {
+			e.backgroundBlocked(store, c, pub, errors.New("shared delivery cannot resume safely"))
+			return
+		}
+		if err = resume.ResumeTurnDeliveryBoundary(runCtx, sess.ID, c.TurnID); err != nil {
+			e.backgroundBlocked(store, c, pub, err)
+			return
+		}
+		if err = e.configureTurnDelivery(runCtx, sess.ID, c.TurnID, builtRunner, pub); err != nil {
+			e.backgroundBlocked(store, c, pub, err)
+			return
+		}
+	}
 	sess.SetTurnStatus(session.TurnStatusResuming)
 	info := backgroundInfo(c)
 	info.State = "resuming"
@@ -304,9 +328,13 @@ func (e *TurnExecutor) resumeBackground(ctx context.Context, store session.Conti
 	if _, err = store.EndContinuation(context.Background(), sess.ID, c.TurnID, state); err != nil && e.OnSaveError != nil {
 		e.OnSaveError(err)
 	}
-	if err = e.repo.Save(context.WithoutCancel(ctx), sess); err != nil && e.OnSaveError != nil {
-		e.OnSaveError(err)
+	if err = e.repo.Save(context.WithoutCancel(ctx), sess); err != nil {
+		if e.OnSaveError != nil {
+			e.OnSaveError(err)
+		}
+		return
 	}
+	wakeQueue = binding.RequestID != "" && turnInputTerminalState(sess, runErr) != ""
 }
 
 func backgroundInfo(c session.Continuation) *agent.BackgroundContinuationInfo {

@@ -379,6 +379,9 @@ type MessageView struct {
 
 // MuxOptions configures the HTTP surface.
 type MuxOptions struct {
+	// EnableTextSupplements opts into the text-only admission/query contract.
+	EnableTextSupplements bool
+	LocalUserQueue        *LocalUserQueue
 	// BackgroundJobs is the live registry used by run_command, not event history.
 	BackgroundJobs *jobs.Registry
 	// Preview is the runtime-owned immutable preview store, viewer materializer,
@@ -485,6 +488,8 @@ type MuxOptions struct {
 // multi-session clients. WebSocket hello capabilities remain a backwards-
 // compatible feature list; this endpoint is the source of truth for execution.
 type RuntimeCapabilities struct {
+	UserQueueText              bool `json:"user_queue_text_v1"`
+	TextSupplements            bool `json:"user_supplement_text_v1"`
 	BackgroundJobControl       bool `json:"background_job_control_v1"`
 	DurableValidationContract  bool `json:"durable_validation_contract_v1"`
 	TaskLinks                  bool `json:"task_links_v1"`
@@ -633,6 +638,13 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 		attentionSupported = attentionSupported && capability.SupportsAttentionSnapshot()
 	}
 	runtimeCapabilities := opts.RuntimeCapabilities
+	runtimeCapabilities.TextSupplements = registerSupplementRoutes(mux, executor, opts.EnableTextSupplements)
+	var queueService *queueHTTPService
+	if opts.LocalUserQueue != nil {
+		queueService = &opts.LocalUserQueue.service
+	}
+	runtimeCapabilities.UserQueueText = registerUserQueueRoutes(mux, queueService, opts.ServerAuth.Enabled)
+
 	runtimeCapabilities.BackgroundJobControl = opts.BackgroundJobs != nil
 	runtimeCapabilities.DurableValidationContract = executor != nil && executor.SupportsValidationContracts()
 	runtimeCapabilities.TaskLinks = registerTaskRoutes(mux, repo, opts.RuntimeInfo.ServerID)
@@ -656,6 +668,9 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 	}
 	advertisedCapabilities := make([]string, 0, len(opts.Capabilities)+1)
 	for _, capability := range opts.Capabilities {
+		if capability == textSupplementCapability || capability == userQueueCapability {
+			continue
+		}
 		if capability == sessionRailCapability {
 			continue // Full six-section semantics are not installed yet.
 		}
@@ -683,6 +698,9 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 	}
 	if runtimeCapabilities.SkillPluginManagement && !hasCapability(advertisedCapabilities, "skill_plugin_management_v1") {
 		advertisedCapabilities = append(advertisedCapabilities, "skill_plugin_management_v1")
+	}
+	if runtimeCapabilities.TextSupplements {
+		advertisedCapabilities = append(advertisedCapabilities, textSupplementCapability)
 	}
 	var previewMismatch bool
 	advertisedCapabilities, previewMismatch = preview.ReconcileAdvertised(advertisedCapabilities, previewFlags)
@@ -719,7 +737,9 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 		if opts.CloneService != nil {
 			projectsRoot = opts.CloneService.ProjectsRoot()
 		}
-		writeJSON(w, r, http.StatusOK, runtimeCapabilitiesResponse{Capabilities: runtimeCapabilities, ProjectsRoot: projectsRoot})
+		caps := runtimeCapabilities
+		caps.UserQueueText = caps.UserQueueText && localQueueOwner(r.Context())
+		writeJSON(w, r, http.StatusOK, runtimeCapabilitiesResponse{Capabilities: caps, ProjectsRoot: projectsRoot})
 	})
 
 	mux.HandleFunc("GET /v1/runtime/info", func(w http.ResponseWriter, r *http.Request) {
@@ -1414,11 +1434,17 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 		return conversation.NewTransportSession(id, executor), nil
 	}
 	capabilityResolver := opts.CapabilityResolver
-	if capabilityResolver != nil {
+	if capabilityResolver != nil || runtimeCapabilities.UserQueueText {
 		capabilityResolver = func(ctx context.Context) []string {
-			var caps []string
-			for _, cap := range opts.CapabilityResolver(ctx) {
-				if cap == sessionRailCapability {
+			var caps, configured []string
+			if runtimeCapabilities.UserQueueText && localQueueOwner(ctx) {
+				caps = append(caps, userQueueCapability)
+			}
+			if opts.CapabilityResolver != nil {
+				configured = opts.CapabilityResolver(ctx)
+			}
+			for _, cap := range configured {
+				if cap == sessionRailCapability || cap == userQueueCapability {
 					continue
 				}
 				if cap == "durable_validation_contract_v1" && !runtimeCapabilities.DurableValidationContract {

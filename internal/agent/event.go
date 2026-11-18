@@ -256,9 +256,10 @@ type Event struct {
 	// web UI, DreamAI) needs them to keep streams from crossing.
 	SessionID              string
 	TurnID                 string
-	RequestID              string                      // client-generated idempotency/correlation key for agent_input
-	ValidationContract     *session.ValidationContract `json:"validation_contract,omitempty"`
-	ValidationContractHash string                      `json:"validation_contract_hash,omitempty"`
+	SupplementApplication  *session.SupplementApplication `json:"supplement_application,omitempty"`
+	RequestID              string                         // client-generated idempotency/correlation key for agent_input
+	ValidationContract     *session.ValidationContract    `json:"validation_contract,omitempty"`
+	ValidationContractHash string                         `json:"validation_contract_hash,omitempty"`
 	UserAssets             []model.GatewayAssetRef
 	LocalAssets            []model.LocalAssetRef
 	QueuePosition          int    // EventTurnQueued: one-based scheduler position

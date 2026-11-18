@@ -34,6 +34,7 @@ import (
 	"code-agent/internal/repos"
 	"code-agent/internal/runtime"
 	"code-agent/internal/server"
+	sqlitestore "code-agent/internal/session/sqlite"
 	"code-agent/internal/settings"
 	"code-agent/internal/systemskills"
 )
@@ -236,6 +237,14 @@ func run() error {
 	rb.SetTaskExecutionGuard(taskExecutionGuard)
 	executor := conversation.NewTurnExecutor(repo, eventStore, active, subs, rb)
 	executor.SetAssetRefReleaseService(rb)
+	enableTextSupplements := os.Getenv("CODEAGENT_EXPERIMENTAL_TEXT_SUPPLEMENTS") == "1"
+	if err := configureExperimentalSupplements(executor, telemetryStore, enableTextSupplements); err != nil {
+		return err
+	}
+	if enableTextSupplements {
+		fmt.Fprintln(os.Stderr, "codeagentd: experimental text supplements enabled")
+	}
+
 	maxConcurrentTurns := cfg.RuntimeMaxConcurrentTurns()
 	executor.SetTurnScheduler(conversation.NewTurnScheduler(maxConcurrentTurns))
 	if provider != nil {
@@ -396,13 +405,37 @@ func run() error {
 			}
 		}
 	}
+	permissionStore := server.NewPermissionStore(home)
+	var localQueue *server.LocalUserQueue
+	if os.Getenv("CODEAGENT_EXPERIMENTAL_USER_QUEUE") == "1" {
+		host, _, splitErr := net.SplitHostPort(addr)
+		ip := net.ParseIP(host)
+		if splitErr != nil || !auth.Enabled || (host != "localhost" && (ip == nil || !ip.IsLoopback())) {
+			return fmt.Errorf("experimental user queue requires authenticated loopback")
+		}
+		sqliteStore, ok := telemetryStore.(*sqlitestore.Store)
+		if !ok {
+			return fmt.Errorf("experimental user queue requires SQLite")
+		}
+		queue, queueErr := sqlitestore.NewUserQueue(sqliteStore)
+		if queueErr != nil {
+			return queueErr
+		}
+		localQueue = server.NewLocalUserQueue(ctx, executor, queue, repo, rb, permissionStore, "local-runtime:"+runtimeInfo.ServerID)
+		if localQueue == nil {
+			return fmt.Errorf("experimental user queue unavailable")
+		}
+		defer localQueue.Close()
+	}
 	handler := server.NewMux(repo, eventStore, executor, server.MuxOptions{
-		BackgroundJobs: runtime.BackgroundJobs(toolReg),
-		Preview:        previewService,
-		Sharing:        sharing,
-		ServerName:     buildinfo.ServerName(),
-		RuntimeInfo:    runtimeInfo,
-		RuntimeModels:  runtimeModels,
+		LocalUserQueue:        localQueue,
+		EnableTextSupplements: enableTextSupplements,
+		BackgroundJobs:        runtime.BackgroundJobs(toolReg),
+		Preview:               previewService,
+		Sharing:               sharing,
+		ServerName:            buildinfo.ServerName(),
+		RuntimeInfo:           runtimeInfo,
+		RuntimeModels:         runtimeModels,
 		RuntimeModelsBuilder: func() server.RuntimeModelCatalog {
 			// A2: live rebuild with the current injected credentials so a
 			// POST /v1/secrets makes models available without a restart.
@@ -421,7 +454,7 @@ func run() error {
 		CloneService:      cloneService,
 		Granter:           rb.Rules(),
 		Providers:         providerStore,
-		Permissions:       server.NewPermissionStore(home),
+		Permissions:       permissionStore,
 		WorkspaceReloader: wsReg.ReloadWorkspace,
 		Prompts:           wsReg,
 		SkillPlugins:      runtime.NewSkillPluginManager(cfg.GlobalSkillsDir),
@@ -440,6 +473,7 @@ func run() error {
 				fmt.Fprintf(os.Stderr, "[control-plane] session ready reconcile: %v\n", err)
 			}
 			_, _ = executor.RecoverSessionTurnInputs(context.WithoutCancel(ctx), sessionID)
+			localQueue.SessionReady(ctx, sessionID)
 			go executor.FlushAssetRefReleases(context.WithoutCancel(ctx), cfg.CredentialResolver(baseResolver))
 		},
 		OwnershipChanged: func(ctx context.Context) {
