@@ -2,7 +2,7 @@
 name: ui-adaptation
 description: Understand an app, web, or design-mockup image's layout and adapt it across iPhone Duo, iPhone, and iPad. Use when the user provides a screenshot or design image and asks to analyze its layout, preserve or adapt it across devices, generate responsive previews, or verify that an implementation visually matches the source. Do not use for generic image captioning or for UI implementation that has no visual reference.
 metadata:
-  version: "7"
+  version: "8"
 ---
 
 # UI Adaptation
@@ -189,8 +189,34 @@ For each cell:
 - use `mode=adaptation`;
 - pass `ui_preview_lineage.v2` with `target` and `state` equal to the cell and
   `target_matrix` identical to the matrix;
-- author a self-contained viewer and keep a workspace raster fallback;
+- author a self-contained HTML fragment and keep a workspace raster fallback;
 - use that cell's own `artifact_key`.
+
+`viewer_html` is a body fragment that the runtime wraps in its own document. It
+MUST NOT contain a full HTML document shell: `<!doctype html>`, `<html>`,
+`<head>`, or `<body>`. Author only the fragment: a `<style>` block, DOM content,
+and restricted inline script. External resources, navigation, network access,
+forms, and bridge calls remain forbidden by the `ui_preview` security check. A
+full document is rejected as `preview_security_violation`.
+
+Do not use `href` or `src` unless the value is a `data:` URL. `href="#"` and
+other navigation targets are rejected even when they look local; use a
+`<button type="button">` for inert actions instead.
+
+A minimal valid fragment looks like:
+
+```html
+<style>.hero{margin:0;padding:24px}</style>
+<main class="hero">
+  <h1>DreamLog</h1>
+  <p>好好表达，剩下的交给剪辑。</p>
+  <button type="button">开始创作</button>
+</main>
+```
+
+If `ui_preview` returns `preview_security_violation`, rewrite the fragment by
+removing the document shell or the forbidden primitive. Do not change the
+schema, add an external resource, or use a bridge to work around the check.
 
 A preview revision belongs to exactly one cell. Never reuse another target's or
 state's preview, artifact key, or revision. Similar layouts still require
@@ -332,6 +358,11 @@ available through the asset/Inspector surface and summarize what matters.
 - A preview interaction is not production proof and is not an approval signal.
 - A preview derived from a reviewed layout must carry `ui_preview_lineage.v2` so
   its layout revision, source image, evidence, target, and state remain traceable.
+- `viewer_html` is a fragment, not a document. A `<!doctype html>`, `<html>`,
+  `<head>`, or `<body>` shell is rejected as `preview_security_violation`; remove
+  the shell instead of changing the schema, adding a resource, or using a bridge.
+- `href` and `src` are only allowed with `data:` URLs. `href="#"`, relative
+  navigation, and external URLs are rejected; use a button for inert actions.
 - One preview revision cannot fill two matrix cells. Shared artifacts, a reused
   artifact key, or a lineage whose target/state differs from the cell are matrix
   errors, not shortcuts.

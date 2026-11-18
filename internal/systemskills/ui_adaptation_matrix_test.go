@@ -59,8 +59,8 @@ func TestUIAdaptationSkillCoversPreviewMatrixOrchestration(t *testing.T) {
 		t.Fatalf("read embedded manifest: %v", err)
 	}
 	for _, entry := range manifest.Skills {
-		if entry.Name == "ui-adaptation" && entry.Version != "7" {
-			t.Fatalf("ui-adaptation version = %q, want 7", entry.Version)
+		if entry.Name == "ui-adaptation" && entry.Version != "8" {
+			t.Fatalf("ui-adaptation version = %q, want 8", entry.Version)
 		}
 	}
 }
