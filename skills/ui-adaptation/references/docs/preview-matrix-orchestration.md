@@ -64,7 +64,7 @@ evidence and the cell's exact target/state:
   "artifact_key": "matrix-dreamlog-duo_folded-default-r1",
   "mode": "adaptation",
   "title": "DreamLog Home · Duo folded · default",
-  "viewer_html": "<self-contained HTML>",
+  "viewer_html": "<style>.hero{margin:0;padding:24px;border-radius:24px;background:#111;color:#fff}</style><main class=\"hero\"><h1>DreamLog</h1><p>好好表达，剩下的交给剪辑。</p></main>",
   "fallback_path": "source.png",
   "lineage": {
     "schema": "ui_preview_lineage.v2",
@@ -83,6 +83,45 @@ evidence and the cell's exact target/state:
     }
   }
 }
+```
+
+### 2.1 `viewer_html` is a fragment
+
+`viewer_html` is the body fragment only; the runtime wraps it in its own
+document. Do not send a full HTML document shell:
+
+- no `<!doctype html>`
+- no `<html>`
+- no `<head>`
+- no `<body>`
+
+Allowed inside the fragment: a `<style>` block, DOM content, and restricted
+inline script. External resources, navigation, network access, forms, and bridge
+calls remain forbidden by `ui_preview`'s security check. `href` and `src` are
+only allowed with `data:` URLs; `href="#"` and relative navigation are rejected,
+so use a `<button type="button">` for inert actions.
+
+If `ui_preview` returns `preview_security_violation`, rewrite the fragment
+(remove the document shell or the forbidden primitive) and retry. Do not change
+the schema, add an external resource, or use a bridge to bypass the check.
+
+A valid fragment has no document shell:
+
+```html
+<style>.hero{margin:0;padding:24px;border-radius:24px;background:#111;color:#fff}</style>
+<main class="hero">
+  <h1>DreamLog</h1>
+  <p>好好表达，剩下的交给剪辑。</p>
+  <button type="button">开始创作</button>
+</main>
+```
+
+A full document is invalid even when its content is otherwise safe:
+
+```html
+<!doctype html>
+<html><head><style>.hero{padding:24px}</style></head>
+<body><main class="hero">DreamLog</main></body></html>
 ```
 
 Repeat for `duo_folded/loading`, `iphone_portrait/default`, and
@@ -115,6 +154,7 @@ Retry only that cell:
 {
   "artifact_key": "matrix-dreamlog-iphone_portrait-default-r2",
   "mode": "adaptation",
+  "viewer_html": "<style>.phone{max-width:390px;margin:0 auto}</style><main class=\"phone\">DreamLog</main>",
   "lineage": { "...": "same layout/source/evidence, target=iphone_portrait, state=default" },
   "fallback_path": "source.png"
 }
@@ -201,6 +241,8 @@ artifact ID and never cross-wire another cell's revision.
 ## 7. Invariants
 
 - One matrix block per matrix revision in the client; one cell per target/state.
+- Each `ui_preview.viewer_html` is a body fragment; no `<!doctype html>`,
+  `<html>`, `<head>`, or `<body>` document shell.
 - Each completed lineage's target/state equals its cell.
 - Every completed lineage binds the matrix's layout, source, evidence and target
   set.
