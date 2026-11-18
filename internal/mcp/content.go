@@ -36,9 +36,10 @@ type contentAssetContext struct {
 }
 
 type renderedContent struct {
-	Text   string
-	Output json.RawMessage
-	Assets []assets.Ref
+	Text         string
+	Output       json.RawMessage
+	Assets       []assets.Ref
+	VisionInputs []assets.Ref
 }
 
 // derivedMCPContentOutput is a code-agent Event.output shape derived from
@@ -72,6 +73,7 @@ func flattenContent(content []mcpsdk.Content) string {
 func renderContentAssets(content []mcpsdk.Content, ctx contentAssetContext) renderedContent {
 	parts := make([]string, 0, len(content))
 	refs := make([]assets.Ref, 0)
+	var visionInputs []assets.Ref
 	items := make([]derivedMCPContentOutputItem, 0)
 	var lastMaterializedMedia *assets.Ref
 	for i, c := range content {
@@ -87,6 +89,7 @@ func renderContentAssets(content []mcpsdk.Content, ctx contentAssetContext) rend
 			refs = append(refs, ref)
 			items = append(items, outputItem(ref, "image", len(v.Data)))
 			if ref.WorkspaceRelativePath != "" {
+				visionInputs = append(visionInputs, ref)
 				lastMaterializedMedia = &refs[len(refs)-1]
 			}
 		case *mcpsdk.AudioContent:
@@ -110,6 +113,11 @@ func renderContentAssets(content []mcpsdk.Content, ctx contentAssetContext) rend
 			} else if materialized, n, ok := materializeResourceLink(ctx, ordinal, v, text); ok {
 				ref = materialized
 				bytes = n
+				// Desktop Control can deliver a capture through a standalone
+				// artifact link. An alias of inline media needs no second input.
+				if isDesktopControlArtifactURI(v.URI) && ref.Kind == "image" {
+					visionInputs = append(visionInputs, ref)
+				}
 			}
 			refs = append(refs, ref)
 			items = append(items, outputItem(ref, "resource_link", bytes))
@@ -135,7 +143,7 @@ func renderContentAssets(content []mcpsdk.Content, ctx contentAssetContext) rend
 	if len(items) > 0 {
 		output, _ = json.Marshal(derivedMCPContentOutput{Kind: internalOutputKindMCPContent, Items: items})
 	}
-	return renderedContent{Text: strings.Join(parts, "\n"), Output: output, Assets: refs}
+	return renderedContent{Text: strings.Join(parts, "\n"), Output: output, Assets: refs, VisionInputs: visionInputs}
 }
 
 func aliasResourceLinkToMedia(ctx contentAssetContext, ordinal int, uri, preview string, media *assets.Ref) (assets.Ref, bool) {

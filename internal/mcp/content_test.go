@@ -150,6 +150,9 @@ func TestDesktopControlResourceLinkAliasesMaterializedImage(t *testing.T) {
 	if link.Metadata["alias_of"] != image.ID || link.Metadata["materialized"] != "true" {
 		t.Fatalf("resource link alias metadata = %+v", link.Metadata)
 	}
+	if len(got.VisionInputs) != 1 || got.VisionInputs[0].ID != image.ID {
+		t.Fatalf("vision inputs = %+v, want only the inline screenshot", got.VisionInputs)
+	}
 }
 
 func TestFlattenNilEmbeddedResource(t *testing.T) {

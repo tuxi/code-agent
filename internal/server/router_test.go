@@ -294,7 +294,7 @@ func TestRouterAgentInputCommandCancel(t *testing.T) {
 func TestRouterAgentInputToolResult(t *testing.T) {
 	tr := &fakeToolResults{called: make(chan struct{}, 1)}
 	r := Router{ToolResults: tr}
-	r.Route(context.Background(), []byte(`{"type":"agent_input","kind":"tool_result","tool_result":{"tool_use_id":"call_99","subtype":"result","content":"done","is_error":false}}`))
+	r.Route(context.Background(), []byte(`{"type":"agent_input","kind":"tool_result","tool_result":{"tool_use_id":"call_99","subtype":"result","content":"done","is_error":false,"assets":[{"id":"shot","kind":"image"}],"vision_asset_ids":["shot"]}}`))
 	select {
 	case <-tr.called:
 		if tr.callID != "call_99" {
@@ -302,6 +302,9 @@ func TestRouterAgentInputToolResult(t *testing.T) {
 		}
 		if tr.result.Content != "done" || tr.result.IsError {
 			t.Errorf("result = %+v, want content=done isError=false", tr.result)
+		}
+		if len(tr.result.VisionAssetIDs) != 1 || tr.result.VisionAssetIDs[0] != "shot" {
+			t.Errorf("vision asset IDs = %v, want [shot]", tr.result.VisionAssetIDs)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("agent_input tool_result did not reach the tool result resolver")

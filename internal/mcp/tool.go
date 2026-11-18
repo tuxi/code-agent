@@ -100,7 +100,12 @@ func (t *remoteTool) Execute(ctx context.Context, ec tools.ExecutionContext, inp
 		// self-correct, so surface it through the loop's existing failure path.
 		return tools.ToolResult{}, fmt.Errorf("mcp: tool error: %s", text)
 	}
-	return tools.ToolResult{Content: text, Output: mergeOutput(res.StructuredContent, rendered.Output), Assets: rendered.Assets}, nil
+	return tools.ToolResult{
+		Content:      text,
+		Output:       mergeOutput(res.StructuredContent, rendered.Output),
+		Assets:       rendered.Assets,
+		VisionInputs: rendered.VisionInputs,
+	}, nil
 }
 
 // mergeOutput combines the MCP server's StructuredContent (the semantically

@@ -357,6 +357,9 @@ type ToolResult struct {
 	Failure              *ToolFailure    `json:"failure,omitempty"`
 	Output               json.RawMessage `json:"output,omitempty"`
 	Assets               []assets.Ref    `json:"assets,omitempty"`
+	// VisionInputs explicitly supplies local images for the next model request.
+	// Assets carries navigation and preview references.
+	VisionInputs []assets.Ref `json:"-"`
 	// Previews is the typed producer side-channel. It is never inferred from
 	// Output or the tool name and is not copied into the model observation.
 	Previews []preview.Draft `json:"-"`

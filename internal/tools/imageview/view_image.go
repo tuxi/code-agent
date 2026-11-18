@@ -327,7 +327,7 @@ func (t *Tool) Execute(ctx context.Context, ec tools.ExecutionContext, raw json.
 	if output.CropAssetID != nil {
 		content = fmt.Sprintf("Viewed image %s (%dx%d, %s detail) and cropped region.", filepath.Base(sourceRel), width, height, in.Detail)
 	}
-	return tools.ToolResult{Content: content, Output: outputJSON, Assets: refs}, nil
+	return tools.ToolResult{Content: content, Output: outputJSON, Assets: refs, VisionInputs: refs}, nil
 }
 
 func decodeStrict(raw json.RawMessage, target any) error {

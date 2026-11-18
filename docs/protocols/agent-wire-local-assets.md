@@ -48,7 +48,11 @@ serialized into a Provider request. The model receives a text-only manifest
 containing relative path, filename, kind, MIME type, and size, plus instructions
 not to infer file contents and to call a client-side local analysis tool.
 
-The Runtime never uploads screenshot or camera output. Capture and image tool
-results stay in the workspace: a vision-capable model consumes them as inline
-content parts, otherwise the model is told to call a client-side local analysis
-tool. No file bytes leave the machine through the Runtime.
+Client capture tools can set `tool_result.vision_asset_ids` to an ordered array
+of IDs from the same result's `assets` array. Each selected asset supplies an
+image MIME type and a local absolute path. For example, a screenshot result
+with an asset whose `id` is `shot-1` declares
+`"vision_asset_ids": ["shot-1"]`. The Runtime uses these selections as inline
+images when the selected model and provider support tool-result images, subject
+to the shared request budget. The `assets` array provides navigation and
+preview references independently.

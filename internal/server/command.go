@@ -92,8 +92,10 @@ type ToolResult struct {
 	Content   string          `json:"content,omitempty"`
 	Output    json.RawMessage `json:"output,omitempty"`
 	Assets    []assets.Ref    `json:"assets,omitempty"`
-	Previews  []preview.Draft `json:"previews,omitempty"`
-	IsError   bool            `json:"is_error,omitempty"`
+	// VisionAssetIDs selects local images from Assets for the model.
+	VisionAssetIDs []string        `json:"vision_asset_ids,omitempty"`
+	Previews       []preview.Draft `json:"previews,omitempty"`
+	IsError        bool            `json:"is_error,omitempty"`
 }
 
 func (t *ToolResult) UnmarshalJSON(data []byte) error {

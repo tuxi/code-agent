@@ -19,11 +19,38 @@ type ToolCallResult struct {
 	Content string
 	Output  json.RawMessage
 	Assets  []assets.Ref
+	// VisionAssetIDs selects local images from Assets for the model.
+	VisionAssetIDs []string
 	// Previews is the typed preview producer side-channel delivered by a client.
 	Previews []preview.Draft
 	IsError  bool
 	// Failure is supplied by the runtime broker for lease/connection failures.
 	Failure *tools.ToolFailure
+}
+
+func (r ToolCallResult) visionInputs() []assets.Ref {
+	if len(r.VisionAssetIDs) == 0 {
+		return nil
+	}
+	byID := make(map[string]assets.Ref, len(r.Assets))
+	for _, ref := range r.Assets {
+		if ref.ID == "" {
+			continue
+		}
+		if _, exists := byID[ref.ID]; exists {
+			byID[ref.ID] = assets.Ref{} // ambiguous reference
+		} else {
+			byID[ref.ID] = ref
+		}
+	}
+	var refs []assets.Ref
+	for _, id := range r.VisionAssetIDs {
+		if ref := byID[id]; ref.ID != "" {
+			refs = append(refs, ref)
+			delete(byID, id)
+		}
+	}
+	return refs
 }
 
 // ClientToolDef is one client-side tool declaration from a register_tools

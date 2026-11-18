@@ -724,6 +724,7 @@ func (r *Runner) RunPreparedTurn(ctx context.Context, sess *session.Session) (Tu
 }
 
 func (r *Runner) withLocalAssetManifests(messages []model.Message) []model.Message {
+	messages = withoutLegacyDirectoryImages(messages)
 	// Vision-capable models get image attachments inlined as multimodal content
 	// parts instead of the textual manifest; everything else is unchanged.
 	if r.VisionSupported && r.WorkspaceRoot != "" {

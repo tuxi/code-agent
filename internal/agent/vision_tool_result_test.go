@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,6 +13,7 @@ import (
 	"code-agent/internal/model"
 	"code-agent/internal/session"
 	"code-agent/internal/tools"
+	"code-agent/internal/tools/filesystem"
 )
 
 // imageTool returns a tool whose result carries an image asset ref.
@@ -26,12 +28,158 @@ func (t imageTool) InputSchema() json.RawMessage {
 	return json.RawMessage(`{"type":"object"}`)
 }
 func (t imageTool) Execute(context.Context, tools.ExecutionContext, json.RawMessage) (tools.ToolResult, error) {
+	ref := assets.Ref{ID: "img1", Kind: "image", MIMEType: t.mime, AbsolutePath: t.path}
 	return tools.ToolResult{
-		Content: "captured",
-		Assets: []assets.Ref{{
-			ID: "img1", Kind: "image", MIMEType: t.mime, AbsolutePath: t.path,
-		}},
+		Content:      "captured",
+		Assets:       []assets.Ref{ref},
+		VisionInputs: []assets.Ref{ref},
 	}, nil
+}
+
+func TestDirectoryImagesAreNavigationOnly(t *testing.T) {
+	root := t.TempDir()
+	const imageCount = 61
+	for i := 0; i < imageCount; i++ {
+		writeRuntimeTestPNG(t, filepath.Join(root, fmt.Sprintf("image-%02d.png", i)), 1, 1)
+	}
+	call := model.ToolCall{ID: "listing", Type: "function", Function: model.FunctionCall{Name: "list_files", Arguments: `{"path":"."}`}}
+	provider := &scriptedProvider{responses: []model.Response{{ToolCalls: []model.ToolCall{call}}, {Content: "done"}}}
+	reg := tools.NewRegistry()
+	if err := reg.Register(filesystem.NewListFilesTool()); err != nil {
+		t.Fatal(err)
+	}
+	var finished Event
+	runner := &Runner{
+		Model: provider, Tools: reg, MaxSteps: 2, WorkspaceRoot: root,
+		VisionSupported: true, ToolImageInputSupported: true,
+		Emitter: validationEmitter(func(event Event) {
+			if event.Kind == EventToolFinished {
+				finished = event
+			}
+		}),
+	}
+	sess := newSession()
+	if _, err := runner.RunTurn(context.Background(), sess, "list files"); err != nil {
+		t.Fatal(err)
+	}
+	if len(finished.Assets) != imageCount {
+		t.Fatalf("navigation assets = %d, want %d", len(finished.Assets), imageCount)
+	}
+	for _, ref := range finished.Assets {
+		if ref.Kind != "image" || ref.MIMEType != "image/png" || ref.URI == "" || ref.WorkspaceRelativePath == "" {
+			t.Fatalf("invalid navigation asset: %+v", ref)
+		}
+	}
+	tool := sess.Messages[len(sess.Messages)-2]
+	if tool.ToolCallID != call.ID || len(tool.LocalAssets) != 0 {
+		t.Fatalf("stored listing carries image attachments: %+v", tool)
+	}
+	for _, msg := range provider.lastRequest.Messages {
+		if len(msg.ContentParts) != 0 {
+			t.Fatalf("provider received image parts on %s message %q", msg.Role, msg.ToolCallID)
+		}
+	}
+}
+
+func TestLegacyDirectoryImagesAreOmittedOnReplay(t *testing.T) {
+	root := t.TempDir()
+	path := "shared.png"
+	writeRuntimeTestPNG(t, filepath.Join(root, path), 1, 1)
+	ref := model.LocalAssetRef{ID: "legacy", RelativePath: path, Filename: path, MIMEType: "image/png", Kind: "image"}
+	// The same directory entry was explicitly viewed in the same tool batch.
+	list := model.ToolCall{ID: "list", Type: "function", Function: model.FunctionCall{Name: "list_files", Arguments: "{}"}}
+	view := model.ToolCall{ID: "view", Type: "function", Function: model.FunctionCall{Name: "view_image", Arguments: "{}"}}
+	recall := model.ToolCall{ID: "recall", Type: "function", Function: model.FunctionCall{Name: "recall_memory", Arguments: "{}"}}
+	ctx := context.Background()
+	store, sess := runtimeFixture(t)
+	sess.Messages = append(sess.Messages,
+		model.Message{Role: model.RoleUser, Content: "analyze structure"},
+		model.Message{Role: model.RoleAssistant, ToolCalls: []model.ToolCall{list, recall, view}},
+		model.Message{Role: model.RoleTool, ToolCallID: list.ID, Content: path, LocalAssets: []model.LocalAssetRef{ref}},
+		model.Message{Role: model.RoleTool, ToolCallID: recall.ID, Content: "no memory"},
+		model.Message{Role: model.RoleTool, ToolCallID: view.ID, Content: "viewed", LocalAssets: []model.LocalAssetRef{ref}},
+		model.Message{Role: model.RoleAssistant, Content: "done"},
+	)
+	if err := store.Save(ctx, sess); err != nil {
+		t.Fatal(err)
+	}
+	sess, err := store.Load(ctx, sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider := &scriptedProvider{responses: []model.Response{{Content: "done"}}}
+	runner := &Runner{Model: provider, WorkspaceRoot: root, VisionSupported: true, ToolImageInputSupported: true}
+	if _, err := runner.RunTurnWithAllAssets(ctx, sess, "compare with attached image", nil, []model.LocalAssetRef{ref}); err != nil {
+		t.Fatal(err)
+	}
+	var viewed, attached bool
+	for _, msg := range provider.lastRequest.Messages {
+		switch {
+		case msg.ToolCallID == list.ID:
+			if len(msg.ContentParts) != 0 || msg.Content != path {
+				t.Fatalf("provider listing = %+v, want original text only", msg)
+			}
+		case msg.ToolCallID == view.ID:
+			viewed = len(msg.ContentParts) == 1 && msg.ContentParts[0].Type == "image_url"
+		case msg.Role == model.RoleUser && strings.HasPrefix(msg.Content, "compare with attached image"):
+			attached = len(msg.ContentParts) == 1 && msg.ContentParts[0].Type == "image_url"
+		}
+	}
+	if !viewed || !attached || len(sess.Messages[3].LocalAssets) != 1 {
+		t.Fatalf("view image sent = %t, user image sent = %t, stored listing = %+v", viewed, attached, sess.Messages[3])
+	}
+}
+
+func TestClientCaptureSendsOnlyDeclaredImages(t *testing.T) {
+	root := t.TempDir()
+	capture := filepath.Join(root, "capture.png")
+	writeRuntimeTestPNG(t, capture, 1, 1)
+	other := filepath.Join(root, "other.png")
+	writeRuntimeTestPNG(t, other, 2, 2)
+	clientResult := ToolCallResult{
+		Content: "captured",
+		Assets: []assets.Ref{
+			{ID: "navigation", Kind: "image", MIMEType: "image/png", AbsolutePath: other},
+			{ID: "capture", Kind: "image", MIMEType: "image/png", AbsolutePath: capture},
+		},
+		VisionAssetIDs: []string{"capture", "missing", "capture"},
+	}
+	for _, tc := range []struct {
+		name               string
+		vision, toolImages bool
+		want               int
+	}{
+		{name: "vision", vision: true, toolImages: true, want: 1},
+		{name: "user images only", vision: true},
+		{name: "text"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			call := model.ToolCall{ID: "capture", Type: "function", Function: model.FunctionCall{Name: "capture_screen", Arguments: "{}"}}
+			provider := &scriptedProvider{responses: []model.Response{{ToolCalls: []model.ToolCall{call}}, {Content: "done"}}}
+			reg := tools.NewRegistry()
+			if err := reg.Register(tools.NewClientProxyTool("capture_screen", "capture on device", json.RawMessage(`{"type":"object"}`))); err != nil {
+				t.Fatal(err)
+			}
+			runner := &Runner{
+				Model: provider, Tools: reg, MaxSteps: 2, WorkspaceRoot: root,
+				VisionSupported: tc.vision, ToolImageInputSupported: tc.toolImages,
+				ClientWaiter: &immediateClientWaiter{result: clientResult},
+			}
+			sess := newSession()
+			if _, err := runner.RunTurn(context.Background(), sess, "capture screen"); err != nil {
+				t.Fatal(err)
+			}
+			req := provider.lastRequest.Messages
+			last := req[len(req)-1]
+			stored := sess.Messages[len(sess.Messages)-2]
+			if last.ToolCallID != call.ID || len(last.ContentParts) != tc.want || len(stored.LocalAssets) != tc.want {
+				t.Fatalf("provider parts = %d, stored refs = %+v, want %d", len(last.ContentParts), stored.LocalAssets, tc.want)
+			}
+			if tc.want > 0 && (last.ContentParts[0].Type != "image_url" || stored.LocalAssets[0].RelativePath != "capture.png") {
+				t.Fatalf("provider part = %+v, stored ref = %+v", last.ContentParts[0], stored.LocalAssets[0])
+			}
+		})
+	}
 }
 
 // runImageToolTurn drives one turn where the model calls the image tool once.

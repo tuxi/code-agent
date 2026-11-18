@@ -200,12 +200,13 @@ func (r Router) Route(ctx context.Context, data []byte) {
 		case "tool_result":
 			if m.ToolResult != nil && r.ToolResults != nil {
 				r.ToolResults.Deliver(m.ToolResult.ToolUseID, agent.ToolCallResult{
-					Subtype:  m.ToolResult.Subtype,
-					Content:  m.ToolResult.Content,
-					Output:   m.ToolResult.Output,
-					Assets:   m.ToolResult.Assets,
-					Previews: m.ToolResult.Previews,
-					IsError:  m.ToolResult.IsError,
+					Subtype:        m.ToolResult.Subtype,
+					Content:        m.ToolResult.Content,
+					Output:         m.ToolResult.Output,
+					Assets:         m.ToolResult.Assets,
+					VisionAssetIDs: m.ToolResult.VisionAssetIDs,
+					Previews:       m.ToolResult.Previews,
+					IsError:        m.ToolResult.IsError,
 				})
 			}
 		case "command":

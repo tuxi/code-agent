@@ -31,6 +31,7 @@ func (t sequenceTool) Execute(context.Context, tools.ExecutionContext, json.RawM
 	if t.image != "" {
 		res.Content = "Viewed image"
 		res.Assets = []assets.Ref{{ID: t.name + "-img", Kind: "image", MIMEType: "image/png", AbsolutePath: t.image}}
+		res.VisionInputs = res.Assets
 	}
 	return res, nil
 }

@@ -68,6 +68,7 @@ type toolCallResult struct {
 	observation          string
 	output               json.RawMessage
 	assetRefs            []assets.Ref
+	visionInputs         []assets.Ref
 	previews             []preview.Draft
 	clientPreviewOrigin  bool
 	usage                *tools.ToolUsage
@@ -331,6 +332,7 @@ func (r *Runner) runToolCall(ctx context.Context, p toolCallPlan) toolCallResult
 			observation = result.Content
 			output = result.Output
 			assetRefs = result.Assets
+			res.visionInputs = result.visionInputs()
 		}
 	default:
 		res.executed = true
@@ -342,6 +344,7 @@ func (r *Runner) runToolCall(ctx context.Context, p toolCallPlan) toolCallResult
 			observation = toolResult.Content
 			output = toolResult.Output
 			assetRefs = toolResult.Assets
+			res.visionInputs = toolResult.VisionInputs
 			res.previews = toolResult.Previews
 			res.usage = toolResult.Usage
 			res.runtimeInputReceipts = toolResult.RuntimeInputReceipts
@@ -548,8 +551,7 @@ func (r *Runner) commitToolResult(ctx context.Context, sess *session.Session, tu
 	turn.Steps = append(turn.Steps, step)
 	writes := append(append([]tools.FileWrite(nil), res.wrote...), res.nestedWrites...)
 	assetRefs := normalizeToolAssets(outputWriteAssets(res.assetRefs, writes, r.WorkspaceRoot, r.emitTurnID, p.call.ID), r.WorkspaceRoot, r.emitTurnID, p.call.ID)
-	// Output navigation references must not change the model's image inputs.
-	toolLocalAssets := r.visionToolLocalAssets(normalizeToolAssets(res.assetRefs, r.WorkspaceRoot, r.emitTurnID, p.call.ID))
+	toolLocalAssets := r.visionToolLocalAssets(res.visionInputs)
 	*turnAssets = append(*turnAssets, assetRefs...)
 
 	r.emit(Event{

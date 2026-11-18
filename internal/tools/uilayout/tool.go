@@ -422,7 +422,12 @@ func (t *Tool) Execute(ctx context.Context, ec tools.ExecutionContext, raw json.
 	}
 	content := fmt.Sprintf("%s ui_layout revision %d for %s (%d nodes, overlay %dx%d, canonical layout.json).",
 		verb, persisted.Revision, sourceRel, nodeCount, overlayWidth, overlayHeight)
-	return tools.ToolResult{Content: content, Output: outputJSON, Assets: []assets.Ref{overlayRef, layoutRef}}, nil
+	return tools.ToolResult{
+		Content:      content,
+		Output:       outputJSON,
+		Assets:       []assets.Ref{overlayRef, layoutRef},
+		VisionInputs: []assets.Ref{overlayRef},
+	}, nil
 }
 
 func layoutUsesEvidence(document layoutDocument) bool {

@@ -150,10 +150,11 @@ func (r *Runner) ExecuteNestedTool(
 			return finish(tools.ToolResult{Content: result.Content, Output: result.Output, Assets: result.Assets, Previews: result.Previews, Failure: failure}, fmt.Errorf("%s", result.Content))
 		}
 		return finish(tools.ToolResult{
-			Content:  result.Content,
-			Output:   result.Output,
-			Assets:   result.Assets,
-			Previews: result.Previews,
+			Content:      result.Content,
+			Output:       result.Output,
+			Assets:       result.Assets,
+			VisionInputs: result.visionInputs(),
+			Previews:     result.Previews,
 		}, nil)
 	}
 

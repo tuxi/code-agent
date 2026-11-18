@@ -148,6 +148,9 @@ func TestExecuteMaterializesResourceLinkViaReadResource(t *testing.T) {
 	if ref.WorkspaceRelativePath == "" || ref.AbsolutePath == "" || ref.Metadata["resource_read"] != "true" {
 		t.Fatalf("resource link was not materialized: %+v", ref)
 	}
+	if len(got.VisionInputs) != 1 || got.VisionInputs[0].ID != ref.ID {
+		t.Fatalf("vision inputs = %+v, want the materialized screenshot", got.VisionInputs)
+	}
 	data, err := os.ReadFile(ref.AbsolutePath)
 	if err != nil {
 		t.Fatal(err)
