@@ -202,3 +202,49 @@ func (s *SupplementInbox) SealSupplementBoundary(ctx context.Context, sid, tid s
 }
 
 var _ session.SupplementStore = (*SupplementInbox)(nil)
+
+// A durable cancellation closes admission and settles any unapplied requests.
+func cancelTurnSupplementsTx(ctx context.Context, tx *sql.Tx, sid, tid string) error {
+	var installed bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='user_supplement_boundaries')`).Scan(&installed); err != nil || !installed {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE user_supplement_boundaries SET sealed=1 WHERE session_id=? AND turn_id=? AND sealed=0`, sid, tid); err != nil {
+		return err
+	}
+	_, err := tx.ExecContext(ctx, `UPDATE user_supplements SET state='cancelled' WHERE session_id=? AND turn_id=? AND state='pending_apply'`, sid, tid)
+	return err
+}
+
+// Turn-input cancellation is durable even when a new user turn supersedes a
+// parked continuation without emitting a second lifecycle event for the old turn.
+func cancelClosedTurnSupplementsTx(ctx context.Context, tx *sql.Tx, sid string) error {
+	var installed bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='user_supplement_boundaries')`).Scan(&installed); err != nil || !installed {
+		return err
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT DISTINCT b.turn_id FROM user_supplement_boundaries b JOIN turn_inputs i ON i.session_id=b.session_id AND i.turn_id=b.turn_id WHERE b.session_id=? AND i.state='cancelled'`, sid)
+	if err != nil {
+		return err
+	}
+	var turns []string
+	for rows.Next() {
+		var tid string
+		if err = rows.Scan(&tid); err != nil {
+			rows.Close()
+			return err
+		}
+		turns = append(turns, tid)
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return err
+	}
+	for _, tid := range turns {
+		if err = cancelTurnSupplementsTx(ctx, tx, sid, tid); err != nil {
+			return err
+		}
+	}
+	return nil
+}

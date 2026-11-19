@@ -53,6 +53,7 @@ type UserQueueCursor struct {
 }
 
 type UserQueuePage struct {
+	Controls    bool                   `json:"controls,omitempty"`
 	Revision    int64                  `json:"revision"`
 	State       string                 `json:"state"`
 	PauseReason string                 `json:"pause_reason,omitempty"`
@@ -66,6 +67,16 @@ type UserQueueStore interface {
 	EnqueueUserMessage(context.Context, QueuedMessage) (QueuedMessageReceipt, bool, error)
 	QueuedUserMessage(context.Context, string, string) (QueuedMessageReceipt, error)
 	ListUserQueue(context.Context, string, *UserQueueCursor, int) (UserQueuePage, error)
+}
+
+type UserQueueControl struct {
+	Action    string `json:"action"`
+	RequestID string `json:"request_id,omitempty"`
+	Revision  *int64 `json:"revision"`
+}
+
+type UserQueueControlStore interface {
+	ControlUserQueue(context.Context, string, string, UserQueueControl) error
 }
 
 // UserQueueTurnEnd is submitted by the serialized executor only after its final

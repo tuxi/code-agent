@@ -118,7 +118,7 @@ func (s *SupplementInbox) applySupplementsTx(ctx context.Context, tx *sql.Tx, se
 		}
 		candidate.Messages = append(candidate.Messages, model.Message{Role: model.RoleUser, Content: item.Input.Text, Assets: item.Input.Assets, LocalAssets: item.Input.LocalAssets})
 		receipts[item.Input.RequestID] = item.Sequence
-		receipt := session.SupplementApplication{AppliedAt: now, RequestID: item.Input.RequestID, TurnID: tid, Sequence: item.Sequence}
+		receipt := session.SupplementApplication{AppliedAt: now, RequestID: item.Input.RequestID, TurnID: tid, Sequence: item.Sequence, Text: item.Input.Text}
 		payload, e := json.Marshal(struct {
 			Kind        string
 			SessionID   string

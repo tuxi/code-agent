@@ -502,3 +502,147 @@ func TestUserQueueInterruptedStartedClaimPauses(t *testing.T) {
 		t.Fatal(page, err)
 	}
 }
+
+func TestUserQueueControlSurvivesReopen(t *testing.T) {
+	s, q, in := queueDeliveryFixture(t)
+	ctx := context.Background()
+	paused, err := q.FinishUserQueueTurn(ctx, queueEnd(in, session.TurnInputCancelled))
+	if err != nil || paused.State != "paused" {
+		t.Fatal(paused, err)
+	}
+	reconnect := func() *UserQueue {
+		t.Helper()
+		if err := s.reopen(); err != nil {
+			t.Fatal(err)
+		}
+		q, err := NewUserQueue(s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return q
+	}
+	q = reconnect()
+	page, err := q.ListUserQueue(ctx, "owner", nil, 0)
+	if err != nil || page.State != "paused" || len(page.Items) != 2 {
+		t.Fatal(page, err)
+	}
+	change := session.UserQueueControl{Action: "resume", Revision: &page.Revision}
+	if err := q.ControlUserQueue(ctx, "owner", "another-owner", change); err == nil {
+		t.Fatal("different execution scope resumed the queue")
+	}
+	if err := q.ControlUserQueue(ctx, "owner", "local-owner", change); err != nil {
+		t.Fatal(err)
+	}
+	q = reconnect()
+	first, err := q.ReconcileUserQueue(ctx, "owner")
+	if err != nil || first.Claim == nil || first.Claim.Message.Input.RequestID != "a" {
+		t.Fatal(first, err)
+	}
+	again, err := q.ReconcileUserQueue(ctx, "owner")
+	if err != nil || again.Claim == nil || again.Claim.EventSequence != first.Claim.EventSequence {
+		t.Fatal(again, err)
+	}
+}
+
+func TestUserQueueResumesAfterStoppedContinuationWithSupplements(t *testing.T) {
+	for _, legacy := range []bool{false, true} {
+		name := "atomic stop"
+		if legacy {
+			name = "legacy stop recovery"
+		}
+		t.Run(name, func(t *testing.T) {
+			s, q, in := queueDeliveryFixture(t)
+			ctx := context.Background()
+			sess, err := s.Load(ctx, in.SessionID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			box, err := NewSupplementInbox(s)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err = box.OpenSupplementBoundary(ctx, in.SessionID, in.TurnID); err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err = box.AcceptSupplement(ctx, supplement("pending")); err != nil {
+				t.Fatal(err)
+			}
+			if err = s.AdmitContinuationWork(ctx, in.SessionID, in.TurnID); err != nil {
+				t.Fatal(err)
+			}
+			if _, err = s.ParkContinuation(ctx, sess, session.Continuation{SessionID: in.SessionID, TurnID: in.TurnID, Await: []string{"job"}, Binding: []byte(`{}`), Checkpoint: []byte(`{}`)}); err != nil {
+				t.Fatal(err)
+			}
+			if ok, err := s.EndContinuation(ctx, in.SessionID, in.TurnID, "stopped"); err != nil || !ok {
+				t.Fatal(ok, err)
+			}
+			receipt, err := box.Supplement(ctx, in.SessionID, "pending")
+			if err != nil || receipt.State != "cancelled" {
+				t.Fatal(receipt, err)
+			}
+			if legacy {
+				if _, err = s.db.Exec(`UPDATE user_supplement_boundaries SET sealed=0; UPDATE user_supplements SET state='pending_apply'`); err != nil {
+					t.Fatal(err)
+				}
+			}
+			paused, err := q.ReconcileUserQueue(ctx, in.SessionID)
+			if err != nil || paused.State != "paused" || paused.Claim != nil {
+				t.Fatal(paused, err)
+			}
+			receipt, err = box.Supplement(ctx, in.SessionID, "pending")
+			if err != nil || receipt.State != "cancelled" {
+				t.Fatal(receipt, err)
+			}
+			if err = q.ControlUserQueue(ctx, in.SessionID, "local-owner", session.UserQueueControl{Action: "resume", Revision: &paused.Revision}); err != nil {
+				t.Fatal(err)
+			}
+			next, err := q.ReconcileUserQueue(ctx, in.SessionID)
+			if err != nil || next.Claim == nil || next.Claim.Message.Input.RequestID != "a" {
+				t.Fatal(next, err)
+			}
+		})
+	}
+}
+
+func TestSupersedingParkedTurnClosesSupplementBoundary(t *testing.T) {
+	s, q, in := queueDeliveryFixture(t)
+	ctx := context.Background()
+	sess, err := s.Load(ctx, in.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	box, err := NewSupplementInbox(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = box.OpenSupplementBoundary(ctx, in.SessionID, in.TurnID); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = box.AcceptSupplement(ctx, supplement("old-pending")); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.AdmitContinuationWork(ctx, in.SessionID, in.TurnID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.ParkContinuation(ctx, sess, session.Continuation{SessionID: in.SessionID, TurnID: in.TurnID, Await: []string{"job"}, Binding: []byte(`{}`), Checkpoint: []byte(`{}`)}); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.AdmitContinuationWork(ctx, in.SessionID, "new-turn"); err != nil {
+		t.Fatal(err)
+	}
+	receipt, err := box.Supplement(ctx, in.SessionID, "old-pending")
+	if err != nil || receipt.State != "cancelled" {
+		t.Fatal(receipt, err)
+	}
+	// Emulate the legacy supersede path, whose continuation identity is gone.
+	if _, err = s.db.Exec(`UPDATE user_supplement_boundaries SET sealed=0; UPDATE user_supplements SET state='pending_apply'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = q.ReconcileUserQueue(ctx, in.SessionID); err != nil {
+		t.Fatal(err)
+	}
+	receipt, err = box.Supplement(ctx, in.SessionID, "old-pending")
+	if err != nil || receipt.State != "cancelled" {
+		t.Fatal(receipt, err)
+	}
+}

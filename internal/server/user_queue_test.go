@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -76,8 +77,18 @@ func TestUserQueueHTTPTrustedSelectionRetryAndScope(t *testing.T) {
 	if w := request("POST", "/v1/conversations/s/queue", `{"request_id":"bad","text":"task","model":"selected","reasoning_effort":"invalid"}`); w.Code != 400 {
 		t.Fatal(w.Code)
 	}
+	wakes := 0
+	service.wake = func(sid string) {
+		if sid != "s" {
+			t.Fatal(sid)
+		}
+		wakes++
+	}
 	if w := request("GET", "/v1/conversations/s/queue?limit=1", ""); w.Code != 200 {
 		t.Fatal(w.Code, w.Body.String())
+	}
+	if wakes != 1 {
+		t.Fatal("enabled queue was not woken on read", wakes)
 	}
 	if w := request("GET", "/v1/conversations/s/queue?revision=0&after_sequence=0", ""); w.Code != 409 {
 		t.Fatal(w.Code)
@@ -170,6 +181,15 @@ type localQueueIntegrationBuilder struct {
 }
 
 func TestLocalUserQueueDrainsAfterOrdinaryTurn(t *testing.T) {
+	testLocalUserQueueDrain(t, false)
+}
+
+func TestLocalUserQueueResumeAfterCancellation(t *testing.T) {
+	testLocalUserQueueDrain(t, true)
+}
+
+func testLocalUserQueueDrain(t *testing.T, cancelFirst bool) {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	storage, err := db.New(filepath.Join(t.TempDir(), "queue.db"))
@@ -211,9 +231,44 @@ func TestLocalUserQueueDrainsAfterOrdinaryTurn(t *testing.T) {
 			t.Fatal(w.Code, w.Body.String())
 		}
 	}
-	close(provider.release)
-	if err = <-done; err != nil {
-		t.Fatal(err)
+	expectedFinished := 3
+	expectedMessages := "task a,task b"
+	if cancelFirst {
+		e.Cancel("s")
+		<-done
+		page, err := queue.ListUserQueue(ctx, "s", nil, 0)
+		if err != nil || page.State != "paused" || page.PauseReason != "cancelled" || len(page.Items) != 2 {
+			t.Fatal(page, err)
+		}
+		control := func(body string, want int) {
+			t.Helper()
+			r := httptest.NewRequest("POST", "/v1/conversations/s/queue/control", strings.NewReader(body))
+			r.Header.Set("Authorization", "Bearer "+auth.Token)
+			w := httptest.NewRecorder()
+			handler.ServeHTTP(w, r)
+			if w.Code != want {
+				t.Fatal(w.Code, w.Body.String())
+			}
+		}
+		control(fmt.Sprintf(`{"action":"remove","request_id":"a","revision":%d}`, page.Revision), 200)
+		control(fmt.Sprintf(`{"action":"resume","revision":%d}`, page.Revision), 409)
+		page, err = queue.ListUserQueue(ctx, "s", nil, 0)
+		if err != nil || page.State != "paused" || len(page.Items) != 1 || page.Items[0].Input.RequestID != "b" {
+			t.Fatal(page, err)
+		}
+		removed, err := queue.QueuedUserMessage(ctx, "s", "a")
+		if err != nil || removed.State != "removed" {
+			t.Fatal(removed, err)
+		}
+		control(fmt.Sprintf(`{"action":"resume","revision":%d}`, page.Revision), 200)
+		expectedFinished = 1
+		expectedMessages = "task b"
+		close(provider.release)
+	} else {
+		close(provider.release)
+		if err = <-done; err != nil {
+			t.Fatal(err)
+		}
 	}
 	ticker := time.NewTicker(10 * time.Millisecond)
 	defer ticker.Stop()
@@ -228,7 +283,7 @@ func TestLocalUserQueueDrainsAfterOrdinaryTurn(t *testing.T) {
 				finished++
 			}
 		}
-		if finished == 3 {
+		if finished == expectedFinished {
 			saved, err := storage.Load(ctx, "s")
 			if err != nil {
 				t.Fatal(err)
@@ -239,7 +294,7 @@ func TestLocalUserQueueDrainsAfterOrdinaryTurn(t *testing.T) {
 					queued = append(queued, m.Content)
 				}
 			}
-			if strings.Join(queued, ",") != "task a,task b" {
+			if strings.Join(queued, ",") != expectedMessages {
 				t.Fatal(queued)
 			}
 			return

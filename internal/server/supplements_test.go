@@ -91,14 +91,14 @@ func TestTextSupplementCapabilityIsFailClosed(t *testing.T) {
 }
 
 func TestSupplementApplicationWireKeepsReceiptAndEventSequence(t *testing.T) {
-	receipt := &session.SupplementApplication{RequestID: "r", TurnID: "t", Sequence: 4, EventSequence: 99, AppliedAt: time.Now().UTC()}
+	receipt := &session.SupplementApplication{RequestID: "r", TurnID: "t", Sequence: 4, Text: "supplement body", EventSequence: 99, AppliedAt: time.Now().UTC()}
 	wire := toWire(agent.Event{Kind: agent.EventKind("user_supplement_applied"), SessionID: "s", TurnID: "t", RequestID: "r", Seq: 99, At: receipt.AppliedAt, SupplementApplication: receipt})
 	data, err := json.Marshal(wire)
 	if err != nil {
 		t.Fatal(err)
 	}
 	var decoded wireEvent
-	if err = json.Unmarshal(data, &decoded); err != nil || decoded.Seq != 99 || decoded.SupplementApplication == nil || decoded.SupplementApplication.Sequence != 4 {
+	if err = json.Unmarshal(data, &decoded); err != nil || decoded.Seq != 99 || decoded.SupplementApplication == nil || decoded.SupplementApplication.Sequence != 4 || decoded.SupplementApplication.Text != "supplement body" {
 		t.Fatal(string(data), err)
 	}
 	if toWire(agent.Event{Kind: agent.EventTurnStarted, SupplementApplication: receipt}).SupplementApplication != nil {

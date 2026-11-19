@@ -42,6 +42,7 @@ type SupplementApplication struct {
 	RequestID     string    `json:"request_id"`
 	TurnID        string    `json:"turn_id"`
 	Sequence      int64     `json:"sequence"`
+	Text          string    `json:"text,omitempty"`
 	EventSequence int64     `json:"-"`
 }
 

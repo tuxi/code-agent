@@ -23,6 +23,11 @@ func ensureUserQueueDeliverySchema(db *sql.DB) error {
  turn_id TEXT NOT NULL, after_request_id TEXT NOT NULL, event_seq INTEGER NOT NULL,
  active INTEGER NOT NULL DEFAULT 1,
  PRIMARY KEY(session_id,request_id), UNIQUE(session_id,execution_request_id), UNIQUE(session_id,turn_id));
+ CREATE TABLE IF NOT EXISTS user_queue_resumes (
+ session_id TEXT PRIMARY KEY, terminal_event_seq INTEGER NOT NULL);
+ CREATE TRIGGER IF NOT EXISTS user_queue_resume_session_delete AFTER DELETE ON sessions BEGIN
+ DELETE FROM user_queue_resumes WHERE session_id=OLD.id;
+ END;
  CREATE UNIQUE INDEX IF NOT EXISTS user_queue_one_claim ON user_queue_claims(session_id) WHERE active=1;
  CREATE TRIGGER IF NOT EXISTS user_queue_delivery_session_delete AFTER DELETE ON sessions BEGIN
  DELETE FROM user_queue_finishes WHERE session_id=OLD.id;
@@ -165,7 +170,7 @@ func (q *UserQueue) finishUserQueueTurnTx(ctx context.Context, tx *sql.Tx, end s
 			return empty, err
 		}
 		if end.State != session.TurnInputCompleted {
-			if _, err = tx.ExecContext(ctx, `UPDATE user_queue_control SET state='paused',pause_reason=?,revision=revision+1 WHERE session_id=? AND (state!='paused' OR pause_reason!=?)`, string(end.State), end.SessionID, string(end.State)); err != nil {
+			if _, err = tx.ExecContext(ctx, `UPDATE user_queue_control SET state='paused',pause_reason=?,revision=revision+1 WHERE session_id=?`, string(end.State), end.SessionID); err != nil {
 				return empty, err
 			}
 		}
@@ -221,6 +226,9 @@ func (q *UserQueue) ReconcileUserQueue(ctx context.Context, sid string) (session
 		return session.UserQueueAdvance{}, err
 	}
 	defer tx.Rollback()
+	if err = cancelClosedTurnSupplementsTx(ctx, tx, sid); err != nil {
+		return session.UserQueueAdvance{}, err
+	}
 	// Import the latest already-durable outcome if a process exited between
 	// the legacy terminal event and this queue boundary. Reuse that event and
 	// the original execution mapping instead of replaying the finished task.
@@ -309,7 +317,14 @@ func (q *UserQueue) advanceUserQueueTx(ctx context.Context, tx *sql.Tx, sid stri
 	if terminalKind == "turn_cancelled" {
 		pauseReason = "cancelled"
 	}
-	if pauseReason == "failed" || pauseReason == "cancelled" {
+	var resumed bool
+	if terminalErr == nil && (pauseReason == "failed" || pauseReason == "cancelled") {
+		if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM user_queue_resumes WHERE session_id=? AND terminal_event_seq=?)`, sid, terminalSeq).Scan(&resumed); err != nil {
+			return out, err
+		}
+		resumed = resumed && ((latestState == "failed" && terminalKind == "turn_failed") || (latestState == "cancelled" && terminalKind == "turn_cancelled"))
+	}
+	if !resumed && (pauseReason == "failed" || pauseReason == "cancelled") {
 		if _, err = tx.ExecContext(ctx, `UPDATE user_queue_control SET state='paused',pause_reason=?,revision=revision+1 WHERE session_id=?`, pauseReason, sid); err != nil {
 			return out, err
 		}
@@ -355,7 +370,7 @@ func (q *UserQueue) advanceUserQueueTx(ctx context.Context, tx *sql.Tx, sid stri
 		out.BlockedReason = "turn_active"
 		return out, nil
 	}
-	if latestState != "completed" {
+	if latestState != "completed" && !resumed {
 		out.BlockedReason = "turn_not_completed"
 		return out, nil
 	}
@@ -364,7 +379,7 @@ func (q *UserQueue) advanceUserQueueTx(ctx context.Context, tx *sql.Tx, sid stri
 		out.BlockedReason = "terminal_not_persisted"
 		return out, nil
 	}
-	if terminalKind != "turn_finished" {
+	if terminalKind != "turn_finished" && !resumed {
 		out.BlockedReason = "terminal_conflict"
 		return out, nil
 	}

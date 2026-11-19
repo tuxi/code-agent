@@ -15,6 +15,9 @@ func admitContinuationWork(ctx context.Context, tx *sql.Tx, sid, tid string) err
 (SELECT turn_id FROM runtime_continuations WHERE session_id=? AND turn_id!=? AND checkpoint!='' AND state IN ('active','waiting','ready'))`, sid, sid, tid); err != nil {
 		return err
 	}
+	if err := cancelClosedTurnSupplementsTx(ctx, tx, sid); err != nil {
+		return err
+	}
 	_, err := tx.ExecContext(ctx, `INSERT INTO runtime_continuations(session_id,turn_id,state) VALUES(?,?,'active')
 ON CONFLICT(session_id) DO UPDATE SET turn_id=excluded.turn_id,state='active',revision=0,await_ids='[]',binding='',checkpoint=''
 WHERE runtime_continuations.turn_id!=excluded.turn_id`, sid, tid)
@@ -149,6 +152,9 @@ func (s *Store) EndContinuation(ctx context.Context, sid, tid, state string) (bo
 			return false, err
 		}
 		if previous == "waiting" || previous == "ready" || previous == "needs_attention" {
+			if err = cancelTurnSupplementsTx(ctx, tx, sid, tid); err != nil {
+				return false, err
+			}
 			now := time.Now().UTC()
 			if _, err = tx.ExecContext(ctx, `UPDATE sessions SET metadata=json_set(COALESCE(NULLIF(metadata,''),'{}'),'$.turn_status','done'),updated_at=? WHERE id=?`, formatTime(now), sid); err != nil {
 				return false, err

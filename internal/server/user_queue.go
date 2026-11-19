@@ -281,7 +281,47 @@ func registerUserQueueRoutes(mux *http.ServeMux, s *queueHTTPService, enabled bo
 				return
 			}
 		}
+		_, page.Controls = s.store.(session.UserQueueControlStore)
+		// Reopening the queue also recovers an enabled queue after a daemon
+		// restart. Wake rechecks durable state and never resumes a paused queue.
+		if page.State == "enabled" && len(page.Items) > 0 && s.wake != nil {
+			s.wake(sid)
+		}
 		respond(w, 200, page)
+	})
+	mux.HandleFunc("POST /v1/conversations/{id}/queue/control", func(w http.ResponseWriter, r *http.Request) {
+		if !ready {
+			failure(w, errQueueUnsupported)
+			return
+		}
+		store, ok := s.store.(session.UserQueueControlStore)
+		if !ok {
+			failure(w, errQueueUnsupported)
+			return
+		}
+		var change session.UserQueueControl
+		var extra any
+		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096))
+		decoder.DisallowUnknownFields()
+		if decoder.Decode(&change) != nil || decoder.Decode(&extra) != io.EOF {
+			failure(w, session.ErrInvalidQueuedMessage)
+			return
+		}
+		sid := r.PathValue("id")
+		scope, err := s.contexts.authorizedScope(r.Context(), sid)
+		if err == nil {
+			err = store.ControlUserQueue(r.Context(), sid, scope, change)
+		}
+		if err != nil {
+			failure(w, err)
+			return
+		}
+		if s.wake != nil {
+			s.wake(sid)
+		}
+		respond(w, 200, struct {
+			OK bool `json:"ok"`
+		}{true})
 	})
 	return ready
 }
