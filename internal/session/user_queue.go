@@ -53,12 +53,14 @@ type UserQueueCursor struct {
 }
 
 type UserQueuePage struct {
-	Controls    bool                   `json:"controls,omitempty"`
-	Revision    int64                  `json:"revision"`
-	State       string                 `json:"state"`
-	PauseReason string                 `json:"pause_reason,omitempty"`
-	Items       []QueuedMessageReceipt `json:"items"`
-	Next        *UserQueueCursor       `json:"next,omitempty"`
+	ResumeSupported bool                   `json:"resume_supported,omitempty"`
+	Interrupted     *QueuedMessageReceipt  `json:"interrupted,omitempty"`
+	Controls        bool                   `json:"controls,omitempty"`
+	Revision        int64                  `json:"revision"`
+	State           string                 `json:"state"`
+	PauseReason     string                 `json:"pause_reason,omitempty"`
+	Items           []QueuedMessageReceipt `json:"items"`
+	Next            *UserQueueCursor       `json:"next,omitempty"`
 }
 
 // UserQueueStore is optional. A storage implementation alone must not
@@ -124,4 +126,11 @@ var ErrUserQueueContextChanged = errors.New("queued execution context changed")
 // the queue payload. Reservation is admission only; it is not a started receipt.
 type UserQueueAdmissionStore interface {
 	ReserveUserQueueClaim(ctx context.Context, sessionID, requestID string, current QueueExecutionContext) (TurnInput, bool, int64, error)
+}
+
+// InterruptedUserQueueStore resumes only a user-confirmed, durable queue input.
+type InterruptedUserQueueStore interface {
+	PendingInterruptedUserQueue(context.Context, string) (TurnInput, QueueExecutionContext, error)
+	StartInterruptedUserQueue(context.Context, TurnInput, *Session, QueueExecutionContext) (int64, error)
+	PauseInterruptedUserQueue(context.Context, string) error
 }

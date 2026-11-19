@@ -281,3 +281,61 @@ func TestWSInboundClientToolRoundTrip(t *testing.T) {
 
 	c.Close(websocket.StatusNormalClosure, "")
 }
+
+// The client disconnects with a live approval. Reconnecting must recover that
+// same request and a denial must reach the original blocked tool invocation.
+func TestWSApprovalReconnectDeniesOriginalRequest(t *testing.T) {
+	sess := &approvalSession{events: make(chan agent.Event, 8)}
+	h := &WSHandler{
+		Resolve:    func(*http.Request) (Session, error) { return sess, nil },
+		ServerName: "codeagent/test",
+		Accept:     &websocket.AcceptOptions{InsecureSkipVerify: true},
+	}
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	url := "ws" + strings.TrimPrefix(srv.URL, "http")
+	first, _, err := websocket.Dial(ctx, url, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.CloseNow()
+	readType(t, ctx, first, "hello")
+	wsWriteJSON(t, ctx, first, map[string]any{"type": "send_message", "text": "approval test"})
+	original := readType(t, ctx, first, "approval_request")
+	id, _ := original["id"].(string)
+	if id == "" {
+		t.Fatal("missing original approval id")
+	}
+	first.CloseNow()
+
+	second, _, err := websocket.Dial(ctx, url, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.CloseNow()
+	var recovered map[string]any
+	hello := false
+	for !hello || recovered == nil {
+		frame := readFrame(t, ctx, second)
+		switch frame["type"] {
+		case "hello":
+			hello = true
+		case "approval_request":
+			recovered = frame
+		default:
+			if frame["kind"] == "turn_finished" {
+				t.Fatal("disconnect resolved pending approval", frame)
+			}
+		}
+	}
+	if recovered["id"] != id {
+		t.Fatal("reconnect replaced approval identity", original, recovered)
+	}
+	wsWriteJSON(t, ctx, second, map[string]any{"type": "approval_response", "id": id, "approved": false})
+	finished := readFrame(t, ctx, second)
+	if finished["kind"] != "turn_finished" || finished["text"] != "approved=false" {
+		t.Fatal(finished)
+	}
+}

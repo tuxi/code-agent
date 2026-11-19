@@ -181,14 +181,18 @@ type localQueueIntegrationBuilder struct {
 }
 
 func TestLocalUserQueueDrainsAfterOrdinaryTurn(t *testing.T) {
-	testLocalUserQueueDrain(t, false)
+	testLocalUserQueueDrain(t, false, false)
 }
 
 func TestLocalUserQueueResumeAfterCancellation(t *testing.T) {
-	testLocalUserQueueDrain(t, true)
+	testLocalUserQueueDrain(t, true, false)
 }
 
-func testLocalUserQueueDrain(t *testing.T, cancelFirst bool) {
+func TestLocalUserQueueResponseLostBeforeClientAcceptance(t *testing.T) {
+	testLocalUserQueueDrain(t, false, true)
+}
+
+func testLocalUserQueueDrain(t *testing.T, cancelFirst, loseResponse bool) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -223,6 +227,12 @@ func testLocalUserQueueDrain(t *testing.T, cancelFirst bool) {
 		t.Fatal(ctx.Err())
 	}
 	for _, id := range []string{"a", "b"} {
+		if loseResponse && id == "a" {
+			srv := deliveryResponseLossServer(t, handler)
+			body := `{"request_id":"a","text":"task a","model":"selected"}`
+			recoverLostDeliveryResponse(t, ctx, srv, "/v1/conversations/s/queue", "a", auth.Token, body)
+			continue
+		}
 		r := httptest.NewRequest("POST", "/v1/conversations/s/queue", strings.NewReader(`{"request_id":"`+id+`","text":"task `+id+`","model":"selected"}`))
 		r.Header.Set("Authorization", "Bearer "+auth.Token)
 		w := httptest.NewRecorder()
@@ -237,6 +247,16 @@ func testLocalUserQueueDrain(t *testing.T, cancelFirst bool) {
 		e.Cancel("s")
 		<-done
 		page, err := queue.ListUserQueue(ctx, "s", nil, 0)
+		// The ordinary executor wakes the queue after releasing its permit.
+		// Await that consumer's persisted pause, not the runner's return alone.
+		for err == nil && page.State != "paused" {
+			select {
+			case <-time.After(5 * time.Millisecond):
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
+			}
+			page, err = queue.ListUserQueue(ctx, "s", nil, 0)
+		}
 		if err != nil || page.State != "paused" || page.PauseReason != "cancelled" || len(page.Items) != 2 {
 			t.Fatal(page, err)
 		}

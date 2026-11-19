@@ -50,6 +50,15 @@ func (b supplementIntegrationBuilder) Build(rc conversation.RuntimeContext) conv
 }
 
 func TestTextSupplementRealExecutorHTTPModelAndReplay(t *testing.T) {
+	testTextSupplementExecutor(t, false)
+}
+
+func TestTextSupplementResponseLostBeforeClientAcceptance(t *testing.T) {
+	testTextSupplementExecutor(t, true)
+}
+
+func testTextSupplementExecutor(t *testing.T, loseResponse bool) {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	store, err := sqlitestore.New(filepath.Join(t.TempDir(), "db"))
@@ -83,7 +92,14 @@ func TestTextSupplementRealExecutorHTTPModelAndReplay(t *testing.T) {
 	}
 	payload, _ := json.Marshal(map[string]string{"request_id": "extra", "expected_turn_id": target, "text": "include supplement"})
 	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, httptest.NewRequest("POST", "/v1/conversations/s/supplements", strings.NewReader(string(payload))))
+	if loseResponse {
+		srv := deliveryResponseLossServer(t, handler)
+		data := recoverLostDeliveryResponse(t, ctx, srv, "/v1/conversations/s/supplements", "extra", "", string(payload))
+		response.WriteHeader(202)
+		_, _ = response.Write(data)
+	} else {
+		handler.ServeHTTP(response, httptest.NewRequest("POST", "/v1/conversations/s/supplements", strings.NewReader(string(payload))))
+	}
 	close(provider.release)
 	if response.Code != 202 {
 		t.Fatal(response.Code, response.Body.String())

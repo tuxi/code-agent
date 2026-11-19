@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -164,5 +165,83 @@ func TestSharedDeliveryKeepsBothInboxesOpenUntilModelHandlesAllInputs(t *testing
 	}
 	if _, err = store.CheckpointRuntimeInputs(context.Background(), sess, session.RuntimeInputBoundary{TurnID: "target", Deliver: true}); !errors.Is(err, session.ErrRuntimeInputClosed) {
 		t.Fatal(err)
+	}
+}
+
+type deliveryApprovalGate struct {
+	entered chan struct{}
+	verdict chan Verdict
+}
+
+func (g deliveryApprovalGate) Approve(string, json.RawMessage) Verdict {
+	close(g.entered)
+	return <-g.verdict
+}
+
+func TestSupplementAndQueueDoNotBypassPendingApproval(t *testing.T) {
+	store, inbox, sess := runnerSupplementFixture(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	gate := deliveryApprovalGate{entered: make(chan struct{}), verdict: make(chan Verdict, 1)}
+	defer close(gate.verdict)
+	tool := &recordingTool{}
+	registry := tools.NewRegistry()
+	mustRegister(t, registry, tool)
+	provider := &scriptedProvider{responses: []model.Response{toolCallResp(tool.Name(), `{}`), {Content: "done", FinishReason: "stop"}}}
+	runner := &Runner{Model: provider, Tools: registry, Approver: gate, MaxSteps: 4, Delivery: inbox, Supplements: inbox, RuntimeInputs: store, ReservedTurnID: "target", RequestID: "initial"}
+	done := make(chan error, 1)
+	go func() { _, err := runner.RunPreparedTurn(ctx, sess); done <- err }()
+	select {
+	case <-gate.entered:
+	case err := <-done:
+		t.Fatal("runner ended before approval", err)
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	enqueueSupplement(t, inbox, "during-approval")
+	q, err := sqlitestore.NewUserQueue(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = q.EnqueueUserMessage(ctx, session.QueuedMessage{SessionID: "owner", RequestID: "queued-during-approval", Text: "next", Context: session.QueueExecutionContext{WireModel: "selected", ResolvedModel: "resolved", AuthorizationScope: "owner", ApprovalMode: "ask"}}); err != nil {
+		t.Fatal(err)
+	}
+	pending, err := inbox.Supplement(ctx, "owner", "during-approval")
+	if err != nil || pending.State != "pending_apply" {
+		t.Fatal(pending, err)
+	}
+	advance, err := q.ReconcileUserQueue(ctx, "owner")
+	if err != nil || advance.Claim != nil {
+		t.Fatal("queue bypassed approval", advance, err)
+	}
+	select {
+	case err := <-done:
+		t.Fatal("input resolved approval", err)
+	default:
+	}
+	gate.verdict <- VerdictDeny
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	if tool.ran {
+		t.Fatal("supplement granted tool permission")
+	}
+	receipt, err := inbox.Supplement(ctx, "owner", "during-approval")
+	if err != nil || receipt.State != "applied" {
+		t.Fatal(receipt, err)
+	}
+	found := false
+	for _, message := range provider.lastMessages {
+		if message.Role == model.RoleUser && message.Content == "during-approval" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("next model request missed supplement")
 	}
 }

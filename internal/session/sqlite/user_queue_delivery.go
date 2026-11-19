@@ -245,7 +245,8 @@ func (q *UserQueue) ReconcileUserQueue(ctx context.Context, sid string) (session
 	var kind, at, payload string
 	err = tx.QueryRowContext(ctx, `SELECT i.request_id,i.turn_id,e.kind,e.at,e.payload
       FROM turn_inputs i JOIN session_events e ON e.id=(SELECT MAX(id) FROM session_events WHERE session_id=i.session_id AND turn_id=i.turn_id AND kind IN ('turn_finished','turn_failed','turn_cancelled'))
-      WHERE (e.kind!='turn_finished' OR NOT EXISTS(SELECT 1 FROM user_queue_claims c WHERE c.session_id=i.session_id AND c.execution_request_id=i.request_id)
+      WHERE e.id>COALESCE((SELECT MAX(resume.id) FROM session_events resume WHERE resume.session_id=i.session_id AND resume.turn_id=i.turn_id AND resume.kind='user_queue_resumed'),0)
+      AND (e.kind!='turn_finished' OR NOT EXISTS(SELECT 1 FROM user_queue_claims c WHERE c.session_id=i.session_id AND c.execution_request_id=i.request_id)
         OR EXISTS(SELECT 1 FROM sessions s WHERE s.id=i.session_id AND json_extract(CASE WHEN json_valid(s.metadata) THEN s.metadata ELSE '{}' END,'$.turn_status')='done'))
       AND i.session_id=? AND i.request_id=(SELECT request_id FROM turn_inputs WHERE session_id=? ORDER BY accepted_seq DESC,created_at DESC,rowid DESC LIMIT 1)
       AND NOT EXISTS(SELECT 1 FROM user_queue_finishes f WHERE f.session_id=i.session_id AND f.request_id=i.request_id)`, sid, sid).Scan(&end.RequestID, &end.TurnID, &kind, &at, &payload)

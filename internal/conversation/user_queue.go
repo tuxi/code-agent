@@ -23,9 +23,10 @@ type QueueExecutionStore interface {
 type QueueContextResolver func(context.Context, string, session.QueueExecutionContext) (session.QueueExecutionContext, error)
 type queueExecutionKey struct{}
 type queueExecution struct {
-	frozen  session.QueueExecutionContext
-	store   QueueExecutionStore
-	resolve QueueContextResolver
+	frozen   session.QueueExecutionContext
+	store    QueueExecutionStore
+	resolve  QueueContextResolver
+	resuming bool
 }
 
 func queueExecutionFrom(ctx context.Context) *queueExecution {
@@ -63,7 +64,7 @@ func (e *TurnExecutor) ExecuteUserQueueClaim(ctx context.Context, sid, rid strin
 		return agent.TurnResult{}, session.ErrUserQueueUnavailable
 	}
 	defer e.releaseRecovery(key)
-	result, runErr := e.executeRecoveredTurn(context.WithValue(ctx, queueExecutionKey{}, &queueExecution{frozen, store, resolve}), input)
+	result, runErr := e.executeRecoveredTurn(context.WithValue(ctx, queueExecutionKey{}, &queueExecution{frozen: frozen, store: store, resolve: resolve}), input)
 	if runErr != nil {
 		runErr = errors.Join(runErr, store.PauseUserQueueContext(context.WithoutCancel(ctx), sid))
 	}
@@ -157,4 +158,54 @@ func (e *TurnExecutor) ConfigureUserQueueWakeup(wake func(string)) { e.queueWake
 // from a queue explicitly scoped to the runtime owner's configured providers.
 func (e *TurnExecutor) UsesPrivateQueueCredentials(sid string) bool {
 	return e.sessionCredential(sid) == nil && e.active.ApprovalMode(sid) == ""
+}
+
+// ResumeInterruptedUserQueue requires a durable user-requested resume. It never
+// appends another user message or re-admits the original input.
+func (e *TurnExecutor) ResumeInterruptedUserQueue(ctx context.Context, sid string, store QueueExecutionStore, resolve QueueContextResolver) (agent.TurnResult, error) {
+	recovery, ok := store.(session.InterruptedUserQueueStore)
+	if !ok || resolve == nil {
+		return agent.TurnResult{}, session.ErrUserQueueUnavailable
+	}
+	key := "user-queue-consumer\x00" + sid
+	if !e.claimRecovery(key) {
+		return agent.TurnResult{}, session.ErrUserQueueUnavailable
+	}
+	defer e.releaseRecovery(key)
+	input, frozen, err := recovery.PendingInterruptedUserQueue(ctx, sid)
+	if err != nil {
+		return agent.TurnResult{}, err
+	}
+	result, err := e.resumeInterruptedQueueTurn(ctx, input, frozen, store, resolve)
+	if err != nil {
+		err = errors.Join(err, recovery.PauseInterruptedUserQueue(context.WithoutCancel(ctx), sid))
+	}
+	return result, err
+}
+
+func (e *TurnExecutor) resumeInterruptedQueueTurn(ctx context.Context, input session.TurnInput, frozen session.QueueExecutionContext, store QueueExecutionStore, resolve QueueContextResolver) (agent.TurnResult, error) {
+	current, err := resolve(ctx, input.SessionID, frozen)
+	if err != nil {
+		return agent.TurnResult{}, err
+	}
+	if current != frozen {
+		return agent.TurnResult{}, session.ErrUserQueueContextChanged
+	}
+	release, err := e.beginSessionTurn(input.SessionID)
+	if err != nil {
+		return agent.TurnResult{}, err
+	}
+	defer release()
+	sess, err := e.repo.Load(ctx, input.SessionID)
+	if err != nil {
+		return agent.TurnResult{}, err
+	}
+	if sess.TurnStatus() != session.TurnStatusPaused || !sessionHasOriginTurn(sess, input.TurnID) {
+		return agent.TurnResult{}, session.ErrUserQueueUnavailable
+	}
+	queued := &queueExecution{frozen: frozen, store: store, resolve: resolve, resuming: true}
+	return e.driveTurn(context.WithValue(ctx, queueExecutionKey{}, queued), sess, input.RequestID, input.Text, input.WireModel, frozen.ReasoningEffort, input.Assets, input.LocalAssets, &input, nil, nil, nil, session.TurnStatusResuming,
+		func(runCtx context.Context, runner TurnRunner, _ bool) (agent.TurnResult, error) {
+			return runner.ResumeTurn(runCtx, sess)
+		}, e.recordRunStatus)
 }

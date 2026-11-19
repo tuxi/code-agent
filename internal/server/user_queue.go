@@ -275,7 +275,11 @@ func registerUserQueueRoutes(mux *http.ServeMux, s *queueHTTPService, enabled bo
 			failure(w, err)
 			return
 		}
-		for _, item := range page.Items {
+		visible := append([]session.QueuedMessageReceipt{}, page.Items...)
+		if page.Interrupted != nil {
+			visible = append(visible, *page.Interrupted)
+		}
+		for _, item := range visible {
 			if item.Input.Context.AuthorizationScope != scope {
 				failure(w, errQueueUnauthorized)
 				return
@@ -284,7 +288,7 @@ func registerUserQueueRoutes(mux *http.ServeMux, s *queueHTTPService, enabled bo
 		_, page.Controls = s.store.(session.UserQueueControlStore)
 		// Reopening the queue also recovers an enabled queue after a daemon
 		// restart. Wake rechecks durable state and never resumes a paused queue.
-		if page.State == "enabled" && len(page.Items) > 0 && s.wake != nil {
+		if (page.State == "enabled" && len(page.Items) > 0 || page.PauseReason == "resume_requested") && s.wake != nil {
 			s.wake(sid)
 		}
 		respond(w, 200, page)
@@ -394,7 +398,21 @@ func (q *LocalUserQueue) drain(sid string) {
 		q.mu.Unlock()
 		count := 0
 		if !q.executor.HasActivity(sid) {
-			count, _ = q.executor.DrainUserQueue(ctx, sid, q.store, q.service.contexts.revalidate, 16)
+			resumeWaiting := false
+			resumeFailed := false
+			if recovery, ok := q.store.(session.InterruptedUserQueueStore); ok {
+				_, _, pendingErr := recovery.PendingInterruptedUserQueue(ctx, sid)
+				if pendingErr == nil {
+					result, err := q.executor.ResumeInterruptedUserQueue(ctx, sid, q.store, q.service.contexts.revalidate)
+					resumeWaiting = result.WaitingBackground
+					resumeFailed = err != nil
+				} else if !errors.Is(pendingErr, sql.ErrNoRows) {
+					resumeFailed = true
+				}
+			}
+			if !resumeWaiting && !resumeFailed {
+				count, _ = q.executor.DrainUserQueue(ctx, sid, q.store, q.service.contexts.revalidate, 16)
+			}
 		}
 		q.mu.Lock()
 		if ctx.Err() != nil || (count < 16 && !q.pending[sid]) {

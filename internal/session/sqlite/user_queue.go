@@ -218,6 +218,23 @@ func (q *UserQueue) ListUserQueue(ctx context.Context, sid string, cursor *sessi
 		page.Items = page.Items[:limit]
 		page.Next = &session.UserQueueCursor{SessionID: sid, Revision: page.Revision, AfterSequence: page.Items[len(page.Items)-1].Sequence}
 	}
+	if page.State == "paused" && (page.PauseReason == "execution_interrupted" || page.PauseReason == "resume_requested" || page.PauseReason == "resume_validation_failed") {
+		var hash string
+		item, e := scanQueuedMessage(tx.QueryRowContext(ctx, `SELECT m.payload,m.sequence,m.accepted_revision,m.state,m.created_at,m.payload_hash
+ FROM user_queue_messages m JOIN user_queue_claims c ON c.session_id=m.session_id AND c.request_id=m.request_id
+ JOIN turn_inputs i ON i.session_id=c.session_id AND i.request_id=c.execution_request_id
+ WHERE c.session_id=? AND c.active=1 AND i.state='running' AND m.state='started'`, sid), &hash)
+		if e == nil {
+			page.Interrupted = &item
+			var blocked int
+			if e = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM runtime_continuations WHERE session_id=? AND checkpoint!='' AND state NOT IN ('finished','stopped','superseded')`, sid).Scan(&blocked); e != nil {
+				return page, e
+			}
+			page.ResumeSupported = blocked == 0
+		} else if !errors.Is(e, sql.ErrNoRows) {
+			return page, e
+		}
+	}
 	return page, tx.Commit()
 }
 

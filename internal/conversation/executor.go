@@ -950,6 +950,9 @@ func (e *TurnExecutor) driveTurn(
 		}
 		*sess = *latest
 		if !sessionHasOriginTurn(sess, turnID) {
+			if queuedExecution != nil && queuedExecution.resuming {
+				return agent.TurnResult{TurnID: turnID}, session.ErrUserQueueUnavailable
+			}
 			sess.RemoveEmptyAssistantNoOps()
 			sess.Messages = append(sess.Messages, model.Message{
 				Role: model.RoleUser, Content: claimed.Text,
@@ -963,7 +966,17 @@ func (e *TurnExecutor) driveTurn(
 			if checkErr != nil {
 				return agent.TurnResult{TurnID: turnID}, errors.Join(checkErr, queuedExecution.store.PauseUserQueueContext(context.WithoutCancel(parentCtx), sess.ID))
 			}
-			startedSeq, startErr := queuedExecution.store.StartUserQueueClaim(parentCtx, claimed, sess, current)
+			var startedSeq int64
+			var startErr error
+			if queuedExecution.resuming {
+				recovery, ok := queuedExecution.store.(session.InterruptedUserQueueStore)
+				if !ok {
+					return agent.TurnResult{TurnID: turnID}, session.ErrUserQueueUnavailable
+				}
+				startedSeq, startErr = recovery.StartInterruptedUserQueue(parentCtx, claimed, sess, current)
+			} else {
+				startedSeq, startErr = queuedExecution.store.StartUserQueueClaim(parentCtx, claimed, sess, current)
+			}
 			if startErr != nil {
 				return agent.TurnResult{TurnID: turnID}, startErr
 			}
@@ -1136,7 +1149,7 @@ func (e *TurnExecutor) driveTurn(
 		}
 	}
 	queueWake = queuedExecution == nil && claimed.RequestID != "" && turnInputTerminalState(sess, runErr) != ""
-	if queuedExecution != nil {
+	if queuedExecution != nil && turnInputTerminalState(sess, runErr) != "" {
 		finishErr := e.finishQueueExecution(context.WithoutCancel(parentCtx), sess.ID, claimed, queuedExecution)
 		if finishErr != nil {
 			finishErr = errors.Join(finishErr, queuedExecution.store.PauseUserQueueContext(context.WithoutCancel(parentCtx), sess.ID))

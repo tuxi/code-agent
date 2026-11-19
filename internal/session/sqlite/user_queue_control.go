@@ -10,8 +10,8 @@ import (
 
 func (q *UserQueue) ControlUserQueue(ctx context.Context, sid, scope string, change session.UserQueueControl) error {
 	if scope == "" || change.Revision == nil || *change.Revision < 0 ||
-		(change.Action != "resume" && change.Action != "remove") ||
-		(change.Action == "remove") != (change.RequestID != "") {
+		(change.Action != "resume" && change.Action != "remove" && change.Action != "resume_interrupted") ||
+		(change.Action != "resume") != (change.RequestID != "") {
 		return session.ErrInvalidQueuedMessage
 	}
 	tx, err := q.deliveryTransaction(ctx, sid)
@@ -31,7 +31,11 @@ func (q *UserQueue) ControlUserQueue(ctx context.Context, sid, scope string, cha
 		return session.ErrUserQueueRevision
 	}
 
-	if change.Action == "remove" {
+	if change.Action == "resume_interrupted" {
+		if err = q.requestInterruptedQueueTx(ctx, tx, sid, scope, change.RequestID); err != nil {
+			return err
+		}
+	} else if change.Action == "remove" {
 		if err = q.removeUnstartedQueueMessage(ctx, tx, sid, scope, change.RequestID); err != nil {
 			return err
 		}
