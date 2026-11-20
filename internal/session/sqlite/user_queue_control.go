@@ -9,7 +9,7 @@ import (
 )
 
 func (q *UserQueue) ControlUserQueue(ctx context.Context, sid, scope string, change session.UserQueueControl) error {
-	if scope == "" || change.Revision == nil || *change.Revision < 0 ||
+	if scope == "" || change.OperationID != "" || change.Revision == nil || *change.Revision < 0 ||
 		(change.Action != "resume" && change.Action != "remove" && change.Action != "resume_interrupted") ||
 		(change.Action != "resume") != (change.RequestID != "") {
 		return session.ErrInvalidQueuedMessage

@@ -397,7 +397,7 @@ func (q *UserQueue) advanceUserQueueTx(ctx context.Context, tx *sql.Tx, sid stri
 		return out, err
 	}
 	var hash string
-	claim.Message, err = scanQueuedMessage(tx.QueryRowContext(ctx, `SELECT payload,sequence,accepted_revision,state,created_at,payload_hash FROM user_queue_messages WHERE session_id=? AND state='queued' ORDER BY sequence LIMIT 1`, sid), &hash)
+	claim.Message, err = scanQueuedMessage(tx.QueryRowContext(ctx, `SELECT payload,sequence,accepted_revision,state,created_at,payload_hash FROM user_queue_dispatch_order WHERE session_id=? AND state='queued' ORDER BY priority_order,sequence LIMIT 1`, sid), &hash)
 	if errors.Is(err, sql.ErrNoRows) {
 		out.BlockedReason = "queue_empty"
 		return out, nil

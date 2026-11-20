@@ -286,6 +286,9 @@ func registerUserQueueRoutes(mux *http.ServeMux, s *queueHTTPService, enabled bo
 			}
 		}
 		_, page.Controls = s.store.(session.UserQueueControlStore)
+		_, page.TakeBackSupported = s.store.(session.UserQueueTakeBackStore)
+		_, page.PrioritizeSupported = s.store.(session.UserQueuePriorityStore)
+		page.PrioritizeSupported = page.PrioritizeSupported && page.Controls
 		// Reopening the queue also recovers an enabled queue after a daemon
 		// restart. Wake rechecks durable state and never resumes a paused queue.
 		if (page.State == "enabled" && len(page.Items) > 0 || page.PauseReason == "resume_requested") && s.wake != nil {
@@ -313,7 +316,13 @@ func registerUserQueueRoutes(mux *http.ServeMux, s *queueHTTPService, enabled bo
 		}
 		sid := r.PathValue("id")
 		scope, err := s.contexts.authorizedScope(r.Context(), sid)
-		if err == nil {
+		if err == nil && change.Action == "prioritize" {
+			if priority, supported := s.store.(session.UserQueuePriorityStore); supported {
+				err = priority.PrioritizeUserQueueMessage(r.Context(), sid, scope, change)
+			} else {
+				err = errQueueUnsupported
+			}
+		} else if err == nil {
 			err = store.ControlUserQueue(r.Context(), sid, scope, change)
 		}
 		if err != nil {
@@ -326,6 +335,43 @@ func registerUserQueueRoutes(mux *http.ServeMux, s *queueHTTPService, enabled bo
 		respond(w, 200, struct {
 			OK bool `json:"ok"`
 		}{true})
+	})
+	mux.HandleFunc("POST /v1/conversations/{id}/queue/{request_id}/take-back", func(w http.ResponseWriter, r *http.Request) {
+		if !ready {
+			failure(w, errQueueUnsupported)
+			return
+		}
+		store, ok := s.store.(session.UserQueueTakeBackStore)
+		if !ok {
+			failure(w, errQueueUnsupported)
+			return
+		}
+		var body struct {
+			TakeBackID string `json:"take_back_id"`
+			Revision   *int64 `json:"revision"`
+		}
+		var extra any
+		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096))
+		decoder.DisallowUnknownFields()
+		if decoder.Decode(&body) != nil || decoder.Decode(&extra) != io.EOF || body.Revision == nil {
+			failure(w, session.ErrInvalidQueuedMessage)
+			return
+		}
+		sid := r.PathValue("id")
+		scope, err := s.contexts.authorizedScope(r.Context(), sid)
+		if err != nil {
+			failure(w, err)
+			return
+		}
+		receipt, err := store.TakeBackUserQueueMessage(r.Context(), sid, scope, r.PathValue("request_id"), body.TakeBackID, *body.Revision)
+		if err != nil {
+			failure(w, err)
+			return
+		}
+		if s.wake != nil {
+			s.wake(sid)
+		}
+		respond(w, 200, receipt)
 	})
 	return ready
 }

@@ -29,6 +29,25 @@ func NewUserQueue(store *Store) (*UserQueue, error) {
  accepted_revision INTEGER NOT NULL, payload_hash TEXT NOT NULL, payload TEXT NOT NULL,
  state TEXT NOT NULL DEFAULT 'queued', created_at TEXT NOT NULL,
  PRIMARY KEY(session_id,request_id), UNIQUE(session_id,sequence));
+ CREATE TABLE IF NOT EXISTS user_queue_take_backs (
+ session_id TEXT NOT NULL, request_id TEXT NOT NULL, take_back_id TEXT NOT NULL,
+ PRIMARY KEY(session_id,request_id), UNIQUE(session_id,take_back_id));
+ CREATE TABLE IF NOT EXISTS user_queue_priority_operations (
+ session_id TEXT NOT NULL, operation_id TEXT NOT NULL, request_id TEXT NOT NULL,
+ applied_revision INTEGER NOT NULL, PRIMARY KEY(session_id,operation_id));
+ CREATE INDEX IF NOT EXISTS user_queue_priority_by_request
+ ON user_queue_priority_operations(session_id,request_id,applied_revision DESC);
+ CREATE TRIGGER IF NOT EXISTS user_queue_priority_session_delete AFTER DELETE ON sessions BEGIN
+ DELETE FROM user_queue_priority_operations WHERE session_id=OLD.id;
+ END;
+ CREATE VIEW IF NOT EXISTS user_queue_dispatch_order AS
+ SELECT m.*, CASE m.state WHEN 'claimed' THEN -1 ELSE 0 END AS claim_order,
+ -COALESCE((SELECT MAX(p.applied_revision) FROM user_queue_priority_operations p
+ WHERE p.session_id=m.session_id AND p.request_id=m.request_id),0) AS priority_order
+ FROM user_queue_messages m;
+ CREATE TRIGGER IF NOT EXISTS user_queue_message_delete AFTER DELETE ON user_queue_messages BEGIN
+ DELETE FROM user_queue_take_backs WHERE session_id=OLD.session_id AND request_id=OLD.request_id;
+ END;
  CREATE TRIGGER IF NOT EXISTS user_queue_session_delete AFTER DELETE ON sessions BEGIN
  DELETE FROM user_queue_messages WHERE session_id=OLD.id;
  DELETE FROM user_queue_control WHERE session_id=OLD.id;
@@ -146,10 +165,14 @@ func (q *UserQueue) EnqueueUserMessage(ctx context.Context, in session.QueuedMes
 
 type queueScanner interface{ Scan(...any) error }
 
-func scanQueuedMessage(row queueScanner, hash *string) (session.QueuedMessageReceipt, error) {
+func scanQueuedMessage(row queueScanner, hash *string, withTakeBackID ...bool) (session.QueuedMessageReceipt, error) {
 	var r session.QueuedMessageReceipt
 	var body, at string
-	if err := row.Scan(&body, &r.Sequence, &r.Revision, &r.State, &at, hash); err != nil {
+	columns := []any{&body, &r.Sequence, &r.Revision, &r.State, &at, hash}
+	if len(withTakeBackID) > 0 && withTakeBackID[0] {
+		columns = append(columns, &r.TakeBackID)
+	}
+	if err := row.Scan(columns...); err != nil {
 		return r, err
 	}
 	if err := json.Unmarshal([]byte(body), &r.Input); err != nil {
@@ -160,9 +183,20 @@ func scanQueuedMessage(row queueScanner, hash *string) (session.QueuedMessageRec
 	return r, err
 }
 
-func (q *UserQueue) QueuedUserMessage(ctx context.Context, sid, rid string) (session.QueuedMessageReceipt, error) {
+type queuedMessageQuery interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}
+
+func queryQueuedUserMessage(ctx context.Context, db queuedMessageQuery, sid, rid string) (session.QueuedMessageReceipt, error) {
 	var hash string
-	return scanQueuedMessage(q.store.db.QueryRowContext(ctx, `SELECT q.payload,q.sequence,q.accepted_revision,q.state,q.created_at,q.payload_hash FROM user_queue_messages q JOIN sessions s ON s.id=q.session_id WHERE q.session_id=? AND q.request_id=?`, sid, rid), &hash)
+	return scanQueuedMessage(db.QueryRowContext(ctx, `SELECT q.payload,q.sequence,q.accepted_revision,q.state,q.created_at,q.payload_hash,COALESCE(t.take_back_id,'')
+ FROM user_queue_messages q JOIN sessions s ON s.id=q.session_id
+ LEFT JOIN user_queue_take_backs t ON t.session_id=q.session_id AND t.request_id=q.request_id
+ WHERE q.session_id=? AND q.request_id=?`, sid, rid), &hash, true)
+}
+
+func (q *UserQueue) QueuedUserMessage(ctx context.Context, sid, rid string) (session.QueuedMessageReceipt, error) {
+	return queryQueuedUserMessage(ctx, q.store.db, sid, rid)
 }
 
 func (q *UserQueue) ListUserQueue(ctx context.Context, sid string, cursor *session.UserQueueCursor, limit int) (session.UserQueuePage, error) {
@@ -196,7 +230,15 @@ func (q *UserQueue) ListUserQueue(ctx context.Context, sid string, cursor *sessi
 		}
 		after = cursor.AfterSequence
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT payload,sequence,accepted_revision,state,created_at,payload_hash FROM user_queue_messages WHERE session_id=? AND sequence>? AND state IN ('queued','claimed') ORDER BY sequence LIMIT ?`, sid, after, limit+1)
+	rows, err := tx.QueryContext(ctx, `WITH anchor AS (
+ SELECT claim_order,priority_order FROM user_queue_dispatch_order
+ WHERE session_id=? AND sequence=? AND state IN ('queued','claimed'))
+ SELECT payload,sequence,accepted_revision,state,created_at,payload_hash
+ FROM user_queue_dispatch_order
+ WHERE session_id=? AND state IN ('queued','claimed')
+ AND (?=0 OR (claim_order,priority_order,sequence) >
+ (COALESCE((SELECT claim_order FROM anchor),0),COALESCE((SELECT priority_order FROM anchor),0),?))
+ ORDER BY claim_order,priority_order,sequence LIMIT ?`, sid, after, sid, after, after, limit+1)
 	if err != nil {
 		return page, err
 	}

@@ -86,6 +86,67 @@ func TestUserQueueIdentityFrozenContextAndReopen(t *testing.T) {
 	}
 }
 
+func TestUserQueueTakeBackOwnsRemovedMessageAndSurvivesReopen(t *testing.T) {
+	s, q := queueFixture(t)
+	ctx := context.Background()
+	for _, id := range []string{"a", "b"} {
+		if _, _, err := q.EnqueueUserMessage(ctx, queueMessage(id)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := q.TakeBackUserQueueMessage(ctx, "owner", "local-owner", "a", "edit-a", 1); !errors.Is(err, session.ErrUserQueueRevision) {
+		t.Fatal(err)
+	}
+	if _, err := q.TakeBackUserQueueMessage(ctx, "owner", "other-owner", "a", "edit-a", 2); !errors.Is(err, session.ErrUserQueueUnavailable) {
+		t.Fatal(err)
+	}
+	got, err := q.TakeBackUserQueueMessage(ctx, "owner", "local-owner", "a", "edit-a", 2)
+	if err != nil || got.State != "removed" || got.TakeBackID != "edit-a" || got.Input.Text != "next task" {
+		t.Fatal(got, err)
+	}
+	if _, err := q.TakeBackUserQueueMessage(ctx, "owner", "local-owner", "b", "edit-a", 3); !errors.Is(err, session.ErrQueuedMessageConflict) {
+		t.Fatal(err)
+	}
+	if _, err := q.TakeBackUserQueueMessage(ctx, "owner", "local-owner", "a", "other-edit", 3); !errors.Is(err, session.ErrUserQueueUnavailable) {
+		t.Fatal(err)
+	}
+	if err := s.reopen(); err != nil {
+		t.Fatal(err)
+	}
+	q, err = NewUserQueue(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, err := q.QueuedUserMessage(ctx, "owner", "a")
+	if err != nil || !reflect.DeepEqual(stored, got) {
+		t.Fatal(stored, err)
+	}
+	replay, err := q.TakeBackUserQueueMessage(ctx, "owner", "local-owner", "a", "edit-a", 2)
+	if err != nil || !reflect.DeepEqual(replay, got) {
+		t.Fatal(replay, err)
+	}
+	page, err := q.ListUserQueue(ctx, "owner", nil, 0)
+	if err != nil || page.Revision != 3 || len(page.Items) != 1 || page.Items[0].Input.RequestID != "b" {
+		t.Fatal(page, err)
+	}
+}
+
+func TestUserQueueTakeBackDoesNotStealClaimedMessage(t *testing.T) {
+	_, q, in := queueDeliveryFixture(t)
+	ctx := context.Background()
+	advanced, err := q.FinishUserQueueTurn(ctx, queueEnd(in, session.TurnInputCompleted))
+	if err != nil || advanced.Claim == nil || advanced.Claim.Message.Input.RequestID != "a" {
+		t.Fatal(advanced, err)
+	}
+	if _, err := q.TakeBackUserQueueMessage(ctx, "owner", "local-owner", "a", "edit-a", advanced.Revision); !errors.Is(err, session.ErrUserQueueUnavailable) {
+		t.Fatal(err)
+	}
+	stored, err := q.QueuedUserMessage(ctx, "owner", "a")
+	if err != nil || stored.State != "claimed" || stored.TakeBackID != "" {
+		t.Fatal(stored, err)
+	}
+}
+
 func TestUserQueuePaginationRejectsChangedRevision(t *testing.T) {
 	_, q := queueFixture(t)
 	ctx := context.Background()

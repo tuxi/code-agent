@@ -84,7 +84,7 @@ func TestUserQueueHTTPTrustedSelectionRetryAndScope(t *testing.T) {
 		}
 		wakes++
 	}
-	if w := request("GET", "/v1/conversations/s/queue?limit=1", ""); w.Code != 200 {
+	if w := request("GET", "/v1/conversations/s/queue?limit=1", ""); w.Code != 200 || !strings.Contains(w.Body.String(), `"take_back_supported":true`) {
 		t.Fatal(w.Code, w.Body.String())
 	}
 	if wakes != 1 {
@@ -99,6 +99,38 @@ func TestUserQueueHTTPTrustedSelectionRetryAndScope(t *testing.T) {
 	}
 	if w := request("GET", "/v1/conversations/s/queue", ""); w.Code != 403 {
 		t.Fatal(w.Code)
+	}
+	const path = "/v1/conversations/s/queue/r/take-back"
+	const change = `{"take_back_id":"recover-r","revision":1}`
+	if w := request("POST", path, change); w.Code != 409 {
+		t.Fatal(w.Code, w.Body.String())
+	}
+	scope = "owner"
+	if w := request("POST", path, `{"take_back_id":"recover-r"}`); w.Code != 400 {
+		t.Fatal(w.Code, w.Body.String())
+	}
+	accepted := request("POST", path, change)
+	if accepted.Code != 200 || json.Unmarshal(accepted.Body.Bytes(), &receipt) != nil ||
+		receipt.State != "removed" || receipt.TakeBackID != "recover-r" || receipt.Input.Text != "next task" {
+		t.Fatal(accepted.Code, accepted.Body.String())
+	}
+	if w := request("GET", "/v1/conversations/s/queue/r", ""); w.Code != 200 || w.Body.String() != accepted.Body.String() {
+		t.Fatal(w.Code, w.Body.String())
+	}
+	if w := request("POST", path, change); w.Code != 200 || w.Body.String() != accepted.Body.String() {
+		t.Fatal(w.Code, w.Body.String())
+	}
+	if w := request("POST", "/v1/conversations/s/queue", `{"request_id":"p","text":"promote me","model":"selected"}`); w.Code != 202 {
+		t.Fatal(w.Code, w.Body.String())
+	}
+	const priority = `{"action":"prioritize","request_id":"p","operation_id":"priority-p","revision":3}`
+	for i := 0; i < 2; i++ {
+		if w := request("POST", "/v1/conversations/s/queue/control", priority); w.Code != 200 {
+			t.Fatal(w.Code, w.Body.String())
+		}
+	}
+	if w := request("GET", "/v1/conversations/s/queue", ""); w.Code != 200 || !strings.Contains(w.Body.String(), `"prioritize_supported":true`) {
+		t.Fatal(w.Code, w.Body.String())
 	}
 	scope = ""
 	if w := request("POST", "/v1/conversations/s/queue", body); w.Code != 403 {

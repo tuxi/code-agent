@@ -39,11 +39,12 @@ type QueuedMessage struct {
 }
 
 type QueuedMessageReceipt struct {
-	Input     QueuedMessage `json:"input"`
-	Sequence  int64         `json:"sequence"`
-	Revision  int64         `json:"revision"` // revision at acceptance, unchanged on retry
-	State     string        `json:"state"`
-	CreatedAt time.Time     `json:"created_at"`
+	Input      QueuedMessage `json:"input"`
+	TakeBackID string        `json:"take_back_id,omitempty"`
+	Sequence   int64         `json:"sequence"`
+	Revision   int64         `json:"revision"` // revision at acceptance, unchanged on retry
+	State      string        `json:"state"`
+	CreatedAt  time.Time     `json:"created_at"`
 }
 
 type UserQueueCursor struct {
@@ -53,14 +54,16 @@ type UserQueueCursor struct {
 }
 
 type UserQueuePage struct {
-	ResumeSupported bool                   `json:"resume_supported,omitempty"`
-	Interrupted     *QueuedMessageReceipt  `json:"interrupted,omitempty"`
-	Controls        bool                   `json:"controls,omitempty"`
-	Revision        int64                  `json:"revision"`
-	State           string                 `json:"state"`
-	PauseReason     string                 `json:"pause_reason,omitempty"`
-	Items           []QueuedMessageReceipt `json:"items"`
-	Next            *UserQueueCursor       `json:"next,omitempty"`
+	PrioritizeSupported bool                   `json:"prioritize_supported,omitempty"`
+	TakeBackSupported   bool                   `json:"take_back_supported,omitempty"`
+	ResumeSupported     bool                   `json:"resume_supported,omitempty"`
+	Interrupted         *QueuedMessageReceipt  `json:"interrupted,omitempty"`
+	Controls            bool                   `json:"controls,omitempty"`
+	Revision            int64                  `json:"revision"`
+	State               string                 `json:"state"`
+	PauseReason         string                 `json:"pause_reason,omitempty"`
+	Items               []QueuedMessageReceipt `json:"items"`
+	Next                *UserQueueCursor       `json:"next,omitempty"`
 }
 
 // UserQueueStore is optional. A storage implementation alone must not
@@ -72,13 +75,22 @@ type UserQueueStore interface {
 }
 
 type UserQueueControl struct {
-	Action    string `json:"action"`
-	RequestID string `json:"request_id,omitempty"`
-	Revision  *int64 `json:"revision"`
+	OperationID string `json:"operation_id,omitempty"`
+	Action      string `json:"action"`
+	RequestID   string `json:"request_id,omitempty"`
+	Revision    *int64 `json:"revision"`
 }
 
 type UserQueueControlStore interface {
 	ControlUserQueue(context.Context, string, string, UserQueueControl) error
+}
+
+type UserQueuePriorityStore interface {
+	PrioritizeUserQueueMessage(ctx context.Context, sessionID, scope string, change UserQueueControl) error
+}
+
+type UserQueueTakeBackStore interface {
+	TakeBackUserQueueMessage(ctx context.Context, sessionID, scope, requestID, takeBackID string, revision int64) (QueuedMessageReceipt, error)
 }
 
 // UserQueueTurnEnd is submitted by the serialized executor only after its final
