@@ -109,10 +109,13 @@ type RunBuilder interface {
 	Build(ctx RuntimeContext) TurnRunner
 }
 
-// TitleGenerator optionally produces a concise human-readable title from the
-// first exchange of a conversation. It is invoked asynchronously after the first
-// turn so the user sees a descriptive name in session lists without blocking the
-// turn response.
+// TurnTitleBuilder prepares a title generator from the accepted turn's model
+// and credential, without building its tools or waiting for its scheduler slot.
+type TurnTitleBuilder interface {
+	BuildTitleGenerator(settings.ModelConfig, bool, credential.Resolver) (TitleGenerator, error)
+}
+
+// TitleGenerator produces a concise title from the earliest usable user input.
 type TitleGenerator interface {
 	GenerateTitle(ctx context.Context, sessionID, userMessage, assistantResponse string) (string, error)
 }

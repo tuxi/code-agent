@@ -32,6 +32,7 @@ type wireEvent struct {
 	Kind            string `json:"kind"`
 	At              string `json:"at"`
 	SessionID       string `json:"session_id,omitempty"`
+	Name            string `json:"name,omitempty"`
 	ParentSessionID string `json:"parent_session_id,omitempty"`
 	TurnID          string `json:"turn_id,omitempty"`
 	RequestID       string `json:"request_id,omitempty"`
@@ -154,6 +155,7 @@ func toWire(e agent.Event) wireEvent {
 		Kind:               string(e.Kind),
 		At:                 e.At.UTC().Format(rfc3339Millis),
 		SessionID:          e.SessionID,
+		Name:               e.Name,
 		TurnID:             e.TurnID,
 		RequestID:          e.RequestID,
 		QueuePosition:      e.QueuePosition,

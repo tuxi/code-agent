@@ -75,9 +75,7 @@ func (m *MemoryStore) Save(ctx context.Context, s *Session) error {
 	// Archive state is mutated only through Archive/Restore. Preserve it across a
 	// stale whole-session save so an async title/checkpoint cannot unarchive a
 	// conversation after the archive operation has committed.
-	if existing, ok := m.sessions[sess.ID]; ok {
-		sess.ArchivedAt = existing.ArchivedAt
-	}
+	m.preserveSessionLabels(sess)
 	m.sessions[sess.ID] = sess
 	m.reindexMetas()
 	return nil
@@ -150,6 +148,12 @@ func (m *MemoryStore) ReserveTurnInput(_ context.Context, input TurnInput, accep
 	m.eventSeq++
 	accepted.Seq = m.eventSeq
 	input.AcceptedSeq = accepted.Seq
+	if sess := m.sessions[input.SessionID]; sess != nil && input.Provenance == nil && sess.Preview == "" {
+		if sess.Preview = sess.ConversationPreview(); sess.Preview == "" {
+			sess.Preview = MessagePreview(input.Text, input.Assets, input.LocalAssets)
+		}
+		m.reindexMetas()
+	}
 	m.turnInputs[key] = cloneTurnInput(input)
 	m.events = append(m.events, accepted)
 	return cloneTurnInput(input), true, accepted.Seq, nil
@@ -165,7 +169,9 @@ func (m *MemoryStore) StartTurnInput(_ context.Context, input TurnInput, sess *S
 	}
 	stored.State, stored.UpdatedAt = TurnInputRunning, time.Now().UTC()
 	m.turnInputs[key] = stored
-	m.sessions[sess.ID] = deepCopySession(sess)
+	copy := deepCopySession(sess)
+	m.preserveSessionLabels(copy)
+	m.sessions[sess.ID] = copy
 	m.reindexMetas()
 	return nil
 }
@@ -377,6 +383,43 @@ func (m *MemoryStore) UpdateWorktree(_ context.Context, record worktree.Record) 
 }
 
 var _ worktree.Store = (*MemoryStore)(nil)
+
+func (m *MemoryStore) preserveSessionLabels(sess *Session) {
+	if existing := m.sessions[sess.ID]; existing != nil {
+		sess.ArchivedAt = existing.ArchivedAt
+		if existing.NameSeq > 0 || (sess.Name == "" && existing.Name != "") {
+			sess.Name = existing.Name
+			sess.NameSeq = existing.NameSeq
+		}
+		sess.Preview = existing.ConversationPreview()
+	}
+	sess.Preview = sess.ConversationPreview()
+}
+
+func (m *MemoryStore) UpdateConversationName(_ context.Context, id, name string, onlyIfEmpty bool, event EventRecord) (int64, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	sess := m.sessions[id]
+	if sess == nil {
+		if onlyIfEmpty {
+			return 0, false, nil
+		}
+		return 0, false, fmt.Errorf("session %q not found", id)
+	}
+	if onlyIfEmpty && sess.Name != "" {
+		return 0, false, nil
+	}
+	sess.Name = name
+	m.eventSeq++
+	event.Seq = m.eventSeq
+	sess.NameSeq = event.Seq
+	if !onlyIfEmpty {
+		sess.UpdatedAt = event.At
+	}
+	m.events = append(m.events, event)
+	m.reindexMetas()
+	return event.Seq, true, nil
+}
 
 func (m *MemoryStore) UpdateName(_ context.Context, id string, name string) error {
 	m.mu.Lock()
@@ -782,6 +825,8 @@ func (m *MemoryStore) reindexMetas() {
 		m.metas = append(m.metas, Meta{
 			ID:            s.ID,
 			Name:          s.Name,
+			NameSeq:       s.NameSeq,
+			Preview:       s.ConversationPreview(),
 			Title:         title,
 			Model:         s.Model,
 			MessageCount:  len(s.Messages),

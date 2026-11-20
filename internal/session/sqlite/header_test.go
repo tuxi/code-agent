@@ -2,10 +2,43 @@ package sqlite
 
 import (
 	"context"
+	"path/filepath"
 	"testing"
 
 	"code-agent/internal/session"
 )
+
+func TestLegacyConversationPreviewMigration(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "legacy.db")
+	store, err := New(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess := sampleSession()
+	want := sess.ConversationPreview()
+	if want == "" {
+		t.Fatal("fixture needs a first message")
+	}
+	if err = store.Save(ctx, sess); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = store.db.Exec(`ALTER TABLE sessions DROP COLUMN conversation_preview`); err != nil {
+		t.Fatal(err)
+	}
+	if err = store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = New(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	rows, _, err := store.ListSessionPage(ctx, false, nil, 10)
+	if err != nil || len(rows) != 1 || rows[0].Preview != want {
+		t.Fatalf("list=%+v want preview=%q err=%v", rows, want, err)
+	}
+}
 
 func TestLoadHeaderDoesNotReadTranscriptTables(t *testing.T) {
 	store := newStore(t)

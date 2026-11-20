@@ -350,6 +350,30 @@ func (r *sqliteRepository) Delete(ctx context.Context, id string) error {
 	return r.store.Delete(ctx, id)
 }
 
+func (r *sqliteRepository) LoadConversationPreview(ctx context.Context, id string) (string, error) {
+	if store, ok := r.store.(interface {
+		LoadConversationPreview(context.Context, string) (string, error)
+	}); ok {
+		return store.LoadConversationPreview(ctx, id)
+	}
+	sess, err := r.Load(ctx, id)
+	if err != nil {
+		return "", err
+	}
+	return sess.ConversationPreview(), nil
+}
+
+func (r *sqliteRepository) UpdateConversationName(ctx context.Context, id, name string, onlyIfEmpty bool, event session.EventRecord) (int64, bool, error) {
+	if store, ok := r.store.(session.NameStore); ok {
+		return store.UpdateConversationName(ctx, id, name, onlyIfEmpty, event)
+	}
+	if onlyIfEmpty {
+		return 0, false, nil
+	}
+	err := r.store.UpdateName(ctx, id, name)
+	return 0, err == nil, err
+}
+
 func (r *sqliteRepository) UpdateName(ctx context.Context, id string, name string) error {
 	return r.store.UpdateName(ctx, id, name)
 }

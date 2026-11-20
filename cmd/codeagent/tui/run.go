@@ -7,12 +7,14 @@ package tui
 
 import (
 	"code-agent/internal/agent"
+	"code-agent/internal/conversation"
 	"code-agent/internal/session"
 	"context"
 	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
+	"sync"
 
 	tea "charm.land/bubbletea/v2"
 )
@@ -111,12 +113,13 @@ type sessionSource struct {
 	list   func() []session.Meta
 	resume ResumeFunc
 	events func(id string) []agent.Event
+	rename func(id, name string) (int64, error)
 
 	modelNames   []modelInfo          // for the /use picker
 	modelSwap    ModelSwapFunc        // switches the model between turns
 	modelSwapped chan modelSwappedMsg // the TUI awaits this after posting a model name
 
-	auto      ApprovalMode    // /auto + /mode switch (nil if not wired)
+	auto      ApprovalMode      // /auto + /mode switch (nil if not wired)
 	granter   PermissionGranter // "always allow" from the approval card (nil if not wired)
 	promptOps PromptOps         // MCP prompt list/invoke (nil if not wired)
 }
@@ -134,6 +137,26 @@ func Run(ctx context.Context, b *Backend, runner *agent.Runner, sess *session.Se
 	// Cancelling on quit stops an in-flight turn rather than orphaning it.
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+
+	var draftMu sync.Mutex
+	var titles *conversation.Titles
+	if names, ok := store.(session.NameStore); ok {
+		titles = conversation.NewTitles(names, func(ev agent.Event) {
+			select {
+			case b.events <- ev:
+			case <-ctx.Done():
+			}
+		})
+		runner.OnUserInput = func(turnCtx context.Context, current *session.Session) {
+			draftMu.Lock()
+			defer draftMu.Unlock()
+			if runner.Model != nil {
+				titles.StartAfterSave(turnCtx, conversation.NewLLMTitleGenerator(runner.Model, runner.ModelName), current, store.Save)
+			}
+		}
+	}
+	draft := *sess
+	activeName, activePreview := sess.Name, sess.ConversationPreview()
 
 	go func() {
 		for {
@@ -238,6 +261,29 @@ func Run(ctx context.Context, b *Backend, runner *agent.Runner, sess *session.Se
 			return filterSessionsByWorkspace(metas, workspaceRoot)
 		},
 		resume: resume,
+		rename: func(id, name string) (int64, error) {
+			if titles == nil {
+				return 0, errors.New("renaming is unavailable")
+			}
+			draftMu.Lock()
+			defer draftMu.Unlock()
+			if id == draft.ID {
+				// A fresh TUI session is lazy-persisted. An explicit rename can
+				// create it before the first turn.
+				if headers, ok := store.(session.SessionHeaderStore); ok {
+					_, err := headers.LoadHeader(ctx, id)
+					switch {
+					case errors.Is(err, session.ErrSessionNotFound):
+						if err := store.Save(ctx, &draft); err != nil {
+							return 0, err
+						}
+					case err != nil:
+						return 0, err
+					}
+				}
+			}
+			return titles.Rename(ctx, id, name)
+		},
 		events: func(id string) []agent.Event {
 			recs, err := store.SessionEvents(ctx, id)
 			if err != nil {
@@ -262,8 +308,12 @@ func Run(ctx context.Context, b *Backend, runner *agent.Runner, sess *session.Se
 	// Alt-screen mode: the program owns the full screen. Finalized events go
 	// into the model's scrollback buffer (m.buf) and render through a viewport,
 	// replacing the inline-mode appendLines-to-terminal-scrollback path.
+	ui := newModel(b, header, src).(*model)
+	ui.sessionID, ui.nameSeq = draft.ID, draft.NameSeq
+	ui.sessionName, ui.sessionPreview = activeName, activePreview
+	ui.refreshTitle()
 	p := tea.NewProgram(
-		newModel(b, header, src),
+		ui,
 		tea.WithContext(ctx),
 		// Some terminals pad SGR mouse sequences with spaces that bubbletea's
 		// parser rejects; the filter normalizes them before parsing (see

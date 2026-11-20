@@ -252,7 +252,9 @@ type Meta struct {
 	// Metadata is populated by lightweight metadata/page queries only.
 	Metadata     map[string]any
 	ID           string
-	Name         string // persisted display name (auto-generated or user-set); empty falls back to Title
+	Name         string // persisted display name (auto-generated or user-set)
+	NameSeq      int64
+	Preview      string
 	Title        string // derived fallback: first user message, truncated — a human label for pickers
 	Model        string
 	MessageCount int

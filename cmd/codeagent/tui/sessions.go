@@ -25,18 +25,14 @@ func formatSessionList(metas []session.Meta) string {
 	return strings.TrimRight(b.String(), "\n")
 }
 
-// effectiveTitle returns the best display title for a session, preferring the
-// persisted Name (auto-generated or user-set) over the derived Title fallback.
 func effectiveTitle(m session.Meta) string {
 	if m.Name != "" {
 		return m.Name
 	}
-	return sessionTitle(m.Title)
-}
-
-// sessionTitle flattens a first-message into a single clean line.
-func sessionTitle(s string) string {
-	return strings.Join(strings.Fields(strings.ReplaceAll(s, "\n", " ")), " ")
+	if preview := m.ConversationPreview(); preview != "" {
+		return preview
+	}
+	return "新对话"
 }
 
 // humanAgo renders a coarse relative time ("18 minutes ago").

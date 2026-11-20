@@ -20,12 +20,13 @@ import (
 type EventKind string
 
 const (
-	EventTurnAccepted  EventKind = "turn_accepted"
-	EventTurnQueued    EventKind = "turn_queued"
-	EventTurnStarted   EventKind = "turn_started"
-	EventModelStarted  EventKind = "model_started"  // about to call the model
-	EventModelRequest  EventKind = "model_request"  // the request envelope: model, advertised tools, context shape
-	EventModelFinished EventKind = "model_finished" // model returned (carries latency)
+	EventTurnAccepted            EventKind = "turn_accepted"
+	EventTurnQueued              EventKind = "turn_queued"
+	EventTurnStarted             EventKind = "turn_started"
+	EventConversationNameUpdated EventKind = "conversation_name_updated"
+	EventModelStarted            EventKind = "model_started"  // about to call the model
+	EventModelRequest            EventKind = "model_request"  // the request envelope: model, advertised tools, context shape
+	EventModelFinished           EventKind = "model_finished" // model returned (carries latency)
 	// EventModelRetrying: a model call failed with a transient error and the
 	// resilience layer is about to retry it (or to replay a failed stream
 	// without streaming). Ephemeral — live-only progress, like the token and
@@ -255,6 +256,7 @@ type Event struct {
 	// console reads them as constant, but a multiplexed bus (concurrent runs, a
 	// web UI, DreamAI) needs them to keep streams from crossing.
 	SessionID              string
+	Name                   string `json:"name,omitempty"`
 	TurnID                 string
 	SupplementApplication  *session.SupplementApplication `json:"supplement_application,omitempty"`
 	RequestID              string                         // client-generated idempotency/correlation key for agent_input

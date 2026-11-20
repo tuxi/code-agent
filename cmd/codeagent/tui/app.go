@@ -37,6 +37,7 @@ import (
 	"code-agent/cmd/codeagent/tui/util"
 	"code-agent/internal/agent"
 	"code-agent/internal/buildinfo"
+	"code-agent/internal/session"
 )
 
 // keyMap is the app-level key routing (§2). Composer keys (enter to send,
@@ -71,6 +72,10 @@ type model struct {
 	b      *Backend
 	header HeaderInfo
 	src    sessionSource
+
+	sessionID, sessionName, sessionPreview string
+	nameSeq                                int64
+	renameDialog                           *renameDialog
 
 	width  int
 	height int
@@ -223,6 +228,22 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// --- runner channel dispatches ----------------------------------------
 	case eventMsg:
 		return m, m.handleEvent(agent.Event(msg))
+	case renamedMsg:
+		if m.renameDialog == msg.dialog {
+			msg.dialog.saving = false
+			if msg.err != nil {
+				msg.dialog.err = msg.err.Error()
+				return m, nil
+			}
+			m.renameDialog = nil
+			if m.dialog == msg.dialog {
+				m.closeDialog()
+			}
+		}
+		if msg.err == nil {
+			m.applyName(msg.id, msg.name, msg.seq)
+		}
+		return m, nil
 	case approvalMsg:
 		req := approvalReq(msg)
 		m.dialog = m.permission
@@ -342,6 +363,9 @@ func (m *model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// on esc/ctrl+c themselves — forward everything. Non-blocking dialogs
 		// are closed by esc at the app level.
 		if key.Matches(msg, m.keys.Cancel) && !m.blocking {
+			if m.renameDialog != nil && m.dialog == m.renameDialog && m.renameDialog.saving {
+				return m, nil
+			}
 			return m, m.closeDialog()
 		}
 		return m.forwardToDialog(msg)
@@ -386,6 +410,8 @@ func (m *model) forwardToDialog(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	var u tea.Model
 	switch {
+	case m.dialog == m.renameDialog:
+		u, cmd = m.renameDialog.Update(msg)
 	case m.dialog == m.permission:
 		u, cmd = m.permission.Update(msg)
 		m.permission = u.(dialog.PermissionDialogCmp)
@@ -449,6 +475,12 @@ func (m *model) updateWindowSize(msg tea.WindowSizeMsg) (tea.Model, tea.Cmd) {
 func (m *model) handleEvent(ev agent.Event) tea.Cmd {
 	var cmds []tea.Cmd
 	switch ev.Kind {
+	case agent.EventConversationNameUpdated:
+		m.applyName(ev.SessionID, ev.Name, ev.Seq)
+		if m.dialog == m.sessionDlg {
+			m.sessionDlg.SetSessions(m.src.list())
+		}
+		return waitForEvent(m.b.events)
 	case agent.EventModelStarted:
 		m.status.SetBusy(true)
 	case agent.EventModelFinished:
@@ -544,7 +576,13 @@ func (m *model) openQuit() tea.Cmd {
 }
 
 func (m *model) closeDialog() tea.Cmd {
+	if m.renameDialog != nil && m.dialog == m.renameDialog {
+		m.renameDialog = nil
+	}
 	m.dialog = nil
+	if m.blocking && m.renameDialog != nil {
+		m.dialog = m.renameDialog
+	}
 	m.blocking = false
 	return nil
 }
@@ -561,6 +599,7 @@ func (m *model) commandList() []dialog.Command {
 		{ID: "resume", Title: "/resume", Description: "switch session", Handler: func(dialog.Command) tea.Cmd { return m.openSessionDialog() }},
 		{ID: "goal", Title: "/goal", Description: "run a goal", Handler: func(dialog.Command) tea.Cmd { return m.goalDispatch("") }},
 		{ID: "auto", Title: "/auto", Description: "toggle auto-approval", Handler: func(dialog.Command) tea.Cmd { return m.toggleAuto() }},
+		{ID: "rename", Title: "/rename", Description: "rename the current conversation", Handler: func(dialog.Command) tea.Cmd { return m.openRename("") }},
 		{ID: "sessions", Title: "/sessions", Description: "list saved sessions", Handler: func(dialog.Command) tea.Cmd { return m.sessions() }},
 		{ID: "prompts", Title: "/prompts", Description: "list MCP prompts", Handler: func(dialog.Command) tea.Cmd { return m.promptHelp() }},
 	}
@@ -600,6 +639,10 @@ func (m *model) startTurn(text string) tea.Cmd {
 	if m.busy {
 		return util.ReportWarn("busy — wait for the current turn to finish")
 	}
+	if m.sessionPreview == "" && m.sessionName == "" {
+		m.sessionPreview = session.MessagePreview(text, nil, nil)
+		m.refreshTitle()
+	}
 	m.busy = true
 	m.status.SetBusy(true)
 	m.b.inputs <- text
@@ -626,6 +669,8 @@ func (m *model) runCommand(name, args string) tea.Cmd {
 		return m.goalDispatch(args)
 	case "auto":
 		return m.toggleAuto()
+	case "rename":
+		return m.openRename(args)
 	case "sessions":
 		return m.sessions()
 	case "prompts":
@@ -653,6 +698,9 @@ func (m *model) resume(id string) tea.Cmd {
 	if err != nil {
 		return util.ReportError(err)
 	}
+	m.sessionID, m.sessionName, m.sessionPreview = sess.ID, sess.Name, sess.ConversationPreview()
+	m.nameSeq = sess.NameSeq
+	m.refreshTitle()
 	m.conversation = &Conversation{}
 	m.busy = false
 	m.status.SetBusy(false)

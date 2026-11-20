@@ -39,8 +39,9 @@ var (
 )
 
 type Store struct {
-	db   *sql.DB
-	path string
+	db            *sql.DB
+	path          string
+	legacyPreview bool
 
 	// OnSave is an optional callback invoked after a successful Save.
 	// The session and the exact path to this store file are passed.
@@ -82,7 +83,12 @@ func NewReadOnly(path string) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("open sqlite read-only %q: %w", path, err)
 	}
-	return &Store{db: db, path: path}, nil
+	var hasPreview bool
+	if err := db.QueryRow(`SELECT EXISTS(SELECT 1 FROM pragma_table_info('sessions') WHERE name='conversation_preview')`).Scan(&hasPreview); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	return &Store{db: db, path: path, legacyPreview: !hasPreview}, nil
 }
 
 const schema = `
@@ -99,6 +105,8 @@ CREATE TABLE IF NOT EXISTS sessions (
 	workspace_rel     TEXT,
 	workspace_ext_id  TEXT,
 	name              TEXT,
+	conversation_preview TEXT,
+	conversation_name_seq INTEGER,
 	created_at        TEXT,
 	updated_at        TEXT,
 	archived_at       TEXT,
@@ -268,6 +276,7 @@ func (s *Store) open() error {
 		`ALTER TABLE sessions ADD COLUMN workspace_rel TEXT`,
 		`ALTER TABLE sessions ADD COLUMN workspace_ext_id TEXT`,
 		`ALTER TABLE sessions ADD COLUMN name TEXT`,
+		`ALTER TABLE sessions ADD COLUMN conversation_name_seq INTEGER`,
 		`ALTER TABLE sessions ADD COLUMN reasoning_effort TEXT`,
 		`ALTER TABLE sessions ADD COLUMN reference_ledger TEXT`,
 		`ALTER TABLE sessions ADD COLUMN archived_at TEXT`,
@@ -298,6 +307,10 @@ func (s *Store) open() error {
 	if err := ensureSecondaryIndexes(db); err != nil {
 		db.Close()
 		return err
+	}
+	if err := migrateConversationPreviews(db); err != nil {
+		db.Close()
+		return fmt.Errorf("migrate conversation previews: %w", err)
 	}
 	s.db = db
 	return nil
@@ -369,18 +382,19 @@ func (s *Store) saveSessionTx(ctx context.Context, tx *sql.Tx, sess *session.Ses
 		ledgerJSON = string(b)
 	}
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO sessions (id, model, reasoning_effort, summary, prompt_tokens, context_window, compact_threshold, workspace_path, workspace_root, workspace_rel, workspace_ext_id, name, created_at, updated_at, archived_at, metadata, reference_ledger)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO sessions (id, model, reasoning_effort, summary, prompt_tokens, context_window, compact_threshold, workspace_path, workspace_root, workspace_rel, workspace_ext_id, name, created_at, updated_at, archived_at, metadata, reference_ledger, conversation_preview)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			model=excluded.model, reasoning_effort=excluded.reasoning_effort, summary=excluded.summary, prompt_tokens=excluded.prompt_tokens,
 			context_window=excluded.context_window, compact_threshold=excluded.compact_threshold,
 			workspace_path=excluded.workspace_path, workspace_root=excluded.workspace_root,
 			workspace_rel=excluded.workspace_rel, workspace_ext_id=excluded.workspace_ext_id,
-			name=excluded.name, updated_at=excluded.updated_at, archived_at=sessions.archived_at, metadata=excluded.metadata,
+			name=CASE WHEN COALESCE(sessions.conversation_name_seq,0)>0 THEN sessions.name ELSE COALESCE(NULLIF(excluded.name,''), sessions.name) END, updated_at=excluded.updated_at, archived_at=sessions.archived_at, metadata=excluded.metadata,
+			conversation_preview=COALESCE(NULLIF(sessions.conversation_preview,''), excluded.conversation_preview),
 			reference_ledger=excluded.reference_ledger`,
 		sess.ID, sess.Model, sess.ReasoningEffort, sess.Summary, sess.PromptTokens, sess.ContextWindow, sess.CompactThreshold,
 		sess.WorkspacePath, sess.Workspace.Root, sess.Workspace.Rel, sess.Workspace.ExtID,
-		sess.Name, formatTime(sess.CreatedAt), formatTime(sess.UpdatedAt), formatTime(sess.ArchivedAt), metaJSON, ledgerJSON); err != nil {
+		sess.Name, formatTime(sess.CreatedAt), formatTime(sess.UpdatedAt), formatTime(sess.ArchivedAt), metaJSON, ledgerJSON, sess.ConversationPreview()); err != nil {
 		return fmt.Errorf("save session row: %w", err)
 	}
 
@@ -454,12 +468,12 @@ func (s *Store) Load(ctx context.Context, id string) (*session.Session, error) {
 	err := s.db.QueryRowContext(ctx, `
 		SELECT id, model, COALESCE(reasoning_effort, ''), summary, prompt_tokens, context_window, compact_threshold, COALESCE(workspace_path, ''),
 		       COALESCE(workspace_root, ''), COALESCE(workspace_rel, ''), COALESCE(workspace_ext_id, ''),
-		       COALESCE(name, ''), created_at, updated_at, COALESCE(archived_at, ''), COALESCE(metadata, ''), COALESCE(reference_ledger, '')
+		       COALESCE(name, ''), created_at, updated_at, COALESCE(archived_at, ''), COALESCE(metadata, ''), COALESCE(reference_ledger, ''), `+s.savedPreviewExpr()+`, `+s.nameSeqExpr()+`
 		FROM sessions WHERE id=?`, id).
 		Scan(&sess.ID, &sess.Model, &sess.ReasoningEffort, &sess.Summary, &sess.PromptTokens, &sess.ContextWindow,
 			&sess.CompactThreshold, &sess.WorkspacePath,
 			&sess.Workspace.Root, &sess.Workspace.Rel, &sess.Workspace.ExtID,
-			&name, &createdAt, &updatedAt, &archivedAt, &metaJSON, &ledgerJSON)
+			&name, &createdAt, &updatedAt, &archivedAt, &metaJSON, &ledgerJSON, &sess.Preview, &sess.NameSeq)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf("session %q not found", id)
 	}
@@ -555,16 +569,16 @@ func (s *Store) Load(ctx context.Context, id string) (*session.Session, error) {
 
 func (s *Store) List(ctx context.Context) ([]session.Meta, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT s.id, s.model, s.prompt_tokens, s.updated_at, COALESCE(s.workspace_path, ''),
-		       COALESCE(s.workspace_root, ''), COALESCE(s.workspace_rel, ''), COALESCE(s.workspace_ext_id, ''), COALESCE(s.name, ''),
-		       COALESCE(s.metadata, ''), COALESCE(s.archived_at, ''),
-		       (SELECT COUNT(*) FROM messages m WHERE m.session_id = s.id),
-		       (SELECT COALESCE((SELECT content FROM messages m WHERE m.session_id = s.id AND m.role = 'user' ORDER BY m.seq LIMIT 1), '')),
-		       (SELECT COUNT(*) FROM compactions c WHERE c.session_id = s.id AND c.after_tokens >= 0),
-		       (SELECT COALESCE(SUM(c.saved_tokens), 0) FROM compactions c WHERE c.session_id = s.id AND c.after_tokens >= 0),
-		       (SELECT COALESCE(MAX(c.compacted_at), '') FROM compactions c WHERE c.session_id = s.id AND c.after_tokens >= 0)
-		FROM sessions s
-		ORDER BY s.updated_at DESC`)
+		SELECT sessions.id, sessions.model, sessions.prompt_tokens, sessions.updated_at, COALESCE(sessions.workspace_path, ''),
+		       COALESCE(sessions.workspace_root, ''), COALESCE(sessions.workspace_rel, ''), COALESCE(sessions.workspace_ext_id, ''), COALESCE(sessions.name, ''),
+		       COALESCE(sessions.metadata, ''), COALESCE(sessions.archived_at, ''), `+s.savedPreviewExpr()+`, `+s.nameSeqExpr()+`,
+		       (SELECT COUNT(*) FROM messages m WHERE m.session_id = sessions.id),
+		       (SELECT COALESCE((SELECT content FROM messages m WHERE m.session_id = sessions.id AND m.role = 'user' ORDER BY m.seq LIMIT 1), '')),
+		       (SELECT COUNT(*) FROM compactions c WHERE c.session_id = sessions.id AND c.after_tokens >= 0),
+		       (SELECT COALESCE(SUM(c.saved_tokens), 0) FROM compactions c WHERE c.session_id = sessions.id AND c.after_tokens >= 0),
+		       (SELECT COALESCE(MAX(c.compacted_at), '') FROM compactions c WHERE c.session_id = sessions.id AND c.after_tokens >= 0)
+		FROM sessions
+		ORDER BY sessions.updated_at DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -575,7 +589,7 @@ func (s *Store) List(ctx context.Context) ([]session.Meta, error) {
 		var updatedAt, lastCompacted, metadata, archivedAt string
 		if err := rows.Scan(&m.ID, &m.Model, &m.PromptTokens, &updatedAt, &m.WorkspacePath,
 			&m.Workspace.Root, &m.Workspace.Rel, &m.Workspace.ExtID, &m.Name, &metadata, &archivedAt,
-			&m.MessageCount, &m.Title, &m.Compactions, &m.TotalSaved, &lastCompacted); err != nil {
+			&m.Preview, &m.NameSeq, &m.MessageCount, &m.Title, &m.Compactions, &m.TotalSaved, &lastCompacted); err != nil {
 			return nil, err
 		}
 		m.Workspace.AbsHint = m.WorkspacePath
@@ -1288,7 +1302,7 @@ func (s *Store) Restore(ctx context.Context, id string) error {
 }
 
 // UpdateName changes just the display name of a session without loading/saving
-// the full session. Used by async title generation and the PATCH rename endpoint.
+// the full session. Used by the PATCH rename endpoint.
 func (s *Store) UpdateName(ctx context.Context, id string, name string) error {
 	err := s.updateName(ctx, id, name)
 	if err != nil && isReadonlyErr(err) {
@@ -1300,6 +1314,48 @@ func (s *Store) UpdateName(ctx context.Context, id string, name string) error {
 		s.OnUpdate(id)
 	}
 	return err
+}
+
+func (s *Store) UpdateConversationName(ctx context.Context, id, name string, onlyIfEmpty bool, event session.EventRecord) (int64, bool, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, false, err
+	}
+	defer tx.Rollback()
+	result, err := tx.ExecContext(ctx, `UPDATE sessions SET name=?, updated_at=CASE WHEN ? THEN updated_at ELSE ? END
+		WHERE id=? AND (NOT ? OR COALESCE(name,'')='')`, name, onlyIfEmpty, formatTime(event.At), id, onlyIfEmpty)
+	if err != nil {
+		return 0, false, err
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return 0, false, err
+	}
+	if count == 0 {
+		if onlyIfEmpty {
+			return 0, false, nil
+		}
+		return 0, false, fmt.Errorf("session %q not found", id)
+	}
+	result, err = tx.ExecContext(ctx, `INSERT INTO session_events (session_id, turn_id, kind, at, payload)
+		VALUES (?, '', ?, ?, ?)`, id, event.Kind, formatTime(event.At), string(event.Payload))
+	if err != nil {
+		return 0, false, err
+	}
+	seq, err := result.LastInsertId()
+	if err != nil {
+		return 0, false, err
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE sessions SET conversation_name_seq=? WHERE id=?`, seq, id); err != nil {
+		return 0, false, err
+	}
+	if err = tx.Commit(); err != nil {
+		return 0, false, err
+	}
+	if s.OnUpdate != nil {
+		s.OnUpdate(id)
+	}
+	return seq, true, nil
 }
 
 func (s *Store) updateName(ctx context.Context, id string, name string) error {

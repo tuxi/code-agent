@@ -28,6 +28,48 @@ func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return f(req)
 }
 
+func TestServeTitleGeneratorUsesAcceptedModelAndSessionCredential(t *testing.T) {
+	defaultMC := settings.ModelConfig{Name: "default", Model: "openrouter/free", BaseURL: "https://default.test/v1"}
+	target := credential.Target{Namespace: "llm", Name: "selected"}
+	baseCred := credential.StaticResolver{target: {Type: credential.Bearer, Secret: "base-key"}}
+	sessionCred := credential.StaticResolver{target: {Type: credential.Bearer, Secret: "session-key"}}
+	defaultProvider, err := BuildProvider(defaultMC, settings.ProviderConfig{}, baseCred)
+	if err != nil {
+		t.Fatal(err)
+	}
+	builder := NewServeRunBuilder(settings.Settings{}, defaultMC, defaultProvider, baseCred, nil, nil, nil)
+	selected := settings.ModelConfig{
+		Name: "selected", Model: "deepseek-v4.1-flash", BaseURL: "https://opencode.ai/zen/go/v1",
+		Credential: settings.CredentialRef{Namespace: target.Namespace, Name: target.Name},
+	}
+	gen, err := builder.BuildTitleGenerator(selected, true, sessionCred)
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider := gen.(*conversation.LLMTitleGenerator).Provider.(*model.ResilientProvider).Inner.(*model.OpenAICompatibleProvider)
+	provider.HTTPClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		var body struct {
+			Model string `json:"model"`
+		}
+		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+			return nil, err
+		}
+		if req.URL.String() != selected.BaseURL+"/chat/completions" || body.Model != selected.Model {
+			t.Errorf("title routed to %s with model %q", req.URL, body.Model)
+		}
+		if req.Header.Get("Authorization") != "Bearer session-key" || req.Header.Get("x-opencode-session") != "session-id" {
+			t.Error("title did not use the session credential and ID")
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader(`{"choices":[{"message":{"content":"助手能力咨询"}}]}`)),
+		}, nil
+	})}
+	if title, err := gen.GenerateTitle(context.Background(), "session-id", "你好，你能做什么", ""); err != nil || title != "助手能力咨询" {
+		t.Fatalf("title=%q err=%v", title, err)
+	}
+}
+
 func TestServeRunBuilderPlanToolsAreTurnScoped(t *testing.T) {
 	SetStoreBaseDir(t.TempDir())
 	base := tools.NewRegistry()

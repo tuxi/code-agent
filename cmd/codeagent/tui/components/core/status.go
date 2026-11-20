@@ -2,6 +2,8 @@ package core
 
 import (
 	"fmt"
+	"github.com/charmbracelet/x/ansi"
+	"strings"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -19,6 +21,7 @@ import (
 type StatusCmp interface {
 	tea.Model
 
+	SetTitle(title string)
 	SetModel(model string)
 	SetTokens(tokens int64)
 	SetGit(git string)
@@ -30,6 +33,7 @@ type statusCmp struct {
 	width      int
 	messageTTL time.Duration
 
+	title  string
 	model  string
 	tokens int64
 	git    string
@@ -70,12 +74,20 @@ func (m *statusCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m *statusCmp) SetSize(width, _ int) tea.Cmd {
+	m.width = width
+	return nil
+}
+
+func (m *statusCmp) GetSize() (int, int) { return m.width, 1 }
+
+func (m *statusCmp) SetTitle(title string) {
+	m.title = strings.Join(strings.Fields(ansi.Strip(title)), " ")
+}
 func (m *statusCmp) SetModel(model string)  { m.model = model }
 func (m *statusCmp) SetTokens(tokens int64) { m.tokens = tokens }
 func (m *statusCmp) SetGit(git string)      { m.git = git }
 func (m *statusCmp) SetBusy(busy bool)      { m.busy = busy }
-
-var helpWidget = ""
 
 // getHelpWidget returns the help widget with current theme colors
 func getHelpWidget() string {
@@ -107,43 +119,31 @@ func (m *statusCmp) View() tea.View {
 	// Initialize the help widget
 	status := getHelpWidget()
 
-	gitWidth := 0
-	// 暂时不显示git，显得有点乱
-	//if m.git != "" {
-	//	git := styles.Padded().
-	//		Background(t.BackgroundDarker()).
-	//		Foreground(t.Text()).
-	//		Render(m.git)
-	//	gitWidth = lipgloss.Width(git) + 2
-	//	status += git
-	//}
-
-	tokenInfoWidth := 0
 	if m.tokens > 0 {
 		tokens := styles.Padded().
 			Background(t.Text()).
 			Foreground(t.BackgroundSecondary()).
 			Render(formatTokens(m.tokens))
-		tokenInfoWidth = lipgloss.Width(tokens) + 2
 		status += tokens
 	}
 
-	modelWidth := 0
 	if m.model != "" {
 		model := styles.Padded().
 			Background(t.Secondary()).
 			Foreground(t.Background()).
 			Render(m.model)
-		modelWidth = lipgloss.Width(model) + 2
 		status += model
 	}
 
-	availableWidht := max(0, m.width-lipgloss.Width(helpWidget)-gitWidth-tokenInfoWidth-modelWidth)
+	availableWidth := m.width - lipgloss.Width(status)
+	if availableWidth <= 0 {
+		return tea.NewView(ansi.Truncate(status, max(0, m.width), ""))
+	}
 
 	if m.info.Msg != "" {
 		infoStyle := styles.Padded().
 			Foreground(t.Background()).
-			Width(availableWidht)
+			Width(availableWidth)
 
 		switch m.info.Type {
 		case util.InfoTypeInfo:
@@ -154,7 +154,7 @@ func (m *statusCmp) View() tea.View {
 			infoStyle = infoStyle.Background(t.Error())
 		}
 
-		infoWidth := availableWidht - 10
+		infoWidth := availableWidth - 10
 		// Truncate message if it's longer than available width
 		msg := m.info.Msg
 		if len(msg) > infoWidth && infoWidth > 0 {
@@ -162,25 +162,27 @@ func (m *statusCmp) View() tea.View {
 		}
 		status += infoStyle.Render(msg)
 	} else if m.busy {
+		label := "working…"
+		if m.title != "" {
+			label = m.title + " · " + label
+		}
 		status += styles.Padded().
 			Foreground(t.Background()).
 			Background(t.Info()).
-			Width(availableWidht).
-			Render("working…")
+			Width(availableWidth).
+			Render(ansi.Truncate(label, max(0, availableWidth-2), "…"))
 	} else {
 		status += styles.Padded().
 			Foreground(t.Text()).
 			Background(t.BackgroundSecondary()).
-			Width(availableWidht).
-			Render("")
+			Width(availableWidth).
+			Render(ansi.Truncate(m.title, max(0, availableWidth-2), "…"))
 	}
 
 	return tea.NewView(status)
 }
 
 func NewStatusCmp() StatusCmp {
-	helpWidget = getHelpWidget()
-
 	return &statusCmp{
 		messageTTL: 10 * time.Second,
 	}

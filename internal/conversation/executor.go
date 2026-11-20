@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -65,9 +66,9 @@ type TurnExecutor struct {
 	sessionCreds   map[string]credential.Resolver
 	sessionCredsMu sync.RWMutex
 
-	// titleGen, if set, asynchronously generates a human-readable title after the
-	// first turn completes. Nil means no auto-titling (tests, headless).
-	titleGen TitleGenerator
+	titleGen     TitleGenerator
+	titleBuilder TurnTitleBuilder
+	titles       *Titles
 
 	// executionGuard optionally holds an external session resource lease for the
 	// whole accepted/queued/running lifecycle. Managed worktrees use it to make
@@ -146,9 +147,14 @@ func (e *TurnExecutor) SetTitleGenerator(g TitleGenerator) {
 	e.titleGen = g
 }
 
+// SetTurnTitleBuilder enables model-aware titles on this executor at startup.
+func (e *TurnExecutor) SetTurnTitleBuilder(builder TurnTitleBuilder) {
+	e.titleBuilder = builder
+}
+
 // NewTurnExecutor wires the execution pipeline.
 func NewTurnExecutor(repo ConversationRepository, events ConversationEventStore, active *ActiveTurnRegistry, subs *SubscriptionManager, rb RunBuilder) *TurnExecutor {
-	return &TurnExecutor{
+	executor := &TurnExecutor{
 		repo:          repo,
 		events:        events,
 		active:        active,
@@ -161,6 +167,20 @@ func NewTurnExecutor(repo ConversationRepository, events ConversationEventStore,
 		sessionOps:    make(map[string]*sessionOperation),
 		sessionCreds:  make(map[string]credential.Resolver),
 	}
+	if names, ok := repo.(session.NameStore); ok {
+		executor.titles = NewTitles(names, func(ev agent.Event) {
+			subs.Emitter(ev.SessionID).Emit(ev)
+		})
+		executor.titles.logf = log.Printf
+	}
+	return executor
+}
+
+func (e *TurnExecutor) Rename(ctx context.Context, id, name string) (int64, error) {
+	if e.titles != nil {
+		return e.titles.Rename(ctx, id, name)
+	}
+	return 0, e.repo.UpdateName(ctx, id, name)
 }
 
 // SetTurnScheduler replaces the admission controller. A nil value restores the
@@ -622,7 +642,7 @@ func (e *TurnExecutor) executeWithSessionAssets(parentCtx context.Context, sess 
 }
 
 func (e *TurnExecutor) executeWithSessionAssetsValidation(parentCtx context.Context, sess *session.Session, requestID, input, modelName, effort string, assets []model.GatewayAssetRef, localAssets []model.LocalAssetRef, provenance *session.CrossSessionProvenance, admitted func(TurnAdmission, error), validation *session.ValidationContract) (agent.TurnResult, error) {
-	res, runErr := e.driveTurn(parentCtx, sess, requestID, input, modelName, effort, assets, localAssets, nil, provenance, validation, admitted,
+	return e.driveTurn(parentCtx, sess, requestID, input, modelName, effort, assets, localAssets, nil, provenance, validation, admitted,
 		session.TurnStatusRunning,
 		func(ctx context.Context, runner TurnRunner, prepared bool) (agent.TurnResult, error) {
 			if prepared {
@@ -644,27 +664,6 @@ func (e *TurnExecutor) executeWithSessionAssetsValidation(parentCtx context.Cont
 		},
 		e.recordRunStatus,
 	)
-	if res.Deduplicated {
-		return res, runErr
-	}
-
-	// Auto-name: set an initial truncation-based name on the first turn, then fire
-	// async LLM title generation if configured. Only the fresh-input path names;
-	// a resume continues an already-named conversation.
-	if sess.Name == "" {
-		initial := truncateForTitle(firstUserMessage(sess))
-		if initial != "" {
-			sess.Name = initial
-			go func() {
-				_ = e.repo.UpdateName(context.WithoutCancel(parentCtx), sess.ID, initial)
-			}()
-		}
-	}
-	if e.titleGen != nil && turnCount(sess) == 1 {
-		go e.generateTitleAsync(sess)
-	}
-
-	return res, runErr
 }
 
 // Resume continues an interrupted (paused) turn for a session, driving the agent
@@ -872,6 +871,13 @@ func (e *TurnExecutor) driveTurn(
 		}
 		return agent.TurnResult{TurnID: existingTurnID, Deduplicated: true}, nil
 	}
+	turnCredential := e.sessionCredential(sess.ID)
+	titleGen := e.titleGeneratorForTurn(resolvedModel, wireModel != "", turnCredential)
+	if claimed.AcceptedSeq != 0 && claimed.Provenance == nil {
+		e.titles.Start(parentCtx, titleGen, sess, model.Message{
+			Content: claimed.Text, Assets: claimed.Assets, LocalAssets: claimed.LocalAssets,
+		})
+	}
 	if preclaimed == nil {
 		e.cancelBackgroundAttempts(sess.ID)
 	}
@@ -999,6 +1005,9 @@ func (e *TurnExecutor) driveTurn(
 			return agent.TurnResult{TurnID: turnID}, startErr
 		}
 		prepared = true
+		if claimed.AcceptedSeq == 0 && claimed.Provenance == nil {
+			e.titles.Start(parentCtx, titleGen, sess, model.Message{})
+		}
 	}
 	if !prepared && preclaimed == nil && e.continuationStore() != nil {
 		latest, loadErr := e.repo.Load(parentCtx, sess.ID)
@@ -1049,7 +1058,7 @@ func (e *TurnExecutor) driveTurn(
 		AskUserApprover: e.active.AskUserApprover(sess.ID),
 		ClientWaiter:    e.active.ClientToolWaiter(sess.ID),
 		ClientTools:     e.active.ClientTools(sess.ID),
-		Credential:      e.sessionCredential(sess.ID),
+		Credential:      turnCredential,
 		ApprovalMode:    e.active.ApprovalMode(sess.ID),
 		// Mid-turn crash-safety (v1.2 §2): persist at each loop boundary so a hard
 		// kill loses at most the in-progress step. The turn-boundary Save below is
@@ -1072,6 +1081,11 @@ func (e *TurnExecutor) driveTurn(
 		}
 	}
 	runner := e.rb.Build(rctx)
+	if legacyRunner, ok := runner.(*agent.Runner); ok && !prepared && runningState == session.TurnStatusRunning && titleGen != nil && e.titles != nil {
+		legacyRunner.OnUserInput = func(ctx context.Context, current *session.Session) {
+			e.titles.StartAfterSave(ctx, titleGen, current, e.repo.Save)
+		}
+	}
 	if provenance == nil && rctx.ManagedTask == nil && prepared && requestID != "" {
 		if err := e.configureTurnDelivery(parentCtx, sess.ID, turnID, runner, pub); err != nil {
 			return agent.TurnResult{TurnID: turnID}, err
@@ -1893,69 +1907,6 @@ func (e *TurnExecutor) Shutdown() {
 	case <-time.After(5 * time.Second):
 	}
 	e.subs.Shutdown()
-}
-
-// ---- auto-naming helpers ----
-
-// firstUserMessage returns the content of the first user message in the session.
-func firstUserMessage(sess *session.Session) string {
-	for _, m := range sess.Messages {
-		if m.Role == model.RoleUser && !m.RuntimeInput {
-			return m.Content
-		}
-	}
-	return ""
-}
-
-// truncateForTitle collapses whitespace and truncates msg to a reasonable
-// display width for use as a fallback session title.
-func truncateForTitle(msg string) string {
-	msg = strings.TrimSpace(msg)
-	// First line only.
-	if idx := strings.IndexAny(msg, "\r\n"); idx >= 0 {
-		msg = msg[:idx]
-	}
-	// Collapse whitespace.
-	msg = strings.Join(strings.Fields(msg), " ")
-	const maxLen = 60
-	if len(msg) > maxLen {
-		msg = msg[:maxLen]
-	}
-	return strings.TrimSpace(msg)
-}
-
-// turnCount returns the number of user turns in the session.
-func turnCount(sess *session.Session) int {
-	n := 0
-	for _, m := range sess.Messages {
-		if m.Role == model.RoleUser && !m.RuntimeInput {
-			n++
-		}
-	}
-	return n
-}
-
-// generateTitleAsync runs the LLM title generator in a background goroutine.
-// It uses a detached context with a timeout so it is not tied to the turn's
-// lifecycle. Best-effort: failures are silently ignored.
-func (e *TurnExecutor) generateTitleAsync(sess *session.Session) {
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-
-	userMsg := firstUserMessage(sess)
-	assistantMsg := ""
-	for _, m := range sess.Messages {
-		if m.Role == model.RoleAssistant && m.Content != "" {
-			assistantMsg = m.Content
-			break
-		}
-	}
-
-	title, err := e.titleGen.GenerateTitle(ctx, sess.ID, userMsg, assistantMsg)
-	if err != nil || title == "" {
-		return
-	}
-	_ = e.repo.UpdateName(ctx, sess.ID, title)
 }
 
 // ---- internal emitter ----

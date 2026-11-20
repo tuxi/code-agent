@@ -43,6 +43,7 @@ type Runner struct {
 	deliveryClosed             bool
 	Supplements                session.SupplementStore
 	OnSupplementsApplied       func([]session.SupplementApplication)
+	OnUserInput                func(context.Context, *session.Session)
 	RuntimeInputs              session.RuntimeInputStore
 	ParkContinuation           ContinuationParker
 	ContinuationPolicyIdentity string
@@ -682,6 +683,9 @@ func (r *Runner) RunTurnWithAllAssets(ctx context.Context, sess *session.Session
 		LocalAssets: append([]model.LocalAssetRef(nil), localAssets...),
 	})
 	sess.UpdatedAt = time.Now()
+	if r.OnUserInput != nil {
+		r.OnUserInput(ctx, sess)
+	}
 	r.emit(Event{
 		Kind: EventTurnStarted, Text: userInput,
 		UserAssets:  append([]model.GatewayAssetRef(nil), gatewayAssets...),

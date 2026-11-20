@@ -31,10 +31,11 @@ type Session struct {
 	// fills it on create (relativize) and resolves it back into WorkspacePath on load.
 	// See WorkspaceRef and docs/ios_workspace_path_spec.md.
 	Workspace WorkspaceRef
-	// Name is the human-readable display name for this conversation. It is set
-	// after the first turn (truncated first user message) and may be replaced by
-	// an LLM-generated title or a user-supplied name via PATCH. Empty means unset.
-	Name string
+	// Name is the persisted generated or manually assigned conversation name.
+	Name    string
+	NameSeq int64
+	// Preview is derived from the first user input and survives compaction.
+	Preview string
 	// Model is the wire model string this session last ran with — stored so a
 	// listing can show it and a resume can report it.
 	Model           string

@@ -187,6 +187,8 @@ type ConversationRef struct {
 	WorkspacePath   string              `json:"workspace_path"`
 	Workspace       *WorkspaceDTO       `json:"workspace,omitempty"`
 	Name            string              `json:"name,omitempty"`
+	Preview         string              `json:"preview,omitempty"`
+	NameSeq         int64               `json:"name_seq,omitempty"`
 	TurnStatus      string              `json:"turn_status,omitempty"`
 	PausedAt        int64               `json:"paused_at,omitempty"`
 	ArchivedAt      string              `json:"archived_at,omitempty"`
@@ -208,6 +210,8 @@ type ConversationDetail struct {
 	WorkspaceRef    *WorkspaceRefDTO    `json:"workspace_ref,omitempty"`
 	NeedsRebind     bool                `json:"needs_rebind,omitempty"`
 	Name            string              `json:"name,omitempty"`
+	Preview         string              `json:"preview,omitempty"`
+	NameSeq         int64               `json:"name_seq,omitempty"`
 	TurnCount       int                 `json:"turn_count"`
 	MessageCount    int                 `json:"message_count"`
 	CreatedAt       string              `json:"created_at,omitempty"`
@@ -1013,13 +1017,12 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 				ID:            m.ID,
 				WorkspacePath: m.WorkspacePath,
 				Workspace:     workspaceDTO(m.WorkspacePath),
-				Name:          effectiveName(m),
+				Name:          m.Name,
+				NameSeq:       m.NameSeq,
+				Preview:       m.ConversationPreview(),
 				TurnStatus:    m.TurnStatus,
 				PausedAt:      m.PausedAt,
 				ArchivedAt:    archiveTimestamp(m.ArchivedAt),
-			}
-			if paged && ref.Name == "" {
-				ref.Name = m.ID
 			}
 			if record, managed := managedBySession[m.ID]; managed {
 				ref.ExecutionPolicy = session.ExecutionPolicyIsolatedWorktree
@@ -1201,7 +1204,15 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 		if s, err := loadConversationHeader(r.Context(), repo, id); err == nil {
 			detail.WorkspacePath = s.WorkspacePath
 			detail.Workspace = workspaceDTO(s.WorkspacePath)
-			detail.Name = s.Name
+			detail.Name, detail.NameSeq = s.Name, s.NameSeq
+			detail.Preview = s.ConversationPreview()
+			if detail.Preview == "" {
+				if previews, ok := repo.(interface {
+					LoadConversationPreview(context.Context, string) (string, error)
+				}); ok {
+					detail.Preview, _ = previews.LoadConversationPreview(r.Context(), id)
+				}
+			}
 			detail.ArchivedAt = archiveTimestamp(s.ArchivedAt)
 			detail.ExecutionPolicy = s.ExecutionPolicy()
 			detail.WorkspaceID, _ = s.Metadata[session.MetaWorkspaceID].(string)
@@ -1584,16 +1595,21 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 			http.Error(w, `"name" is required`, http.StatusBadRequest)
 			return
 		}
-		if len(body.Name) > 200 {
-			http.Error(w, `"name" must not exceed 200 characters`, http.StatusBadRequest)
+		if len(body.Name) > session.MaxManualNameBytes {
+			http.Error(w, `"name" must not exceed 200 bytes`, http.StatusBadRequest)
 			return
 		}
-		if err := repo.UpdateName(r.Context(), id, body.Name); err != nil {
+		sess, err := loadConversationHeader(r.Context(), repo, id)
+		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		// Reload to return the full ref.
-		sess, err := repo.Load(r.Context(), id)
+		var seq int64
+		if executor != nil {
+			seq, err = executor.Rename(r.Context(), id, body.Name)
+		} else {
+			err = repo.UpdateName(r.Context(), id, body.Name)
+		}
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -1602,7 +1618,9 @@ func NewMux(repo conversation.ConversationRepository, eventStore conversation.Co
 			ID:            sess.ID,
 			WorkspacePath: sess.WorkspacePath,
 			Workspace:     workspaceDTO(sess.WorkspacePath),
-			Name:          sess.Name,
+			Name:          body.Name,
+			Preview:       sess.ConversationPreview(),
+			NameSeq:       seq,
 			ArchivedAt:    archiveTimestamp(sess.ArchivedAt),
 		})
 	})
@@ -2216,15 +2234,6 @@ func decodeStoredEvent(rec session.EventRecord) (agent.Event, bool) {
 		return ev, false
 	}
 	return ev, true
-}
-
-// effectiveName returns the display name for a session Meta, preferring the
-// persisted Name and falling back to Title (first user message truncation).
-func effectiveName(m session.Meta) string {
-	if m.Name != "" {
-		return m.Name
-	}
-	return m.Title
 }
 
 func workspaceDTO(path string) *WorkspaceDTO {

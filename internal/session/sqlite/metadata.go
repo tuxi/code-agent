@@ -6,14 +6,42 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
+	"code-agent/internal/model"
 	"code-agent/internal/session"
 )
 
-const metadataColumns = `id, COALESCE(model,''), COALESCE(name,''), COALESCE(workspace_path,''),
+func (s *Store) nameSeqExpr() string {
+	if s.legacyPreview {
+		return "0"
+	}
+	return "COALESCE(conversation_name_seq,0)"
+}
+
+func (s *Store) savedPreviewExpr() string {
+	if s.legacyPreview {
+		return "''"
+	}
+	return "COALESCE(conversation_preview,'')"
+}
+
+// Legacy rows can derive a bounded preview from their first persisted input.
+func (s *Store) previewColumns() string {
+	saved := s.savedPreviewExpr()
+	return saved + `,
+	COALESCE((SELECT CASE WHEN length(content)>8000 THEN substr(content,1,4000)||char(10)||substr(content,-4000) ELSE content END
+		FROM messages WHERE session_id=sessions.id AND role='user' AND runtime_input=0 AND ` + saved + `='' ORDER BY seq LIMIT 1),''),
+	COALESCE((SELECT assets FROM messages WHERE session_id=sessions.id AND role='user' AND runtime_input=0 AND ` + saved + `='' ORDER BY seq LIMIT 1),''),
+	COALESCE((SELECT local_assets FROM messages WHERE session_id=sessions.id AND role='user' AND runtime_input=0 AND ` + saved + `='' ORDER BY seq LIMIT 1),'')`
+}
+
+func (s *Store) metadataColumns() string {
+	return `id, COALESCE(model,''), COALESCE(name,''), COALESCE(workspace_path,''),
 	COALESCE(workspace_root,''), COALESCE(workspace_rel,''), COALESCE(workspace_ext_id,''),
-	COALESCE(updated_at,''), COALESCE(metadata,''), COALESCE(archived_at,'')`
+	COALESCE(updated_at,''), COALESCE(metadata,''), COALESCE(archived_at,''), ` + s.savedPreviewExpr() + ", " + s.nameSeqExpr()
+}
 
 func (s *Store) LoadHeader(ctx context.Context, id string) (*session.Session, error) {
 	var header session.Session
@@ -21,11 +49,11 @@ func (s *Store) LoadHeader(ctx context.Context, id string) (*session.Session, er
 	err := s.db.QueryRowContext(ctx, `SELECT id, COALESCE(model,''), COALESCE(name,''),
 		COALESCE(workspace_path,''), COALESCE(workspace_root,''), COALESCE(workspace_rel,''),
 		COALESCE(workspace_ext_id,''), COALESCE(created_at,''), COALESCE(updated_at,''),
-		COALESCE(archived_at,''), COALESCE(metadata,'') FROM sessions WHERE id=?`, id).Scan(
+		COALESCE(archived_at,''), COALESCE(metadata,''), `+s.savedPreviewExpr()+`, `+s.nameSeqExpr()+` FROM sessions WHERE id=?`, id).Scan(
 		&header.ID, &header.Model, &header.Name, &header.WorkspacePath, &header.Workspace.Root,
-		&header.Workspace.Rel, &header.Workspace.ExtID, &createdAt, &updatedAt, &archivedAt, &metadata)
+		&header.Workspace.Rel, &header.Workspace.ExtID, &createdAt, &updatedAt, &archivedAt, &metadata, &header.Preview, &header.NameSeq)
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil, fmt.Errorf("session %q not found", id)
+		return nil, fmt.Errorf("%w: %q", session.ErrSessionNotFound, id)
 	}
 	if err != nil {
 		return nil, err
@@ -41,8 +69,25 @@ func (s *Store) LoadHeader(ctx context.Context, id string) (*session.Session, er
 	return &header, nil
 }
 
+func (s *Store) LoadConversationPreview(ctx context.Context, id string) (string, error) {
+	var preview, text, assets, localAssets string
+	err := s.db.QueryRowContext(ctx, `SELECT `+s.previewColumns()+` FROM sessions WHERE id=?`, id).Scan(&preview, &text, &assets, &localAssets)
+	if err == nil && preview == "" {
+		preview = legacyMessagePreview(text, assets, localAssets)
+	}
+	return preview, err
+}
+
+func legacyMessagePreview(text, assets, localAssets string) string {
+	var gateway []model.GatewayAssetRef
+	var local []model.LocalAssetRef
+	_ = json.Unmarshal([]byte(assets), &gateway)
+	_ = json.Unmarshal([]byte(localAssets), &local)
+	return session.MessagePreview(text, gateway, local)
+}
+
 func (s *Store) ListMetadata(ctx context.Context) ([]session.Meta, error) {
-	metas, _, err := s.listMetadata(ctx, `SELECT `+metadataColumns+` FROM sessions ORDER BY updated_at DESC, id DESC`)
+	metas, _, err := s.listMetadata(ctx, `SELECT `+s.metadataColumns()+` FROM sessions ORDER BY updated_at DESC, id DESC`)
 	return metas, err
 }
 
@@ -50,7 +95,7 @@ func (s *Store) ListSessionPage(ctx context.Context, archived bool, before *sess
 	if limit < 1 || limit > 200 {
 		return nil, nil, fmt.Errorf("limit must be between 1 and 200")
 	}
-	query := `SELECT ` + metadataColumns + ` FROM sessions WHERE (COALESCE(archived_at,'')!='')=?`
+	query := `SELECT ` + s.metadataColumns() + ` FROM sessions WHERE (COALESCE(archived_at,'')!='')=?`
 	args := []any{archived}
 	if before != nil {
 		query += ` AND (COALESCE(updated_at,''),id) < (?,?)`
@@ -78,7 +123,7 @@ func (s *Store) listMetadata(ctx context.Context, query string, args ...any) ([]
 		var m session.Meta
 		var updatedAt, metadata, archivedAt string
 		if err := rows.Scan(&m.ID, &m.Model, &m.Name, &m.WorkspacePath, &m.Workspace.Root,
-			&m.Workspace.Rel, &m.Workspace.ExtID, &updatedAt, &metadata, &archivedAt); err != nil {
+			&m.Workspace.Rel, &m.Workspace.ExtID, &updatedAt, &metadata, &archivedAt, &m.Preview, &m.NameSeq); err != nil {
 			return nil, nil, err
 		}
 		m.Workspace.AbsHint = m.WorkspacePath
@@ -125,4 +170,52 @@ func (s *Store) PauseInterruptedSessions(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// migrateConversationPreviews keeps list and header reads independent of the
+// transcript, including on databases created before previews were stored.
+func migrateConversationPreviews(db *sql.DB) error {
+	var hasPreview bool
+	if err := db.QueryRow(`SELECT EXISTS(SELECT 1 FROM pragma_table_info('sessions') WHERE name='conversation_preview')`).Scan(&hasPreview); err != nil || hasPreview {
+		return err
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err = tx.Exec(`ALTER TABLE sessions ADD COLUMN conversation_preview TEXT`); err != nil {
+		if strings.Contains(err.Error(), "duplicate column") {
+			return nil
+		}
+		return err
+	}
+	rows, err := tx.Query(`SELECT id, ` + (&Store{}).previewColumns() + ` FROM sessions`)
+	if err != nil {
+		return err
+	}
+	previews := make(map[string]string)
+	for rows.Next() {
+		var id, preview, text, assets, localAssets string
+		if err = rows.Scan(&id, &preview, &text, &assets, &localAssets); err != nil {
+			rows.Close()
+			return err
+		}
+		if preview = legacyMessagePreview(text, assets, localAssets); preview != "" {
+			previews[id] = preview
+		}
+	}
+	if err = rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	if err = rows.Close(); err != nil {
+		return err
+	}
+	for id, preview := range previews {
+		if _, err = tx.Exec(`UPDATE sessions SET conversation_preview=? WHERE id=?`, preview, id); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }

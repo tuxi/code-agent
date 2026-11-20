@@ -18,7 +18,7 @@ func TestRuntimeInputsAreNotHumanTurns(t *testing.T) {
 		{Role: model.RoleUser, Content: "result data", RuntimeInput: true},
 		{Role: model.RoleUser, Content: "user request", OriginTurnID: "turn"},
 	}}
-	if turnCount(sess) != 1 || firstUserMessage(sess) != "user request" {
+	if titleInput(sess, model.Message{}) != "user request" {
 		t.Fatal("runtime facts counted as human input")
 	}
 }

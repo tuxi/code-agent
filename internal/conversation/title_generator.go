@@ -4,12 +4,13 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"code-agent/internal/model"
 )
 
 // LLMTitleGenerator calls a provider to generate a concise title from the
-// conversation's first exchange. It uses a simple, low-temperature prompt so
+// conversation's user input. It uses a simple, low-temperature prompt so
 // the title is deterministic and cheap (typically < 200 tokens).
 type LLMTitleGenerator struct {
 	Provider model.Provider
@@ -21,51 +22,26 @@ func NewLLMTitleGenerator(provider model.Provider, modelName string) *LLMTitleGe
 	return &LLMTitleGenerator{Provider: provider, Model: modelName}
 }
 
-// GenerateTitle produces a 3-6 word title by prompting the model with the
-// first user message and assistant response. Messages longer than 800 chars are
-// truncated to keep the prompt small. sessionID rides on the request envelope so
-// providers that require a stable per-conversation session id (OpenCode Go's
-// x-opencode-session header) can route this direct provider call, which — like
-// compaction — bypasses the agent loop's request stamping.
-func (g *LLMTitleGenerator) GenerateTitle(ctx context.Context, sessionID, userMessage, assistantResponse string) (string, error) {
-	userMsg := strings.TrimSpace(userMessage)
-	assistantMsg := strings.TrimSpace(assistantResponse)
-
-	if userMsg == "" {
+// GenerateTitle summarizes the user's request before an assistant reply exists.
+func (g *LLMTitleGenerator) GenerateTitle(ctx context.Context, sessionID, userMessage, _ string) (string, error) {
+	userMessage = strings.TrimSpace(userMessage)
+	if userMessage == "" {
 		return "", fmt.Errorf("no user message to generate title from")
 	}
-
-	// Truncate each to keep the prompt small.
-	const maxLen = 800
-	if len(userMsg) > maxLen {
-		userMsg = userMsg[:maxLen]
+	if utf8.RuneCountInString(userMessage) > 900 {
+		userMessage = string([]rune(userMessage)[:900])
 	}
-	if len(assistantMsg) > maxLen {
-		assistantMsg = assistantMsg[:maxLen]
-	}
-
-	prompt := fmt.Sprintf(
-		"Generate a short, concise title (3-6 words) for a conversation that starts with:\n\n"+
-			"User: %s\n\nAssistant: %s\n\nTitle:",
-		userMsg, assistantMsg,
-	)
-
 	resp, err := g.Provider.Complete(ctx, model.Request{
-		SessionID:   sessionID,
-		Model:       g.Model,
-		Messages:    []model.Message{{Role: model.RoleUser, Content: prompt}},
+		SessionID: sessionID,
+		Model:     g.Model,
+		Messages: []model.Message{
+			{Role: model.RoleSystem, Content: fmt.Sprintf("Write a concise conversation title in the user's language, using only their request as context. Return only a single title on one line, at most %d characters. Prefer 6–12 Chinese characters or 3–6 English words. Preserve relevant ticket or error codes. Do not answer the request.", MaxGeneratedTitleChars)},
+			{Role: model.RoleUser, Content: userMessage},
+		},
 		Temperature: 0.3,
 	})
 	if err != nil {
 		return "", err
 	}
-
-	title := strings.TrimSpace(resp.Content)
-	// Strip surrounding quotes.
-	title = strings.Trim(title, `"'`)
-	// Limit to 80 chars (reasonable display width).
-	if len(title) > 80 {
-		title = title[:80]
-	}
-	return title, nil
+	return strings.TrimSpace(strings.Trim(strings.TrimSpace(resp.Content), `"'`)), nil
 }

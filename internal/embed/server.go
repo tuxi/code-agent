@@ -1087,12 +1087,10 @@ func Assemble(ctx context.Context, cfg settings.Settings, mc settings.ModelConfi
 		rb.SetPreviewService(previewService)
 	}
 	executor := conversation.NewTurnExecutor(repo, eventStore, active, subs, rb)
+	executor.SetTurnTitleBuilder(rb)
 	executor.SetAssetRefReleaseService(rb)
 	maxConcurrentTurns := cfg.RuntimeMaxConcurrentTurns()
 	executor.SetTurnScheduler(conversation.NewTurnScheduler(maxConcurrentTurns))
-	if provider != nil {
-		executor.SetTitleGenerator(conversation.NewLLMTitleGenerator(provider, mc.Model))
-	}
 	managedWorktrees, worktreeReport, worktreeErr := runtime.ConfigureManagedWorktrees(ctx, telemetryStore, repo, executor, cfg.Profile != settings.ProfileSandboxed)
 	if worktreeErr != nil {
 		fmt.Printf("codeagent embedded: managed worktrees disabled: %v\n", worktreeErr)

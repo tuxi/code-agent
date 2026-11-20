@@ -463,6 +463,35 @@ func (b *ServeRunBuilder) ReleaseConversationAssetRefs(ctx context.Context, cred
 	return releaser.ReleaseConversationAssetRefs(ctx, sessionID)
 }
 
+// BuildTitleGenerator uses the same provider selection as the main turn.
+func (b *ServeRunBuilder) BuildTitleGenerator(mc settings.ModelConfig, explicit bool, cred credential.Resolver) (conversation.TitleGenerator, error) {
+	b.mu.RLock()
+	defaultMC, baseProvider, baseCredential, pc := b.mc, b.provider, b.credential, b.Set.Provider
+	b.mu.RUnlock()
+
+	provider, err := buildTurnProvider(mc, pc, baseProvider, effectiveCredentialResolver(cred, baseCredential),
+		explicit || cred != nil || mc.Name != defaultMC.Name || mc.Model != defaultMC.Model)
+	if err != nil {
+		return nil, err
+	}
+	if provider == nil {
+		return nil, errors.New("no model provider configured")
+	}
+	return conversation.NewLLMTitleGenerator(provider, mc.Model), nil
+}
+
+func buildTurnProvider(mc settings.ModelConfig, pc settings.ProviderConfig, base model.Provider, cred credential.Resolver, rebuild bool) (model.Provider, error) {
+	if !rebuild {
+		return base, nil
+	}
+	provider, err := BuildProvider(mc, pc, cred)
+	if err != nil {
+		return nil, fmt.Errorf("build provider for model %q: %w", mc.Name, err)
+	}
+	inheritProviderObserver(base, provider)
+	return provider, nil
+}
+
 // Build creates a per-turn TurnRunner that resolves skills from the session's
 // workspace, merges client-registered tools, and wires plan tools + client waiter.
 func (b *ServeRunBuilder) Build(ctx conversation.RuntimeContext) conversation.TurnRunner {
@@ -496,14 +525,10 @@ func (b *ServeRunBuilder) Build(ctx conversation.RuntimeContext) conversation.Tu
 		}
 	}
 
-	provider := baseProvider
-	if ctx.Model != "" || ctx.Credential != nil || mc.Name != defaultMC.Name {
-		p, err := BuildProvider(mc, cfg.Provider, effectiveCredential)
-		if err != nil {
-			return failedTurnRunner{err: fmt.Errorf("build provider for model %q: %w", mc.Name, err)}
-		}
-		inheritProviderObserver(baseProvider, p)
-		provider = p
+	provider, err := buildTurnProvider(mc, cfg.Provider, baseProvider, effectiveCredential,
+		ctx.Model != "" || ctx.Credential != nil || mc.Name != defaultMC.Name || mc.Model != defaultMC.Model)
+	if err != nil {
+		return failedTurnRunner{err: err}
 	}
 
 	// Resolve skills AND tools for the session's workspace. The workspace instance

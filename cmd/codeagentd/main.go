@@ -236,6 +236,7 @@ func run() error {
 	taskExecutionGuard, _ := repo.(collab.ExecutionGuard)
 	rb.SetTaskExecutionGuard(taskExecutionGuard)
 	executor := conversation.NewTurnExecutor(repo, eventStore, active, subs, rb)
+	executor.SetTurnTitleBuilder(rb)
 	executor.SetAssetRefReleaseService(rb)
 	enableTextSupplements := os.Getenv("CODEAGENT_EXPERIMENTAL_TEXT_SUPPLEMENTS") == "1"
 	if err := configureExperimentalSupplements(executor, telemetryStore, enableTextSupplements); err != nil {
@@ -247,9 +248,6 @@ func run() error {
 
 	maxConcurrentTurns := cfg.RuntimeMaxConcurrentTurns()
 	executor.SetTurnScheduler(conversation.NewTurnScheduler(maxConcurrentTurns))
-	if provider != nil {
-		executor.SetTitleGenerator(conversation.NewLLMTitleGenerator(provider, mc.Model))
-	}
 	if err := executor.ReconcileInterrupted(ctx); err != nil {
 		return fmt.Errorf("reconcile interrupted sessions: %w", err)
 	}

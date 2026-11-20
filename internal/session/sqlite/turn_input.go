@@ -105,6 +105,15 @@ func (s *Store) reserveTurnInputTx(ctx context.Context, tx *sql.Tx, input sessio
 		string(input.State), formatTime(now), formatTime(now)); err != nil {
 		return session.TurnInput{}, false, 0, err
 	}
+	if input.Provenance == nil {
+		preview := session.MessagePreview(input.Text, input.Assets, input.LocalAssets)
+		if _, err = tx.ExecContext(ctx, `UPDATE sessions SET conversation_preview=? WHERE id=?
+			AND COALESCE(conversation_preview,'')=''
+			AND NOT EXISTS(SELECT 1 FROM messages WHERE session_id=sessions.id AND role='user' AND runtime_input=0)`,
+			preview, input.SessionID); err != nil {
+			return session.TurnInput{}, false, 0, err
+		}
+	}
 	result, err := tx.ExecContext(ctx, `INSERT INTO session_events (session_id, turn_id, kind, at, payload) VALUES (?, ?, ?, ?, ?)`,
 		accepted.SessionID, accepted.TurnID, accepted.Kind, formatTime(accepted.At), string(accepted.Payload))
 	if err != nil {
