@@ -10,6 +10,7 @@ import (
 
 	"code-agent/internal/agent"
 	"code-agent/internal/model"
+	"code-agent/internal/session"
 )
 
 type rejectionRecorder struct{ ch chan AgentInputRejected }
@@ -87,6 +88,60 @@ func TestUserAssetValidationRejectsFrozenInvalidShapes(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestFollowUpReplyValidationAndRouting(t *testing.T) {
+	for _, tc := range []struct{ name, payload, code string }{
+		{"missing request id", `{"type":"agent_input","kind":"text","text":"改严","reply_to":{"turn_id":"t1","follow_up_id":"fu1","option_id":"opt_1"}}`, "invalid_follow_up"},
+		{"missing option", `{"type":"agent_input","kind":"text","request_id":"r","text":"改严","reply_to":{"turn_id":"t1","follow_up_id":"fu1"}}`, "invalid_follow_up"},
+		{"dismiss with option", `{"type":"agent_input","kind":"command","request_id":"r","command":"dismiss_follow_up","reply_to":{"turn_id":"t1","follow_up_id":"fu1","option_id":"opt_1"}}`, "invalid_follow_up"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, rejected := decodeAndValidateAgentInput([]byte(tc.payload), false)
+			if rejected == nil || rejected.Error.Code != tc.code {
+				t.Fatalf("rejected=%+v want %s", rejected, tc.code)
+			}
+		})
+	}
+
+	commands := &followUpCommands{fakeCommands: newFakeCommands(), replies: make(chan session.FollowUpReply, 1), dismissals: make(chan session.FollowUpReply, 1)}
+	rejections := rejectionRecorder{ch: make(chan AgentInputRejected, 1)}
+	router := Router{Commands: commands, Rejections: rejections}
+	router.Route(context.Background(), []byte(`{"type":"agent_input","kind":"text","request_id":"r","text":"改严","reply_to":{"turn_id":"t1","follow_up_id":"fu1","option_id":"opt_1"}}`))
+	select {
+	case reply := <-commands.replies:
+		if reply.TurnID != "t1" || reply.FollowUpID != "fu1" || reply.OptionID != "opt_1" {
+			t.Fatalf("reply = %+v", reply)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("follow-up selection was not routed")
+	}
+
+	router.Route(context.Background(), []byte(`{"type":"agent_input","kind":"command","request_id":"d","command":"dismiss_follow_up","reply_to":{"turn_id":"t1","follow_up_id":"fu1"}}`))
+	select {
+	case reply := <-commands.dismissals:
+		if reply.TurnID != "t1" || reply.FollowUpID != "fu1" {
+			t.Fatalf("dismissal = %+v", reply)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("follow-up dismissal was not routed")
+	}
+}
+
+type followUpCommands struct {
+	*fakeCommands
+	replies    chan session.FollowUpReply
+	dismissals chan session.FollowUpReply
+}
+
+func (c *followUpCommands) SendMessageWithFollowUp(_ context.Context, _ string, _ string, _ string, _ string, reply session.FollowUpReply) (agent.TurnResult, error) {
+	c.replies <- reply
+	return agent.TurnResult{}, nil
+}
+
+func (c *followUpCommands) DismissFollowUp(_ context.Context, reply session.FollowUpReply) error {
+	c.dismissals <- reply
+	return nil
 }
 
 func TestToWireKeepsUserAssetsSeparateFromToolAssets(t *testing.T) {

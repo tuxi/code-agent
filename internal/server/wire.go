@@ -10,6 +10,7 @@ import (
 
 	"code-agent/internal/agent"
 	"code-agent/internal/assetref"
+	"code-agent/internal/followup"
 	"code-agent/internal/model"
 	"code-agent/internal/preview"
 	"code-agent/internal/session"
@@ -26,6 +27,9 @@ type wireEvent struct {
 	Background             *agent.BackgroundContinuationInfo `json:"background,omitempty"`
 	ValidationContract     *session.ValidationContract       `json:"validation_contract,omitempty"`
 	ValidationContractHash string                            `json:"validation_contract_hash,omitempty"`
+	FollowUpReply          *session.FollowUpReply            `json:"reply_to,omitempty"`
+	FollowUp               *followup.Offer                   `json:"follow_up,omitempty"`
+	FollowUpID             string                            `json:"follow_up_id,omitempty"`
 	// Common header (§3.1). event_id and parent_session_id are stamped by the
 	// emitter, not by toWire, which keeps toWire pure and golden-testable.
 	EventID         string `json:"event_id,omitempty"`
@@ -150,6 +154,9 @@ func toWire(e agent.Event) wireEvent {
 		ContextMaintenance: e.ContextMaintenance,
 		ContextOperationID: e.ContextOperationID,
 		Background:         e.Background,
+		FollowUpReply:      e.FollowUpReply,
+		FollowUp:           e.FollowUp,
+		FollowUpID:         e.FollowUpID,
 		ModelSelection:     e.ModelSelection,
 		ModelSucceeded:     e.ModelSucceeded,
 		Kind:               string(e.Kind),

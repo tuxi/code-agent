@@ -2,6 +2,7 @@ package agent
 
 import (
 	"code-agent/internal/assetref"
+	"code-agent/internal/followup"
 	"code-agent/internal/hooks"
 	"code-agent/internal/model"
 	"code-agent/internal/observation"
@@ -39,11 +40,14 @@ type Runner struct {
 	// RuntimeInputs enables optional durable result delivery at model boundaries.
 	// Nil preserves the legacy loop; this port never initiates a model request.
 	// Supplements is opt-in until executor admission and transport recovery are wired.
-	Delivery                   session.TurnDeliveryStore
-	deliveryClosed             bool
-	Supplements                session.SupplementStore
-	OnSupplementsApplied       func([]session.SupplementApplication)
-	OnUserInput                func(context.Context, *session.Session)
+	Delivery             session.TurnDeliveryStore
+	deliveryClosed       bool
+	Supplements          session.SupplementStore
+	OnSupplementsApplied func([]session.SupplementApplication)
+	OnUserInput          func(context.Context, *session.Session)
+	// FollowUpReply is durable provenance for a submission produced by clicking
+	// a previous turn's follow-up option. It is attached to turn_started only.
+	FollowUpReply              *session.FollowUpReply
 	RuntimeInputs              session.RuntimeInputStore
 	ParkContinuation           ContinuationParker
 	ContinuationPolicyIdentity string
@@ -431,8 +435,10 @@ type TurnResult struct {
 	Deduplicated      bool // true when request_id resolved to an already accepted turn
 	WaitingBackground bool
 	Final             string
-	Steps             []Step
-	PromptTokens      int
+	// FollowUp is the optional structured next-step card attached to Final.
+	FollowUp     *followup.Offer
+	Steps        []Step
+	PromptTokens int
 
 	// TokensUsed is the turn's CUMULATIVE token consumption: the sum over every
 	// model call this turn of prompt+completion usage. It differs from
@@ -688,8 +694,9 @@ func (r *Runner) RunTurnWithAllAssets(ctx context.Context, sess *session.Session
 	}
 	r.emit(Event{
 		Kind: EventTurnStarted, Text: userInput,
-		UserAssets:  append([]model.GatewayAssetRef(nil), gatewayAssets...),
-		LocalAssets: append([]model.LocalAssetRef(nil), localAssets...),
+		UserAssets:    append([]model.GatewayAssetRef(nil), gatewayAssets...),
+		LocalAssets:   append([]model.LocalAssetRef(nil), localAssets...),
+		FollowUpReply: r.FollowUpReply,
 	})
 
 	return r.drive(ctx, sess)
@@ -726,8 +733,9 @@ func (r *Runner) RunPreparedTurn(ctx context.Context, sess *session.Session) (Tu
 	}
 	r.emit(Event{
 		Kind: EventTurnStarted, Text: user.Content,
-		UserAssets:  append([]model.GatewayAssetRef(nil), user.Assets...),
-		LocalAssets: append([]model.LocalAssetRef(nil), user.LocalAssets...),
+		UserAssets:    append([]model.GatewayAssetRef(nil), user.Assets...),
+		LocalAssets:   append([]model.LocalAssetRef(nil), user.LocalAssets...),
+		FollowUpReply: r.FollowUpReply,
 	})
 	return r.drive(ctx, sess)
 }
@@ -1325,15 +1333,19 @@ func (r *Runner) drive(ctx context.Context, sess *session.Session) (TurnResult, 
 			continue
 		}
 
+		// A successful TurnFinalizer call is a structured ending: its assistant text
+		// is the final answer and its typed side-channel is the terminal card. Keep
+		// this interface-driven so the loop never knows a concrete tool name.
+		terminalCall := stopPol == nil && isTurnFinalizerCall(resp.ToolCalls, activeTools, resp.Content)
+
 		// Tool-call path: the assistant turn must precede its tool results in
 		// history (the API requires the tool_calls message before the answers).
 		sess.Messages = append(sess.Messages, resp.AssistantMessage())
 		sess.UpdatedAt = time.Now()
 
-		// The model may have said something before calling tools. Publish it as a
-		// persisted assistant_text event so clients render the intermediate
-		// narration between tool calls, not just the final answer.
-		if assistantText != "" {
+		// Ordinary tool narration is persisted between steps. A terminal finalizer's
+		// text is emitted once below as turn_finished instead.
+		if assistantText != "" && !terminalCall {
 			r.emit(Event{Kind: EventAssistantText, Text: assistantText})
 		}
 
@@ -1357,6 +1369,28 @@ func (r *Runner) drive(ctx context.Context, sess *session.Session) (TurnResult, 
 		}
 		if cancelErr != nil {
 			return turn, cancelErr
+		}
+		if !terminalCall {
+			// A finalizer side-channel is meaningful only for the single terminal
+			// call. Ignore it when the model mixed calls or omitted final text.
+			turn.FollowUp = nil
+		} else if turn.FollowUp != nil {
+			turn.Final = resp.Content
+			r.checkpoint(ctx, sess)
+			r.emit(Event{
+				Kind:               EventTurnFinished,
+				Text:               turn.Final,
+				TextAnnotations:    annotateTextWithAssets(turn.Final, turnAssets),
+				FollowUp:           turn.FollowUp,
+				BillingUnits:       turn.BillingUnits,
+				ModelBillingUnits:  turn.ModelBillingUnits,
+				ToolBillingUnits:   turn.ToolBillingUnits,
+				ExecutedToolCalls:  turn.ExecutedToolCalls,
+				SucceededToolCalls: turn.SucceededToolCalls,
+				BillableToolCalls:  turn.BillableToolCalls,
+				DiffStat:           turn.DiffStat,
+			})
+			return turn, nil
 		}
 		if len(r.runtimeWaitFor) > 0 && r.CanContinueBackground() && i+1 < r.MaxSteps {
 			if err := ctx.Err(); err != nil {
@@ -1661,6 +1695,22 @@ const (
 // history is valid to resend, and tells the model the call did not execute so it
 // re-issues if still needed (v1.2 §2.2).
 const toolInterruptedObservation = "This tool call did not run: the turn was interrupted (app suspended or cancelled) before it executed. Re-issue the call if the result is still needed."
+
+// isTurnFinalizerCall reports whether this model response is a valid structured
+// ending: exact final text plus exactly one successful-capable terminal tool.
+// The tool still executes normally; this predicate only decides whether its
+// typed result should close the turn instead of prompting another model call.
+func isTurnFinalizerCall(calls []model.ToolCall, registry *tools.Registry, content string) bool {
+	if len(calls) != 1 || strings.TrimSpace(content) == "" || registry == nil {
+		return false
+	}
+	tool, ok := registry.Get(calls[0].Function.Name)
+	if !ok {
+		return false
+	}
+	finalizer, ok := tool.(TurnFinalizer)
+	return ok && finalizer.FinalizesTurn()
+}
 
 // finalAnswerAfterLimit makes one tool-free model call so the agent answers from
 // what it already gathered when the step limit is hit. The nudge is ephemeral

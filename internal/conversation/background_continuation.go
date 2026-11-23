@@ -234,7 +234,8 @@ func (e *TurnExecutor) resumeBackground(ctx context.Context, store session.Conti
 		return
 	}
 	rctx := RuntimeContext{Session: sess, TurnID: c.TurnID, RequestID: binding.RequestID, Publisher: pub, Model: binding.WireModel, ResolvedModel: binding.ResolvedModel, ReasoningEffort: binding.Effort,
-		Approver: e.active.Approver(sess.ID), PlanApprover: e.active.PlanApprover(sess.ID), AskUserApprover: e.active.AskUserApprover(sess.ID), ClientWaiter: e.active.ClientToolWaiter(sess.ID), ClientTools: e.active.ClientTools(sess.ID), Credential: e.sessionCredential(sess.ID), RuntimeInputs: provider.RuntimeInputStore(), Checkpointer: repoCheckpointer{repo: e.repo, onErr: e.OnSaveError}}
+		ClientCapabilities: e.active.ClientCapabilities(sess.ID),
+		Approver:           e.active.Approver(sess.ID), PlanApprover: e.active.PlanApprover(sess.ID), AskUserApprover: e.active.AskUserApprover(sess.ID), ClientWaiter: e.active.ClientToolWaiter(sess.ID), ClientTools: e.active.ClientTools(sess.ID), Credential: e.sessionCredential(sess.ID), RuntimeInputs: provider.RuntimeInputStore(), Checkpointer: repoCheckpointer{repo: e.repo, onErr: e.OnSaveError}}
 	rctx.ParkContinuation = e.backgroundParker(store, &binding, c.TurnID, pub)
 	builtRunner := e.rb.Build(rctx)
 	runner, ok := builtRunner.(backgroundRunner)

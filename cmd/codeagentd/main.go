@@ -29,6 +29,7 @@ import (
 	"code-agent/internal/controlplane"
 	"code-agent/internal/conversation"
 	"code-agent/internal/credential"
+	"code-agent/internal/followup"
 	"code-agent/internal/gitworkspace"
 	"code-agent/internal/model"
 	"code-agent/internal/repos"
@@ -55,6 +56,7 @@ var defaultCapabilities = []string{
 	"conversation_fork_v1",
 	"conversation_fork_through_turn_v1",
 	"history_pagination",
+	followup.Capability,
 }
 
 func main() {

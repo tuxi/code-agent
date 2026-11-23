@@ -16,6 +16,7 @@ import (
 	"code-agent/internal/collab"
 	"code-agent/internal/conversation"
 	"code-agent/internal/credential"
+	"code-agent/internal/followup"
 	"code-agent/internal/model"
 	"code-agent/internal/preview"
 	"code-agent/internal/session"
@@ -572,6 +573,9 @@ func (b *ServeRunBuilder) Build(ctx conversation.RuntimeContext) conversation.Tu
 	turnTools.Replace(agent.NewEnterPlanModeTool(planRef))
 	turnTools.Replace(agent.NewProposePlanTool(planRef, filepath.Join(workspacePath, ".codeagent", "plans")))
 	turnTools.Replace(agent.NewAskUserTool(planRef))
+	if cfg.Agent.ToolAllowed("offer_next_step") && containsCapability(ctx.ClientCapabilities, followup.Capability) && ctx.ManagedTask == nil {
+		_ = turnTools.Register(agent.NewOfferNextStepTool())
+	}
 
 	// Replace the shared LoadSkillTool with one that uses this workspace's own
 	// skill registry, so hot-reload (triggered on cache miss) only affects this
@@ -622,6 +626,7 @@ func (b *ServeRunBuilder) Build(ctx conversation.RuntimeContext) conversation.Tu
 	}
 	runner.ReservedTurnID = ctx.TurnID
 	runner.RequestID = ctx.RequestID
+	runner.FollowUpReply = ctx.ReplyTo
 	runner.SessionControl = control
 	runner.AutomationStore = b.automationStore
 	runner.WorkflowRunner = b.workflowRunner
@@ -705,6 +710,15 @@ func (b *ServeRunBuilder) Build(ctx conversation.RuntimeContext) conversation.Tu
 	applyCodingProfile(runner, cfg) // after workspace and client tools have been merged
 	runner.Stream = true            // emit final-text and reasoning deltas for live client rendering
 	return runner
+}
+
+func containsCapability(capabilities []string, want string) bool {
+	for _, capability := range capabilities {
+		if capability == want {
+			return true
+		}
+	}
+	return false
 }
 
 // failedTurnRunner preserves RunBuilder's historical no-error factory signature

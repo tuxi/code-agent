@@ -177,6 +177,7 @@ CREATE TABLE IF NOT EXISTS turn_inputs (
 	message_id TEXT NOT NULL DEFAULT '',
 	correlation_id TEXT NOT NULL DEFAULT '',
 	intent TEXT NOT NULL DEFAULT '',
+	follow_up_reply TEXT NOT NULL DEFAULT '',
 	accepted_seq INTEGER NOT NULL DEFAULT 0,
 	state TEXT NOT NULL,
 	created_at TEXT NOT NULL,
@@ -293,6 +294,7 @@ func (s *Store) open() error {
 		`ALTER TABLE turn_inputs ADD COLUMN message_id TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE turn_inputs ADD COLUMN correlation_id TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE turn_inputs ADD COLUMN intent TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE turn_inputs ADD COLUMN follow_up_reply TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE turn_inputs ADD COLUMN accepted_seq INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE managed_worktrees ADD COLUMN remove_force INTEGER NOT NULL DEFAULT 0`,
 		// Existing chronological indexes are retained. New query-specific indexes

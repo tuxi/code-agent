@@ -14,6 +14,7 @@ import (
 	"code-agent/internal/agent"
 	"code-agent/internal/conversation"
 	"code-agent/internal/credential"
+	"code-agent/internal/followup"
 	"code-agent/internal/model"
 	"code-agent/internal/session"
 	"code-agent/internal/settings"
@@ -67,6 +68,27 @@ func TestServeTitleGeneratorUsesAcceptedModelAndSessionCredential(t *testing.T) 
 	})}
 	if title, err := gen.GenerateTitle(context.Background(), "session-id", "你好，你能做什么", ""); err != nil || title != "助手能力咨询" {
 		t.Fatalf("title=%q err=%v", title, err)
+	}
+}
+
+func TestServeRunBuilderGatesOfferNextStepByClientCapability(t *testing.T) {
+	SetStoreBaseDir(t.TempDir())
+	base := tools.NewRegistry()
+	sharedRef := WirePlanTools(base, t.TempDir())
+	builder := NewServeRunBuilder(settings.Settings{}, settings.ModelConfig{}, nil, nil, base, NewWorkspaceRegistry(""), sharedRef)
+	workspace := t.TempDir()
+
+	without := builder.Build(conversation.RuntimeContext{Session: &session.Session{ID: "without", WorkspacePath: workspace}}).(*agent.Runner)
+	if _, ok := without.Tools.Get("offer_next_step"); ok {
+		t.Fatal("offer_next_step registered without client capability")
+	}
+
+	with := builder.Build(conversation.RuntimeContext{
+		Session:            &session.Session{ID: "with", WorkspacePath: workspace},
+		ClientCapabilities: []string{followup.Capability},
+	}).(*agent.Runner)
+	if _, ok := with.Tools.Get("offer_next_step"); !ok {
+		t.Fatal("offer_next_step missing after capability negotiation")
 	}
 }
 

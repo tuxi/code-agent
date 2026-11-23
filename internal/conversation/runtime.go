@@ -52,15 +52,17 @@ type RuntimeContext struct {
 	RuntimeInputs    session.RuntimeInputStore
 	ParkContinuation agent.ContinuationParker
 	// ManagedTask is trusted host provenance, never decoded from agent_input.
-	ManagedTask     *collab.ManagedTurnRef
-	Session         *session.Session
-	TurnID          string        // reserved before acceptance; stable across queued → terminal lifecycle events
-	Publisher       agent.Emitter // TurnExecutor assembles the composite emitter
-	Approver        agent.Approver
-	PlanApprover    agent.PlanApprover     // nil = auto-approve plans (test/headless path)
-	AskUserApprover agent.AskUserApprover  // nil = headless fallback
-	ClientWaiter    agent.ClientToolWaiter // nil = no client tool executor
-	ClientTools     []agent.ClientToolDef  // client-registered tools (nil if none)
+	ManagedTask        *collab.ManagedTurnRef
+	Session            *session.Session
+	TurnID             string        // reserved before acceptance; stable across queued → terminal lifecycle events
+	Publisher          agent.Emitter // TurnExecutor assembles the composite emitter
+	Approver           agent.Approver
+	PlanApprover       agent.PlanApprover     // nil = auto-approve plans (test/headless path)
+	AskUserApprover    agent.AskUserApprover  // nil = headless fallback
+	ClientWaiter       agent.ClientToolWaiter // nil = no client tool executor
+	ClientTools        []agent.ClientToolDef  // client-registered tools (nil if none)
+	ClientCapabilities []string               // latest client_capabilities snapshot for this session
+	ReplyTo            *session.FollowUpReply // selected follow-up option, if this turn began from one
 
 	// Model is the optional model profile name for this turn. When non-empty,
 	// the runner looks up this model from config instead of using the server

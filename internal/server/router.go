@@ -47,6 +47,17 @@ type RequestLocalAssetMessageTarget interface {
 	SendMessageWithRequestIDAndAllAssets(ctx context.Context, requestID, text, model, effort string, assets []model.GatewayAssetRef, localAssets []model.LocalAssetRef) (agent.TurnResult, error)
 }
 
+// FollowUpMessageTarget starts a normal text turn linked to a previous
+// end-of-turn follow-up option. Selection never bypasses normal agent approval.
+type FollowUpMessageTarget interface {
+	SendMessageWithFollowUp(ctx context.Context, requestID, text, model, effort string, reply session.FollowUpReply) (agent.TurnResult, error)
+}
+
+// FollowUpCommandTarget records a non-turn UI action on a terminal card.
+type FollowUpCommandTarget interface {
+	DismissFollowUp(ctx context.Context, reply session.FollowUpReply) error
+}
+
 // ValidationMessageTarget must preserve the contract through durable admission.
 // Legacy command targets cannot silently discard it.
 type ValidationMessageTarget interface {
@@ -148,6 +159,35 @@ func (r Router) Route(ctx context.Context, data []byte) {
 			go func() {
 				result, err := target.SendMessageWithValidationContract(turnCtx, m.RequestID, m.Text, m.Model, m.ReasoningEffort, copyGatewayAssetRefs(m.Assets), copyLocalAssetRefs(m.LocalAssets), m.ValidationContract)
 				r.rejectTurnError(m.RequestID, result, err)
+			}()
+			return
+		}
+		if m.Kind == "text" && m.ReplyTo != nil {
+			target, ok := r.Commands.(FollowUpMessageTarget)
+			if !ok {
+				r.reject(*rejectInput(m.RequestID, "follow_up_unsupported", "follow-up selections are unavailable on this target"))
+				return
+			}
+			turnCtx := context.WithoutCancel(ctx)
+			reply := *m.ReplyTo
+			go func() {
+				result, err := target.SendMessageWithFollowUp(turnCtx, m.RequestID, m.Text, m.Model, m.ReasoningEffort, reply)
+				r.rejectTurnError(m.RequestID, result, err)
+			}()
+			return
+		}
+		if m.Kind == "command" && (m.Command == "dismiss_follow_up" || m.Text == "dismiss_follow_up") {
+			target, ok := r.Commands.(FollowUpCommandTarget)
+			if !ok || m.ReplyTo == nil {
+				r.reject(*rejectInput(m.RequestID, "follow_up_unsupported", "follow-up dismissal is unavailable on this target"))
+				return
+			}
+			turnCtx := context.WithoutCancel(ctx)
+			reply := *m.ReplyTo
+			go func() {
+				if err := target.DismissFollowUp(turnCtx, reply); err != nil {
+					r.reject(*rejectInput(m.RequestID, "follow_up_stale", "the follow-up is no longer active"))
+				}
 			}()
 			return
 		}

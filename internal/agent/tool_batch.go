@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"code-agent/internal/assetref"
+	"code-agent/internal/followup"
 	"code-agent/internal/model"
 	"code-agent/internal/preview"
 	"code-agent/internal/reference"
@@ -70,6 +71,7 @@ type toolCallResult struct {
 	assetRefs            []assets.Ref
 	visionInputs         []assets.Ref
 	previews             []preview.Draft
+	followUp             *followup.Offer
 	clientPreviewOrigin  bool
 	usage                *tools.ToolUsage
 	nestedUsage          []*tools.ToolUsage
@@ -346,6 +348,7 @@ func (r *Runner) runToolCall(ctx context.Context, p toolCallPlan) toolCallResult
 			assetRefs = toolResult.Assets
 			res.visionInputs = toolResult.VisionInputs
 			res.previews = toolResult.Previews
+			res.followUp = toolResult.FollowUp
 			res.usage = toolResult.Usage
 			res.runtimeInputReceipts = toolResult.RuntimeInputReceipts
 			res.runtimeWaitFor = toolResult.RuntimeWaitFor
@@ -470,6 +473,11 @@ func (r *Runner) commitToolResult(ctx context.Context, sess *session.Session, tu
 		}
 		for _, w := range res.nestedWrites {
 			turn.DiffStat.Add(w)
+		}
+	}
+	if res.followUp != nil && p.known && res.succeeded && res.stepError == "" {
+		if finalizer, ok := p.tool.(TurnFinalizer); ok && finalizer.FinalizesTurn() {
+			turn.FollowUp = res.followUp
 		}
 	}
 	if res.usage != nil {

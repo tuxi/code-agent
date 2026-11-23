@@ -12,7 +12,7 @@ var codingToolNames = []string{
 	"list_files", "read_file", "grep", "edit_file", "create_file",
 	"run_command", "job_status", "job_logs", "job_wait", "job_cancel",
 	"load_skill", "recall_memory", "list_memories", "create_memory", "update_memory", "delete_memory",
-	"todo_write", "ask_user", "enter_plan_mode", "propose_plan", "task", "git_diff",
+	"todo_write", "ask_user", "offer_next_step", "enter_plan_mode", "propose_plan", "task", "git_diff",
 	"view_image",
 }
 

@@ -75,6 +75,7 @@ type AgentInput struct {
 	// unsupported value rejects the turn. Only meaningful on kind="text".
 	ReasoningEffort string                  `json:"reasoning_effort,omitempty"` // kind="text": per-turn thinking budget override
 	Assets          []model.GatewayAssetRef `json:"assets,omitempty"`           // kind="text": Gateway-owned user asset refs
+	ReplyTo         *session.FollowUpReply  `json:"reply_to,omitempty"`         // kind="text"/"command": follow-up card provenance
 	LocalAssets     []model.LocalAssetRef   `json:"local_assets,omitempty"`     // kind="text": workspace-local attachment refs
 	ToolResult      *ToolResult             `json:"tool_result,omitempty"`      // kind="tool_result"
 	// kind="system" fields (v1.1 parses but stubs out the semantics):

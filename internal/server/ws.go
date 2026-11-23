@@ -207,6 +207,12 @@ func (h *WSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// "connection lost". The newly attached channel becomes the delivery path
 	// through normal event replay while the same waiter keeps the blocked turn.
 	sess.SetClientToolWaiter(waiter)
+	if target, ok := sess.(interface{ SetClientCapabilities([]string) }); ok {
+		// A connection starts with no client-declared features. The client sends
+		// client_capabilities after hello; stale capabilities from a prior client
+		// must not keep presentation tools enabled.
+		target.SetClientCapabilities(nil)
+	}
 
 	defer func() {
 		// Clear the sink so future sends don't target a dead connection, but
@@ -226,8 +232,11 @@ func (h *WSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		Rejections:  frameInputRejectionSink{sink: sink},
 		ImageInput:  hasCapability(capabilities, "image_input"),
 	}
-	if backgroundCapable {
-		router.ClientCapabilities = func(ctx context.Context, values []string) {
+	router.ClientCapabilities = func(ctx context.Context, values []string) {
+		if target, ok := sess.(interface{ SetClientCapabilities([]string) }); ok {
+			target.SetClientCapabilities(values)
+		}
+		if backgroundCapable {
 			h.configureBackground(ctx, sessionID, controlRevision, background, sink, values, hasCapability(capabilities, BackgroundContinuationCapability))
 		}
 	}

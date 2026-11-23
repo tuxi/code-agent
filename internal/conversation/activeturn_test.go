@@ -220,3 +220,23 @@ func TestActiveTurnRegistryCapabilityContextIsRuntimeOwnedAndPersistent(t *testi
 		t.Fatalf("cleared capability context = %q", got)
 	}
 }
+
+func TestActiveTurnRegistryClientCapabilitiesAreSessionScoped(t *testing.T) {
+	r := NewActiveTurnRegistry()
+	r.SetClientCapabilities("s1", []string{"turn_follow_up_v1"})
+	got := r.ClientCapabilities("s1")
+	if len(got) != 1 || got[0] != "turn_follow_up_v1" {
+		t.Fatalf("capabilities = %v", got)
+	}
+	got[0] = "mutated"
+	if r.ClientCapabilities("s1")[0] != "turn_follow_up_v1" {
+		t.Fatal("capability slice was not copied")
+	}
+	if r.ClientCapabilities("s2") != nil {
+		t.Fatal("capabilities leaked across sessions")
+	}
+	r.SetClientCapabilities("s1", nil)
+	if r.ClientCapabilities("s1") != nil {
+		t.Fatal("empty capability set did not clear")
+	}
+}

@@ -29,6 +29,7 @@ import (
 	"code-agent/internal/controlplane"
 	"code-agent/internal/conversation"
 	"code-agent/internal/credential"
+	"code-agent/internal/followup"
 	"code-agent/internal/gitworkspace"
 	"code-agent/internal/mcp"
 	"code-agent/internal/model"
@@ -56,6 +57,7 @@ var defaultCapabilities = []string{
 	"workflow_execution",
 	"conversation_fork_v1",
 	"history_pagination",
+	followup.Capability,
 }
 
 // Options configures an embedded server. Every field is supplied in-memory by the

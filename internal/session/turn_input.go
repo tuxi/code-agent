@@ -31,6 +31,15 @@ type CrossSessionProvenance struct {
 	Intent          string
 }
 
+// FollowUpReply links a user submission back to a specific option on the
+// previous turn's follow-up card. It is durable provenance only; the model sees
+// the selected message text and the previous tool call in normal history.
+type FollowUpReply struct {
+	TurnID     string `json:"turn_id"`
+	FollowUpID string `json:"follow_up_id"`
+	OptionID   string `json:"option_id,omitempty"`
+}
+
 // TurnInput is the durable v1.5 submission inbox. WireModel is payload identity;
 // ResolvedModel is frozen execution identity and deliberately excluded from the
 // payload hash.
@@ -45,6 +54,7 @@ type TurnInput struct {
 	Assets             []model.GatewayAssetRef
 	LocalAssets        []model.LocalAssetRef
 	Provenance         *CrossSessionProvenance
+	ReplyTo            *FollowUpReply
 	ManagedTask        *collab.ManagedTurnRef
 	ValidationContract *ValidationContract // authoritative content lives in the accepted event
 	AcceptedSeq        int64

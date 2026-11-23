@@ -204,7 +204,7 @@ func (e *TurnExecutor) resumeInterruptedQueueTurn(ctx context.Context, input ses
 		return agent.TurnResult{}, session.ErrUserQueueUnavailable
 	}
 	queued := &queueExecution{frozen: frozen, store: store, resolve: resolve, resuming: true}
-	return e.driveTurn(context.WithValue(ctx, queueExecutionKey{}, queued), sess, input.RequestID, input.Text, input.WireModel, frozen.ReasoningEffort, input.Assets, input.LocalAssets, &input, nil, nil, nil, session.TurnStatusResuming,
+	return e.driveTurn(context.WithValue(ctx, queueExecutionKey{}, queued), sess, input.RequestID, input.Text, input.WireModel, frozen.ReasoningEffort, input.Assets, input.LocalAssets, &input, nil, nil, nil, nil, session.TurnStatusResuming,
 		func(runCtx context.Context, runner TurnRunner, _ bool) (agent.TurnResult, error) {
 			return runner.ResumeTurn(runCtx, sess)
 		}, e.recordRunStatus)

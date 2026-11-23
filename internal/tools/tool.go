@@ -3,6 +3,7 @@ package tools
 import (
 	"code-agent/internal/assetref"
 	"code-agent/internal/automation"
+	"code-agent/internal/followup"
 	"code-agent/internal/preview"
 	"code-agent/internal/sessionfork"
 	"context"
@@ -363,6 +364,10 @@ type ToolResult struct {
 	// Previews is the typed producer side-channel. It is never inferred from
 	// Output or the tool name and is not copied into the model observation.
 	Previews []preview.Draft `json:"-"`
+	// FollowUp is a typed terminal presentation side-channel. Only tools whose
+	// implementation is recognized as a TurnFinalizer can contribute it to the
+	// terminal turn event.
+	FollowUp *followup.Offer `json:"-"`
 	// Usage is populated by billable managed tools. Local tools leave it nil.
 	// It is an event side-channel and is not included in the model observation.
 	Usage *ToolUsage `json:"usage,omitempty"`

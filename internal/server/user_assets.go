@@ -18,6 +18,7 @@ const maxLocalAssetsPerTurn = 16
 
 var userAssetSHA256 = regexp.MustCompile(`^[0-9a-f]{64}$`)
 var localAssetID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`)
+var followUpToken = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`)
 
 // AgentInputRejected is the non-persisted v1.5 control response used before a
 // turn exists. It deliberately carries no turn_id.
@@ -75,8 +76,37 @@ func decodeAndValidateAgentInput(data []byte, imageInput bool) (AgentInput, *Age
 	if (hasAssets || hasLocalAssets) && input.Kind != "text" {
 		return AgentInput{}, rejectInput(requestID, "invalid_assets", "assets are only allowed on text input")
 	}
-	if input.Kind != "text" {
+	if input.Kind == "command" {
+		if input.Command != "dismiss_follow_up" && input.Text != "dismiss_follow_up" {
+			if input.ReplyTo != nil {
+				return AgentInput{}, rejectInput(requestID, "invalid_follow_up", "reply_to is only allowed on dismiss_follow_up command input")
+			}
+			return input, nil
+		}
+		if input.ReplyTo == nil {
+			return AgentInput{}, rejectInput(requestID, "invalid_follow_up", "dismiss_follow_up requires reply_to")
+		}
+		if !validFollowUpReplyToken(input.ReplyTo.TurnID) || !validFollowUpReplyToken(input.ReplyTo.FollowUpID) || input.ReplyTo.OptionID != "" {
+			return AgentInput{}, rejectInput(requestID, "invalid_follow_up", "reply_to contains invalid follow-up identifiers")
+		}
 		return input, nil
+	}
+	if input.Kind != "text" {
+		if input.ReplyTo != nil {
+			return AgentInput{}, rejectInput(requestID, "invalid_follow_up", "reply_to is only allowed on text or dismiss_follow_up input")
+		}
+		return input, nil
+	}
+	if input.ReplyTo != nil {
+		if !validValidationRequestID(requestID) || input.ValidationContract != nil {
+			return AgentInput{}, rejectInput(requestID, "invalid_follow_up", "a stable request_id is required for a follow-up selection")
+		}
+		if len(input.Assets) > 0 || len(input.LocalAssets) > 0 {
+			return AgentInput{}, rejectInput(requestID, "invalid_follow_up", "follow-up selections cannot include attachments")
+		}
+		if !validFollowUpReplyToken(input.ReplyTo.TurnID) || !validFollowUpReplyToken(input.ReplyTo.FollowUpID) || !validFollowUpReplyToken(input.ReplyTo.OptionID) {
+			return AgentInput{}, rejectInput(requestID, "invalid_follow_up", "reply_to contains invalid follow-up identifiers")
+		}
 	}
 	if strings.TrimSpace(input.Text) == "" && len(input.Assets) == 0 && len(input.LocalAssets) == 0 {
 		return AgentInput{}, rejectInput(requestID, "invalid_input", "text or attachments are required")
@@ -210,6 +240,10 @@ func validUserAssetFilename(filename string) bool {
 		filename != "." && filename != ".." &&
 		!strings.ContainsAny(filename, "/\\\x00") &&
 		strings.IndexFunc(filename, unicode.IsControl) < 0
+}
+
+func validFollowUpReplyToken(value string) bool {
+	return followUpToken.MatchString(value)
 }
 
 func rawString(raw json.RawMessage) string {

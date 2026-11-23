@@ -497,6 +497,31 @@ func (e *TurnExecutor) ExecuteWithRequestIDAndAllAssets(ctx context.Context, ses
 	return e.executeWithRequestIDAndAllAssetsValidation(ctx, sessionID, requestID, input, modelName, effort, assets, localAssets, nil)
 }
 
+// ExecuteWithRequestIDAndFollowUp starts a normal turn from a clicked terminal
+// option. The text and reply reference are validated before admission so stale
+// or forged card interactions cannot be recorded as user intent.
+func (e *TurnExecutor) ExecuteWithRequestIDAndFollowUp(ctx context.Context, sessionID, requestID, input, modelName, effort string, reply session.FollowUpReply) (agent.TurnResult, error) {
+	release, err := e.beginSessionTurn(sessionID)
+	if err != nil {
+		return agent.TurnResult{}, err
+	}
+	defer release()
+
+	sess, err := e.repo.Load(ctx, sessionID)
+	if err != nil {
+		return agent.TurnResult{}, err
+	}
+	if !sess.ArchivedAt.IsZero() {
+		return agent.TurnResult{}, ErrConversationArchived
+	}
+	if !e.turnInputExists(ctx, sessionID, requestID) {
+		if err := e.validateFollowUpReply(ctx, sessionID, input, &reply); err != nil {
+			return agent.TurnResult{}, err
+		}
+	}
+	return e.executeWithSessionAssetsValidation(ctx, sess, requestID, input, modelName, effort, nil, nil, nil, nil, nil, &reply)
+}
+
 func (e *TurnExecutor) executeWithRequestIDAndAllAssetsValidation(ctx context.Context, sessionID, requestID, input, modelName, effort string, assets []model.GatewayAssetRef, localAssets []model.LocalAssetRef, validation *session.ValidationContract) (agent.TurnResult, error) {
 	release, err := e.beginSessionTurn(sessionID)
 	if err != nil {
@@ -511,7 +536,7 @@ func (e *TurnExecutor) executeWithRequestIDAndAllAssetsValidation(ctx context.Co
 	if !sess.ArchivedAt.IsZero() {
 		return agent.TurnResult{}, ErrConversationArchived
 	}
-	return e.executeWithSessionAssetsValidation(ctx, sess, requestID, input, modelName, effort, assets, localAssets, nil, nil, validation)
+	return e.executeWithSessionAssetsValidation(ctx, sess, requestID, input, modelName, effort, assets, localAssets, nil, nil, validation, nil)
 }
 
 // AcceptCrossSessionMessage returns after durable acceptance and target-side
@@ -638,11 +663,11 @@ func modelSupportsEffort(mc settings.ModelConfig, effort string) bool {
 }
 
 func (e *TurnExecutor) executeWithSessionAssets(parentCtx context.Context, sess *session.Session, requestID, input, modelName, effort string, assets []model.GatewayAssetRef, localAssets []model.LocalAssetRef, provenance *session.CrossSessionProvenance, admitted func(TurnAdmission, error)) (agent.TurnResult, error) {
-	return e.executeWithSessionAssetsValidation(parentCtx, sess, requestID, input, modelName, effort, assets, localAssets, provenance, admitted, nil)
+	return e.executeWithSessionAssetsValidation(parentCtx, sess, requestID, input, modelName, effort, assets, localAssets, provenance, admitted, nil, nil)
 }
 
-func (e *TurnExecutor) executeWithSessionAssetsValidation(parentCtx context.Context, sess *session.Session, requestID, input, modelName, effort string, assets []model.GatewayAssetRef, localAssets []model.LocalAssetRef, provenance *session.CrossSessionProvenance, admitted func(TurnAdmission, error), validation *session.ValidationContract) (agent.TurnResult, error) {
-	return e.driveTurn(parentCtx, sess, requestID, input, modelName, effort, assets, localAssets, nil, provenance, validation, admitted,
+func (e *TurnExecutor) executeWithSessionAssetsValidation(parentCtx context.Context, sess *session.Session, requestID, input, modelName, effort string, assets []model.GatewayAssetRef, localAssets []model.LocalAssetRef, provenance *session.CrossSessionProvenance, admitted func(TurnAdmission, error), validation *session.ValidationContract, reply *session.FollowUpReply) (agent.TurnResult, error) {
+	return e.driveTurn(parentCtx, sess, requestID, input, modelName, effort, assets, localAssets, nil, provenance, validation, reply, admitted,
 		session.TurnStatusRunning,
 		func(ctx context.Context, runner TurnRunner, prepared bool) (agent.TurnResult, error) {
 			if prepared {
@@ -726,7 +751,7 @@ func (e *TurnExecutor) Resume(parentCtx context.Context, sessionID string) (agen
 		requestID, inputText, wireModel, assets = recovered.RequestID, recovered.Text, recovered.WireModel, recovered.Assets
 		localAssets = recovered.LocalAssets
 	}
-	return e.driveTurn(parentCtx, sess, requestID, inputText, wireModel, "", assets, localAssets, recovered, nil, nil, nil, session.TurnStatusResuming,
+	return e.driveTurn(parentCtx, sess, requestID, inputText, wireModel, "", assets, localAssets, recovered, nil, nil, nil, nil, session.TurnStatusResuming,
 		func(ctx context.Context, runner TurnRunner, _ bool) (agent.TurnResult, error) {
 			return runner.ResumeTurn(ctx, sess)
 		},
@@ -751,6 +776,7 @@ func (e *TurnExecutor) driveTurn(
 	preclaimed *session.TurnInput,
 	provenance *session.CrossSessionProvenance,
 	validation *session.ValidationContract,
+	reply *session.FollowUpReply,
 	admitted func(TurnAdmission, error),
 	runningState string,
 	run func(ctx context.Context, runner TurnRunner, prepared bool) (agent.TurnResult, error),
@@ -859,7 +885,7 @@ func (e *TurnExecutor) driveTurn(
 			resolvedModel.Model = claimed.ResolvedModel
 		}
 	} else {
-		claimed, duplicate, claimErr = e.claimRequest(parentCtx, sess.ID, requestID, turnID, inputText, wireModel, resolvedModel.Model, assets, localAssets, provenance, validation, pub)
+		claimed, duplicate, claimErr = e.claimRequest(parentCtx, sess.ID, requestID, turnID, inputText, wireModel, resolvedModel.Model, assets, localAssets, provenance, validation, reply, pub)
 	}
 	if claimErr != nil {
 		return agent.TurnResult{}, claimErr
@@ -1044,22 +1070,24 @@ func (e *TurnExecutor) driveTurn(
 
 	// 4. Build a fresh turnRunner for this turn.
 	rctx := RuntimeContext{
-		ManagedTask:     managedAdmissionRef(parentCtx),
-		Session:         sess,
-		TurnID:          turnID,
-		Model:           wireModel,
-		ResolvedModel:   resolvedModel.Model,
-		ReasoningEffort: effectiveEffort,
-		RequestID:       requestID,
-		Capability:      e.active.CapabilityContext(sess.ID),
-		Publisher:       pub,
-		Approver:        e.active.Approver(sess.ID),
-		PlanApprover:    e.active.PlanApprover(sess.ID),
-		AskUserApprover: e.active.AskUserApprover(sess.ID),
-		ClientWaiter:    e.active.ClientToolWaiter(sess.ID),
-		ClientTools:     e.active.ClientTools(sess.ID),
-		Credential:      turnCredential,
-		ApprovalMode:    e.active.ApprovalMode(sess.ID),
+		ManagedTask:        managedAdmissionRef(parentCtx),
+		Session:            sess,
+		TurnID:             turnID,
+		Model:              wireModel,
+		ResolvedModel:      resolvedModel.Model,
+		ReasoningEffort:    effectiveEffort,
+		RequestID:          requestID,
+		Capability:         e.active.CapabilityContext(sess.ID),
+		Publisher:          pub,
+		Approver:           e.active.Approver(sess.ID),
+		PlanApprover:       e.active.PlanApprover(sess.ID),
+		AskUserApprover:    e.active.AskUserApprover(sess.ID),
+		ClientWaiter:       e.active.ClientToolWaiter(sess.ID),
+		ClientTools:        e.active.ClientTools(sess.ID),
+		ClientCapabilities: e.active.ClientCapabilities(sess.ID),
+		ReplyTo:            cloneFollowUpReply(claimed.ReplyTo),
+		Credential:         turnCredential,
+		ApprovalMode:       e.active.ApprovalMode(sess.ID),
 		// Mid-turn crash-safety (v1.2 §2): persist at each loop boundary so a hard
 		// kill loses at most the in-progress step. The turn-boundary Save below is
 		// still the backstop.
@@ -1205,7 +1233,7 @@ func (RequestConflictError) SafeMessage() string {
 	return "request_id was already used with a different payload"
 }
 
-func (e *TurnExecutor) claimRequest(ctx context.Context, sessionID, requestID, proposedTurnID, text, wireModel, resolvedModel string, assets []model.GatewayAssetRef, localAssets []model.LocalAssetRef, provenance *session.CrossSessionProvenance, validation *session.ValidationContract, pub *sequencingEmitter) (session.TurnInput, bool, error) {
+func (e *TurnExecutor) claimRequest(ctx context.Context, sessionID, requestID, proposedTurnID, text, wireModel, resolvedModel string, assets []model.GatewayAssetRef, localAssets []model.LocalAssetRef, provenance *session.CrossSessionProvenance, validation *session.ValidationContract, reply *session.FollowUpReply, pub *sequencingEmitter) (session.TurnInput, bool, error) {
 	if requestID == "" {
 		if store := e.continuationStore(); store != nil {
 			if err := store.AdmitContinuationWork(ctx, sessionID, proposedTurnID); err != nil {
@@ -1220,12 +1248,13 @@ func (e *TurnExecutor) claimRequest(ctx context.Context, sessionID, requestID, p
 			SessionID:   sessionID,
 			RequestID:   requestID,
 			TurnID:      proposedTurnID,
-			PayloadHash: turnInputPayloadHashWithProvenance(text, wireModel, assets, localAssets, provenance), Text: text,
+			PayloadHash: turnInputPayloadHashWithProvenanceAndReply(text, wireModel, assets, localAssets, provenance, reply), Text: text,
 			WireModel:     wireModel,
 			ResolvedModel: resolvedModel,
 			Assets:        append([]model.GatewayAssetRef(nil), assets...), CreatedAt: time.Now().UTC(),
 			LocalAssets: append([]model.LocalAssetRef(nil), localAssets...),
 			Provenance:  provenance,
+			ReplyTo:     cloneFollowUpReply(reply),
 			ManagedTask: managedAdmissionRef(ctx),
 		}
 		if validation != nil {
@@ -1248,7 +1277,7 @@ func (e *TurnExecutor) claimRequest(ctx context.Context, sessionID, requestID, p
 		}
 		event := agent.Event{
 			Kind: agent.EventTurnAccepted, SessionID: sessionID, TurnID: proposedTurnID,
-			RequestID: requestID, At: input.CreatedAt,
+			RequestID: requestID, At: input.CreatedAt, FollowUpReply: cloneFollowUpReply(reply),
 		}
 		if input.ValidationContract != nil {
 			event.ValidationContract = input.ValidationContract
@@ -1287,6 +1316,7 @@ func (e *TurnExecutor) claimRequest(ctx context.Context, sessionID, requestID, p
 			ack := agent.Event{
 				Kind: agent.EventTurnAccepted, SessionID: stored.SessionID,
 				TurnID: stored.TurnID, RequestID: stored.RequestID, At: stored.CreatedAt,
+				FollowUpReply: cloneFollowUpReply(stored.ReplyTo),
 			}
 			if stored.ValidationContract != nil {
 				ack.ValidationContract = stored.ValidationContract
@@ -1345,6 +1375,22 @@ func turnInputPayloadHashWithLocalAssets(text, wireModel string, assets []model.
 		Assets      []model.GatewayAssetRef `json:"assets"`
 		LocalAssets []model.LocalAssetRef   `json:"local_assets"`
 	}{Text: text, Model: wireModel, Assets: normalizedAssets, LocalAssets: normalizedLocalAssets}
+	encoded, _ := json.Marshal(payload)
+	return fmt.Sprintf("%x", sha256.Sum256(encoded))
+}
+
+func turnInputPayloadHashWithProvenanceAndReply(text, wireModel string, assets []model.GatewayAssetRef, localAssets []model.LocalAssetRef, provenance *session.CrossSessionProvenance, reply *session.FollowUpReply) string {
+	if reply == nil {
+		return turnInputPayloadHashWithProvenance(text, wireModel, assets, localAssets, provenance)
+	}
+	payload := struct {
+		Text       string                          `json:"text"`
+		Model      string                          `json:"model"`
+		Assets     []model.GatewayAssetRef         `json:"assets"`
+		Local      []model.LocalAssetRef           `json:"local_assets"`
+		Provenance *session.CrossSessionProvenance `json:"provenance"`
+		ReplyTo    *session.FollowUpReply          `json:"reply_to"`
+	}{text, wireModel, append([]model.GatewayAssetRef{}, assets...), append([]model.LocalAssetRef{}, localAssets...), provenance, reply}
 	encoded, _ := json.Marshal(payload)
 	return fmt.Sprintf("%x", sha256.Sum256(encoded))
 }
@@ -1730,7 +1776,7 @@ func (e *TurnExecutor) executeRecoveredTurn(ctx context.Context, input session.T
 	if err != nil {
 		return agent.TurnResult{}, err
 	}
-	return e.driveTurn(ctx, sess, input.RequestID, input.Text, input.WireModel, "", input.Assets, input.LocalAssets, &input, input.Provenance, input.ValidationContract, nil,
+	return e.driveTurn(ctx, sess, input.RequestID, input.Text, input.WireModel, "", input.Assets, input.LocalAssets, &input, input.Provenance, input.ValidationContract, nil, nil,
 		session.TurnStatusRunning,
 		func(runCtx context.Context, runner TurnRunner, prepared bool) (agent.TurnResult, error) {
 			if !prepared {
@@ -1883,6 +1929,12 @@ func (e *TurnExecutor) SetClientToolWaiter(sessionID string, w agent.ClientToolW
 // session. It is a host/runtime control, not an agent_input field.
 func (e *TurnExecutor) SetCapabilityContext(sessionID, capability string) {
 	e.active.SetCapabilityContext(sessionID, capability)
+}
+
+// SetClientCapabilities records the connection's latest client capability
+// snapshot for future turn-local tool gating.
+func (e *TurnExecutor) SetClientCapabilities(sessionID string, capabilities []string) {
+	e.active.SetClientCapabilities(sessionID, capabilities)
 }
 
 // RegisterTools stores client-side tool definitions for a session.

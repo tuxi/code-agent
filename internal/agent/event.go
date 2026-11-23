@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"code-agent/internal/assetref"
+	"code-agent/internal/followup"
 	"code-agent/internal/model"
 	"code-agent/internal/preview"
 	"code-agent/internal/session"
@@ -66,6 +67,9 @@ const (
 	// results (no LLM call). Text carries the count cleared.
 	EventContextEdited EventKind = "context_edited"
 	EventTurnFinished  EventKind = "turn_finished"
+	// EventFollowUpDismissed records that the user closed a terminal card. It is
+	// a UI-state event, not a user turn, and therefore carries no assistant text.
+	EventFollowUpDismissed EventKind = "follow_up_dismissed"
 
 	// Lifecycle (v1.2). Emitted around suspend/resume so a client can drive the
 	// "已暂停 / 恢复中 / 思考中" UI labels off the event stream. TurnResumed fires
@@ -260,6 +264,7 @@ type Event struct {
 	TurnID                 string
 	SupplementApplication  *session.SupplementApplication `json:"supplement_application,omitempty"`
 	RequestID              string                         // client-generated idempotency/correlation key for agent_input
+	FollowUpReply          *session.FollowUpReply         `json:"reply_to,omitempty"`
 	ValidationContract     *session.ValidationContract    `json:"validation_contract,omitempty"`
 	ValidationContractHash string                         `json:"validation_contract_hash,omitempty"`
 	UserAssets             []model.GatewayAssetRef
@@ -301,6 +306,8 @@ type Event struct {
 	ToolUsage       *tools.ToolUsage        // EventToolFinished: managed-tool billing receipt; nil for local tools
 	Workflow        json.RawMessage         // workflow_*: structured DAG/task/node payload
 	TextAnnotations []assets.TextAnnotation // EventTurnFinished: assistant-text ranges linked to assets
+	FollowUp        *followup.Offer         `json:"follow_up,omitempty"`    // EventTurnFinished: optional terminal decision card
+	FollowUpID      string                  `json:"follow_up_id,omitempty"` // EventFollowUpDismissed
 	Chunk           string                  // stdout/stderr chunk (ToolStdout / ToolStderr)
 	Failure         string                  // EventObserved: the classified FailureType (e.g. "compile")
 	Version         string                  // EventSkillLoaded: the loaded skill's version (name is in ToolName)

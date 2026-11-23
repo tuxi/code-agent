@@ -20,6 +20,7 @@ type ActiveTurnRegistry struct {
 	mu                 sync.Mutex
 	turns              map[string]*activeTurn
 	capabilityContexts map[string]string
+	clientCapabilities map[string][]string
 	shutdown           bool
 }
 
@@ -71,7 +72,11 @@ func (r *ActiveTurnRegistry) RegisterTools(sessionID string, tools []agent.Clien
 
 // NewActiveTurnRegistry creates an empty registry.
 func NewActiveTurnRegistry() *ActiveTurnRegistry {
-	return &ActiveTurnRegistry{turns: make(map[string]*activeTurn), capabilityContexts: make(map[string]string)}
+	return &ActiveTurnRegistry{
+		turns:              make(map[string]*activeTurn),
+		capabilityContexts: make(map[string]string),
+		clientCapabilities: make(map[string][]string),
+	}
 }
 
 // CapabilityContext returns the host-selected active capability for a session.
@@ -98,6 +103,33 @@ func (r *ActiveTurnRegistry) SetCapabilityContext(sessionID, capability string) 
 		r.capabilityContexts = make(map[string]string)
 	}
 	r.capabilityContexts[sessionID] = capability
+}
+
+// ClientCapabilities returns the latest capabilities declared by a connected
+// client for this session. The slice is copied so callers cannot mutate registry
+// state. Values persist across turns and connections until replaced.
+func (r *ActiveTurnRegistry) ClientCapabilities(sessionID string) []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.clientCapabilities[sessionID]...)
+}
+
+// SetClientCapabilities replaces the session's connection-level capability
+// snapshot. An empty slice clears it.
+func (r *ActiveTurnRegistry) SetClientCapabilities(sessionID string, capabilities []string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.shutdown {
+		return
+	}
+	if len(capabilities) == 0 {
+		delete(r.clientCapabilities, sessionID)
+		return
+	}
+	if r.clientCapabilities == nil {
+		r.clientCapabilities = make(map[string][]string)
+	}
+	r.clientCapabilities[sessionID] = append([]string(nil), capabilities...)
 }
 
 // BeginTurn reserves a session for exclusive execution. It returns a derived
@@ -399,4 +431,5 @@ func (r *ActiveTurnRegistry) Shutdown() {
 	}
 	r.turns = nil
 	r.capabilityContexts = nil
+	r.clientCapabilities = nil
 }

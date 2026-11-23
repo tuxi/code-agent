@@ -52,6 +52,17 @@ func (s *TransportSession) SendMessageWithRequestIDAndAllAssets(ctx context.Cont
 	return s.ex.ExecuteWithRequestIDAndAllAssets(ctx, s.id, requestID, text, model, effort, assets, localAssets)
 }
 
+// SendMessageWithFollowUp starts an ordinary text turn linked to the selected
+// option from the preceding terminal card.
+func (s *TransportSession) SendMessageWithFollowUp(ctx context.Context, requestID, text, model, effort string, reply session.FollowUpReply) (agent.TurnResult, error) {
+	return s.ex.ExecuteWithRequestIDAndFollowUp(ctx, s.id, requestID, text, model, effort, reply)
+}
+
+// DismissFollowUp records the close action without starting a model turn.
+func (s *TransportSession) DismissFollowUp(ctx context.Context, reply session.FollowUpReply) error {
+	return s.ex.DismissFollowUp(ctx, s.id, reply)
+}
+
 // Cancel stops the in-flight turn. Satisfies server.CommandTarget.
 func (s *TransportSession) Cancel() {
 	s.ex.Cancel(s.id)
@@ -139,4 +150,10 @@ func (s *TransportSession) RegisterTools(tools []agent.ClientToolDef) {
 // turns. Satisfies optional host wiring; it is not an Agent Wire input field.
 func (s *TransportSession) SetCapabilityContext(capability string) {
 	s.ex.SetCapabilityContext(s.id, capability)
+}
+
+// SetClientCapabilities stores the latest client_capabilities snapshot so the
+// per-turn builder can gate presentation tools without trusting agent_input.
+func (s *TransportSession) SetClientCapabilities(capabilities []string) {
+	s.ex.SetClientCapabilities(s.id, capabilities)
 }
